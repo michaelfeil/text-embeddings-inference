@@ -204,8 +204,10 @@ impl CandleBackend {
                 }
             }
             #[cfg(not(feature = "cuda"))]
-            let _ = device_id; // suppress unused variable warning
-            Ok(Device::Cpu)
+            {
+                let _ = device_id;
+                Ok(Device::Cpu)
+            }
         } else if candle::utils::metal_is_available() {
             Device::new_metal(0)
         } else {
