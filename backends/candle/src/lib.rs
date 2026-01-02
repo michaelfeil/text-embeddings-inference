@@ -236,6 +236,10 @@ impl CandleBackend {
             );
             let file_u8 = std::fs::read(&model_files[0])
                 .map_err(|err| BackendError::Start(err.to_string()))?;
+            tracing::info!(
+                "Loaded safetensors, size: {} bytes",
+                file_u8.len()
+            );
             VarBuilder::from_buffered_safetensors(file_u8, dtype, &device)
         } else {
             unsafe { VarBuilder::from_mmaped_safetensors(&model_files, dtype, &device) }
