@@ -111,10 +111,12 @@ fn queue_blocking_task(
 
     let mut entries: VecDeque<Entry> = VecDeque::with_capacity(max_concurrent_requests);
 
+    tracing::info!("Using {} queue {}", "custom Baseten", "queue");
+
     while let Some(cmd) = queue_receiver.blocking_recv() {
         match cmd {
             QueueCommand::Append(entry, span) => {
-                let _span = span.entered();
+                let _span = span.entered(); 
                 entries.push_back(*entry);
                 let gauge = metrics::gauge!("te_queue_size");
                 gauge.increment(1.0);

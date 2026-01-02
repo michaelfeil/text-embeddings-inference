@@ -11,7 +11,7 @@ VERSION="1.8.4"
 REGISTRIES=(
     # "registry.internal.huggingface.tech/api-inference/text-embeddings-inference"
     # "ghcr.io/huggingface/text-embeddings-inference"
-    "basetenlabs/bei_bert"
+    "baseten/bei_bert"
 )
 
 # Matrix configurations: prefix:compute_cap:dockerfile:grpc:sccache:extra_args
