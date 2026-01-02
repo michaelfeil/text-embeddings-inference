@@ -519,7 +519,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "criterion",
- "cudarc",
+ "cudarc 0.18.1",
  "hf-hub",
  "radix_mlp",
  "serde_json",
