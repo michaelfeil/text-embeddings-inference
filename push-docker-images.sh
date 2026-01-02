@@ -123,7 +123,6 @@ build_and_push_variant() {
         local grpc_tags=()
         for registry in "${REGISTRIES[@]}"; do
             grpc_tags+=("-t" "${registry}:${prefix}${VERSION}-grpc")
-            grpc_tags+=("-t" "${registry}:${prefix}1.8-grpc")
             grpc_tags+=("-t" "${registry}:${prefix}latest-grpc")
         done
         
