@@ -228,6 +228,11 @@ impl CandleBackend {
 
         let vb = if model_files.len() == 1 && model_files[0].extension().unwrap() == "bin" {
             VarBuilder::from_pth(&model_files[0], dtype, &device)
+        } else if model_files.len() == 1 && model_files[0].extension().unwrap() == "safetensors"
+        {
+            let file_u8 = std::fs::read(&model_files[0])
+                .map_err(|err| BackendError::Start(err.to_string()))?;
+            VarBuilder::from_buffered_safetensors(file_u8, dtype, &device)
         } else {
             unsafe { VarBuilder::from_mmaped_safetensors(&model_files, dtype, &device) }
         }
