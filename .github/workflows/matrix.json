@@ -46,8 +46,8 @@
     "dockerfile": "Dockerfile-cuda"
   },
   {
-    "name": "Ada",
-    "imageNamePrefix": "ada-",
+    "name": "Blackwell",
+    "imageNamePrefix": "blackwell-",
     "runOn": "always",
     "sccache": true,
     "cudaComputeCap": 120,
