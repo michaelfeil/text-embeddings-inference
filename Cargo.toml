@@ -2,6 +2,7 @@
 members = [
     "backends",
     "backends/candle",
+    "backends/candle-bench",
     "backends/ort",
     "backends/core",
     "backends/python",
@@ -54,6 +55,7 @@ candle-index-select-cu =  { version = "0.0.1", features = ["cuda-12"], default-f
 candle-rotary = { version = "0.0.2" }
 candle-flash-attn-v1 = { version = "0.0.2" }
 half = { version = "2.3.1", features = ["num-traits"] }
+radix_mlp = { version = "0.0.2" }
 
 [patch.crates-io]
 candle-cublaslt = { git = "https://github.com/michaelfeil/candle-extensions-fork", rev = "00481021d23517c99b609a25725be941edb5ed0e", package = "candle-cublaslt" }
