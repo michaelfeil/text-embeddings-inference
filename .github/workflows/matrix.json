@@ -46,6 +46,15 @@
     "dockerfile": "Dockerfile-cuda"
   },
   {
+    "name": "Ada",
+    "imageNamePrefix": "ada-",
+    "runOn": "always",
+    "sccache": true,
+    "cudaComputeCap": 120,
+    "grpc": true,
+    "dockerfile": "Dockerfile-cuda"
+  },
+  {
     "name": "All",
     "imageNamePrefix": "cuda-",
     "runOn": "always",
