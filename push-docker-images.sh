@@ -103,7 +103,6 @@ build_and_push_variant() {
     local tags=()
     for registry in "${REGISTRIES[@]}"; do
         tags+=("-t" "${registry}:${prefix}${VERSION}")
-        tags+=("-t" "${registry}:${prefix}1.8")
         tags+=("-t" "${registry}:${prefix}latest")
     done
     
