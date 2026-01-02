@@ -146,6 +146,7 @@ fn queue_blocking_task(
                     if entry.metadata.response_tx.is_closed() {
                         let counter = metrics::counter!("te_request_failure", "err" => "dropped");
                         counter.increment(1);
+                        tracing::warn!("Client dropped 1 request before batching.");
                         continue;
                     }
 
