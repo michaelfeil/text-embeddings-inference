@@ -135,6 +135,7 @@ FROM base AS grpc
 COPY --from=grpc-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
 
 ENTRYPOINT ["text-embeddings-router"]
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
 CMD ["--json-output"]
 
 FROM base
@@ -142,4 +143,5 @@ FROM base
 COPY --from=http-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
 
 ENTRYPOINT ["text-embeddings-router"]
+RUN apt-get update && apt-get install -y python3 && rm -rf /var/lib/apt/lists/*
 CMD ["--json-output"]
