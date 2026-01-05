@@ -58,9 +58,9 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     elif [ ${CUDA_COMPUTE_CAP} -eq 90 ]; \
     then  \
         nvprune --generate-code code=sm_90 /usr/local/cuda/lib64/libcublas_static.a -o /usr/local/cuda/lib64/libcublas_static.a; \
-    elif [ ${CUDA_COMPUTE_CAP} -eq 120 ]; \
+    elif [ ${CUDA_COMPUTE_CAP} -eq 100 ]; \
     then  \
-        nvprune --generate-code code=sm_120 /usr/local/cuda/lib64/libcublas_static.a -o /usr/local/cuda/lib64/libcublas_static.a; \
+        nvprune --generate-code code=sm_100 /usr/local/cuda/lib64/libcublas_static.a -o /usr/local/cuda/lib64/libcublas_static.a; \
     else  \
         echo "cuda compute cap ${CUDA_COMPUTE_CAP} is not supported"; exit 1; \
     fi;
