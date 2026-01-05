@@ -21,7 +21,7 @@ declare -A IMAGES=(
     ["86-"]="86:Dockerfile-cuda:true:true:"
     ["89-"]="89:Dockerfile-cuda:true:true:"
     ["hopper-"]="90:Dockerfile-cuda:true:true:"
-    ["blackwell-"]="120:Dockerfile-cuda:true:true:"
+    ["blackwell-"]="100:Dockerfile-cuda:true:true:"
 )
 
 # Colors for output
