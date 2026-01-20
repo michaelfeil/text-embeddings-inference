@@ -249,6 +249,7 @@ pub struct FlashMistralModel {
     sin_cache: Tensor,
     pool: Pool,
     pub device: Device,
+    use_bidirectional_attention: bool,
 
     span: tracing::Span,
 }
@@ -304,6 +305,7 @@ impl FlashMistralModel {
             sin_cache,
             pool,
             device: vb.device().clone(),
+            use_bidirectional_attention: config.use_bidirectional_attention,
             span: tracing::span!(tracing::Level::TRACE, "model"),
         })
     }
@@ -464,7 +466,7 @@ impl Model for FlashMistralModel {
     }
 
     fn supports_radix_mlp(&self) -> bool {
-        true
+        !self.use_bidirectional_attention
     }
 
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
