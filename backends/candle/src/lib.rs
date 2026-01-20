@@ -23,9 +23,9 @@ use crate::compute_cap::{
 };
 use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, Gemma3Config, Gemma3Model, JinaBertModel, JinaCodeBertModel, MPNetConfig,
-    MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel, NomicBertModel,
-    NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
+    GTEConfig, GTEModel, Gemma3Config, Gemma3Model, JinaBertModel, JinaCodeBertModel, LLamaConfig,
+    MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
+    NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
@@ -113,6 +113,9 @@ enum Config {
     Qwen3(Qwen3Config),
     Roberta(BertConfig),
     XlmRoberta(BertConfig),
+    #[allow(dead_code)]
+    #[serde(alias = "llama_bidirec")] // Also accept llama_bidirec
+    Llama(LLamaConfig),
 }
 
 pub struct CandleBackend {
@@ -228,18 +231,14 @@ impl CandleBackend {
 
         let vb = if model_files.len() == 1 && model_files[0].extension().unwrap() == "bin" {
             VarBuilder::from_pth(&model_files[0], dtype, &device)
-        } else if model_files.len() == 1 && model_files[0].extension().unwrap() == "safetensors"
-        {
+        } else if model_files.len() == 1 && model_files[0].extension().unwrap() == "safetensors" {
             tracing::info!(
                 "Loading safetensors model with B10 method from file: {:?}",
                 &model_files[0]
             );
             let file_u8 = std::fs::read(&model_files[0])
                 .map_err(|err| BackendError::Start(err.to_string()))?;
-            tracing::info!(
-                "Loaded safetensors, size: {} bytes",
-                file_u8.len()
-            );
+            tracing::info!("Loaded safetensors, size: {} bytes", file_u8.len());
             VarBuilder::from_buffered_safetensors(file_u8, dtype, &device)
         } else {
             unsafe { VarBuilder::from_mmaped_safetensors(&model_files, dtype, &device) }
@@ -302,6 +301,10 @@ impl CandleBackend {
             }
             (Config::Mistral(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
                 "Mistral is only supported on Cuda devices in fp16 with flash attention enabled"
+                    .to_string(),
+            )),
+            (Config::Llama(_config), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
+                "Llama is only supported on Cuda devices in fp16 with flash attention enabled"
                     .to_string(),
             )),
             (Config::ModernBert(config), Device::Cpu | Device::Metal(_)) => {
@@ -451,6 +454,29 @@ impl CandleBackend {
                 tracing::info!("Starting FlashMistral model on {:?}", device);
                 Ok(Box::new(
                     FlashMistralModel::load(vb, &config, model_type).s()?,
+                ))
+            }
+            #[cfg(feature = "cuda")]
+            (Config::Llama(config), Device::Cuda(_)) => {
+                let cfg_mistral = MistralConfig {
+                    vocab_size: config.vocab_size,
+                    hidden_size: config.hidden_size,
+                    intermediate_size: config.intermediate_size,
+                    num_hidden_layers: config.num_hidden_layers,
+                    num_attention_heads: config.num_attention_heads,
+                    num_key_value_heads: config.num_key_value_heads,
+                    hidden_act: config.hidden_act,
+                    max_position_embeddings: config.max_position_embeddings,
+                    initializer_range: config.initializer_range,
+                    rms_norm_eps: config.rms_norm_eps,
+                    model_type: config.model_type.clone(),
+                    rope_theta: config.rope_theta,
+                    sliding_window: config.sliding_window,
+                    rope_scaling: config.rope_scaling,
+                    use_bidirectional_attention: config.use_bidirectional_attention,
+                };
+                Ok(Box::new(
+                    FlashMistralModel::load(vb, &cfg_mistral, model_type).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -614,7 +640,10 @@ impl Backend for CandleBackend {
             // michaelfeil: ideally, we should sleep here for 1.0s/5.0s to allow k8s to detect healthcheck failure
             // without queuing further work on a possibly broken device by blocking the backend.
             // and sending 429s in the meantime.
-            tracing::error!("Device {:?} healthcheck failed: expected [2.0], got {v:?}", self.device);
+            tracing::error!(
+                "Device {:?} healthcheck failed: expected [2.0], got {v:?}",
+                self.device
+            );
             return Err(BackendError::Inference(format!(
                 "device healthcheck failed: expected [2.0], got {v:?}"
             )));
