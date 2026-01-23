@@ -3,7 +3,7 @@ use crate::tokenization::ValidEncoding;
 use std::cmp::max;
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{BackendError, Batch, set_global_queue_size};
+use text_embeddings_backend::{set_global_queue_size, BackendError, Batch};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{instrument, Span};
 
@@ -116,11 +116,11 @@ fn queue_blocking_task(
     while let Some(cmd) = queue_receiver.blocking_recv() {
         match cmd {
             QueueCommand::Append(entry, span) => {
-                let _span = span.entered(); 
+                let _span = span.entered();
                 entries.push_back(*entry);
                 // Set global queue size based on current entries length
                 set_global_queue_size(entries.len());
-                
+
                 let gauge = metrics::gauge!("te_queue_size");
                 gauge.increment(1.0);
             }
@@ -256,7 +256,7 @@ fn queue_blocking_task(
                 histogram.record(current_tokens as f64);
                 // Set global queue size based on current entries length
                 set_global_queue_size(entries.len());
-                
+
                 let gauge = metrics::gauge!("te_queue_size");
                 gauge.set(entries.len() as f64)
             }

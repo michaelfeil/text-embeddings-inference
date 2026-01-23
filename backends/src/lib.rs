@@ -90,8 +90,6 @@ pub(crate) fn is_dual_backend_enabled() -> bool {
         .unwrap_or(false)
 }
 
-
-
 #[derive(Debug, Clone)]
 pub struct Backend {
     /// Channel to communicate with the background thread(s)
@@ -121,7 +119,7 @@ impl Backend {
         device_id: usize,
     ) -> Result<Self, BackendError> {
         let dual_mode = is_dual_backend_enabled();
-        
+
         if dual_mode {
             tracing::info!(" Initializing dual backend mode ");
             Self::new_dual_backend(
@@ -134,7 +132,8 @@ impl Backend {
                 otlp_endpoint,
                 otlp_service_name,
                 device_id,
-            ).await
+            )
+            .await
         } else {
             tracing::info!("🔧 Initializing single backend mode");
             Self::new_single_backend(
@@ -147,7 +146,8 @@ impl Backend {
                 otlp_endpoint,
                 otlp_service_name,
                 device_id,
-            ).await
+            )
+            .await
         }
     }
 
@@ -182,8 +182,11 @@ impl Backend {
         let max_batch_size = backend.max_batch_size();
 
         let (health_sender, health_receiver) = watch::channel(false);
-        let _backend_thread =
-            Arc::new(BackendThread::new_single(backend, backend_receiver, health_sender));
+        let _backend_thread = Arc::new(BackendThread::new_single(
+            backend,
+            backend_receiver,
+            health_sender,
+        ));
 
         Ok(Self {
             backend_sender,
@@ -209,12 +212,12 @@ impl Backend {
         otlp_service_name: String,
         device_id: usize,
     ) -> Result<Self, BackendError> {
-// Proper dual backend implementation with two separate instances
+        // Proper dual backend implementation with two separate instances
         let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(8);
 
         // Create two separate backend instances sharing ApiRepo via Arc
         let api_repo_arc = api_repo.map(Arc::new);
-        
+
         // Initialize both backends concurrently for better performance
         let (backend1, backend2) = tokio::try_join!(
             init_backend(
@@ -247,10 +250,14 @@ impl Backend {
         let max_batch_size = backend1.max_batch_size();
 
         let (health_sender, health_receiver) = watch::channel(false);
-        
+
         // Spawn proper dual backend threads
-        let _backend_thread =
-            Arc::new(BackendThread::new_dual(backend1, backend2, backend_receiver, health_sender));
+        let _backend_thread = Arc::new(BackendThread::new_dual(
+            backend1,
+            backend2,
+            backend_receiver,
+            health_sender,
+        ));
 
         Ok(Self {
             backend_sender,
@@ -272,7 +279,9 @@ impl Backend {
         max_bs: Option<usize>,
     ) -> Result<(), BackendError> {
         if self.is_dual_backend {
-            tracing::info!("📊 Warming up dual backend mode (2 backend instances will share warmup workload)");
+            tracing::info!(
+                "📊 Warming up dual backend mode (2 backend instances will share warmup workload)"
+            );
         }
         let read_env_var = |key: &str, default: usize| -> usize {
             env::var(key)
@@ -385,7 +394,9 @@ impl Backend {
         padded_model: bool,
     ) -> Result<(), BackendError> {
         if self.is_dual_backend {
-            tracing::info!("📊 Warming up dual backend mode (2 backend instances will share warmup workload)");
+            tracing::info!(
+                "📊 Warming up dual backend mode (2 backend instances will share warmup workload)"
+            );
         }
         if is_hpu() {
             return self
@@ -755,11 +766,11 @@ fn backend_worker(
         } else {
             // Secondary worker: check global queue size against compile-time constant
             let queue_size = get_global_queue_size();
-            
+
             if queue_size >= ACTIVATION_THRESHOLD {
                 // Queue is big enough, try to process
                 if let Ok(cmd) = backend_receiver.try_recv() {
-process_command(cmd, &backend, &health_sender);
+                    process_command(cmd, &backend, &health_sender);
                 } else {
                     // No command available, brief wait
                     std::thread::sleep(std::time::Duration::from_millis(5));
@@ -1072,37 +1083,20 @@ async fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBu
 
 #[cfg(test)]
 mod tests {
+    use crate::{
+        get_global_queue_size, is_dual_backend_enabled, set_global_queue_size, ACTIVATION_THRESHOLD,
+    };
     use std::env;
-    use crate::{get_global_queue_size, set_global_queue_size, ACTIVATION_THRESHOLD, is_dual_backend_enabled};
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
-    
 
     #[test]
     fn test_dual_backend_env_variable() {
         // Test that the environment variable is read correctly
         env::set_var("DUAL_BACKEND_ENABLED", "true");
         assert!(is_dual_backend_enabled());
-        
+
         env::set_var("DUAL_BACKEND_ENABLED", "false");
         assert!(!is_dual_backend_enabled());
-        
+
         env::remove_var("DUAL_BACKEND_ENABLED");
         assert!(!is_dual_backend_enabled()); // Should default to false
     }
@@ -1112,30 +1106,30 @@ mod tests {
         // Test the environment variable logic
         env::set_var("DUAL_BACKEND_ENABLED", "false");
         assert!(!is_dual_backend_enabled());
-        
+
         env::set_var("DUAL_BACKEND_ENABLED", "true");
         assert!(is_dual_backend_enabled());
-        
-// Clean up
+
+        // Clean up
         env::remove_var("DUAL_BACKEND_ENABLED");
     }
 
     #[test]
     fn test_conditional_worker_behavior() {
         // Test the conditional activation logic for workers
-        
+
         // Test below threshold - secondary worker should not activate
         set_global_queue_size(32); // Below 64
         assert!(get_global_queue_size() < ACTIVATION_THRESHOLD);
-        
+
         // Test at threshold - secondary worker should activate
         set_global_queue_size(64); // At threshold
         assert!(get_global_queue_size() >= ACTIVATION_THRESHOLD);
-        
+
         // Test above threshold - secondary worker should activate
         set_global_queue_size(128); // Above threshold
         assert!(get_global_queue_size() >= ACTIVATION_THRESHOLD);
-        
+
         // Reset to small queue size
         set_global_queue_size(0);
     }
@@ -1143,15 +1137,15 @@ mod tests {
     #[test]
     fn test_queue_size_tracking_thread_safety() {
         // Test that global queue size tracking is thread-safe
-        
+
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
         use std::thread;
-        
+
         let counter = Arc::new(AtomicUsize::new(0));
         let num_threads = 10;
         let operations_per_thread = 100;
-        
+
         let handles: Vec<_> = (0..num_threads)
             .map(|_| {
                 let counter = Arc::clone(&counter);
@@ -1164,14 +1158,14 @@ mod tests {
                 })
             })
             .collect();
-        
+
         for handle in handles {
             handle.join().unwrap();
         }
-        
+
         // Verify that operations completed without panics
         assert!(counter.load(Ordering::Relaxed) > 0);
-        
+
         // Reset
         set_global_queue_size(0);
     }
@@ -1179,33 +1173,37 @@ mod tests {
     #[test]
     fn test_activation_threshold_scenarios() {
         // Test various scenarios around the activation threshold
-        
+
         const THRESHOLD: usize = 64;
-        
+
         // Test edge cases around threshold
         let test_cases = vec![
-            (0, false),      // Empty queue
-            (1, false),      // Single item
-            (32, false),     // Half threshold
-            (63, false),     // Just below threshold
-            (64, true),      // Exactly at threshold
-            (65, true),      // Just above threshold
-            (128, true),     // Double threshold
-            (1000, true),    // Very large queue
+            (0, false),   // Empty queue
+            (1, false),   // Single item
+            (32, false),  // Half threshold
+            (63, false),  // Just below threshold
+            (64, true),   // Exactly at threshold
+            (65, true),   // Just above threshold
+            (128, true),  // Double threshold
+            (1000, true), // Very large queue
         ];
-        
+
         for (queue_size, should_activate) in test_cases {
             set_global_queue_size(queue_size);
             let is_above_threshold = get_global_queue_size() >= THRESHOLD;
             assert_eq!(
-                is_above_threshold, 
+                is_above_threshold,
                 should_activate,
                 "Queue size {} should {} secondary backend",
                 queue_size,
-                if should_activate { "activate" } else { "not activate" }
+                if should_activate {
+                    "activate"
+                } else {
+                    "not activate"
+                }
             );
         }
-        
+
         // Reset
         set_global_queue_size(0);
     }
@@ -1213,33 +1211,41 @@ mod tests {
     #[test]
     fn test_performance_overhead() {
         // Test that the global queue size tracking has minimal performance overhead
-        
+
         use std::time::Instant;
-        
+
         const ITERATIONS: usize = 1_000_000;
-        
+
         // Test queue size setting performance
         let start = Instant::now();
         for i in 0..ITERATIONS {
             set_global_queue_size(i % 1000); // Keep numbers reasonable
         }
         let set_duration = start.elapsed();
-        
+
         // Test queue size getting performance
         let start = Instant::now();
         for _ in 0..ITERATIONS {
             let _ = get_global_queue_size();
         }
         let get_duration = start.elapsed();
-        
+
         // Performance should be very fast (microseconds per operation)
         let set_avg_ns = set_duration.as_nanos() / ITERATIONS as u128;
         let get_avg_ns = get_duration.as_nanos() / ITERATIONS as u128;
-        
+
         // Assert that operations are fast (< 100ns per operation on average)
-        assert!(set_avg_ns < 100, "set_global_queue_size too slow: {}ns/op", set_avg_ns);
-        assert!(get_avg_ns < 100, "get_global_queue_size too slow: {}ns/op", get_avg_ns);
-        
+        assert!(
+            set_avg_ns < 100,
+            "set_global_queue_size too slow: {}ns/op",
+            set_avg_ns
+        );
+        assert!(
+            get_avg_ns < 100,
+            "get_global_queue_size too slow: {}ns/op",
+            get_avg_ns
+        );
+
         // Reset
         set_global_queue_size(0);
     }
