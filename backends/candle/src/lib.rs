@@ -192,7 +192,7 @@ impl CandleBackend {
         let device = if candle::utils::cuda_is_available() {
             #[cfg(feature = "cuda")]
             match compatible_compute_cap() {
-                Ok(true) => Device::new_cuda(device_id),
+                Ok(true) => Device::new_cuda_with_stream(device_id),
                 Ok(false) => {
                     return Err(BackendError::Start(format!(
                         "Runtime compute cap {} is not compatible with compile time compute cap {}",

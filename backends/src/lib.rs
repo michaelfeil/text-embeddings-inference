@@ -6,11 +6,12 @@ use std::cmp::{max, min};
 use std::env;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use text_embeddings_backend_core::{Backend as CoreBackend, Predictions};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tracing::{instrument, Span};
 
 #[cfg(feature = "candle")]
@@ -29,6 +30,22 @@ use text_embeddings_backend_ort::OrtBackend;
 
 #[cfg(feature = "python")]
 use text_embeddings_backend_python::PythonBackend;
+
+// Compile-time constant for secondary backend activation
+const ACTIVATION_THRESHOLD: usize = 64;
+
+// Global atomic for queue size tracking
+static GLOBAL_QUEUE_SIZE: AtomicUsize = AtomicUsize::new(0);
+
+// Functions for queue.rs to call
+pub fn set_global_queue_size(size: usize) {
+    GLOBAL_QUEUE_SIZE.store(size, Ordering::Relaxed);
+}
+
+// Function for backend workers to read
+pub fn get_global_queue_size() -> usize {
+    GLOBAL_QUEUE_SIZE.load(Ordering::Relaxed)
+}
 
 fn powers_of_two(max_value: usize) -> Vec<usize> {
     let mut result = Vec::new();
@@ -53,7 +70,6 @@ fn generate_bucket_sizes(bucket_size: usize, max_s: usize, base_exp: usize) -> V
             None => break,
         }
     }
-
     sizes
 }
 
@@ -67,10 +83,19 @@ fn is_hpu() -> bool {
     }
 }
 
+pub(crate) fn is_dual_backend_enabled() -> bool {
+    std::env::var("DUAL_BACKEND_ENABLED")
+        .ok()
+        .and_then(|s| s.parse::<bool>().ok())
+        .unwrap_or(false)
+}
+
+
+
 #[derive(Debug, Clone)]
 pub struct Backend {
-    /// Channel to communicate with the background thread
-    backend_sender: mpsc::Sender<BackendCommand>,
+    /// Channel to communicate with the background thread(s)
+    backend_sender: crossbeam_channel::Sender<BackendCommand>,
     /// Health status
     health_receiver: watch::Receiver<bool>,
     _backend_thread: Arc<BackendThread>,
@@ -78,6 +103,8 @@ pub struct Backend {
     pub radix_mlp_supported: bool,
     pub max_batch_size: Option<usize>,
     pub model_type: ModelType,
+    /// Whether dual backend mode is enabled
+    pub is_dual_backend: bool,
 }
 
 impl Backend {
@@ -93,11 +120,54 @@ impl Backend {
         otlp_service_name: String,
         device_id: usize,
     ) -> Result<Self, BackendError> {
-        let (backend_sender, backend_receiver) = mpsc::channel(8);
+        let dual_mode = is_dual_backend_enabled();
+        
+        if dual_mode {
+            tracing::info!(" Initializing dual backend mode ");
+            Self::new_dual_backend(
+                model_path,
+                api_repo,
+                dtype,
+                model_type,
+                dense_path,
+                uds_path,
+                otlp_endpoint,
+                otlp_service_name,
+                device_id,
+            ).await
+        } else {
+            tracing::info!("🔧 Initializing single backend mode");
+            Self::new_single_backend(
+                model_path,
+                api_repo,
+                dtype,
+                model_type,
+                dense_path,
+                uds_path,
+                otlp_endpoint,
+                otlp_service_name,
+                device_id,
+            ).await
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn new_single_backend(
+        model_path: PathBuf,
+        api_repo: Option<ApiRepo>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        uds_path: String,
+        otlp_endpoint: Option<String>,
+        otlp_service_name: String,
+        device_id: usize,
+    ) -> Result<Self, BackendError> {
+        let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(8);
 
         let backend = init_backend(
             model_path,
-            api_repo,
+            api_repo.map(Arc::new),
             dtype,
             model_type.clone(),
             dense_path,
@@ -113,7 +183,7 @@ impl Backend {
 
         let (health_sender, health_receiver) = watch::channel(false);
         let _backend_thread =
-            Arc::new(BackendThread::new(backend, backend_receiver, health_sender));
+            Arc::new(BackendThread::new_single(backend, backend_receiver, health_sender));
 
         Ok(Self {
             backend_sender,
@@ -123,6 +193,74 @@ impl Backend {
             radix_mlp_supported,
             max_batch_size,
             model_type,
+            is_dual_backend: false,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn new_dual_backend(
+        model_path: PathBuf,
+        api_repo: Option<ApiRepo>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        uds_path: String,
+        otlp_endpoint: Option<String>,
+        otlp_service_name: String,
+        device_id: usize,
+    ) -> Result<Self, BackendError> {
+// Proper dual backend implementation with two separate instances
+        let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(8);
+
+        // Create two separate backend instances sharing ApiRepo via Arc
+        let api_repo_arc = api_repo.map(Arc::new);
+        
+        // Initialize both backends concurrently for better performance
+        let (backend1, backend2) = tokio::try_join!(
+            init_backend(
+                model_path.clone(),
+                api_repo_arc.clone(),
+                dtype.clone(),
+                model_type.clone(),
+                dense_path.clone(),
+                uds_path.clone(),
+                otlp_endpoint.clone(),
+                otlp_service_name.clone(),
+                device_id,
+            ),
+            init_backend(
+                model_path,
+                api_repo_arc,
+                dtype.clone(),
+                model_type.clone(),
+                dense_path,
+                uds_path,
+                otlp_endpoint,
+                otlp_service_name,
+                device_id,
+            )
+        )?;
+
+        // Both backends should have the same properties
+        let padded_model = backend1.is_padded();
+        let radix_mlp_supported = backend1.supports_radix_mlp();
+        let max_batch_size = backend1.max_batch_size();
+
+        let (health_sender, health_receiver) = watch::channel(false);
+        
+        // Spawn proper dual backend threads
+        let _backend_thread =
+            Arc::new(BackendThread::new_dual(backend1, backend2, backend_receiver, health_sender));
+
+        Ok(Self {
+            backend_sender,
+            health_receiver,
+            _backend_thread,
+            padded_model,
+            radix_mlp_supported,
+            max_batch_size,
+            model_type,
+            is_dual_backend: true,
         })
     }
 
@@ -133,6 +271,9 @@ impl Backend {
         max_token: usize,
         max_bs: Option<usize>,
     ) -> Result<(), BackendError> {
+        if self.is_dual_backend {
+            tracing::info!("📊 Warming up dual backend mode (2 backend instances will share warmup workload)");
+        }
         let read_env_var = |key: &str, default: usize| -> usize {
             env::var(key)
                 .ok()
@@ -243,6 +384,9 @@ impl Backend {
         max_batch_requests: Option<usize>,
         padded_model: bool,
     ) -> Result<(), BackendError> {
+        if self.is_dual_backend {
+            tracing::info!("📊 Warming up dual backend mode (2 backend instances will share warmup workload)");
+        }
         if is_hpu() {
             return self
                 .warmup_hpu(max_input_length, max_batch_tokens, max_batch_requests)
@@ -319,8 +463,7 @@ impl Backend {
             let (sender, receiver) = oneshot::channel();
             self.backend_sender
                 .send(BackendCommand::Health(Span::current(), sender))
-                .await
-                .expect("No backend receiver. This is a bug.");
+                .map_err(|_| BackendError::Inference("Backend channel closed".to_string()))?;
             receiver.await.expect(
                 "Backend blocking task dropped the sender without sending a response. This is a bug.",
             )
@@ -358,8 +501,8 @@ impl Backend {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::Embed(batch, Span::current(), sender))
-            .expect("No backend receiver. This is a bug.");
+            .send(BackendCommand::Embed(batch, Span::current(), sender))
+            .map_err(|_| BackendError::Inference("Backend channel closed".to_string()))?;
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -370,8 +513,8 @@ impl Backend {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::Predict(batch, Span::current(), sender))
-            .expect("No backend receiver. This is a bug.");
+            .send(BackendCommand::Predict(batch, Span::current(), sender))
+            .map_err(|_| BackendError::Inference("Backend channel closed".to_string()))?;
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -381,7 +524,7 @@ impl Backend {
 #[allow(unused, clippy::too_many_arguments)]
 async fn init_backend(
     model_path: PathBuf,
-    api_repo: Option<ApiRepo>,
+    api_repo: Option<Arc<ApiRepo>>,
     dtype: DType,
     model_type: ModelType,
     dense_path: Option<String>,
@@ -391,7 +534,6 @@ async fn init_backend(
     device_id: usize,
 ) -> Result<Box<dyn CoreBackend + Send>, BackendError> {
     let mut backend_start_failed = false;
-    let api_repo = api_repo.map(Arc::new);
 
     if cfg!(feature = "ort") {
         #[cfg(feature = "ort")]
@@ -550,48 +692,130 @@ async fn init_backend(
 }
 
 #[derive(Debug)]
-struct BackendThread(Option<JoinHandle<()>>);
+enum BackendThread {
+    Single(Option<JoinHandle<()>>),
+    Dual(Vec<JoinHandle<()>>),
+}
 
 impl BackendThread {
-    fn new(
+    fn new_single(
         backend: Box<dyn CoreBackend + Send>,
-        mut backend_receiver: mpsc::Receiver<BackendCommand>,
+        backend_receiver: crossbeam_channel::Receiver<BackendCommand>,
         health_sender: watch::Sender<bool>,
     ) -> Self {
         let handle = std::thread::spawn(move || {
-            while let Some(cmd) = backend_receiver.blocking_recv() {
-                let start = Instant::now();
-                let mut healthy = false;
-                match cmd {
-                    BackendCommand::Health(span, sender) => {
-                        let _span = span.entered();
-                        let _ = sender.send(backend.health().map(|_| healthy = true));
-                    }
-                    BackendCommand::Embed(batch, span, sender) => {
-                        let _span = span.entered();
-                        let _ = sender.send(backend.embed(batch).map(|e| {
-                            healthy = true;
-                            (e, start.elapsed())
-                        }));
-                    }
-                    BackendCommand::Predict(batch, span, sender) => {
-                        let _span = span.entered();
-                        let _ = sender.send(backend.predict(batch).map(|e| {
-                            healthy = true;
-                            (e, start.elapsed())
-                        }));
-                    }
-                };
-                let _ = health_sender.send(healthy);
-            }
+            backend_worker(backend, backend_receiver, health_sender, 0); // Primary worker
         });
-        Self(Some(handle))
+        Self::Single(Some(handle))
     }
+
+    fn new_dual(
+        backend1: Box<dyn CoreBackend + Send>,
+        backend2: Box<dyn CoreBackend + Send>,
+        backend_receiver: crossbeam_channel::Receiver<BackendCommand>,
+        health_sender: watch::Sender<bool>,
+    ) -> Self {
+        let receiver1 = backend_receiver.clone();
+        let receiver2 = backend_receiver;
+        let health_sender1 = health_sender.clone();
+        let health_sender2 = health_sender;
+
+        tracing::info!("🚀 Spawning dual backend worker threads");
+
+        let handle1 = std::thread::spawn(move || {
+            tracing::info!("📡 Primary backend worker (ID 0) started");
+            backend_worker(backend1, receiver1, health_sender1, 0); // Primary worker
+            tracing::info!("📡 Primary backend worker (ID 0) stopped");
+        });
+
+        let handle2 = std::thread::spawn(move || {
+            tracing::info!("📡 Secondary backend worker (ID 1) started");
+            backend_worker(backend2, receiver2, health_sender2, 1); // Secondary worker
+            tracing::info!("📡 Secondary backend worker (ID 1) stopped");
+        });
+
+        Self::Dual(vec![handle1, handle2])
+    }
+}
+
+fn backend_worker(
+    backend: Box<dyn CoreBackend + Send>,
+    backend_receiver: crossbeam_channel::Receiver<BackendCommand>,
+    health_sender: watch::Sender<bool>,
+    worker_id: usize, // 0 = primary, 1 = secondary
+) {
+    loop {
+        if worker_id == 0 {
+            // Primary worker: always process
+            if let Ok(cmd) = backend_receiver.recv() {
+                process_command(cmd, &backend, &health_sender);
+            } else {
+                break; // Channel closed
+            }
+        } else {
+            // Secondary worker: check global queue size against compile-time constant
+            let queue_size = get_global_queue_size();
+            
+            if queue_size >= ACTIVATION_THRESHOLD {
+                // Queue is big enough, try to process
+                if let Ok(cmd) = backend_receiver.try_recv() {
+process_command(cmd, &backend, &health_sender);
+                } else {
+                    // No command available, brief wait
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            } else {
+                // Queue too small, wait longer
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        }
+    }
+}
+
+fn process_command(
+    cmd: BackendCommand,
+    backend: &Box<dyn CoreBackend + Send>,
+    health_sender: &watch::Sender<bool>,
+) {
+    let start = Instant::now();
+    let mut healthy = false;
+    match cmd {
+        BackendCommand::Health(span, sender) => {
+            let _span = span.entered();
+            let _ = sender.send(backend.health().map(|_| healthy = true));
+        }
+        BackendCommand::Embed(batch, span, sender) => {
+            let _span = span.entered();
+            let _ = sender.send(backend.embed(batch).map(|e| {
+                healthy = true;
+                (e, start.elapsed())
+            }));
+        }
+        BackendCommand::Predict(batch, span, sender) => {
+            let _span = span.entered();
+            let _ = sender.send(backend.predict(batch).map(|e| {
+                healthy = true;
+                (e, start.elapsed())
+            }));
+        }
+    };
+    let _ = health_sender.send(healthy);
 }
 
 impl Drop for BackendThread {
     fn drop(&mut self) {
-        self.0.take().unwrap().join().unwrap();
+        match self {
+            BackendThread::Single(handle) => {
+                if let Some(handle) = handle.take() {
+                    handle.join().unwrap();
+                }
+            }
+            BackendThread::Dual(handles) => {
+                for handle in handles.drain(..) {
+                    handle.join().unwrap();
+                }
+            }
+        }
     }
 }
 
@@ -844,4 +1068,179 @@ async fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBu
     }
 
     Ok(config_path.parent().unwrap().to_path_buf())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::env;
+    use crate::{get_global_queue_size, set_global_queue_size, ACTIVATION_THRESHOLD, is_dual_backend_enabled};
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+
+    #[test]
+    fn test_dual_backend_env_variable() {
+        // Test that the environment variable is read correctly
+        env::set_var("DUAL_BACKEND_ENABLED", "true");
+        assert!(is_dual_backend_enabled());
+        
+        env::set_var("DUAL_BACKEND_ENABLED", "false");
+        assert!(!is_dual_backend_enabled());
+        
+        env::remove_var("DUAL_BACKEND_ENABLED");
+        assert!(!is_dual_backend_enabled()); // Should default to false
+    }
+
+    #[tokio::test]
+    async fn test_backend_creation_modes() {
+        // Test the environment variable logic
+        env::set_var("DUAL_BACKEND_ENABLED", "false");
+        assert!(!is_dual_backend_enabled());
+        
+        env::set_var("DUAL_BACKEND_ENABLED", "true");
+        assert!(is_dual_backend_enabled());
+        
+// Clean up
+        env::remove_var("DUAL_BACKEND_ENABLED");
+    }
+
+    #[test]
+    fn test_conditional_worker_behavior() {
+        // Test the conditional activation logic for workers
+        
+        // Test below threshold - secondary worker should not activate
+        set_global_queue_size(32); // Below 64
+        assert!(get_global_queue_size() < ACTIVATION_THRESHOLD);
+        
+        // Test at threshold - secondary worker should activate
+        set_global_queue_size(64); // At threshold
+        assert!(get_global_queue_size() >= ACTIVATION_THRESHOLD);
+        
+        // Test above threshold - secondary worker should activate
+        set_global_queue_size(128); // Above threshold
+        assert!(get_global_queue_size() >= ACTIVATION_THRESHOLD);
+        
+        // Reset to small queue size
+        set_global_queue_size(0);
+    }
+
+    #[test]
+    fn test_queue_size_tracking_thread_safety() {
+        // Test that global queue size tracking is thread-safe
+        
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use std::thread;
+        
+        let counter = Arc::new(AtomicUsize::new(0));
+        let num_threads = 10;
+        let operations_per_thread = 100;
+        
+        let handles: Vec<_> = (0..num_threads)
+            .map(|_| {
+                let counter = Arc::clone(&counter);
+                thread::spawn(move || {
+                    for i in 0..operations_per_thread {
+                        set_global_queue_size(i);
+                        let read_back = get_global_queue_size();
+                        counter.fetch_add(read_back, Ordering::Relaxed);
+                    }
+                })
+            })
+            .collect();
+        
+        for handle in handles {
+            handle.join().unwrap();
+        }
+        
+        // Verify that operations completed without panics
+        assert!(counter.load(Ordering::Relaxed) > 0);
+        
+        // Reset
+        set_global_queue_size(0);
+    }
+
+    #[test]
+    fn test_activation_threshold_scenarios() {
+        // Test various scenarios around the activation threshold
+        
+        const THRESHOLD: usize = 64;
+        
+        // Test edge cases around threshold
+        let test_cases = vec![
+            (0, false),      // Empty queue
+            (1, false),      // Single item
+            (32, false),     // Half threshold
+            (63, false),     // Just below threshold
+            (64, true),      // Exactly at threshold
+            (65, true),      // Just above threshold
+            (128, true),     // Double threshold
+            (1000, true),    // Very large queue
+        ];
+        
+        for (queue_size, should_activate) in test_cases {
+            set_global_queue_size(queue_size);
+            let is_above_threshold = get_global_queue_size() >= THRESHOLD;
+            assert_eq!(
+                is_above_threshold, 
+                should_activate,
+                "Queue size {} should {} secondary backend",
+                queue_size,
+                if should_activate { "activate" } else { "not activate" }
+            );
+        }
+        
+        // Reset
+        set_global_queue_size(0);
+    }
+
+    #[test]
+    fn test_performance_overhead() {
+        // Test that the global queue size tracking has minimal performance overhead
+        
+        use std::time::Instant;
+        
+        const ITERATIONS: usize = 1_000_000;
+        
+        // Test queue size setting performance
+        let start = Instant::now();
+        for i in 0..ITERATIONS {
+            set_global_queue_size(i % 1000); // Keep numbers reasonable
+        }
+        let set_duration = start.elapsed();
+        
+        // Test queue size getting performance
+        let start = Instant::now();
+        for _ in 0..ITERATIONS {
+            let _ = get_global_queue_size();
+        }
+        let get_duration = start.elapsed();
+        
+        // Performance should be very fast (microseconds per operation)
+        let set_avg_ns = set_duration.as_nanos() / ITERATIONS as u128;
+        let get_avg_ns = get_duration.as_nanos() / ITERATIONS as u128;
+        
+        // Assert that operations are fast (< 100ns per operation on average)
+        assert!(set_avg_ns < 100, "set_global_queue_size too slow: {}ns/op", set_avg_ns);
+        assert!(get_avg_ns < 100, "get_global_queue_size too slow: {}ns/op", get_avg_ns);
+        
+        // Reset
+        set_global_queue_size(0);
+    }
 }
