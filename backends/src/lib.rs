@@ -715,7 +715,7 @@ impl BackendThread {
         health_sender: watch::Sender<bool>,
     ) -> Self {
         let handle = std::thread::spawn(move || {
-            backend_worker(backend, backend_receiver, health_sender, 0); // Primary worker
+            backend_worker(backend, backend_receiver, health_sender, 0, Arc::new(std::sync::atomic::AtomicBool::new(false))); // Primary worker
         });
         Self::Single(Some(handle))
     }
@@ -731,17 +731,20 @@ impl BackendThread {
         let health_sender1 = health_sender.clone();
         let health_sender2 = health_sender;
 
+        let global_shutdown_flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let global_shutdown_flag_clone = global_shutdown_flag.clone();
+
         tracing::info!("🚀 Spawning dual backend worker threads");
 
         let handle1 = std::thread::spawn(move || {
             tracing::info!("📡 Primary backend worker (ID 0) started");
-            backend_worker(backend1, receiver1, health_sender1, 0); // Primary worker
+            backend_worker(backend1, receiver1, health_sender1, 0, global_shutdown_flag); // Primary worker
             tracing::info!("📡 Primary backend worker (ID 0) stopped");
         });
 
         let handle2 = std::thread::spawn(move || {
             tracing::info!("📡 Secondary backend worker (ID 1) started");
-            backend_worker(backend2, receiver2, health_sender2, 1); // Secondary worker
+            backend_worker(backend2, receiver2, health_sender2, 1, global_shutdown_flag_clone); // Secondary worker
             tracing::info!("📡 Secondary backend worker (ID 1) stopped");
         });
 
@@ -754,43 +757,49 @@ fn backend_worker(
     backend_receiver: crossbeam_channel::Receiver<BackendCommand>,
     health_sender: watch::Sender<bool>,
     worker_id: usize, // 0 = primary, 1 = secondary
+    global_shutdown_flag: Arc<std::sync::atomic::AtomicBool>,
 ) {
+    let mut verbose_i = 0;
     loop {
         if worker_id == 0 {
             // Primary worker: always process
             if let Ok(cmd) = backend_receiver.recv() {
                 process_command(cmd, &backend, &health_sender);
             } else {
+                // set shutdown flag for secondary worker
+                global_shutdown_flag.store(true, std::sync::atomic::Ordering::Relaxed);
                 break; // Channel closed
             }
         } else {
+            verbose_i += 1;
             // Secondary worker: check global queue size against compile-time constant
             let queue_size = get_global_queue_size();
+
+            // check for shutdown signal
+            if global_shutdown_flag.load(std::sync::atomic::Ordering::Relaxed) {
+                break;
+            }
 
             if queue_size >= ACTIVATION_THRESHOLD {
                 // Queue is big enough, try to process
                 if let Ok(cmd) = backend_receiver.try_recv() {
-                    tracing::info!(
+                    tracing::warn!(
                         "Secondary backend worker processing command (queue size: {})",
                         queue_size
                     );
                     process_command(cmd, &backend, &health_sender);
-                } else {
-                    // Check if channel is closed
-                    if backend_receiver.is_empty() && backend_receiver.is_disconnected() {
-                        break;
-                    }
-                    // No command available, brief wait
-                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             } else {
-                // Check if channel is closed before sleeping
-                if backend_receiver.is_disconnected() {
-                    break;
+                // Queue not big enough, sleep briefly
+                if verbose_i % 200 == 0 {
+                    tracing::warn!(
+                        "Secondary backend worker idle (queue size: {}), sleeping...",
+                        queue_size
+                    );
                 }
-                // Queue too small, wait longer
-                std::thread::sleep(std::time::Duration::from_millis(5));
+                std::thread::sleep(std::time::Duration::from_millis(24));
             }
+            std::thread::sleep(std::time::Duration::from_millis(1)); // Prevent busy waiting
         }
     }
 }
