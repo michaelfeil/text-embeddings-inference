@@ -770,14 +770,26 @@ fn backend_worker(
             if queue_size >= ACTIVATION_THRESHOLD {
                 // Queue is big enough, try to process
                 if let Ok(cmd) = backend_receiver.try_recv() {
+                    tracing::info!(
+                        "Secondary backend worker processing command (queue size: {})",
+                        queue_size
+                    );
                     process_command(cmd, &backend, &health_sender);
                 } else {
+                    // Check if channel is closed
+                    if backend_receiver.is_empty() && backend_receiver.is_disconnected() {
+                        break;
+                    }
                     // No command available, brief wait
-                    std::thread::sleep(std::time::Duration::from_millis(5));
+                    std::thread::sleep(std::time::Duration::from_millis(1));
                 }
             } else {
+                // Check if channel is closed before sleeping
+                if backend_receiver.is_disconnected() {
+                    break;
+                }
                 // Queue too small, wait longer
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
     }
