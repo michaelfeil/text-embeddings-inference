@@ -157,7 +157,7 @@ build_all_variants() {
         pids+=($!)
         
         # Limit parallel builds to avoid overwhelming the system
-        if [[ ${#pids[@]} -ge 3 ]]; then
+        if [[ ${#pids[@]} -ge 5 ]]; then
             for pid in "${pids[@]}"; do
                 wait "$pid"
             done
