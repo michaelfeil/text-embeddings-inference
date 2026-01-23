@@ -4641,6 +4641,7 @@ name = "text-embeddings-backend"
 version = "1.8.4"
 dependencies = [
  "clap",
+ "crossbeam-channel",
  "hf-hub",
  "rand 0.9.0",
  "serde",

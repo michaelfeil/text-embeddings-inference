@@ -3,8 +3,8 @@ use std::fmt;
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
 
-#[derive(Debug, PartialEq)]
-#[cfg_attr(feature = "clap", derive(Clone, ValueEnum))]
+#[derive(Debug, PartialEq, Clone)]
+#[cfg_attr(feature = "clap", derive(ValueEnum))]
 pub enum DType {
     // Float16 is not available on accelerate
     #[cfg(any(
@@ -31,11 +31,17 @@ impl fmt::Display for DType {
             DType::Float32 => write!(f, "float32"),
             #[cfg(feature = "python")]
             DType::Bfloat16 => write!(f, "bfloat16"),
+
+            // Handle cases where variants are not available
+            #[cfg(not(any(
+                feature = "python",
+                all(feature = "candle", not(feature = "accelerate"))
+            )))]
+            _ => write!(f, "unknown"),
         }
     }
 }
 
-#[allow(clippy::derivable_impls)]
 impl Default for DType {
     fn default() -> Self {
         #[cfg(any(feature = "accelerate", feature = "mkl", feature = "ort"))]
@@ -49,7 +55,21 @@ impl Default for DType {
             feature = "python"
         )))]
         {
-            DType::Float16
+            #[cfg(any(
+                feature = "python",
+                all(feature = "candle", not(feature = "accelerate"))
+            ))]
+            {
+                DType::Float16
+            }
+            #[cfg(not(any(
+                feature = "python",
+                all(feature = "candle", not(feature = "accelerate"))
+            )))]
+            {
+                // Fallback - this should not happen in normal usage
+                panic!("No valid DType available for current feature set");
+            }
         }
         #[cfg(feature = "python")]
         {
