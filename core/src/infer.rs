@@ -8,7 +8,8 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use text_embeddings_backend::{Backend, BackendError, Embedding, ModelType};
 use tokenizers::TruncationDirection;
-use tokio::sync::{mpsc, oneshot, watch, Notify, OwnedSemaphorePermit, Semaphore};
+use async_channel::{bounded, Receiver, Sender};
+use tokio::sync::{oneshot, watch, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::instrument;
 
 /// Inference struct
@@ -33,8 +34,8 @@ impl Infer {
     ) -> Self {
         let notify_batching_task = Arc::new(Notify::new());
 
-        // Bound channel to 1 to be able to prefetch one batch
-        let (embed_sender, embed_receiver) = mpsc::channel(1);
+        // Use async-channel for dual backend support with pull model (size 1)
+        let (embed_sender, embed_receiver) = bounded(1);
 
         // Batching task
         tokio::spawn(batching_task(
@@ -43,8 +44,16 @@ impl Infer {
             embed_sender,
         ));
 
-        // Create embed task to communicate with backend
-        tokio::spawn(backend_task(backend.clone(), embed_receiver));
+        // Check if backend is in dual mode and spawn appropriate number of tasks
+        if backend.is_dual_backend {
+            tracing::info!("🚀 Spawning dual backend tasks (2 workers)");
+            // Spawn dual backend tasks
+            tokio::spawn(backend_task(backend.clone(), embed_receiver.clone(), 0));
+            tokio::spawn(backend_task(backend.clone(), embed_receiver, 1));
+        } else {
+            // Single backend mode
+            tokio::spawn(backend_task(backend.clone(), embed_receiver, 0));
+        }
 
         // Inference limit with a semaphore
         let semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
@@ -547,106 +556,116 @@ impl Infer {
 }
 
 #[instrument(skip_all)]
-async fn batching_task(queue: Queue, notify: Arc<Notify>, embed_sender: mpsc::Sender<NextBatch>) {
+async fn batching_task(queue: Queue, notify: Arc<Notify>, embed_sender: Sender<NextBatch>) {
     loop {
         notify.notified().await;
 
-        {
-            let mut permit = embed_sender
-                .reserve()
-                .await
-                .expect("embed receiver was dropped. This is a bug.");
 
-            while let Some(next_batch) = queue.next_batch().await {
-                permit.send(next_batch);
-                permit = embed_sender
-                    .reserve()
-                    .await
-                    .expect("embed receiver was dropped. This is a bug.");
+        while let Some(next_batch) = queue.next_batch().await {
+            // Send batch - will block naturally when channel is full (backpressure)
+            match embed_sender.send(next_batch).await {
+                Ok(()) => {
+                    // Batch sent successfully
+                    tracing::debug!("Batch sent to backend (queue size: {})", embed_sender.len());
+                }
+                Err(_) => {
+                    tracing::error!("Backend receiver dropped, shutting down batching task");
+                    break;
+                }
             }
         }
     }
 }
 
 #[instrument(skip_all)]
-async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextBatch>) {
-    while let Some(batch) = embed_receiver.recv().await {
-        match &backend.model_type {
-            ModelType::Classifier => {
-                let results = backend.predict(batch.1).await;
-
-                // Handle sending responses in a blocking task to avoid starving the backend
-                tokio::task::spawn_blocking(move || match results {
-                    Ok((mut predictions, inference_duration)) => {
-                        batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                            let infer_metadata = InferMetadata {
-                                prompt_tokens: m.prompt_tokens,
-                                tokenization: m.tokenization,
-                                queue: m.queue_time.elapsed() - inference_duration,
-                                inference: inference_duration,
-                            };
-
-                            let _ = m.response_tx.send(Ok(InferResult::Classification(
-                                ClassificationInferResponse {
-                                    results: predictions.remove(&i).expect(
-                                        "prediction not found in results. This is a backend bug.",
-                                    ),
-                                    metadata: infer_metadata,
-                                },
-                            )));
-                        });
-                    }
-                    Err(err) => {
-                        batch.0.into_iter().for_each(|m| {
-                            let _ = m.response_tx.send(Err(err.clone()));
-                        });
-                    }
-                });
-            }
-            ModelType::Embedding(_) => {
-                let results = backend.embed(batch.1).await;
-
-                // Handle sending responses in a blocking task to avoid starving the backend
-                tokio::task::spawn_blocking(move || match results {
-                    Ok((mut embeddings, inference_duration)) => {
-                        batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                            let metadata = InferMetadata {
-                                prompt_tokens: m.prompt_tokens,
-                                tokenization: m.tokenization,
-                                queue: m.queue_time.elapsed() - inference_duration,
-                                inference: inference_duration,
-                            };
-
-                            let results = match embeddings
-                                .remove(&i)
-                                .expect("embedding not found in results. This is a backend bug.")
-                            {
-                                Embedding::Pooled(e) => {
-                                    InferResult::PooledEmbedding(PooledEmbeddingsInferResponse {
-                                        results: e,
-                                        metadata,
-                                    })
-                                }
-                                Embedding::All(e) => {
-                                    InferResult::AllEmbedding(AllEmbeddingsInferResponse {
-                                        results: e,
-                                        metadata,
-                                    })
-                                }
-                            };
-
-                            let _ = m.response_tx.send(Ok(results));
-                        })
-                    }
-                    Err(err) => {
-                        batch.0.into_iter().for_each(|m| {
-                            let _ = m.response_tx.send(Err(err.clone()));
-                        });
-                    }
-                });
-            }
-        };
+async fn backend_task(backend: Backend, embed_receiver: Receiver<NextBatch>, worker_id: usize) {
+    tracing::info!("📡 Backend worker {} started", worker_id);
+    
+    while let Ok(batch) = embed_receiver.recv().await {
+        // Process the batch immediately when slot is free
+        process_batch(backend.clone(), batch, worker_id).await;
     }
+    
+    tracing::info!("📡 Backend worker {} stopped", worker_id);
+}
+
+#[instrument(skip_all)]
+async fn process_batch(backend: Backend, batch: NextBatch, _worker_id: usize) {
+    match &backend.model_type {
+        ModelType::Classifier => {
+            let results = backend.predict(batch.1).await;
+
+            // Handle sending responses in a blocking task to avoid starving the backend
+            tokio::task::spawn_blocking(move || match results {
+                Ok((mut predictions, inference_duration)) => {
+                    batch.0.into_iter().enumerate().for_each(|(i, m)| {
+                        let infer_metadata = InferMetadata {
+                            prompt_tokens: m.prompt_tokens,
+                            tokenization: m.tokenization,
+                            queue: m.queue_time.elapsed() - inference_duration,
+                            inference: inference_duration,
+                        };
+
+                        let _ = m.response_tx.send(Ok(InferResult::Classification(
+                            ClassificationInferResponse {
+                                results: predictions.remove(&i).expect(
+                                    "prediction not found in results. This is a backend bug.",
+                                ),
+                                metadata: infer_metadata,
+                            },
+                        )));
+                    });
+                }
+                Err(err) => {
+                    batch.0.into_iter().for_each(|m| {
+                        let _ = m.response_tx.send(Err(err.clone()));
+                    });
+                }
+            });
+        }
+        ModelType::Embedding(_) => {
+            let results = backend.embed(batch.1).await;
+
+            // Handle sending responses in a blocking task to avoid starving the backend
+            tokio::task::spawn_blocking(move || match results {
+                Ok((mut embeddings, inference_duration)) => {
+                    batch.0.into_iter().enumerate().for_each(|(i, m)| {
+                        let metadata = InferMetadata {
+                            prompt_tokens: m.prompt_tokens,
+                            tokenization: m.tokenization,
+                            queue: m.queue_time.elapsed() - inference_duration,
+                            inference: inference_duration,
+                        };
+
+                        let results = match embeddings
+                            .remove(&i)
+                            .expect("embedding not found in results. This is a backend bug.")
+                        {
+                            Embedding::Pooled(e) => {
+                                InferResult::PooledEmbedding(PooledEmbeddingsInferResponse {
+                                    results: e,
+                                    metadata,
+                                })
+                            }
+                            Embedding::All(e) => {
+                                InferResult::AllEmbedding(AllEmbeddingsInferResponse {
+                                    results: e,
+                                    metadata,
+                                })
+                            }
+                        };
+
+                        let _ = m.response_tx.send(Ok(results));
+                    })
+                }
+                Err(err) => {
+                    batch.0.into_iter().for_each(|m| {
+                        let _ = m.response_tx.send(Err(err.clone()));
+                    });
+                }
+            });
+        }
+    };
 }
 
 #[derive(Debug)]

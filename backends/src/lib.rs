@@ -163,7 +163,7 @@ impl Backend {
         otlp_service_name: String,
         device_id: usize,
     ) -> Result<Self, BackendError> {
-        let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(8);
+        let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(1);
 
         let backend = init_backend(
             model_path,
@@ -213,7 +213,7 @@ impl Backend {
         device_id: usize,
     ) -> Result<Self, BackendError> {
         // Proper dual backend implementation with two separate instances
-        let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(8);
+        let (backend_sender, backend_receiver) = crossbeam_channel::bounded::<BackendCommand>(1);
 
         // Create two separate backend instances sharing ApiRepo via Arc
         let api_repo_arc = api_repo.map(Arc::new);
