@@ -26,6 +26,10 @@ pub struct Qwen3Config {
     pub eos_token_id: usize,
     #[serde(default)]
     pub use_bidirectional_attention: bool,
+    #[serde(default)]
+    pub use_linear_output_projection: bool,
+    #[serde(default)]
+    pub linear_output_size: usize,
 }
 
 struct Qwen3Attention {
@@ -381,6 +385,7 @@ pub struct Qwen3Model {
     embeddings: Embedding,
     layers: Vec<Qwen3Layer>,
     norm: RMSNorm,
+    linear_output_projection: Option<Linear>,
     rotary_cache: (Tensor, Tensor),
     rotary_dim: usize,
     pool: Pool,
@@ -422,6 +427,20 @@ impl Qwen3Model {
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
 
+        let linear_output_projection = if config.use_linear_output_projection {
+            let output_size = config.linear_output_size;
+            let weight = vb
+                .pp("linear_output_projection")
+                .get((output_size, config.hidden_size), "weight")?;
+            let bias = vb
+                .pp("linear_output_projection")
+                .get(output_size, "bias")
+                .ok();
+            Some(Linear::new(weight, bias, None))
+        } else {
+            None
+        };
+
         let rotary_dim = config
             .head_dim
             .unwrap_or(config.hidden_size / config.num_attention_heads);
@@ -435,6 +454,7 @@ impl Qwen3Model {
             embeddings,
             layers,
             norm,
+            linear_output_projection,
             rotary_cache,
             rotary_dim,
             pool,
@@ -582,6 +602,12 @@ impl Qwen3Model {
         }
 
         let (outputs, _) = self.norm.forward(&hidden_states, None)?;
+
+        let outputs = if let Some(linear_output_projection) = &self.linear_output_projection {
+            linear_output_projection.forward(&outputs)?
+        } else {
+            outputs
+        };
 
         let has_pooling_requests = !batch.pooled_indices.is_empty();
         let has_raw_requests = !batch.raw_indices.is_empty();

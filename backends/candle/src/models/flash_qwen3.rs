@@ -305,6 +305,7 @@ pub struct FlashQwen3Model {
     embeddings: Embedding,
     layers: Vec<Qwen3Layer>,
     norm: RMSNorm,
+    linear_output_projection: Option<Linear>,
     cos_cache: Tensor,
     sin_cache: Tensor,
     pool: Pool,
@@ -352,6 +353,20 @@ impl FlashQwen3Model {
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
 
+        let linear_output_projection = if config.use_linear_output_projection {
+            let output_size = config.linear_output_size;
+            let weight = vb
+                .pp("linear_output_projection")
+                .get((output_size, config.hidden_size), "weight")?;
+            let bias = vb
+                .pp("linear_output_projection")
+                .get(output_size, "bias")
+                .ok();
+            Some(Linear::new(weight, bias, None))
+        } else {
+            None
+        };
+
         let inv_freqs = get_inv_freqs(
             layers[0].attention.attention_head_size,
             config.rope_theta,
@@ -369,6 +384,7 @@ impl FlashQwen3Model {
             embeddings,
             layers,
             norm,
+            linear_output_projection,
             cos_cache,
             sin_cache,
             pool,
@@ -413,6 +429,12 @@ impl FlashQwen3Model {
         }
 
         let (outputs, _) = self.norm.forward(&hidden_states, residual.as_ref())?;
+
+        let outputs = if let Some(linear_output_projection) = &self.linear_output_projection {
+            linear_output_projection.forward(&outputs)?
+        } else {
+            outputs
+        };
 
         // Expand final outputs to original layout for pooling/raw extraction
         let outputs = compact_tensors.scatter_unfold(&outputs)?;
