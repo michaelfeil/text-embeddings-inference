@@ -22,6 +22,7 @@ struct Qwen3Attention {
     attention_head_size: usize,
 
     softmax_scale: f32,
+    use_bidirectional_attention: bool,
 
     span: tracing::Span,
 }
@@ -100,6 +101,7 @@ impl Qwen3Attention {
             num_key_value_heads,
             attention_head_size,
             softmax_scale,
+            use_bidirectional_attention: config.use_bidirectional_attention,
             span: tracing::span!(tracing::Level::TRACE, "attention"),
         })
     }
@@ -167,7 +169,7 @@ impl Qwen3Attention {
             max_s,
             max_s,
             self.softmax_scale,
-            true,
+            !self.use_bidirectional_attention,
             None,
             None,
         )?;
@@ -307,6 +309,7 @@ pub struct FlashQwen3Model {
     sin_cache: Tensor,
     pool: Pool,
     pub device: Device,
+    use_bidirectional_attention: bool,
 
     span: tracing::Span,
 }
@@ -370,6 +373,7 @@ impl FlashQwen3Model {
             sin_cache,
             pool,
             device: vb.device().clone(),
+            use_bidirectional_attention: config.use_bidirectional_attention,
             span: tracing::span!(tracing::Level::TRACE, "model"),
         })
     }
@@ -531,7 +535,7 @@ impl Model for FlashQwen3Model {
     }
 
     fn supports_radix_mlp(&self) -> bool {
-        true
+        !self.use_bidirectional_attention
     }
 
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {

@@ -24,6 +24,8 @@ pub struct Qwen3Config {
     pub sliding_window: Option<usize>,
     pub use_sliding_window: bool,
     pub eos_token_id: usize,
+    #[serde(default)]
+    pub use_bidirectional_attention: bool,
 }
 
 struct Qwen3Attention {

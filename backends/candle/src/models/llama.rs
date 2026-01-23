@@ -1,10 +1,6 @@
 use crate::layers::{HiddenAct, RopeScaling};
 use serde::Deserialize;
 
-fn default_use_bidirectional_attention() -> bool {
-    false
-}
-
 fn default_mlp_bias() -> bool {
     false
 }
@@ -25,7 +21,7 @@ pub struct LLamaConfig {
     pub rope_theta: f32,
     pub sliding_window: Option<usize>,
     pub rope_scaling: Option<RopeScaling>,
-    #[serde(default = "default_use_bidirectional_attention")]
+    #[serde(default)]
     pub use_bidirectional_attention: bool,
     pub head_dim: Option<usize>,
     pub attention_bias: Option<bool>,
