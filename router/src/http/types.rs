@@ -302,6 +302,12 @@ pub(crate) struct RerankResponse(pub Vec<Rank>);
 pub(crate) enum InputType {
     String(String),
     Ids(Vec<u32>),
+    // New multi-modal input types
+    MultiModal {
+        text: Option<String>,
+        image: String, // base64: or url: prefixed
+    },
+    ImageOnly(String), // base64: or url: prefixed
 }
 
 impl InputType {
@@ -309,6 +315,10 @@ impl InputType {
         match self {
             InputType::String(s) => s.chars().count(),
             InputType::Ids(v) => v.len(),
+            InputType::MultiModal { text, image } => {
+                text.as_ref().map_or(0, |t| t.chars().count()) + image.chars().count()
+            }
+            InputType::ImageOnly(image) => image.chars().count(),
         }
     }
 }
@@ -318,6 +328,8 @@ impl From<InputType> for EncodingInput {
         match value {
             InputType::String(s) => Self::Single(s),
             InputType::Ids(v) => Self::Ids(v),
+            InputType::MultiModal { text, image } => Self::MultiModal { text, image },
+            InputType::ImageOnly(image) => Self::ImageOnly(image),
         }
     }
 }

@@ -1,3 +1,4 @@
+use crate::http::image_resolver::ImageResolver;
 use crate::http::ner::apply_aggregation;
 /// HTTP Server logic
 use crate::http::types::{
@@ -1321,6 +1322,29 @@ async fn embed_all(
     Ok((headers, Json(response)))
 }
 
+async fn resolve_multimodal_input(input: InputType, image_resolver: &ImageResolver) -> Result<InputType, TextEmbeddingsError> {
+    match input {
+        InputType::MultiModal { text, image } => {
+            let _image_data = image_resolver.resolve_image(&image).await.map_err(|e| {
+                TextEmbeddingsError::Validation(format!("Image resolution error: {}", e))
+            })?;
+            
+            // For now, we'll keep the image URL and let the backend handle the image data
+            // In a full implementation, we would update the MultiModalOption with the resolved image data
+            Ok(InputType::MultiModal { text, image })
+        }
+        InputType::ImageOnly(image) => {
+            let _image_data = image_resolver.resolve_image(&image).await.map_err(|e| {
+                TextEmbeddingsError::Validation(format!("Image resolution error: {}", e))
+            })?;
+            
+            // For now, we'll keep the image URL and let the backend handle the image data
+            Ok(InputType::ImageOnly(image))
+        }
+        other => Ok(other),
+    }
+}
+
 /// OpenAI compatible route. Returns a 424 status code if the model is not an embedding model.
 #[utoipa::path(
 post,
@@ -1375,17 +1399,20 @@ async fn openai_embed(
     let start_time = Instant::now();
 
     let truncate = info.auto_truncate;
+    let image_resolver = ImageResolver::new();
 
     let (embeddings, metadata) = match req.input {
         Input::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
-            let compute_chars = input.count_chars();
+            // Resolve multi-modal input if needed
+            let resolved_input = resolve_multimodal_input(input, &image_resolver).await.map_err(ErrorResponse::from)?;
+            let compute_chars = resolved_input.count_chars();
 
             let permit = infer.try_acquire_permit().map_err(ErrorResponse::from)?;
             let response = infer
                 .embed_pooled(
-                    input,
+                    resolved_input,
                     truncate,
                     tokenizers::TruncationDirection::Right,
                     None,
@@ -1461,11 +1488,17 @@ async fn openai_embed(
 
                 let local_infer = infer.clone();
                 let local_batch_counter = batch_counter.clone();
+                let local_image_resolver = image_resolver.clone();
                 futures.push(async move {
+                    // Resolve multi-modal input if needed
+                    let resolved_input = resolve_multimodal_input(input, &local_image_resolver).await.map_err(|e| {
+                        TextEmbeddingsError::Validation(e.to_string())
+                    })?;
+                    
                     let permit = local_infer.acquire_permit().await;
                     local_infer
                         .embed_pooled(
-                            input,
+                            resolved_input,
                             truncate,
                             tokenizers::TruncationDirection::Right,
                             None,

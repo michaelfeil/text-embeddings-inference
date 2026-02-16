@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 pub use crate::dtype::DType;
 pub use text_embeddings_backend_core::{
-    BackendError, Batch, Embedding, Embeddings, ModelType, Pool, TokenPredictions,
+    BackendError, Batch, Embedding, Embeddings, ModelType, Pool, TokenPredictions, MultiModalOption,
 };
 
 #[cfg(feature = "candle")]
@@ -234,6 +234,9 @@ impl Backend {
             scatter_unfold: None,
             tokens: vec![],
             offsets: vec![],
+            multimodal: None,
+            pixel_values: None,
+            image_tensors: None,
         }
     }
 
@@ -306,6 +309,9 @@ impl Backend {
             scatter_unfold: None,
             tokens: vec![],
             offsets: vec![],
+            multimodal: None,
+            pixel_values: None,
+            image_tensors: None,
         };
 
         match &self.model_type {
@@ -346,6 +352,9 @@ impl Backend {
                 scatter_unfold: None,
                 tokens: vec![],
                 offsets: vec![],
+                multimodal: None,
+                pixel_values: None,
+                image_tensors: None,
             };
             match &self.model_type {
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),

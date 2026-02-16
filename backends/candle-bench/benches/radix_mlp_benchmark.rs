@@ -119,6 +119,9 @@ impl From<Batch> for text_embeddings_backend_core::Batch {
             compact_position_ids: b.compact_position_ids,
             scatter_unfold: b.scatter_unfold,
             fold_gather: b.fold_gather,
+            tokens: vec![],
+            offsets: vec![],
+            multimodal: None,
         }
     }
 }

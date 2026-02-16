@@ -7,7 +7,44 @@ use tokenizers::{TruncationDirection, TruncationParams, TruncationStrategy};
 use tokio::sync::oneshot;
 use tracing::{instrument, Span};
 
+#[cfg(feature = "multimodal")]
+use base64::engine::general_purpose;
+
 static MAX_CHAR_MULTIPLIER: usize = 250;
+
+// Image preprocessing function
+#[cfg(feature = "multimodal")]
+fn preprocess_image(image_source: &str) -> Result<(Vec<u8>, Vec<Vec<f32>>), String> {
+    // This is a placeholder implementation
+    // In a real implementation, you would:
+    // 1. Parse the image source (base64 or URL)
+    // 2. Download/decode the image
+    // 3. Resize to standard dimensions (e.g., 224x224)
+    // 4. Normalize pixel values
+    // 5. Convert to tensor format
+    
+    if image_source.starts_with("base64:") {
+        // Decode base64 image
+        let base64_data = &image_source[7..];
+        let decoded_data = general_purpose::STANDARD
+            .decode(base64_data)
+            .map_err(|e| format!("Base64 decoding error: {}", e))?;
+        
+        // Create dummy tensor data (3 channels, 224x224)
+        let tensor_data = vec![vec![0.0; 224 * 224]; 3]; // RGB channels
+        
+        Ok((decoded_data, tensor_data))
+    } else if image_source.starts_with("url:") {
+        // For URL images, we'd download and process them
+        // For now, return dummy data
+        let dummy_bytes = vec![0u8; 1024];
+        let tensor_data = vec![vec![0.0; 224 * 224]; 3]; // RGB channels
+        
+        Ok((dummy_bytes, tensor_data))
+    } else {
+        Err("Invalid image source format".to_string())
+    }
+}
 
 /// Validation
 #[derive(Debug, Clone)]
@@ -359,6 +396,39 @@ fn tokenize_input(
                 (Some(text), encoding)
             }
         }
+        // Multi-modal inputs
+        EncodingInput::MultiModal { text, image: _ } => {
+            if pre_prompt.is_some() {
+                return Err(TextEmbeddingsError::Validation(
+                    "`prompt_name` cannot be set with multi-modal inputs".to_string(),
+                ));
+            }
+
+            // For multi-modal, we only tokenize the text part
+            let text_to_encode = text.unwrap_or_else(|| "".to_string());
+            
+            let encoding = if text_to_encode.is_empty() {
+                // If no text, create a minimal encoding for image-only input
+                tokenizer.encode("", add_special_tokens)?
+            } else {
+                tokenizer
+                    .with_truncation(truncate_params)?
+                    .encode::<&str>(&text_to_encode, add_special_tokens)?
+            };
+
+            (Some(text_to_encode), encoding)
+        }
+        EncodingInput::ImageOnly(_) => {
+            if pre_prompt.is_some() {
+                return Err(TextEmbeddingsError::Validation(
+                    "`prompt_name` cannot be set with image-only inputs".to_string(),
+                ));
+            }
+
+            // For image-only, create a minimal encoding
+            let encoding = tokenizer.encode("", add_special_tokens)?;
+            (None, encoding)
+        }
     };
     Ok(encoding)
 }
@@ -384,8 +454,8 @@ fn encode_input(
         stride: 0,
     });
 
-    let (_, encoding) = tokenize_input(
-        inputs,
+    let (_text, encoding) = tokenize_input(
+        inputs.clone(),
         true,
         max_input_length,
         truncate_params,
@@ -403,6 +473,34 @@ fn encode_input(
     }
     let histogram = metrics::histogram!("te_request_input_length");
     histogram.record(seq_len as f64);
+
+    // Create multi-modal option and preprocess images if needed
+    #[cfg(feature = "multimodal")]
+    let (multimodal, pixel_values, image_tensors) = match inputs {
+        EncodingInput::MultiModal { text: input_text, image } => {
+            // For now, we'll prioritize text over image
+            // In a real implementation, you might want to handle this differently
+            if let Some(text) = input_text {
+                (Some(text_embeddings_backend::MultiModalOption::Text(text)), None, None)
+            } else {
+                // Preprocess image
+                let (preprocessed_bytes, tensor_data) = preprocess_image(&image)
+                    .map_err(|e| TextEmbeddingsError::Validation(e))?;
+                (Some(text_embeddings_backend::MultiModalOption::ImageUrl(image)), Some(preprocessed_bytes), Some(tensor_data))
+            }
+        }
+        EncodingInput::ImageOnly(image) => {
+            // Preprocess image
+            let (preprocessed_bytes, tensor_data) = preprocess_image(&image)
+                .map_err(|e| TextEmbeddingsError::Validation(e))?;
+            (Some(text_embeddings_backend::MultiModalOption::ImageUrl(image)), Some(preprocessed_bytes), Some(tensor_data))
+        }
+        _ => (None, None, None),
+    };
+    
+    #[cfg(not(feature = "multimodal"))]
+    let (multimodal, pixel_values, image_tensors) = (None, None, None);
+
     Ok(ValidEncoding {
         input_ids: encoding.get_ids().to_vec(),
         token_type_ids: encoding.get_type_ids().to_vec(),
@@ -410,6 +508,9 @@ fn encode_input(
             .collect::<Vec<_>>(),
         tokens: encoding.get_tokens().to_vec(),
         offsets: encoding.get_offsets().to_vec(),
+        multimodal,
+        pixel_values,
+        image_tensors,
     })
 }
 
@@ -420,13 +521,22 @@ pub struct ValidEncoding {
     pub position_ids: Vec<u32>,
     pub tokens: Vec<String>,
     pub offsets: Vec<(usize, usize)>,
+    pub multimodal: Option<text_embeddings_backend::MultiModalOption>,
+    pub pixel_values: Option<Vec<u8>>,
+    pub image_tensors: Option<Vec<Vec<f32>>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum EncodingInput {
     Single(String),
     Dual(String, String),
     Ids(Vec<u32>),
+    // New multi-modal variants
+    MultiModal {
+        text: Option<String>,
+        image: String, // base64: or url: prefixed
+    },
+    ImageOnly(String), // base64: or url: prefixed
 }
 
 impl EncodingInput {
@@ -435,6 +545,10 @@ impl EncodingInput {
             EncodingInput::Single(s) => s.is_empty(),
             EncodingInput::Dual(s1, s2) => s1.is_empty() && s2.is_empty(),
             EncodingInput::Ids(v) => v.is_empty(),
+            EncodingInput::MultiModal { text, image } => {
+                text.as_ref().map_or(true, |t| t.is_empty()) && image.is_empty()
+            }
+            EncodingInput::ImageOnly(image) => image.is_empty(),
         }
     }
 
@@ -443,6 +557,10 @@ impl EncodingInput {
             EncodingInput::Single(s) => s.chars().count(),
             EncodingInput::Dual(s1, s2) => s1.chars().count() + s2.chars().count(),
             EncodingInput::Ids(v) => v.len(),
+            EncodingInput::MultiModal { text, image } => {
+                text.as_ref().map_or(0, |t| t.chars().count()) + image.chars().count()
+            }
+            EncodingInput::ImageOnly(image) => image.chars().count(),
         }
     }
 
@@ -460,6 +578,15 @@ impl EncodingInput {
             EncodingInput::Dual(s1, s2) => {
                 truncate_string(s1, limit / 2);
                 truncate_string(s2, limit / 2);
+            }
+            EncodingInput::MultiModal { text, image: _ } => {
+                if let Some(text) = text {
+                    truncate_string(text, limit / 2);
+                }
+                // Image URLs/base64 typically don't get truncated
+            }
+            EncodingInput::ImageOnly(_) => {
+                // Image URLs/base64 typically don't get truncated
             }
             EncodingInput::Ids(_) => {}
         }

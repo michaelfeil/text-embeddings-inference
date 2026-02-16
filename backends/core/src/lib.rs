@@ -6,6 +6,34 @@ use std::fmt;
 use thiserror::Error;
 
 #[derive(Debug, Clone)]
+pub enum MultiModalOption {
+    Text(String),
+    Image(Vec<u8>),
+    ImageUrl(String),
+}
+
+impl MultiModalOption {
+    pub fn is_multimodal(&self) -> bool {
+        match self {
+            MultiModalOption::Text(_) => false,
+            MultiModalOption::Image(_) => true,
+            MultiModalOption::ImageUrl(_) => true,
+        }
+    }
+
+    pub fn has_text(&self) -> bool {
+        matches!(self, MultiModalOption::Text(_))
+    }
+
+    pub fn has_image(&self) -> bool {
+        matches!(
+            self,
+            MultiModalOption::Image(_) | MultiModalOption::ImageUrl(_)
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Batch {
     pub input_ids: Vec<u32>,
     pub token_type_ids: Vec<u32>,
@@ -20,6 +48,9 @@ pub struct Batch {
     pub fold_gather: Option<Vec<u32>>,
     pub tokens: Vec<String>,
     pub offsets: Vec<(usize, usize)>,
+    pub multimodal: Option<MultiModalOption>,
+    pub pixel_values: Option<Vec<u8>>, // Preprocessed image data as bytes
+    pub image_tensors: Option<Vec<Vec<f32>>>, // Preprocessed image tensors for batch
 }
 
 impl Batch {
@@ -58,6 +89,10 @@ pub trait Backend {
     fn predict(&self, batch: Batch) -> Result<Predictions, BackendError>;
 
     fn predict_tokens(&self, batch: Batch) -> Result<TokenPredictions, BackendError>;
+
+    fn supports_multimodal(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]

@@ -25,7 +25,8 @@ use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
     GTEConfig, GTEModel, Gemma3Config, Gemma3Model, JinaBertModel, JinaCodeBertModel, LLamaConfig,
     MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
-    NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
+    NomicBertModel, NomicConfig, OpenCLIPConfig, OpenCLIPModel, Qwen2Config, Qwen3Config,
+    Qwen3Model,
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
@@ -107,6 +108,8 @@ enum Config {
     ModernBert(ModernBertConfig),
     #[serde(rename(deserialize = "nomic_bert"))]
     NomicBert(NomicConfig),
+    #[serde(rename(deserialize = "openclip"))]
+    OpenCLIP(OpenCLIPConfig),
     #[allow(dead_code)]
     Qwen2(Qwen2Config),
     #[allow(dead_code)]
@@ -317,6 +320,10 @@ impl CandleBackend {
                 tracing::info!("Starting NomicBert model on {:?}", device);
                 Ok(Box::new(NomicBertModel::load(vb, &config, model_type).s()?))
             }
+            (Config::OpenCLIP(config), Device::Cpu | Device::Metal(_)) => {
+                tracing::info!("Starting OpenCLIP model on {:?}", device);
+                Ok(Box::new(OpenCLIPModel::load(vb, &config, model_type).s()?))
+            }
             (Config::Qwen2(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
                 "Qwen2 is only supported on Cuda devices in fp16 with flash attention enabled"
                     .to_string(),
@@ -517,6 +524,11 @@ impl CandleBackend {
                     tracing::info!("Starting NomicBert model on {:?}", device);
                     Ok(Box::new(NomicBertModel::load(vb, &config, model_type).s()?))
                 }
+            }
+            #[cfg(feature = "cuda")]
+            (Config::OpenCLIP(config), Device::Cuda(_)) => {
+                tracing::info!("Starting OpenCLIP model on {:?}", device);
+                Ok(Box::new(OpenCLIPModel::load(vb, &config, model_type).s()?))
             }
             #[cfg(feature = "cuda")]
             (Config::Qwen2(config), Device::Cuda(_)) => {

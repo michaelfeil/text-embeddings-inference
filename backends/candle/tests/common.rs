@@ -357,5 +357,6 @@ pub fn batch(encodings: Vec<Encoding>, pooled_indices: Vec<u32>, raw_indices: Ve
         // missing dummy values for tokens and offsets since they are not used in the tests
         tokens: Vec::new(),
         offsets: Vec::new(),
+        multimodal: None,
     }
 }

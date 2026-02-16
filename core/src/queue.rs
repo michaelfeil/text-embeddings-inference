@@ -145,6 +145,11 @@ fn queue_blocking_task(
                 let mut max_length = 0;
 
                 let mut entry_index = 0;
+                
+                // Track multimodal data for the batch
+                let mut batch_multimodal = None;
+                let mut batch_pixel_values = None;
+                let mut batch_image_tensors = None;
 
                 while let Some(entry) = entries.pop_front() {
                     // Filter entries where the response receiver was dropped (== entries where the request
@@ -182,6 +187,14 @@ fn queue_blocking_task(
                     position_ids.extend(entry.encoding.position_ids);
                     tokens.extend(entry.encoding.tokens);
                     offsets.extend(entry.encoding.offsets);
+
+                    // Handle multimodal data - for now, we'll use the first entry's multimodal data
+                    // In a real implementation, you might want to handle multiple images differently
+                    if batch_multimodal.is_none() {
+                        batch_multimodal = entry.encoding.multimodal.clone();
+                        batch_pixel_values = entry.encoding.pixel_values.clone();
+                        batch_image_tensors = entry.encoding.image_tensors.clone();
+                    }
 
                     current_tokens += entry_tokens;
                     metadata.push(entry.metadata);
@@ -249,6 +262,9 @@ fn queue_blocking_task(
                             fold_gather,
                             tokens,
                             offsets,
+                            multimodal: batch_multimodal,
+                            pixel_values: batch_pixel_values,
+                            image_tensors: batch_image_tensors,
                         },
                     ))
                 };

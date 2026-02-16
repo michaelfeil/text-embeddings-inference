@@ -7,6 +7,7 @@ homepage.workspace = true
 
 [dependencies]
 async-channel = "^2.3"
+base64 = { version = "0.22.1", optional = true }
 hf-hub = { workspace = true }
 metrics = { workspace = true }
 serde_json = { workspace = true }
@@ -16,6 +17,10 @@ tokenizers = { workspace = true }
 tracing = { workspace = true }
 tokio = { workspace = true }
 radix_mlp = {workspace = true}
+
+[features]
+default = []
+multimodal = ["dep:base64"]
 
 [dev-dependencies]
 hf-hub = { workspace = true, features = ["ureq"] }
