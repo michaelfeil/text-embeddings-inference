@@ -270,25 +270,19 @@ fn bench_radix_mlp(c: &mut Criterion) {
     .expect("Could not start backend");
     println!("Backend initialized");
 
-    let batch_size = 15;
+    let batch_size = 4;
     let size_configs = [
-        // 256 suffix sizes
-        (1, 256),
-        (15, 256),
-        (31, 256),
-        (127, 256),
-        (255, 256),
-        (511, 256),
-        (1023, 256),
-        (2047, 256),
-        // 1024 suffix sizes
-        (1, 1024),
-        (31, 1024),
-        (127, 1024),
-        (255, 1024),
-        (511, 1024),
-        (1023, 1024),
-        (2047, 1024),
+    // 256 suffix sizes
+        (256, 1),
+        // (256, 32),
+        // (256, 127),
+        // (256, 255),
+        // (256, 511),
+        // (256, 1023),
+        (256, 2047),
+        (256, 4095),
+        (256, 8191),
+        (256, 16383),
     ];
 
     for (shared_prefix_len, unique_suffix_len) in size_configs {
@@ -380,8 +374,8 @@ fn bench_radix_mlp(c: &mut Criterion) {
         ));
         group
             .sample_size(15)
-            .warm_up_time(std::time::Duration::from_secs(3))
-            .measurement_time(std::time::Duration::from_secs(30));
+            .warm_up_time(std::time::Duration::from_secs(1))
+            .measurement_time(std::time::Duration::from_secs(5));
 
         // Benchmark WITHOUT RadixMLP (standard full computation)
         group.bench_function("no_radix_mlp", |b| {

@@ -1,6 +1,7 @@
 use crate::flash_attn::flash_attn_varlen;
 use crate::layers::{
-    get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
+    get_cos_sin, get_inv_freqs, index_select, mean_pooling_varlen, CompactUnfoldTensors, HiddenAct,
+    Linear, RMSNorm,
 };
 use crate::models::{MistralConfig, Model};
 use candle::{DType, Device, IndexOp, Result, Tensor};
@@ -396,29 +397,11 @@ impl FlashMistralModel {
                     }
                 }
                 // Mean pooling
-                Pool::Mean => {
-                    if batch_size > 1 {
-                        // for each request that requires pooling
-                        let results: Result<Vec<Tensor>> = batch
-                            .pooled_indices
-                            .into_iter()
-                            .map(|i| {
-                                let i = i as usize;
-                                let start = batch.cumulative_seq_lengths[i];
-                                let len = batch.cumulative_seq_lengths[i + 1] - start;
-
-                                // Mean
-                                let embeddings = outputs.narrow(0, start as usize, len as usize)?;
-                                embeddings.sum_keepdim(0)? / (len as f64)
-                            })
-                            .collect();
-
-                        // Concatenate all results
-                        Some(Tensor::cat(&results?, 0)?)
-                    } else {
-                        Some((outputs.sum_keepdim(0)? / (batch.max_length as f64))?)
-                    }
-                }
+                Pool::Mean => Some(mean_pooling_varlen(
+                    &outputs,
+                    &batch.cumulative_seq_lengths,
+                    &batch.pooled_indices,
+                )?),
                 Pool::Splade => {
                     unreachable!();
                 }

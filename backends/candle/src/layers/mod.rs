@@ -3,6 +3,7 @@ mod cublaslt;
 mod index_select;
 mod layer_norm;
 mod linear;
+mod pooling;
 mod radix_mlp;
 #[allow(dead_code, unused)]
 mod rms_norm;
@@ -13,6 +14,7 @@ pub use cublaslt::get_cublas_lt_wrapper;
 pub use index_select::index_select;
 pub use layer_norm::{LayerNorm, LayerNormNoBias};
 pub use linear::{HiddenAct, Linear};
+pub use pooling::mean_pooling_varlen;
 #[allow(unused_imports)]
 pub use radix_mlp::CompactUnfoldTensors;
 #[allow(unused_imports)]
