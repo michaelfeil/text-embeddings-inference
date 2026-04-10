@@ -17,10 +17,11 @@ pub fn mean_pooling_varlen(
     cumulative_seq_lengths: &[u32],
     pooled_indices: &[u32],
 ) -> Result<Tensor> {
+    let out_dtype = outputs.dtype();
     let outputs_f32 = outputs.to_dtype(DType::F32)?;
     let batch_size = cumulative_seq_lengths.len() - 1;
 
-    if batch_size > 1 {
+    let pooled = if batch_size > 1 {
         let results: Result<Vec<Tensor>> = pooled_indices
             .iter()
             .map(|&i| {
@@ -29,12 +30,15 @@ pub fn mean_pooling_varlen(
                 let len = cumulative_seq_lengths[i + 1] - start;
 
                 let embeddings = outputs_f32.narrow(0, start as usize, len as usize)?;
-                embeddings.mean_keepdim(0)
+                embeddings.sum_keepdim(0)? / (len.max(1) as f64)
             })
             .collect();
 
-        Tensor::cat(&results?, 0)
+        Tensor::cat(&results?, 0)?
     } else {
-        outputs_f32.mean_keepdim(0)
-    }
+        let len = cumulative_seq_lengths[1] - cumulative_seq_lengths[0];
+        (outputs_f32.sum_keepdim(0)? / (len.max(1) as f64))?
+    };
+
+    pooled.to_dtype(out_dtype)
 }
