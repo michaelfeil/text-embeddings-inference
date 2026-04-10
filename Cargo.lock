@@ -679,6 +679,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-varlen-mean"
+version = "0.0.1"
+source = "git+https://github.com/michaelfeil/candle-varlen-mean?rev=d3baea4#d3baea4ad282a2b4238b8abee5e3ceac5636c151"
+dependencies = [
+ "anyhow",
+ "candle-core",
+ "half",
+]
+
+[[package]]
 name = "cast"
 version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4668,6 +4678,7 @@ dependencies = [
  "candle-nn",
  "candle-rotary",
  "candle-transformers",
+ "candle-varlen-mean",
  "hf-hub",
  "insta",
  "intel-mkl-src",

@@ -1,4 +1,7 @@
+use crate::layers::index_select;
 use candle::{DType, Result, Tensor};
+#[cfg(feature = "cuda")]
+use candle_varlen_mean;
 
 /// Compute mean pooling over a variable-length (unpadded) tensor.
 ///
@@ -17,6 +20,33 @@ pub fn mean_pooling_varlen(
     cumulative_seq_lengths: &[u32],
     pooled_indices: &[u32],
 ) -> Result<Tensor> {
+    #[cfg(feature = "cuda")]
+    {
+        let cu_seqlens = Tensor::from_vec(
+            cumulative_seq_lengths.to_vec(),
+            cumulative_seq_lengths.len(),
+            outputs.device(),
+        )?
+        .to_dtype(DType::U32)?;
+
+        let pooled = candle_varlen_mean::varlen_mean(outputs, &cu_seqlens)?;
+
+        if pooled_indices.len() == cumulative_seq_lengths.len().saturating_sub(1) {
+            return Ok(pooled);
+        }
+
+        let pooled_indices = Tensor::from_vec(
+            pooled_indices.to_vec(),
+            pooled_indices.len(),
+            outputs.device(),
+        )?
+        .to_dtype(DType::U32)?;
+
+        return index_select(&pooled, &pooled_indices, 0);
+    }
+
+    #[cfg(not(feature = "cuda"))]
+    {
     let out_dtype = outputs.dtype();
     let outputs_f32 = outputs.to_dtype(DType::F32)?;
     let batch_size = cumulative_seq_lengths.len() - 1;
@@ -41,4 +71,5 @@ pub fn mean_pooling_varlen(
     };
 
     pooled.to_dtype(out_dtype)
+    }
 }
