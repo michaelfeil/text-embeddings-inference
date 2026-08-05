@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="1.8.7"
+VERSION="1.8.8"
 REGISTRIES=(
     # "registry.internal.huggingface.tech/api-inference/text-embeddings-inference"
     # "ghcr.io/huggingface/text-embeddings-inference"
@@ -22,6 +22,7 @@ declare -A IMAGES=(
     ["89-"]="89:Dockerfile-cuda:false:true:"
     ["hopper-"]="90:Dockerfile-cuda:false:true:"
     ["blackwell-"]="100:Dockerfile-cuda:false:true:"
+    ["sm120-"]="120:Dockerfile-cuda:false:true:"
 )
 
 # Colors for output
@@ -301,7 +302,9 @@ main() {
         build_all_variants
     else
         for prefix_config in "${!IMAGES[@]}"; do
-            build_and_push_variant "$prefix_config" "${IMAGES[$prefix_config]}"
+            actual_prefix="$prefix_config"
+            [[ "$actual_prefix" == "ampere-" ]] && actual_prefix=""
+            build_and_push_variant "$actual_prefix" "${IMAGES[$prefix_config]}"
         done
     fi
     

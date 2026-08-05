@@ -42,7 +42,8 @@ Full-featured script with error handling, parallel builds, and verification.
 | `86-` | A10 | sm86 | Dockerfile-cuda | ✅ |
 | `89-` | RTX 4000 | sm89 | Dockerfile-cuda | ✅ |
 | `hopper-` | Hopper | sm90 | Dockerfile-cuda | ✅ |
-| `blackwell-` | Blackwell | sm120 | Dockerfile-cuda | ✅ |
+| `blackwell-` | Datacenter Blackwell | sm100 | Dockerfile-cuda | ✅ |
+| `sm120-` | RTX Blackwell | sm120 | Dockerfile-cuda | ✅ |
 
 ## Image Naming Convention
 
@@ -61,7 +62,8 @@ Images are tagged following the GitHub Actions conventions:
 **Examples:**
 - `ghcr.io/huggingface/text-embeddings-inference:latest` (sm80)
 - `ghcr.io/huggingface/text-embeddings-inference:turing-1.8.4` (sm75)
-- `ghcr.io/huggingface/text-embeddings-inference:blackwell-1.8.4-grpc` (sm120)
+- `ghcr.io/huggingface/text-embeddings-inference:blackwell-1.8.4-grpc` (sm100)
+- `ghcr.io/huggingface/text-embeddings-inference:sm120-1.8.4-grpc` (sm120)
 
 ## Registries
 

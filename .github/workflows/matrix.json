@@ -50,6 +50,15 @@
     "imageNamePrefix": "blackwell-",
     "runOn": "always",
     "sccache": true,
+    "cudaComputeCap": 100,
+    "grpc": true,
+    "dockerfile": "Dockerfile-cuda"
+  },
+  {
+    "name": "RTX Blackwell",
+    "imageNamePrefix": "sm120-",
+    "runOn": "always",
+    "sccache": true,
     "cudaComputeCap": 120,
     "grpc": true,
     "dockerfile": "Dockerfile-cuda"
