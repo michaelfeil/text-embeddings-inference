@@ -482,6 +482,22 @@ impl ClassificationHead for RobertaClassificationHead {
     }
 }
 
+pub(crate) fn load_roberta_classification_head(
+    vb: VarBuilder,
+    config: &BertConfig,
+) -> Result<Box<dyn ClassificationHead + Send>> {
+    if vb.contains_tensor("classifier.dense.weight") {
+        Ok(Box::new(RobertaClassificationHead::load(
+            vb.pp("classifier"),
+            config,
+        )?))
+    } else {
+        // RobertaForTokenClassification and XLMRobertaForTokenClassification use a plain
+        // `classifier.{weight,bias}` head, unlike their sequence-classification counterparts.
+        Ok(Box::new(BertClassificationHead::load(vb, config)?))
+    }
+}
+
 #[derive(Debug)]
 pub struct BertSpladeHead {
     transform: Linear,
@@ -662,9 +678,7 @@ impl BertModel {
             ModelType::Classifier => {
                 let pool = Pool::Cls;
 
-                let classifier: Box<dyn ClassificationHead + Send> = Box::new(
-                    RobertaClassificationHead::load(vb.pp("classifier"), config)?,
-                );
+                let classifier = load_roberta_classification_head(vb.clone(), config)?;
                 (pool, Some(classifier), None)
             }
             ModelType::Embedding(pool) => {

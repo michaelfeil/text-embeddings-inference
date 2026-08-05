@@ -190,6 +190,23 @@ fn test_emotions() -> Result<()> {
 
 #[test]
 #[serial_test::serial]
+fn test_roberta_token_classification_loads() -> Result<()> {
+    let (model_root, _) =
+        download_artifacts("philschmid/distilroberta-base-ner-conll2003", None, None)?;
+
+    CandleBackend::new(
+        &model_root,
+        "float32".to_string(),
+        ModelType::Classifier,
+        None,
+        0,
+    )?;
+
+    Ok(())
+}
+
+#[test]
+#[serial_test::serial]
 fn test_bert_classification() -> Result<()> {
     let (model_root, _) =
         download_artifacts("ibm-research/re2g-reranker-nq", Some("refs/pr/3"), None)?;

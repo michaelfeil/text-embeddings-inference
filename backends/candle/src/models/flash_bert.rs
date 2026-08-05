@@ -1,8 +1,8 @@
 use crate::flash_attn::flash_attn_varlen;
 use crate::layers::{index_select, LayerNorm, Linear};
 use crate::models::bert::{
-    BertClassificationHead, BertConfig, BertEmbeddings, BertSpladeHead, ClassificationHead,
-    PositionEmbeddingType, RobertaClassificationHead,
+    load_roberta_classification_head, BertClassificationHead, BertConfig, BertEmbeddings,
+    BertSpladeHead, ClassificationHead, PositionEmbeddingType,
 };
 use crate::models::Model;
 use candle::{DType, Device, IndexOp, Result, Tensor};
@@ -313,9 +313,7 @@ impl FlashBertModel {
             ModelType::Classifier => {
                 let pool = Pool::Cls;
 
-                let classifier: Box<dyn ClassificationHead + Send> = Box::new(
-                    RobertaClassificationHead::load(vb.pp("classifier"), config)?,
-                );
+                let classifier = load_roberta_classification_head(vb.clone(), config)?;
                 (pool, Some(classifier), None)
             }
             ModelType::Embedding(pool) => {
