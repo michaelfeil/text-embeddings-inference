@@ -854,27 +854,12 @@ impl NomicBertModel {
         let input_lengths =
             Tensor::from_vec(input_lengths, (batch_size, 1), &self.device)?.to_dtype(self.dtype)?;
 
-        let (cos, sin) = if self.scaled_rotary_cache.is_some()
-            && batch.max_length > self.max_trained_positions
-        {
-            let cos = self
-                .scaled_rotary_cache
-                .as_ref()
-                .unwrap()
-                .0
-                .index_select(&position_ids, 0)?;
-            let sin = self
-                .scaled_rotary_cache
-                .as_ref()
-                .unwrap()
-                .1
-                .index_select(&position_ids, 0)?;
-            (cos, sin)
-        } else {
-            let cos = self.rotary_cache.0.index_select(&position_ids, 0)?;
-            let sin = self.rotary_cache.1.index_select(&position_ids, 0)?;
-            (cos, sin)
+        let rotary_cache = match &self.scaled_rotary_cache {
+            Some(cache) if batch.max_length > self.max_trained_positions => cache,
+            _ => &self.rotary_cache,
         };
+        let cos = rotary_cache.0.index_select(&position_ids, 0)?;
+        let sin = rotary_cache.1.index_select(&position_ids, 0)?;
 
         let cos = cos.reshape((batch_size, 1, max_length, self.rotary_dim))?;
         let sin = sin.reshape((batch_size, 1, max_length, self.rotary_dim))?;

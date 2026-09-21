@@ -324,6 +324,8 @@ impl DistilBertEncoder {
 pub trait ClassificationHead {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor>;
 
+    // Retained alongside the other classification heads for token-level callers.
+    #[allow(dead_code)]
     fn forward_tokens(&self, hidden_states: &Tensor) -> Result<Tensor>;
 }
 

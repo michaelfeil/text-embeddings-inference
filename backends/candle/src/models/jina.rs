@@ -338,6 +338,8 @@ impl JinaBertEncoder {
 pub trait ClassificationHead {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor>;
 
+    // Token classification uses this hook in the CUDA model.
+    #[cfg_attr(not(feature = "cuda"), allow(dead_code))]
     fn forward_tokens(&self, hidden_states: &Tensor) -> Result<Tensor>;
 }
 
