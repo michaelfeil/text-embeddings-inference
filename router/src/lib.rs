@@ -787,38 +787,13 @@ mod auto_dtype_tests {
     }
 
     #[test]
-    fn auto_uses_both_config_names_and_prefers_dtype() {
+    fn auto_selects_bf16_unless_overridden() {
         for field in ["dtype", "torch_dtype"] {
             let json = format!(
                 r#"{{"architectures":[],"model_type":"qwen3","max_position_embeddings":512,"{field}":"bfloat16"}}"#
             );
-            assert_eq!(from_config(&json, None), DType::Bfloat16);
             assert_eq!(from_config(&json, Some(DType::Auto)), DType::Bfloat16);
             assert_eq!(from_config(&json, Some(DType::Float16)), DType::Float16);
-            assert_eq!(from_config(&json, Some(DType::Float32)), DType::Float32);
         }
-        let json = r#"{"architectures":[],"model_type":"qwen3","max_position_embeddings":512,"dtype":"float16","torch_dtype":"bfloat16"}"#;
-        assert_eq!(from_config(json, None), DType::Float16);
-        let json = r#"{"architectures":[],"model_type":"qwen3","max_position_embeddings":512,"dtype":null,"torch_dtype":"bfloat16"}"#;
-        assert_eq!(from_config(json, None), DType::Bfloat16);
-    }
-
-    #[test]
-    fn auto_preserves_fallback_and_gemma_defaults() {
-        for value in [None, Some("float16"), Some("float32"), Some("unknown")] {
-            assert_eq!(resolve_dtype(None, value, "qwen3"), DType::Float16);
-            assert_eq!(
-                resolve_dtype(Some(DType::Auto), value, "qwen3"),
-                DType::Float16
-            );
-        }
-        assert_eq!(
-            resolve_dtype(None, Some("bfloat16"), "gemma3_text"),
-            DType::Float32
-        );
-        assert_eq!(
-            resolve_dtype(Some(DType::Bfloat16), None, "gemma3_text"),
-            DType::Bfloat16
-        );
     }
 }

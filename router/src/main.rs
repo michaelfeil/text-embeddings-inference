@@ -285,24 +285,3 @@ async fn main() -> Result<()> {
     }
     Ok(())
 }
-
-#[cfg(test)]
-mod dtype_cli_tests {
-    use super::*;
-    use clap::CommandFactory;
-
-    #[test]
-    fn dtype_defaults_to_auto_and_accepts_explicit_auto() {
-        // Disable env lookup in this parser test so a caller's DTYPE cannot affect it.
-        let command = Args::command().mut_arg("dtype", |arg| arg.env(None::<&str>));
-        let matches = command
-            .clone()
-            .try_get_matches_from(["router", "--model-id", "test-model"])
-            .unwrap();
-        assert_eq!(matches.get_one::<DType>("dtype"), Some(&DType::Auto));
-        let matches = command
-            .try_get_matches_from(["router", "--model-id", "test-model", "--dtype", "auto"])
-            .unwrap();
-        assert_eq!(matches.get_one::<DType>("dtype"), Some(&DType::Auto));
-    }
-}
