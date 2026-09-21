@@ -262,14 +262,11 @@ pub async fn run(
         prompts,
     );
 
-    // NOTE: `gemma3_text` won't support Float16 but only Float32, given that with `candle-cuda`
-    // feature, the default `Dtype::Float16` this overrides that to prevent issues when running a
-    // `gemma3_text` model without specifying a `--dtype`
-    let dtype = if dtype.is_none() && config.model_type == "gemma3_text" {
-        DType::Float32
-    } else {
-        dtype.unwrap_or_default()
-    };
+    let dtype = resolve_dtype(
+        dtype,
+        config.dtype.as_deref().or(config.torch_dtype.as_deref()),
+        &config.model_type,
+    );
 
     // Create backend
     tracing::info!("Starting model backend");
@@ -483,10 +480,34 @@ fn get_backend_model_type(
     Ok(text_embeddings_backend::ModelType::Embedding(pool))
 }
 
+// Resolve Auto before passing a concrete dtype to the backend or reporting /info.
+fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type: &str) -> DType {
+    match requested {
+        None | Some(DType::Auto) => {
+            // Keep the existing defaults for backends/models requiring FP32.
+            if model_type == "gemma3_text" {
+                return DType::Float32;
+            }
+            #[cfg(all(
+                any(feature = "candle", feature = "python"),
+                not(any(feature = "mkl", feature = "accelerate", feature = "ort"))
+            ))]
+            if model_dtype == Some("bfloat16") {
+                return DType::Bfloat16;
+            }
+            let _ = model_dtype;
+            DType::default()
+        }
+        Some(dtype) => dtype,
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct ModelConfig {
     pub architectures: Vec<String>,
     pub model_type: String,
+    pub dtype: Option<String>,
+    pub torch_dtype: Option<String>,
     #[serde(alias = "n_positions")]
     pub max_position_embeddings: usize,
     #[serde(default)]
@@ -740,5 +761,64 @@ impl From<ResponseMetadata> for HeaderMap {
                 .unwrap(),
         );
         headers
+    }
+}
+
+#[cfg(all(
+    test,
+    feature = "candle",
+    not(any(
+        feature = "mkl",
+        feature = "accelerate",
+        feature = "ort",
+        feature = "python"
+    ))
+))]
+mod auto_dtype_tests {
+    use super::*;
+
+    fn from_config(json: &str, requested: Option<DType>) -> DType {
+        let config: ModelConfig = serde_json::from_str(json).unwrap();
+        resolve_dtype(
+            requested,
+            config.dtype.as_deref().or(config.torch_dtype.as_deref()),
+            &config.model_type,
+        )
+    }
+
+    #[test]
+    fn auto_uses_both_config_names_and_prefers_dtype() {
+        for field in ["dtype", "torch_dtype"] {
+            let json = format!(
+                r#"{{"architectures":[],"model_type":"qwen3","max_position_embeddings":512,"{field}":"bfloat16"}}"#
+            );
+            assert_eq!(from_config(&json, None), DType::Bfloat16);
+            assert_eq!(from_config(&json, Some(DType::Auto)), DType::Bfloat16);
+            assert_eq!(from_config(&json, Some(DType::Float16)), DType::Float16);
+            assert_eq!(from_config(&json, Some(DType::Float32)), DType::Float32);
+        }
+        let json = r#"{"architectures":[],"model_type":"qwen3","max_position_embeddings":512,"dtype":"float16","torch_dtype":"bfloat16"}"#;
+        assert_eq!(from_config(json, None), DType::Float16);
+        let json = r#"{"architectures":[],"model_type":"qwen3","max_position_embeddings":512,"dtype":null,"torch_dtype":"bfloat16"}"#;
+        assert_eq!(from_config(json, None), DType::Bfloat16);
+    }
+
+    #[test]
+    fn auto_preserves_fallback_and_gemma_defaults() {
+        for value in [None, Some("float16"), Some("float32"), Some("unknown")] {
+            assert_eq!(resolve_dtype(None, value, "qwen3"), DType::Float16);
+            assert_eq!(
+                resolve_dtype(Some(DType::Auto), value, "qwen3"),
+                DType::Float16
+            );
+        }
+        assert_eq!(
+            resolve_dtype(None, Some("bfloat16"), "gemma3_text"),
+            DType::Float32
+        );
+        assert_eq!(
+            resolve_dtype(Some(DType::Bfloat16), None, "gemma3_text"),
+            DType::Bfloat16
+        );
     }
 }
