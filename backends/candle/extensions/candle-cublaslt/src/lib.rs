@@ -395,7 +395,7 @@ impl candle::CustomOp3 for CublasLTMatmul {
 /// * `a` - Input tensor of size MxK
 /// * `b` - Input tensor of size NxK
 /// * `out` - Optional Output tensor of size NxK.
-///           If set and beta != 0, will be added to the end result of A*B before `act`
+///   If set and beta != 0, will be added to the end result of A*B before `act`
 /// * `alpha` - Optional scaling factor for A*B
 /// * `beta` - Optional scaling factor for C
 /// * `bias` - Optional bias tensor of size M
@@ -828,7 +828,7 @@ impl candle::CustomOp3 for CublasLTBatchMatmul {
 /// * `a` - Input tensor of size BxMxK
 /// * `b` - Input tensor of size BxNxK
 /// * `out` - Optional Output tensor of size BxNxK.
-///           If set and beta != 0, will be added to the end result of A*B before `act`
+///   If set and beta != 0, will be added to the end result of A*B before `act`
 /// * `alpha` - Optional scaling factor for A*B
 /// * `beta` - Optional scaling factor for C
 /// * `bias` - Optional bias tensor of size M

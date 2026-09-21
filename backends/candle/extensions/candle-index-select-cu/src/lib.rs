@@ -106,6 +106,7 @@ mod cuda_impl {
     use super::*;
     use candle::cuda_backend::cudarc::driver::{DevicePtr, DevicePtrMut};
 
+    #[allow(clippy::too_many_arguments)]
     pub fn fwd_impl<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(

@@ -54,7 +54,7 @@ python integration_tests/candle_precision.py reference --model voyage \
 
 docker run --rm --gpus device=0 -p 18910:80 \
   -v /absolute/model/cache:/models:ro tei-candle-after:pr10 \
-  --model-id /models/snapshot --dtype bfloat16 --max-batch-tokens 32768 \
+  --model-id /models/snapshot --dtype bfloat16 --max-batch-tokens 40960 \
   --max-client-batch-size 16
 
 python integration_tests/candle_precision.py http --model voyage \
@@ -72,4 +72,6 @@ before/after results. Embedding comparisons require cosine similarity at least
 logit error against the FP32 reference (use `--logit-tolerance 0.25` for BF16).
 The before/after FP16 BGE bound is 0.05. The script records all metrics and checks
 in JSON and exits nonzero on failures, including null/non-finite embeddings.
-Keep failing FP16 Voyage results as a control; do not relax finiteness checks.
+If FP16 Voyage produces non-finite outputs, keep that result as a control; do not
+relax finiteness checks. Finite results on these inputs do not establish that FP16
+is safe for every input.

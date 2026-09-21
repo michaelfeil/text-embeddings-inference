@@ -99,8 +99,10 @@ def http(args):
 def validate(args, result):
     checks = {}
     values = result["values"]
-    flat = [v for row in values for v in row]
-    checks["finite"] = all(isinstance(v, (float, int)) and math.isfinite(v) for v in flat)
+    result["finite_by_input"] = [all(isinstance(v, (float, int)) and math.isfinite(v) for v in row) for row in values]
+    checks["finite"] = all(result["finite_by_input"])
+    if "unnormalized" in result:
+        result["unnormalized_finite_by_input"] = [all(isinstance(v, (float, int)) and math.isfinite(v) for v in row) for row in result["unnormalized"]]
     if not checks["finite"]:
         return checks
     if args.model == "bge":
