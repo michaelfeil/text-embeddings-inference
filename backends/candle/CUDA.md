@@ -49,6 +49,7 @@ instead of `candle-cuda`; BF16 is unavailable on Turing.
 The five small crates in `extensions/` are ported from
 [`candle-extensions` at e287dd09535ab5d7631c0f2ae0a93d7ec168cb86](https://github.com/huggingface/candle-extensions/tree/e287dd09535ab5d7631c0f2ae0a93d7ec168cb86).
 They preserve their MIT/Apache licenses and the original fused CUDA kernels.
+Standalone upstream benchmark/profiler programs are omitted.
 The port updates Candle/cudarc APIs, passes Candle's actual stream to CUDA FFI,
 and retains pointer guards until launches are submitted. BF16 gather copies the
 16-bit representation directly, including NaNs and subnormals.
