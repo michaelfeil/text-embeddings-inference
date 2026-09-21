@@ -45,8 +45,8 @@ struct Args {
     #[clap(long, env)]
     tokenization_workers: Option<usize>,
 
-    /// The dtype to be forced upon the model.
-    #[clap(long, env, value_enum)]
+    /// Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default.
+    #[clap(long, env, value_enum, default_value = "auto")]
     dtype: Option<DType>,
 
     /// Optionally control the pooling method for embedding models.

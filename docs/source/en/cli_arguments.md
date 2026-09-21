@@ -42,10 +42,15 @@ Options:
           [env: TOKENIZATION_WORKERS=]
 
       --dtype <DTYPE>
-          The dtype to be forced upon the model
+          Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default
 
           [env: DTYPE=]
-          [possible values: float16, float32, bfloat16]
+          [default: auto]
+          [possible values: auto, float16, float32, bfloat16]
+
+          Auto prefers config.json's dtype over torch_dtype and selects bfloat16 when configured.
+          Otherwise it keeps the backend default (float16 for Candle CUDA). MKL, Accelerate,
+          ONNX, and gemma3_text retain their float32 defaults. Explicit dtype values override auto.
 
       --pooling <POOLING>
           Optionally control the pooling method for embedding models.

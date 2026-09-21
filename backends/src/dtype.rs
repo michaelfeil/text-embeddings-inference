@@ -6,6 +6,7 @@ use clap::ValueEnum;
 #[derive(Debug, PartialEq)]
 #[cfg_attr(feature = "clap", derive(Clone, ValueEnum))]
 pub enum DType {
+    Auto,
     // Float16 is not available on accelerate
     #[cfg(any(
         feature = "python",
@@ -21,6 +22,7 @@ pub enum DType {
 impl fmt::Display for DType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
+            DType::Auto => write!(f, "auto"),
             // Float16 is not available on accelerate
             #[cfg(any(
                 feature = "python",
