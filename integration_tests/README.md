@@ -75,3 +75,10 @@ in JSON and exits nonzero on failures, including null/non-finite embeddings.
 If FP16 Voyage produces non-finite outputs, keep that result as a control; do not
 relax finiteness checks. Finite results on these inputs do not establish that FP16
 is safe for every input.
+
+For the overflow control, add `--stress` to the Voyage HTTP probe. This adds
+31,687-token prose, multilingual text, repeated code at 534/1,062/2,118 tokens,
+numbers, and punctuation. The 534-token code case reproduces non-finite FP16
+embeddings on the tested H100 build; BF16 remains finite. Stress mode splits
+requests into at most 16 inputs. Generate a reference with the same `--stress`
+flag if using `--reference`; ordinary and stress result shapes differ.

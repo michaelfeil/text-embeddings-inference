@@ -22,14 +22,25 @@ GROUPS = [
 PASSAGE = "The research team measured water quality in the river. Samples collected upstream contained less sediment than samples near the bridge. Temperature, rainfall, and seasonal changes were recorded alongside each observation. The report recommends repeated measurements before drawing conclusions. "
 
 
-def inputs(model):
+def inputs(model, stress=False):
     prefix = "Represent the document for retrieval: " if model == "voyage" else ""
-    return [prefix + x for x in [
+    texts = [prefix + x for x in [
         "Paris is the capital of France.",
         "A database index speeds up searches through a large table.",
         "Yeast makes bread dough rise during fermentation.",
         *[PASSAGE * n for n in (12, 24, 48, 96, 192)],
     ]]
+    if stress:
+        texts += [prefix + text for text in [
+            PASSAGE * 384,
+            PASSAGE * 720,
+            *["def index_records(rows):\n    return {row['id']: row for row in rows if row['active']}\n" * n for n in (24, 48, 96)],
+            "研究团队测量了河流水质，并比较了不同季节的温度和降雨量。 " * 96,
+            "Les chercheurs analysent la qualité de l’eau. Die Ergebnisse werden sorgfältig verglichen. " * 96,
+            " ".join(str(i) for i in range(2000)),
+            "{} [] () => :: ; , . ! ? " * 192,
+        ]]
+    return texts
 
 
 def pairs():
@@ -71,7 +82,7 @@ def reference(args):
                     values.append(model(**encoded).logits.float().item())
                 result["values"].append(values)
         else:
-            for text in inputs(args.model):
+            for text in inputs(args.model, args.stress):
                 encoded = tokenizer(text, return_tensors="pt", truncation=False).to("cuda")
                 result["token_counts"].append(encoded.input_ids.shape[1])
                 hidden = model(**encoded).last_hidden_state.float()
@@ -88,9 +99,11 @@ def http(args):
             result["values"].append([row["score"] for row in sorted(rows, key=lambda r: r["index"])])
             result["single_values"].append([request(args.url, "/rerank", {"query": query, "texts": [doc], "truncate": False, "raw_scores": True})[0]["score"] for doc in docs])
     else:
-        texts = inputs(args.model)
+        texts = inputs(args.model, args.stress)
         result["token_counts"] = [len(request(args.url, "/tokenize", {"inputs": text})[0]) for text in texts]
-        result["values"] = request(args.url, "/embed", {"inputs": texts, "normalize": True, "truncate": False})
+        result["input_previews"] = [text[:120] for text in texts]
+        for start in range(0, len(texts), 16):
+            result["values"].extend(request(args.url, "/embed", {"inputs": texts[start:start + 16], "normalize": True, "truncate": False}))
         result["single_values"] = [request(args.url, "/embed", {"inputs": text, "normalize": True, "truncate": False})[0] for text in texts]
         result["unnormalized"] = [request(args.url, "/embed", {"inputs": text, "normalize": False, "truncate": False})[0] for text in texts]
     return result
@@ -151,13 +164,16 @@ def main():
     parser.add_argument("mode", choices=["reference", "http"])
     parser.add_argument("--model", choices=MODELS, required=True)
     parser.add_argument("--path")
+    parser.add_argument("--stress", action="store_true", help="Add long, code, multilingual, number, and punctuation embedding inputs")
     parser.add_argument("--url", default="http://localhost:18910")
     parser.add_argument("--reference")
     parser.add_argument("--baseline")
     parser.add_argument("--logit-tolerance", type=float, default=0.1)
     parser.add_argument("--output", required=True)
     args = parser.parse_args()
-    result = {"model": MODELS[args.model][0], "revision": MODELS[args.model][1], "mode": args.mode}
+    if args.stress and args.model == "bge":
+        parser.error("--stress applies to embedding models")
+    result = {"stress": args.stress, "model": MODELS[args.model][0], "revision": MODELS[args.model][1], "mode": args.mode}
     try:
         result.update(reference(args) if args.mode == "reference" else http(args))
         result["checks"] = validate(args, result)
