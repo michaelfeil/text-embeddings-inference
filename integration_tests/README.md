@@ -16,71 +16,23 @@ Then you can run the tests.
 uv run pytest --durations=0 -sv .
 ```
 
-## Candle BF16 and upgrade regression checks
 
-`candle_precision.py` uses pinned revisions of `Qwen/Qwen3-0.6B`,
-`voyageai/voyage-4-nano`, and `BAAI/bge-reranker-base`. It checks eight embedding
-inputs (including contexts above 500, 1,000, 2,000, 4,000, and 8,000 tokens),
-normalized and unnormalized finiteness, output dimensions, and batch/single
-agreement. Qwen uses last-token pooling; Voyage uses mean pooling and its trained
-2,048-dimensional projection. The BGE probe compares 28 query/document logits,
-including near-512-token pairs, and reports labeled top-1 accuracy on seven small
-handwritten groups. These are regression fixtures, not a retrieval benchmark.
+## Candle precision regression test
 
-Build both images from separate clean worktrees, using the same compute capability:
-
-```bash
-# Run in a worktree at the base revision ac28ad03.
-docker build -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=90 \
-  --build-arg CARGO_BUILD_JOBS=8 --build-arg RAYON_NUM_THREADS=8 \
-  -t tei-candle-before:pr10 .
-# Run in the PR worktree.
-docker build -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=90 \
-  --build-arg CARGO_BUILD_JOBS=8 --build-arg RAYON_NUM_THREADS=8 \
-  -t tei-candle-after:pr10 .
-```
-
-Download each model at the revision in `candle_precision.py` and use its local
-snapshot directory for both implementations. To generate an independent reference,
-use a CUDA PyTorch environment with `transformers==4.57.6`. The Voyage reference
-loads the checkpoint's custom Python model (`trust_remote_code=True`); inspect
-that pinned code before running it. Reference embeddings use BF16 and FP32 mean
-pooling/normalization; BGE reference logits use FP32. The HTTP probe itself uses
-only the Python standard library.
+`candle_precision.py` compares a running server with pinned Transformers references
+for Qwen3-0.6B, Voyage 4 Nano, and BGE reranker. HTTP mode uses only the Python
+standard library; reference mode needs CUDA PyTorch and `transformers==4.57.6`.
+Voyage's reference loads custom code from the pinned checkpoint.
 
 ```bash
 python integration_tests/candle_precision.py reference --model voyage \
-  --path /absolute/model/snapshot --output voyage-reference.json
-
-docker run --rm --gpus device=0 -p 18910:80 \
-  -v /absolute/model/cache:/models:ro tei-candle-after:pr10 \
-  --model-id /models/snapshot --dtype bfloat16 --max-batch-tokens 40960 \
-  --max-client-batch-size 16
-
+  --path /absolute/pinned/model/snapshot --output /tmp/voyage-reference.json
 python integration_tests/candle_precision.py http --model voyage \
-  --reference voyage-reference.json --output voyage-after-bf16.json
+  --reference /tmp/voyage-reference.json --output /tmp/voyage-result.json
 ```
 
-Use `--model qwen` and add `--pooling last-token` to its server command. Use
-`--model bge` and no pooling override for the reranker. Preserve the Hugging Face
-cache directory structure when mounting snapshots that contain symlinks.
-
-Run the base image in `float16`, then the upgraded image in both `float16` and
-`bfloat16`. Pass the base HTTP result as `--baseline before.json` to compare
-before/after results. Embedding comparisons require cosine similarity at least
-0.99; BGE comparisons require identical top-1 choices and at most 0.1 absolute
-logit error against the FP32 reference (use `--logit-tolerance 0.25` for BF16).
-The before/after FP16 BGE bound is 0.05. The script records all metrics and checks
-in JSON and exits nonzero on failures, including null/non-finite embeddings.
-If FP16 Voyage produces non-finite outputs, keep that result as a control; do not
-relax finiteness checks. Finite results on these inputs do not establish that FP16
-is safe for every input.
-
-For the overflow control, add `--stress` to the Voyage HTTP probe. This adds
-31,687-token prose, multilingual text, repeated code at 534/1,062/2,118 tokens,
-numbers, and punctuation. The 534-token code case reproduces non-finite FP16
-embeddings on the tested H100 build; BF16 remains finite. Stress mode splits
-requests into at most 16 inputs. Generate a reference with the same `--stress`
-flag if using `--reference`; ordinary and stress result shapes differ.
-
-Recorded results for PR #10: [standalone upgrade verification](CANDLE_VERIFICATION.md).
+Serve Voyage with `--dtype bfloat16 --max-batch-tokens 40960`. Qwen also needs
+`--pooling last-token`. Use `--model bge` for the reranker, and `--baseline` to
+compare against a previous HTTP result. `--stress` adds embedding overflow cases,
+including 534-token repeated code that fails in Voyage FP16. Reference and HTTP
+runs must use the same stress setting. Failures produce a nonzero exit status.
