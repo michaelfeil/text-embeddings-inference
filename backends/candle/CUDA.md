@@ -8,10 +8,10 @@ kernel libraries. `cudarc` is pinned to **0.19.8**. Rust **1.93.1** is selected
 by `rust-toolchain.toml`.
 
 `--dtype bfloat16` selects BF16 for Candle. CUDA BF16 requires Ampere (sm80) or
-newer; older GPUs receive a startup error. Float16 remains the default. Qwen3
-decisions use the same RadixMLP path for both precisions. BF16 has lower mantissa
-precision, so scores can differ between compact, expanded, and single-option
-matrix shapes; use FP16 when tight agreement between those scores matters.
+newer; older GPUs receive a startup error. Float16 remains the default. BF16 offers a wider exponent range, which is
+needed by checkpoints such as `voyageai/voyage-4-nano`. Voyage uses bidirectional
+attention, mean pooling, and its trained 2,048-dimensional output projection.
+Bidirectional models do not use RadixMLP prefix sharing.
 
 ## Static CUDA toolkit build
 
@@ -34,7 +34,7 @@ NVIDIA driver (`libcuda.so.1`) and operating-system libraries remain dynamic.
 Inspect the executable with `readelf -d target/release/text-embeddings-router`;
 there should be no `NEEDED` entry for `libcudart`, `libcublas`, `libcublasLt`, or
 `libnvrtc`. To also catch libraries opened at runtime, launch with `LD_DEBUG=libs`
-and inspect the loader log after model warmup and a `/decide` request.
+and inspect the loader log after model warmup and an embedding or reranking request.
 Do not combine `static-linking` with the default `dynamic-linking` feature; use
 `--no-default-features` as above. Neither linking selector activates CUDA for a
 CPU-only build.
@@ -64,16 +64,7 @@ toolkit. This is compilation coverage, not a Turing hardware runtime test.
 
 The extension tests cover BF16 fused cuBLASLt bias/activation, RMSNorm and residual
 fusion, rotary embedding, gather offsets/repeated rows/bit preservation, and
-FlashAttention v1. CUDA tests use a nondefault stream. The model test compares
-compact and expanded Qwen3 scoring against complete independent likelihoods for
-FP16 and BF16, with tied/untied heads and logit chunk boundaries.
+FlashAttention v1. CUDA tests use a nondefault stream.
 
-```bash
-CUDA_VISIBLE_DEVICES=0 CUDA_COMPUTE_CAP=90 CUDA_ROOT=/usr/local/cuda \
-  scripts/cargo-static-cuda.sh test -p text-embeddings-backend-candle \
-  -p text-embeddings-router --lib decision_scores --no-default-features \
-  --features text-embeddings-router/candle-cuda,text-embeddings-router/http,text-embeddings-router/static-linking
-```
-
-See [the HTTP integration test](../../integration_tests/README.md#radixmlp-decisions-with-qwen3-4b-instruct-2507)
-for actual Qwen3-4B-Instruct-2507 scoring and recorded results.
+End-to-end model verification is documented in
+[the integration test guide](../../integration_tests/README.md).
