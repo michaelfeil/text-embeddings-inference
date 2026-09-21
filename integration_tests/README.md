@@ -82,3 +82,5 @@ numbers, and punctuation. The 534-token code case reproduces non-finite FP16
 embeddings on the tested H100 build; BF16 remains finite. Stress mode splits
 requests into at most 16 inputs. Generate a reference with the same `--stress`
 flag if using `--reference`; ordinary and stress result shapes differ.
+
+Recorded results for PR #10: [standalone upgrade verification](CANDLE_VERIFICATION.md).
