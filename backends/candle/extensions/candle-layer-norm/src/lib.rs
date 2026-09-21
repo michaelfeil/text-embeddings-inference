@@ -25,7 +25,7 @@ pub struct LayerNorm {
 }
 
 fn round_multiple(x: usize, m: usize) -> usize {
-    (x + m - 1) / m * m
+    x.div_ceil(m) * m
 }
 
 impl LayerNorm {
@@ -64,7 +64,7 @@ impl LayerNorm {
         let rows = x_l.dims()[0];
         let cols = x_l.dims()[1];
 
-        if !(cols % 8 == 0 && cols <= 8192) {
+        if !(cols.is_multiple_of(8) && cols <= 8192) {
             candle::bail!("hidden size must be % 8 and <= 8192")
         }
 
@@ -133,7 +133,7 @@ impl LayerNorm {
                 ptr
             }) as *const core::ffi::c_void
         } else {
-            ptr::null() as *const std::ffi::c_void
+            ptr::null()
         };
 
         // If residual is set, get its device pointer
@@ -164,7 +164,7 @@ impl LayerNorm {
                 ptr
             }) as *const std::ffi::c_void
         } else {
-            ptr::null() as *const std::ffi::c_void
+            ptr::null()
         };
 
         // Get cuda device pointers from cuda slices
@@ -324,7 +324,7 @@ pub fn layer_norm(
 ///
 /// * `x` - Input tensor of rank 2
 /// * `res` - Residual tensor of rank 2. Will be added to `x` before normalization. Must have
-/// the same shape as `x`.
+///   the same shape as `x`.
 /// * `gamma` - Channel scale
 /// * `beta` - Channel bias
 /// * `epsilon` - A value added to the denominator for numerical stability
@@ -377,7 +377,7 @@ pub fn rms_norm(x: &Tensor, gamma: &Tensor, beta: Option<&Tensor>, epsilon: f32)
 ///
 /// * `x` - Input tensor of rank 2
 /// * `res` - Residual tensor of rank 2. Will be added to `x` before normalization. Must have
-/// the same shape as `x`.
+///   the same shape as `x`.
 /// * `gamma` - Channel scale
 /// * `beta` - Channel bias
 /// * `epsilon` - A value added to the denominator for numerical stability

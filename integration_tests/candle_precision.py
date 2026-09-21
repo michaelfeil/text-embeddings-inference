@@ -150,7 +150,10 @@ def validate(args, result):
             tolerance = args.logit_tolerance if name != "before_upgrade" else 0.05
             comparison["tolerance"] = tolerance
             comparison["top1_agreement"] = all(max(range(len(a)), key=a.__getitem__) == max(range(len(b)), key=b.__getitem__) for a, b in zip(values, expected))
-            checks[name] = error <= tolerance and comparison["top1_agreement"]
+            comparison["identical_ranking_groups"] = sum(sorted(range(len(a)), key=a.__getitem__, reverse=True) == sorted(range(len(b)), key=b.__getitem__, reverse=True) for a, b in zip(values, expected))
+            comparison["pairwise_order_margin"] = 0.1
+            comparison["meaningful_pair_inversions"] = sum(abs(b[i] - b[j]) > 0.1 and (a[i] - a[j]) * (b[i] - b[j]) <= 0 for a, b in zip(values, expected) for i in range(len(a)) for j in range(i))
+            checks[name] = error <= tolerance and comparison["top1_agreement"] and comparison["meaningful_pair_inversions"] == 0
         else:
             comparison["min_cosine"] = min(cosine(a, b) for a, b in zip(values, expected))
             checks[name] = comparison["min_cosine"] >= 0.99

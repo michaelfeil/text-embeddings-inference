@@ -18,10 +18,11 @@ struct FlashAttnVarLen {
 }
 
 fn round_multiple(x: usize, m: usize) -> usize {
-    (x + m - 1) / m * m
+    x.div_ceil(m) * m
 }
 
 impl FlashAttnVarLen {
+    #[allow(clippy::too_many_arguments)]
     fn cuda_fwd_t<
         T: candle::cuda_backend::CudaDType + candle::cuda_backend::cudarc::driver::DeviceRepr,
     >(
