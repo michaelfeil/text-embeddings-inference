@@ -535,16 +535,8 @@ impl Infer {
         raw_scores: bool,
         _permit: OwnedSemaphorePermit,
         batch_counter: Option<Arc<AtomicUsize>>,
-    ) -> Result<
-        (
-            Vec<(String, u32, Vec<f32>, Option<usize>, Option<usize>)>,
-            usize,
-            Duration,
-            Duration,
-            Duration,
-        ),
-        TextEmbeddingsError,
-    > {
+    ) -> Result<(Vec<TokenPrediction>, usize, Duration, Duration, Duration), TextEmbeddingsError>
+    {
         if !self.is_classifier() {
             let counter = metrics::counter!("te_request_failure", "err" => "model_type");
             counter.increment(1);
@@ -727,13 +719,7 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
                                 let start_idx = encoding.cumulative_seq_lengths[i] as usize;
                                 let _end_idx = encoding.cumulative_seq_lengths[i + 1] as usize;
 
-                                let token_predictions: Vec<(
-                                    String,
-                                    u32,
-                                    Vec<f32>,
-                                    Option<usize>,
-                                    Option<usize>,
-                                )> = token_predictions
+                                let token_predictions: Vec<TokenPrediction> = token_predictions
                                     .into_iter()
                                     .enumerate()
                                     .map(|(token_idx, scores)| {
@@ -864,9 +850,12 @@ pub struct ClassificationInferResponse {
     pub metadata: InferMetadata,
 }
 
+/// Token text, token ID, class scores, and optional character offsets.
+pub type TokenPrediction = (String, u32, Vec<f32>, Option<usize>, Option<usize>);
+
 #[derive(Debug)]
 pub struct TokenClassificationInferResponse {
-    pub results: Vec<(String, u32, Vec<f32>, Option<usize>, Option<usize>)>,
+    pub results: Vec<TokenPrediction>,
     pub metadata: InferMetadata,
 }
 

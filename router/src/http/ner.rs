@@ -549,7 +549,7 @@ fn group_sub_entities(sentence: &str, entities: &[Entity]) -> EntityGroup {
     let entity = entities[0]
         .entity
         .split('-')
-        .last()
+        .next_back()
         .unwrap_or(&entities[0].entity);
 
     let mut total_score = 0.0;

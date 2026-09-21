@@ -30,6 +30,37 @@ pub struct Qwen3Config {
     pub use_linear_output_projection: bool,
     #[serde(default)]
     pub linear_output_size: usize,
+    #[serde(default)]
+    pub num_labels: Option<usize>,
+}
+
+impl Qwen3Config {
+    pub(crate) fn load_output_projection(
+        &self,
+        root: &VarBuilder,
+        model: &VarBuilder,
+    ) -> Result<Option<Linear>> {
+        // Voyage's projection is outside `model` and has no bias. Do not infer
+        // a projection from num_labels alone: causal checkpoints may set it too.
+        if self.use_bidirectional_attention && root.contains_tensor("linear.weight") {
+            let size = self.num_labels.ok_or_else(|| {
+                candle::Error::Msg("Qwen3 linear.weight requires num_labels".into())
+            })?;
+            let weight = root.pp("linear").get((size, self.hidden_size), "weight")?;
+            return Ok(Some(Linear::new(weight, None, None)));
+        }
+        if self.use_linear_output_projection {
+            let vb = model.pp("linear_output_projection");
+            let weight = vb.get((self.linear_output_size, self.hidden_size), "weight")?;
+            let bias = if vb.contains_tensor("bias") {
+                Some(vb.get(self.linear_output_size, "bias")?)
+            } else {
+                None
+            };
+            return Ok(Some(Linear::new(weight, bias, None)));
+        }
+        Ok(None)
+    }
 }
 
 struct Qwen3Attention {
@@ -391,6 +422,7 @@ pub struct Qwen3Model {
     pool: Pool,
     num_attention_heads: usize,
     pad_token_id: u32,
+    use_bidirectional_attention: bool,
 
     dtype: DType,
     device: Device,
@@ -409,6 +441,7 @@ impl Qwen3Model {
 
         // The Qwen3-Reranker models contain the `model` key
         // https://huggingface.co/collections/Qwen/qwen3-reranker-6841b22d0192d7ade9cdefea
+        let root = vb.clone();
         let vb = if vb.contains_tensor("model.embed_tokens.weight") {
             vb.pp("model")
         } else {
@@ -427,19 +460,7 @@ impl Qwen3Model {
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
 
-        let linear_output_projection = if config.use_linear_output_projection {
-            let output_size = config.linear_output_size;
-            let weight = vb
-                .pp("linear_output_projection")
-                .get((output_size, config.hidden_size), "weight")?;
-            let bias = vb
-                .pp("linear_output_projection")
-                .get(output_size, "bias")
-                .ok();
-            Some(Linear::new(weight, bias, None))
-        } else {
-            None
-        };
+        let linear_output_projection = config.load_output_projection(&root, &vb)?;
 
         let rotary_dim = config
             .head_dim
@@ -459,6 +480,7 @@ impl Qwen3Model {
             rotary_dim,
             pool,
             pad_token_id: config.eos_token_id as u32,
+            use_bidirectional_attention: config.use_bidirectional_attention,
             num_attention_heads: config.num_attention_heads,
             dtype: vb.dtype(),
             device: vb.device().clone(),
@@ -577,7 +599,9 @@ impl Qwen3Model {
             (input_ids, position_ids, input_lengths, Some(attention_bias))
         };
 
-        let attention_bias = if let Some(attn_bias) = attention_bias {
+        let attention_bias = if self.use_bidirectional_attention {
+            attention_bias
+        } else if let Some(attn_bias) = attention_bias {
             Some(self.get_causal_attention_bias(attn_bias)?)
         } else {
             None

@@ -52,17 +52,17 @@ log_error() {
 # Check if required tools are available
 check_prerequisites() {
     log_info "Checking prerequisites..."
-    
+
     if ! command -v docker &> /dev/null; then
         log_error "Docker is not installed or not in PATH"
         exit 1
     fi
-    
+
     if ! docker info &> /dev/null; then
         log_error "Docker daemon is not running"
         exit 1
     fi
-    
+
     # Check if user is logged in to registries
     for registry in "${REGISTRIES[@]}"; do
         if [[ "$registry" == *"ghcr.io"* ]]; then
@@ -71,7 +71,7 @@ check_prerequisites() {
             fi
         fi
     done
-    
+
     log_success "Prerequisites check completed"
 }
 
@@ -79,11 +79,11 @@ check_prerequisites() {
 build_and_push_variant() {
     local prefix="$1"
     local config="$2"
-    
+
     IFS=':' read -r compute_cap dockerfile grpc sccache extra_args <<< "$config"
-    
+
     log_info "Building variant: ${prefix}sm${compute_cap}"
-    
+
     # Build arguments
     local build_args=(
         "--build-arg" "CUDA_COMPUTE_CAP=${compute_cap}"
@@ -91,7 +91,7 @@ build_and_push_variant() {
         "--build-arg" "DOCKER_LABEL=sha-$(git rev-parse --short HEAD)"
         "--build-arg" "SCCACHE_GHA_ENABLED=false"
     )
-    
+
     # Add extra build args if specified
     if [[ -n "$extra_args" ]]; then
         IFS=',' read -ra args <<< "$extra_args"
@@ -99,14 +99,14 @@ build_and_push_variant() {
             build_args+=("--build-arg" "$arg")
         done
     fi
-    
+
     # Tags to build
     local tags=()
     for registry in "${REGISTRIES[@]}"; do
         tags+=("-t" "${registry}:${prefix}${VERSION}")
         # tags+=("-t" "${registry}:${prefix}latest")
     done
-    
+
     # Build standard image
     log_info "Building standard image for ${prefix}sm${compute_cap}..."
     docker buildx build \
@@ -116,17 +116,17 @@ build_and_push_variant() {
         "${tags[@]}" \
         --push \
         .
-    
+
     # Build gRPC image if enabled
     if [[ "$grpc" == "true" ]]; then
         log_info "Building gRPC image for ${prefix}sm${compute_cap}..."
-        
+
         local grpc_tags=()
         for registry in "${REGISTRIES[@]}"; do
             grpc_tags+=("-t" "${registry}:${prefix}${VERSION}-grpc")
             grpc_tags+=("-t" "${registry}:${prefix}latest-grpc")
         done
-        
+
         docker buildx build \
             --target grpc \
             --platform linux/amd64 \
@@ -136,18 +136,18 @@ build_and_push_variant() {
             --push \
             .
     fi
-    
+
     log_success "Completed variant: ${prefix}sm${compute_cap}"
 }
 
 # Build all variants in parallel
 build_all_variants() {
     log_info "Starting build for all variants..."
-    
+
     # Create a temporary directory for job tracking
     local temp_dir=$(mktemp -d)
     local pids=()
-    
+
     # Build each variant
     for prefix_config in "${!IMAGES[@]}"; do
         local actual_prefix="$prefix_config"
@@ -156,7 +156,7 @@ build_all_variants() {
             build_and_push_variant "$actual_prefix" "${IMAGES[$prefix_config]}"
         ) &
         pids+=($!)
-        
+
         # Limit parallel builds to avoid overwhelming the system
         if [[ ${#pids[@]} -ge 8 ]]; then
             for pid in "${pids[@]}"; do
@@ -165,12 +165,12 @@ build_all_variants() {
             pids=()
         fi
     done
-    
+
     # Wait for remaining jobs
     for pid in "${pids[@]}"; do
         wait "$pid"
     done
-    
+
     rm -rf "$temp_dir"
     log_success "All variants built successfully"
 }
@@ -178,13 +178,13 @@ build_all_variants() {
 # Verify images were pushed
 verify_images() {
     log_info "Verifying pushed images..."
-    
+
     local failed=0
     for prefix_config in "${!IMAGES[@]}"; do
         IFS=':' read -r compute_cap dockerfile grpc sccache extra_args <<< "${IMAGES[$prefix_config]}"
         local actual_prefix="$prefix_config"
         [[ "$actual_prefix" == "ampere-" ]] && actual_prefix=""
-        
+
         for registry in "${REGISTRIES[@]}"; do
             # Check standard image
             if ! docker pull "${registry}:${actual_prefix}${VERSION}" &> /dev/null; then
@@ -193,7 +193,7 @@ verify_images() {
             else
                 log_success "Verified ${registry}:${actual_prefix}${VERSION}"
             fi
-            
+
             # Check gRPC image if enabled
             if [[ "$grpc" == "true" ]]; then
                 if ! docker pull "${registry}:${actual_prefix}${VERSION}-grpc" &> /dev/null; then
@@ -205,7 +205,7 @@ verify_images() {
             fi
         done
     done
-    
+
     if [[ $failed -eq 0 ]]; then
         log_success "All images verified successfully"
     else
@@ -242,7 +242,7 @@ main() {
     local verify_only=false
     local parallel_build=false
     local dry_run=false
-    
+
     # Parse command line arguments
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -269,18 +269,18 @@ main() {
                 ;;
         esac
     done
-    
+
     # Set environment variables for better performance
     export DOCKER_BUILDKIT=1
     export BUILDKIT_INLINE_CACHE=1
-    
+
     log_info "Text Embeddings Inference Docker Build Script"
     log_info "Version: $VERSION"
     log_info "Git SHA: $(git rev-parse --short HEAD)"
-    
+
     # Check prerequisites
     check_prerequisites
-    
+
     if [[ "$dry_run" == "true" ]]; then
         log_info "DRY RUN - Would build the following images:"
         for prefix_config in "${!IMAGES[@]}"; do
@@ -291,12 +291,12 @@ main() {
         done
         exit 0
     fi
-    
+
     if [[ "$verify_only" == "true" ]]; then
         verify_images
         exit $?
     fi
-    
+
     # Build all variants
     if [[ "$parallel_build" == "true" ]]; then
         build_all_variants
@@ -307,10 +307,10 @@ main() {
             build_and_push_variant "$actual_prefix" "${IMAGES[$prefix_config]}"
         done
     fi
-    
+
     # Verify images
     verify_images
-    
+
     log_success "Docker build and push completed successfully!"
     log_info "Built images for version $VERSION"
     log_info "Total variants: ${#IMAGES[@]}"

@@ -1,5 +1,7 @@
 FROM lukemathwalker/cargo-chef:latest-rust-1.85-bookworm AS chef
 WORKDIR /usr/src
+COPY rust-toolchain.toml rust-toolchain.toml
+RUN rustup show
 
 ENV SCCACHE=0.10.0
 ENV RUSTC_WRAPPER=/usr/local/bin/sccache

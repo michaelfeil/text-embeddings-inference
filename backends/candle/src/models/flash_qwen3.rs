@@ -322,8 +322,8 @@ impl FlashQwen3Model {
             _ => candle::bail!("FlashQwen3 requires Cuda"),
         }
 
-        if vb.dtype() != DType::F16 {
-            candle::bail!("FlashQwen3 requires DType::F16")
+        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
+            candle::bail!("FlashQwen3 requires DType::F16 or DType::BF16")
         }
 
         let pool = match model_type {
@@ -335,6 +335,7 @@ impl FlashQwen3Model {
 
         // The Qwen3-Reranker models contain the `model` key
         // https://huggingface.co/collections/Qwen/qwen3-reranker-6841b22d0192d7ade9cdefea
+        let root = vb.clone();
         let vb = if vb.contains_tensor("model.embed_tokens.weight") {
             vb.pp("model")
         } else {
@@ -353,19 +354,7 @@ impl FlashQwen3Model {
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
 
-        let linear_output_projection = if config.use_linear_output_projection {
-            let output_size = config.linear_output_size;
-            let weight = vb
-                .pp("linear_output_projection")
-                .get((output_size, config.hidden_size), "weight")?;
-            let bias = vb
-                .pp("linear_output_projection")
-                .get(output_size, "bias")
-                .ok();
-            Some(Linear::new(weight, bias, None))
-        } else {
-            None
-        };
+        let linear_output_projection = config.load_output_projection(&root, &vb)?;
 
         let inv_freqs = get_inv_freqs(
             layers[0].attention.attention_head_size,
