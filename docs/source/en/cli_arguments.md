@@ -45,7 +45,7 @@ Options:
           The dtype to be forced upon the model
 
           [env: DTYPE=]
-          [possible values: float16, float32]
+          [possible values: float16, float32, bfloat16]
 
       --pooling <POOLING>
           Optionally control the pooling method for embedding models.

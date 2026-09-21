@@ -14,7 +14,7 @@ pub enum DType {
     Float16,
     #[cfg(any(feature = "python", feature = "candle", feature = "ort"))]
     Float32,
-    #[cfg(feature = "python")]
+    #[cfg(any(feature = "python", feature = "candle"))]
     Bfloat16,
 }
 
@@ -29,7 +29,7 @@ impl fmt::Display for DType {
             DType::Float16 => write!(f, "float16"),
             #[cfg(any(feature = "python", feature = "candle", feature = "ort"))]
             DType::Float32 => write!(f, "float32"),
-            #[cfg(feature = "python")]
+            #[cfg(any(feature = "python", feature = "candle"))]
             DType::Bfloat16 => write!(f, "bfloat16"),
         }
     }
@@ -55,5 +55,17 @@ impl Default for DType {
         {
             DType::Bfloat16
         }
+    }
+}
+
+#[cfg(all(test, feature = "clap", feature = "candle"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn candle_accepts_bfloat16_cli_dtype() {
+        let dtype = DType::from_str("bfloat16", false).unwrap();
+        assert_eq!(dtype, DType::Bfloat16);
+        assert_eq!(dtype.to_string(), "bfloat16");
     }
 }
