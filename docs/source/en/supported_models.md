@@ -21,7 +21,7 @@ We are continually expanding our support for other model types and plan to inclu
 ## Supported embeddings models
 
 Text Embeddings Inference currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
-model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, MPNet, ModernBERT, Qwen3, and Gemma3.
+model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, MPNet, ModernBERT, Qwen3, Gemma3, and dense Gemma4 text models.
 
 Below are some examples of the currently supported models:
 
