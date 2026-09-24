@@ -762,6 +762,9 @@ enum Gemma4Output {
 }
 
 pub struct Gemma4Model {
+    lm_head: Option<Tensor>,
+    #[cfg(feature = "flash-attn")]
+    end_of_turn_token_id: u32,
     embeddings: Embedding,
     embedding_scale: f64,
     ple: Option<Gemma4Ple>,
@@ -871,6 +874,15 @@ impl Gemma4Model {
             }
         };
 
+        let lm_head = [
+            "lm_head.weight",
+            "model.lm_head.weight",
+            "model.language_model.lm_head.weight",
+        ]
+        .into_iter()
+        .find(|name| vb.contains_tensor(name))
+        .map(|name| vb.get((text.vocab_size, text.hidden_size), name))
+        .transpose()?;
         let vb = if vb.contains_tensor("model.language_model.embed_tokens.weight") {
             vb.pp("model.language_model")
         } else if vb.contains_tensor("model.embed_tokens.weight") {
@@ -883,6 +895,19 @@ impl Gemma4Model {
                 .get((text.vocab_size, text.hidden_size), "weight")?,
             text.hidden_size,
         );
+        let lm_head = lm_head.or_else(|| {
+            (config.tie_word_embeddings || text.tie_word_embeddings)
+                .then(|| embeddings.embeddings().clone())
+        });
+        #[cfg(feature = "flash-attn")]
+        let end_of_turn_token_id = config
+            .eos_token_id
+            .as_ref()
+            .and_then(serde_json::Value::as_array)
+            .and_then(|ids| ids.last())
+            .and_then(serde_json::Value::as_u64)
+            .map(|id| id as u32)
+            .unwrap_or(106);
         let ple = Gemma4Ple::load(vb.clone(), text)?;
         let layers = (0..text.num_hidden_layers)
             .map(|idx| Gemma4Layer::load(vb.pp(format!("layers.{idx}")), text, idx))
@@ -919,6 +944,9 @@ impl Gemma4Model {
         let full_rope = get_cos_sin(text.max_position_embeddings, &full_inv, vb.dtype(), true)?;
 
         Ok(Self {
+            lm_head,
+            #[cfg(feature = "flash-attn")]
+            end_of_turn_token_id,
             embeddings,
             embedding_scale: (text.hidden_size as f64).sqrt(),
             ple,
@@ -1134,6 +1162,100 @@ impl Gemma4Model {
 impl Model for Gemma4Model {
     fn supports_radix_mlp(&self) -> bool {
         self.device.is_cuda() && cfg!(feature = "flash-attn")
+    }
+
+    fn supports_decision_scoring(&self) -> bool {
+        self.device.is_cuda() && cfg!(feature = "flash-attn") && self.lm_head.is_some()
+    }
+
+    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
+        self.supports_decision_scoring()
+            .then_some(text_embeddings_backend_core::DecisionPromptStyle::Gemma4)
+    }
+
+    fn score_options(&self, batch: Batch, prompt_lengths: &[usize]) -> Result<Vec<f32>> {
+        if !self.supports_decision_scoring() {
+            candle::bail!("Gemma4 decision scoring requires CUDA FlashAttention and LM weights")
+        }
+        if prompt_lengths.is_empty()
+            || prompt_lengths.len() + 1 != batch.cumulative_seq_lengths.len()
+            || batch
+                .cumulative_seq_lengths
+                .windows(2)
+                .zip(prompt_lengths)
+                .any(|(bounds, &len)| len == 0 || (bounds[1] - bounds[0]) as usize <= len)
+        {
+            candle::bail!("Each branch must contain a nonempty prompt and continuation")
+        }
+        #[cfg(feature = "flash-attn")]
+        {
+            let (hidden, _) = self.forward_hidden_varlen(&batch, true)?;
+            let weight = self.lm_head.as_ref().unwrap();
+            let mut rows = Vec::new();
+            let mut row_map = std::collections::HashMap::new();
+            let mut edges = Vec::new();
+            for (bounds, &prompt_length) in
+                batch.cumulative_seq_lengths.windows(2).zip(prompt_lengths)
+            {
+                let mut branch = Vec::new();
+                for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize) {
+                    let row = batch
+                        .scatter_unfold
+                        .as_ref()
+                        .map_or(pos as u32, |map| map[pos]);
+                    let next = rows.len();
+                    let index = *row_map.entry(row).or_insert_with(|| {
+                        rows.push(row);
+                        next
+                    });
+                    let target = if pos + 1 == bounds[1] as usize {
+                        self.end_of_turn_token_id
+                    } else {
+                        batch.input_ids[pos + 1]
+                    };
+                    branch.push((index, target as usize));
+                }
+                edges.push(branch);
+            }
+            let mut scores = vec![0f32; edges.len()];
+            let mut targets_by_row = vec![Vec::new(); rows.len()];
+            for (branch_index, branch) in edges.iter().enumerate() {
+                for &(row, target) in branch {
+                    targets_by_row[row].push((branch_index, target));
+                }
+            }
+            let vocab_size = weight.dim(0)?;
+            for (chunk_index, chunk) in rows.chunks(16).enumerate() {
+                let indices = Tensor::from_vec(chunk.to_vec(), chunk.len(), &self.device)?;
+                let states = index_select(&hidden, &indices, 0)?;
+                let logits = states.matmul(&weight.t()?)?.to_dtype(DType::F32)?;
+                let logits = match self.final_logit_softcapping {
+                    Some(cap) => ((logits / cap)?.tanh()? * cap)?,
+                    None => logits,
+                };
+                let log_probs = candle_nn::ops::log_softmax(&logits, 1)?.flatten_all()?;
+                let start = chunk_index * 16;
+                let mut selected = Vec::new();
+                let mut branches = Vec::new();
+                for (local_row, targets) in targets_by_row[start..start + chunk.len()]
+                    .iter()
+                    .enumerate()
+                {
+                    for &(branch, target) in targets {
+                        selected.push((local_row * vocab_size + target) as u32);
+                        branches.push(branch);
+                    }
+                }
+                let indices = Tensor::from_vec(selected, branches.len(), &self.device)?;
+                let values = log_probs.index_select(&indices, 0)?.to_vec1::<f32>()?;
+                for (branch, value) in branches.into_iter().zip(values) {
+                    scores[branch] += value;
+                }
+            }
+            Ok(scores)
+        }
+        #[cfg(not(feature = "flash-attn"))]
+        candle::bail!("Gemma4 decision scoring requires FlashAttention")
     }
 
     fn is_padded(&self) -> bool {

@@ -690,6 +690,22 @@ impl Backend for CandleBackend {
         self.model.is_padded()
     }
 
+    fn score_options(
+        &self,
+        batch: Batch,
+        prompt_lengths: &[usize],
+    ) -> Result<Vec<f32>, BackendError> {
+        self.model.score_options(batch, prompt_lengths).e()
+    }
+
+    fn supports_decision_scoring(&self) -> bool {
+        self.model.supports_decision_scoring()
+    }
+
+    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
+        self.model.decision_prompt_style()
+    }
+
     fn supports_radix_mlp(&self) -> bool {
         self.model.supports_radix_mlp()
     }

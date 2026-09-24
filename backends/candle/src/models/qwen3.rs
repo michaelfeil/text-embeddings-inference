@@ -9,6 +9,8 @@ use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Qwen3Config {
+    #[serde(default)]
+    pub tie_word_embeddings: bool,
     pub attention_bias: bool,
     pub vocab_size: usize,
     pub head_dim: Option<usize>,

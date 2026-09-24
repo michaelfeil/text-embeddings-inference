@@ -41,6 +41,12 @@ pub type Embeddings = IntMap<usize, Embedding>;
 pub type Predictions = IntMap<usize, Vec<f32>>;
 pub type TokenPredictions = IntMap<usize, Vec<Vec<f32>>>;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecisionPromptStyle {
+    Qwen3,
+    Gemma4,
+}
+
 pub trait Backend {
     fn health(&self) -> Result<(), BackendError>;
     fn max_batch_size(&self) -> Option<usize> {
@@ -51,6 +57,26 @@ pub trait Backend {
 
     fn supports_radix_mlp(&self) -> bool {
         false
+    }
+
+    fn supports_decision_scoring(&self) -> bool {
+        false
+    }
+
+    fn decision_prompt_style(&self) -> Option<DecisionPromptStyle> {
+        None
+    }
+
+    /// Score complete candidate sequences in one forward pass.
+    /// Each branch has its own prompt length; only its continuation and EOS are scored.
+    fn score_options(
+        &self,
+        _batch: Batch,
+        _prompt_lengths: &[usize],
+    ) -> Result<Vec<f32>, BackendError> {
+        Err(BackendError::Inference(
+            "Decision scoring is not supported by this model".into(),
+        ))
     }
 
     fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError>;

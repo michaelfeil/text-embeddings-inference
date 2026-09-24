@@ -58,6 +58,87 @@ impl Infer {
         }
     }
 
+    /// All question groups are delivered in one backend call, never scheduled separately.
+    pub async fn decide(
+        &self,
+        groups: Vec<crate::decision::Group>,
+        max_batch_tokens: usize,
+        max_length: usize,
+    ) -> Result<(Vec<crate::decision::ScoredGroup>, usize, usize), TextEmbeddingsError> {
+        let _permit = self.try_acquire_permit()?;
+        let Some(style) = self.backend.decision_prompt_style else {
+            return Err(TextEmbeddingsError::Validation(
+                "Decision scoring requires a supported causal language model with LM weights"
+                    .into(),
+            ));
+        };
+        let mut encoded = Vec::new();
+        let mut results = Vec::new();
+        let mut total = 0usize;
+        for group in groups {
+            let prompt = self
+                .tokenization
+                .tokenize_exact(group.prompt(style))
+                .await?;
+            if prompt.is_empty() || prompt.len() >= max_length || prompt.len() >= max_batch_tokens {
+                return Err(TextEmbeddingsError::Validation(
+                    "Group prompt must leave room for an option within the server token limits"
+                        .into(),
+                ));
+            }
+            let mut options = Vec::new();
+            let mut candidates = Vec::new();
+            for candidate in group.options {
+                let option = self.tokenization.tokenize_exact(candidate.clone()).await?;
+                if option.len() > max_length - prompt.len() {
+                    return Err(TextEmbeddingsError::Validation(
+                        "A prompt + option exceeds the model context limit".into(),
+                    ));
+                }
+                total = total
+                    .checked_add(prompt.len())
+                    .and_then(|n| n.checked_add(option.len()))
+                    .ok_or_else(|| {
+                        TextEmbeddingsError::Validation("Token count overflow".into())
+                    })?;
+                if total > max_batch_tokens {
+                    return Err(TextEmbeddingsError::Validation(
+                        "Expanded question groups exceed the server max_batch_tokens; no branches were evaluated".into(),
+                    ));
+                }
+                options.push(option.get_ids().to_vec());
+                candidates.push(candidate);
+            }
+            encoded.push(crate::decision::EncodedGroup {
+                prompt: prompt.get_ids().to_vec(),
+                options,
+            });
+            results.push(crate::decision::ScoredGroup {
+                name: group.name,
+                options: candidates,
+                log_scores: Vec::new(),
+            });
+        }
+        let (batch, prompt_lengths) =
+            crate::decision::option_batch(&encoded, max_batch_tokens, max_length)?;
+        let compact_tokens = batch.compact_input_ids.as_ref().unwrap().len();
+        let scores = self.backend.score_options(batch, prompt_lengths).await?;
+        let expected: usize = results.iter().map(|g| g.options.len()).sum();
+        if scores.len() != expected || scores.iter().any(|s| !s.is_finite()) {
+            return Err(text_embeddings_backend::BackendError::Inference(
+                "Model returned invalid decision scores".into(),
+            )
+            .into());
+        }
+        let mut offset = 0;
+        for group in &mut results {
+            let end = offset + group.options.len();
+            group.log_scores = scores[offset..end].to_vec();
+            offset = end;
+        }
+        Ok((results, total, compact_tokens))
+    }
+
     #[instrument(skip(self, inputs))]
     pub async fn tokenize<I: Into<EncodingInput> + std::fmt::Debug>(
         &self,

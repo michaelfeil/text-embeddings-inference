@@ -25,6 +25,8 @@ length of 512 tokens:
 
 </div>
 
+This branch also supports [exhaustive structured decisions with RadixMLP](DECISIONS.md): shared context, exhaustive question groups in one atomic batch, and a server token-budget guard through `POST /decide`.
+
 ## Table of contents
 
 - [Get Started](#get-started)
