@@ -23,9 +23,10 @@ use crate::compute_cap::{
 };
 use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, Gemma3Config, Gemma3Model, JinaBertModel, JinaCodeBertModel, LLamaConfig,
-    MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
-    NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
+    GTEConfig, GTEModel, Gemma3Config, Gemma3Model, Gemma4Config, Gemma4Model, JinaBertModel,
+    JinaCodeBertModel, LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model,
+    ModernBertConfig, ModernBertModel, NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config,
+    Qwen3Model,
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
@@ -97,6 +98,8 @@ enum Config {
     DistilBert(DistilBertConfig),
     #[serde(rename(deserialize = "gemma3_text"))]
     Gemma3(Gemma3Config),
+    #[serde(rename = "gemma4", alias = "gemma4_unified")]
+    Gemma4(Gemma4Config),
     #[serde(alias = "new")]
     Gte(GTEConfig),
     #[serde(rename = "mpnet")]
@@ -300,6 +303,16 @@ impl CandleBackend {
                     Ok(Box::new(Gemma3Model::load(vb, &config, model_type).s()?))
                 }
             }
+            (Config::Gemma4(config), Device::Cpu | Device::Metal(_)) => {
+                if !matches!(dtype, DType::F32 | DType::BF16) {
+                    Err(BackendError::Start(
+                        "Gemma4 is only supported in fp32 and bf16 precision".to_string(),
+                    ))
+                } else {
+                    tracing::info!("Starting Gemma4 model on {:?}", device);
+                    Ok(Box::new(Gemma4Model::load(vb, &config, model_type).s()?))
+                }
+            }
             (Config::Gte(config), Device::Cpu | Device::Metal(_)) => {
                 tracing::info!("Starting GTE model on {:?}", device);
                 Ok(Box::new(GTEModel::load(vb, &config, model_type).s()?))
@@ -430,6 +443,17 @@ impl CandleBackend {
                 } else {
                     tracing::info!("Starting Gemma3 model on {:?}", device);
                     Ok(Box::new(Gemma3Model::load(vb, &config, model_type).s()?))
+                }
+            }
+            #[cfg(feature = "cuda")]
+            (Config::Gemma4(config), Device::Cuda(_)) => {
+                if dtype != DType::BF16 || !cfg!(feature = "flash-attn") {
+                    Err(BackendError::Start(
+                        "Gemma4 CUDA inference requires bfloat16 and FlashAttention".to_string(),
+                    ))
+                } else {
+                    tracing::info!("Starting Gemma4 model on {:?}", device);
+                    Ok(Box::new(Gemma4Model::load(vb, &config, model_type).s()?))
                 }
             }
             #[cfg(feature = "cuda")]

@@ -105,8 +105,21 @@ pub async fn run(
     // Load config
     let config_path = model_root.join("config.json");
     let config = fs::read_to_string(config_path).context("`config.json` not found")?;
-    let config: ModelConfig =
+    let mut config: ModelConfig =
         serde_json::from_str(&config).context("Failed to parse `config.json`")?;
+    if matches!(config.model_type.as_str(), "gemma4" | "gemma4_unified")
+        && config.max_position_embeddings == 0
+    {
+        config.max_position_embeddings = config
+            .text_config
+            .as_ref()
+            .map(|text| text.max_position_embeddings)
+            .context("Gemma4 `text_config.max_position_embeddings` is missing")?;
+    }
+    anyhow::ensure!(
+        config.max_position_embeddings > 0,
+        "`max_position_embeddings` must be positive"
+    );
 
     // Set model type from config
     let backend_model_type = get_backend_model_type(&config, &model_root, pooling)?;
@@ -315,10 +328,15 @@ pub async fn run(
         || config.model_type == "distilbert"
         || config.model_type == "modernbert"
         || config.use_bidirectional_attention.unwrap_or(false)
+        || (matches!(config.model_type.as_str(), "gemma4" | "gemma4_unified")
+            && matches!(
+                &backend.model_type,
+                text_embeddings_backend::ModelType::Embedding(_)
+            ))
         || !backend.radix_mlp_supported
     {
         if radix_mlp_threshold > 0.0 {
-            tracing::warn!("`--radix-mlp-threshold` is only supported for Causal LM's Qwen2.5, Qwen3 and LLaMA models. Disabling RadixMLP.");
+            tracing::warn!("`--radix-mlp-threshold` requires a causal model with RadixMLP support. Disabling RadixMLP.");
         }
         0.0
     } else {
@@ -508,14 +526,20 @@ pub struct ModelConfig {
     pub model_type: String,
     pub dtype: Option<String>,
     pub torch_dtype: Option<String>,
-    #[serde(alias = "n_positions")]
+    #[serde(default, alias = "n_positions")]
     pub max_position_embeddings: usize,
+    pub text_config: Option<TextPositionConfig>,
     #[serde(default)]
     pub pad_token_id: usize,
     pub id2label: Option<HashMap<String, String>>,
     pub label2id: Option<HashMap<String, usize>>,
     pub auto_map: Option<HashMap<String, String>>,
     pub use_bidirectional_attention: Option<bool>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TextPositionConfig {
+    pub max_position_embeddings: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -795,5 +819,15 @@ mod auto_dtype_tests {
             assert_eq!(from_config(&json, Some(DType::Auto)), DType::Bfloat16);
             assert_eq!(from_config(&json, Some(DType::Float16)), DType::Float16);
         }
+    }
+
+    #[test]
+    fn gemma4_context_length_is_nested() {
+        let config: ModelConfig = serde_json::from_str(
+            r#"{"architectures":[],"model_type":"gemma4","text_config":{"max_position_embeddings":131072}}"#,
+        )
+        .unwrap();
+        assert_eq!(config.max_position_embeddings, 0);
+        assert_eq!(config.text_config.unwrap().max_position_embeddings, 131072);
     }
 }
