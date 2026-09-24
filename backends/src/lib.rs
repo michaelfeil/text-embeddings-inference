@@ -18,7 +18,8 @@ use serde::Deserialize;
 
 pub use crate::dtype::DType;
 pub use text_embeddings_backend_core::{
-    BackendError, Batch, Embedding, Embeddings, ModelType, Pool, TokenPredictions,
+    BackendError, Batch, DecisionPromptStyle, Embedding, Embeddings, ModelType, Pool,
+    TokenPredictions,
 };
 
 #[cfg(feature = "candle")]
@@ -76,6 +77,7 @@ pub struct Backend {
     _backend_thread: Arc<BackendThread>,
     pub padded_model: bool,
     pub radix_mlp_supported: bool,
+    pub decision_prompt_style: Option<text_embeddings_backend_core::DecisionPromptStyle>,
     pub max_batch_size: Option<usize>,
     pub model_type: ModelType,
 }
@@ -109,6 +111,7 @@ impl Backend {
         .await?;
         let padded_model = backend.is_padded();
         let radix_mlp_supported = backend.supports_radix_mlp();
+        let decision_prompt_style = backend.decision_prompt_style();
         let max_batch_size = backend.max_batch_size();
 
         let (health_sender, health_receiver) = watch::channel(false);
@@ -121,6 +124,7 @@ impl Backend {
             _backend_thread,
             padded_model,
             radix_mlp_supported,
+            decision_prompt_style,
             max_batch_size,
             model_type,
         })
@@ -324,7 +328,7 @@ impl Backend {
             self.backend_sender
                 .send(BackendCommand::Health(Span::current(), sender))
                 .await
-                .expect("No backend receiver. This is a bug.");
+                .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
             receiver.await.expect(
                 "Backend blocking task dropped the sender without sending a response. This is a bug.",
             )
@@ -359,13 +363,29 @@ impl Backend {
         self.health_receiver.clone()
     }
 
+    pub async fn score_options(
+        &self,
+        batch: Batch,
+        prompt_lengths: Vec<usize>,
+    ) -> Result<Vec<f32>, BackendError> {
+        let (sender, receiver) = oneshot::channel();
+        self.backend_sender
+            .send(BackendCommand::ScoreOptions(batch, prompt_lengths, sender))
+            .await
+            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
+        receiver
+            .await
+            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?
+    }
+
     #[instrument(skip_all)]
     pub async fn embed(&self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::Embed(batch, Span::current(), sender))
-            .expect("No backend receiver. This is a bug.");
+            .send(BackendCommand::Embed(batch, Span::current(), sender))
+            .await
+            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -376,8 +396,9 @@ impl Backend {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::Predict(batch, Span::current(), sender))
-            .expect("No backend receiver. This is a bug.");
+            .send(BackendCommand::Predict(batch, Span::current(), sender))
+            .await
+            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -391,12 +412,13 @@ impl Backend {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::PredictTokens(
+            .send(BackendCommand::PredictTokens(
                 batch,
                 Span::current(),
                 sender,
             ))
-            .expect("No backend receiver. This is a bug.");
+            .await
+            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -588,6 +610,11 @@ impl BackendThread {
                 let start = Instant::now();
                 let mut healthy = false;
                 match cmd {
+                    BackendCommand::ScoreOptions(batch, prompt_lengths, sender) => {
+                        let result = backend.score_options(batch, &prompt_lengths);
+                        healthy = result.is_ok();
+                        let _ = sender.send(result);
+                    }
                     BackendCommand::Health(span, sender) => {
                         let _span = span.entered();
                         let _ = sender.send(backend.health().map(|_| healthy = true));
@@ -628,6 +655,11 @@ impl Drop for BackendThread {
 }
 
 enum BackendCommand {
+    ScoreOptions(
+        Batch,
+        Vec<usize>,
+        oneshot::Sender<Result<Vec<f32>, BackendError>>,
+    ),
     Health(Span, oneshot::Sender<Result<(), BackendError>>),
     Embed(
         Batch,
@@ -882,4 +914,82 @@ async fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBu
     }
 
     Ok(config_path.parent().unwrap().to_path_buf())
+}
+
+#[cfg(test)]
+mod decision_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    struct RecordingBackend(Arc<Mutex<Vec<usize>>>);
+    impl CoreBackend for RecordingBackend {
+        fn health(&self) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn is_padded(&self) -> bool {
+            false
+        }
+        fn embed(&self, _: Batch) -> Result<Embeddings, BackendError> {
+            Ok(Embeddings::default())
+        }
+        fn predict(&self, _: Batch) -> Result<Predictions, BackendError> {
+            Ok(Predictions::default())
+        }
+        fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
+            Ok(TokenPredictions::default())
+        }
+        fn score_options(
+            &self,
+            batch: Batch,
+            prompt_lengths: &[usize],
+        ) -> Result<Vec<f32>, BackendError> {
+            assert_eq!(prompt_lengths, [1, 2, 1]);
+            self.0.lock().unwrap().push(batch.len());
+            std::thread::sleep(Duration::from_millis(2));
+            Ok(vec![0.0; batch.len()])
+        }
+    }
+
+    #[tokio::test]
+    async fn decision_commands_preserve_all_branches_under_backpressure() {
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let (backend_sender, receiver) = mpsc::channel(1);
+        let (health_sender, health_receiver) = watch::channel(true);
+        let worker = BackendThread::new(
+            Box::new(RecordingBackend(calls.clone())),
+            receiver,
+            health_sender,
+        );
+        let backend = Backend {
+            backend_sender,
+            health_receiver,
+            _backend_thread: Arc::new(worker),
+            padded_model: false,
+            radix_mlp_supported: true,
+            decision_prompt_style: Some(text_embeddings_backend_core::DecisionPromptStyle::Qwen3),
+            max_batch_size: None,
+            model_type: ModelType::Embedding(Pool::LastToken),
+        };
+        let batch = backend.create_warmup_batch((3, 4), 10, 1);
+        let mut tasks = Vec::new();
+        for _ in 0..16 {
+            let backend = backend.clone();
+            let batch = batch.clone();
+            tasks.push(tokio::spawn(async move {
+                assert_eq!(
+                    backend
+                        .score_options(batch.clone(), vec![1, 2, 1])
+                        .await
+                        .unwrap()
+                        .len(),
+                    3
+                );
+                backend.embed(batch).await.unwrap();
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert_eq!(*calls.lock().unwrap(), vec![3; 16]);
+    }
 }

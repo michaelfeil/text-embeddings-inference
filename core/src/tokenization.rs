@@ -100,6 +100,15 @@ impl Tokenization {
         response_receiver.await.expect("Tokenization background task dropped the sender without sending a response. This is a bug.")
     }
 
+    pub async fn tokenize_exact(&self, input: String) -> Result<RawEncoding, TextEmbeddingsError> {
+        let (sender, receiver) = oneshot::channel();
+        self.sender
+            .send(TokenizerRequest::TokenizeExact(input, sender))
+            .await
+            .expect("Tokenization worker unavailable");
+        receiver.await.expect("Tokenization worker unavailable")
+    }
+
     #[instrument(skip_all)]
     pub async fn tokenize(
         &self,
@@ -209,6 +218,20 @@ fn tokenizer_worker(
                         ));
                     }
                 })
+            }
+            TokenizerRequest::TokenizeExact(input, sender) => {
+                let result = tokenize_input(
+                    input.into(),
+                    false,
+                    max_input_length,
+                    None,
+                    None,
+                    None,
+                    None,
+                    &mut tokenizer,
+                )
+                .map(|(_, encoding)| encoding);
+                let _ = sender.send(result);
             }
             TokenizerRequest::Tokenize(
                 inputs,
@@ -479,6 +502,10 @@ impl From<(String, String)> for EncodingInput {
 }
 
 enum TokenizerRequest {
+    TokenizeExact(
+        String,
+        oneshot::Sender<Result<RawEncoding, TextEmbeddingsError>>,
+    ),
     Encode(
         EncodingInput,
         bool,
@@ -651,5 +678,44 @@ mod tests {
                 }
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod decision_tokenization_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn decision_tokenization_ignores_embedding_prefixes_and_special_tokens() {
+        use tokenizers::models::wordlevel::WordLevel;
+        use tokenizers::pre_tokenizers::whitespace::Whitespace;
+        use tokenizers::processors::template::TemplateProcessing;
+        let vocab = [("[UNK]", 0), ("prefix", 1), ("approve", 2), ("[BOS]", 3)]
+            .into_iter()
+            .map(|(s, id)| (s.to_string(), id))
+            .collect();
+        let model = WordLevel::builder()
+            .vocab(vocab)
+            .unk_token("[UNK]".into())
+            .build()
+            .unwrap();
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(Whitespace));
+        tokenizer.with_post_processor(Some(
+            TemplateProcessing::builder()
+                .try_single("[BOS] $A")
+                .unwrap()
+                .special_tokens(vec![("[BOS]", 3)])
+                .build()
+                .unwrap(),
+        ));
+        let service = Tokenization::new(1, tokenizer, 100, 0, Some("prefix ".into()), None);
+        let exact = service.tokenize_exact("approve".into()).await.unwrap();
+        assert_eq!(exact.get_ids(), &[2]);
+        let (_, normal) = service
+            .tokenize(EncodingInput::Single("approve".into()), true, None)
+            .await
+            .unwrap();
+        assert_eq!(normal.get_ids(), &[3, 1, 2]);
     }
 }

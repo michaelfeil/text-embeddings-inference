@@ -100,6 +100,18 @@ pub use flash_qwen2::FlashQwen2Model;
 pub use flash_qwen3::FlashQwen3Model;
 
 pub(crate) trait Model {
+    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
+        None
+    }
+
+    fn supports_decision_scoring(&self) -> bool {
+        false
+    }
+
+    fn score_options(&self, _batch: Batch, _prompt_lengths: &[usize]) -> Result<Vec<f32>> {
+        candle::bail!("Decision scoring requires a causal FlashQwen3 model with LM weights")
+    }
+
     fn is_padded(&self) -> bool;
 
     fn supports_radix_mlp(&self) -> bool {

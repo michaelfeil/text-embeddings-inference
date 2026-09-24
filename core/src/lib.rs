@@ -1,3 +1,5 @@
+pub mod decision;
+pub mod decision_schema;
 pub mod download;
 pub mod infer;
 pub mod queue;

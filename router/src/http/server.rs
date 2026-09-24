@@ -45,6 +45,88 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct DecideRequest {
+    /// Shared context, without chat-template tokens.
+    context: String,
+    /// Named finite JSON Schemas. Optional `group` selects an independent group;
+    /// omitted markers share the "default" group. All combinations within a group are scored.
+    questions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct DecisionGroupResponse {
+    index: usize,
+    /// Joint answers for this group, keyed by question name.
+    decision: serde_json::Value,
+    options: Vec<String>,
+    /// Sum of continuation token log probabilities including EOS, in option order.
+    log_scores: Vec<f32>,
+    /// Relative likelihoods normalized within this group, not calibrated confidence.
+    probabilities: Vec<f32>,
+}
+
+#[derive(serde::Serialize, utoipa::ToSchema)]
+struct DecideResponse {
+    groups: std::collections::BTreeMap<String, DecisionGroupResponse>,
+    expanded_tokens: usize,
+    compact_tokens: usize,
+}
+
+#[utoipa::path(post, path = "/decide", request_body = DecideRequest,
+    responses((status = 200, body = DecideResponse), (status = 413, body = ErrorResponse)))]
+async fn decide(
+    infer: Extension<Infer>,
+    info: Extension<Info>,
+    Json(request): Json<DecideRequest>,
+) -> Result<Json<DecideResponse>, (StatusCode, Json<ErrorResponse>)> {
+    let groups = text_embeddings_core::decision::groups(
+        &request.context,
+        request.questions,
+        info.max_batch_tokens,
+    )
+    .map_err(ErrorResponse::from)?;
+    let (scores, expanded_tokens, compact_tokens) = infer
+        .decide(groups, info.max_batch_tokens, info.max_input_length)
+        .await
+        .map_err(ErrorResponse::from)?;
+    let mut groups = std::collections::BTreeMap::new();
+    for group in scores {
+        let index = group
+            .log_scores
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.total_cmp(b.1))
+            .unwrap()
+            .0;
+        let maximum = group.log_scores[index];
+        let mut probabilities: Vec<f32> = group
+            .log_scores
+            .iter()
+            .map(|s| (s - maximum).exp())
+            .collect();
+        let sum: f32 = probabilities.iter().sum();
+        probabilities.iter_mut().for_each(|p| *p /= sum);
+        groups.insert(
+            group.name,
+            DecisionGroupResponse {
+                index,
+                decision: serde_json::from_str(&group.options[index])
+                    .map_err(ErrorResponse::from)?,
+                options: group.options,
+                log_scores: group.log_scores,
+                probabilities,
+            },
+        );
+    }
+    Ok(Json(DecideResponse {
+        groups,
+        expanded_tokens,
+        compact_tokens,
+    }))
+}
+
 ///Text Embeddings Inference endpoint info
 #[utoipa::path(
 get,
@@ -1850,6 +1932,7 @@ pub async fn run(
     #[derive(OpenApi)]
     #[openapi(
     paths(
+        decide,
     get_model_info,
     health,
     predict,
@@ -1865,6 +1948,9 @@ pub async fn run(
     ),
     components(
     schemas(
+    DecideRequest,
+    DecideResponse,
+    DecisionGroupResponse,
     PredictInput,
     Input,
     Info,
@@ -1977,6 +2063,7 @@ pub async fn run(
         .route("/embed", post(embed))
         .route("/embed_all", post(embed_all))
         .route("/embed_sparse", post(embed_sparse))
+        .route("/decide", post(decide))
         .route("/predict", post(predict))
         .route("/predict_tokens", post(predict_tokens))
         .route("/rerank", post(rerank))
