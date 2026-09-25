@@ -1,3 +1,4 @@
+pub mod backend_pool;
 pub mod download;
 pub mod infer;
 pub mod queue;
@@ -19,4 +20,8 @@ pub enum TextEmbeddingsError {
     Overloaded(#[from] TryAcquireError),
     #[error("Backend error: {0}")]
     Backend(#[from] BackendError),
+}
+
+pub(crate) fn log_response_dropped_after(stage: &'static str) {
+    metrics::counter!("te_request_canceled", "stage" => stage).increment(1);
 }

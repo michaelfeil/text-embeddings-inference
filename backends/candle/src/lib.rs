@@ -194,19 +194,19 @@ impl CandleBackend {
         // Get candle device
         let device = if candle::utils::cuda_is_available() {
             #[cfg(feature = "cuda")]
-            match compatible_compute_cap() {
+            match compatible_compute_cap(device_id) {
                 Ok(true) => Device::new_cuda(device_id),
                 Ok(false) => {
                     return Err(BackendError::Start(format!(
                         "Runtime compute cap {} is not compatible with compile time compute cap {}",
-                        get_runtime_compute_cap().unwrap(),
+                        get_runtime_compute_cap(device_id).unwrap(),
                         get_compile_compute_cap().unwrap()
                     )));
                 }
                 Err(err) => {
-                    tracing::warn!("Could not find a compatible CUDA device on host: {err:?}");
-                    tracing::warn!("Using CPU instead");
-                    Ok(Device::Cpu)
+                    return Err(BackendError::Start(format!(
+                        "Could not initialize CUDA device {device_id}: {err:?}"
+                    )));
                 }
             }
             #[cfg(not(feature = "cuda"))]
@@ -235,7 +235,10 @@ impl CandleBackend {
         }?;
 
         #[cfg(feature = "cuda")]
-        if dtype == DType::BF16 && device.is_cuda() && get_runtime_compute_cap().unwrap_or(0) < 80 {
+        if dtype == DType::BF16
+            && device.is_cuda()
+            && get_runtime_compute_cap(device_id).unwrap_or(0) < 80
+        {
             return Err(BackendError::Start(
                 "bfloat16 CUDA inference requires compute capability 8.0 or newer".into(),
             ));
@@ -476,7 +479,7 @@ impl CandleBackend {
             (Config::Mistral(config), Device::Cuda(_)) => {
                 if !matches!(dtype, DType::F16 | DType::BF16)
                     || !cfg!(feature = "flash-attn")
-                    || get_runtime_compute_cap().unwrap() < 80
+                    || get_runtime_compute_cap(device_id).unwrap() < 80
                     || &std::env::var("USE_FLASH_ATTENTION")
                         .unwrap_or("True".to_string())
                         .to_lowercase()
@@ -807,4 +810,11 @@ impl<O> WrapErr<O> for Result<O, candle::Error> {
     fn e(self) -> Result<O, BackendError> {
         self.map_err(|e| BackendError::Inference(e.to_string()))
     }
+}
+
+#[cfg(feature = "cuda")]
+pub fn visible_cuda_device_count() -> Result<usize, BackendError> {
+    candle::cuda_backend::cudarc::driver::CudaContext::device_count()
+        .map(|count| count as usize)
+        .map_err(|err| BackendError::Start(format!("Cannot enumerate CUDA devices: {err}")))
 }

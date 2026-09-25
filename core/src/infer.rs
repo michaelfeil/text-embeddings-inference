@@ -1,4 +1,5 @@
-use crate::queue::{Entry, Metadata, NextBatch, Queue};
+use crate::backend_pool::BackendPool;
+use crate::queue::{prune_canceled_batch, Entry, Metadata, NextBatch, Queue};
 use crate::tokenization::{EncodingInput, RawEncoding, Tokenization};
 use crate::TextEmbeddingsError;
 use std::sync::{
@@ -8,7 +9,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use text_embeddings_backend::{Backend, BackendError, Embedding, ModelType};
 use tokenizers::TruncationDirection;
-use tokio::sync::{mpsc, oneshot, watch, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::instrument;
 
 /// Inference struct
@@ -20,7 +21,8 @@ pub struct Infer {
     notify_batching_task: Arc<Notify>,
     /// Inference limit
     limit_concurrent_requests: Arc<Semaphore>,
-    backend: Backend,
+    backend: BackendPool,
+    _lifetime: Arc<PipelineLifetime>,
 }
 
 impl Infer {
@@ -31,30 +33,48 @@ impl Infer {
         max_concurrent_requests: usize,
         backend: Backend,
     ) -> Self {
+        Self::with_pool(
+            tokenization,
+            queue,
+            max_concurrent_requests,
+            BackendPool::new(vec![backend]).expect("single backend is compatible"),
+        )
+    }
+
+    pub fn with_pool(
+        tokenization: Tokenization,
+        queue: Queue,
+        max_concurrent_requests: usize,
+        backend: BackendPool,
+    ) -> Self {
         let notify_batching_task = Arc::new(Notify::new());
-
-        // Bound channel to 1 to be able to prefetch one batch
-        let (embed_sender, embed_receiver) = mpsc::channel(1);
-
-        // Batching task
+        let (sender, receiver) = mpsc::channel(1);
+        let receiver = Arc::new(Mutex::new(receiver));
         tokio::spawn(batching_task(
+            backend.clone(),
             queue.clone(),
             notify_batching_task.clone(),
-            embed_sender,
+            sender,
         ));
-
-        // Create embed task to communicate with backend
-        tokio::spawn(backend_task(backend.clone(), embed_receiver));
-
-        // Inference limit with a semaphore
-        let semaphore = Arc::new(Semaphore::new(max_concurrent_requests));
-
+        for replica in 0..backend.len() {
+            tokio::spawn(backend_task(
+                backend.clone(),
+                queue.clone(),
+                receiver.clone(),
+                replica,
+            ));
+        }
+        let lifetime = Arc::new(PipelineLifetime {
+            pool: backend.clone(),
+            queue: queue.clone(),
+        });
         Self {
             tokenization,
             queue,
             notify_batching_task,
-            limit_concurrent_requests: semaphore,
+            limit_concurrent_requests: Arc::new(Semaphore::new(max_concurrent_requests)),
             backend,
+            _lifetime: lifetime,
         }
     }
 
@@ -371,17 +391,20 @@ impl Infer {
         let (response_tx, response_rx) = oneshot::channel();
 
         // Append the request to the queue
-        self.queue.append(Entry {
-            metadata: Metadata {
-                response_tx,
-                tokenization: start_time.elapsed(),
-                queue_time: Instant::now(),
-                prompt_tokens: encoding.input_ids.len(),
-                pooling,
-                token_classification: false,
-            },
-            encoding,
-        });
+        self.queue
+            .append(Entry {
+                metadata: Metadata {
+                    client_batch: batch_counter.clone(),
+                    response_tx,
+                    tokenization: start_time.elapsed(),
+                    queue_time: Instant::now(),
+                    prompt_tokens: encoding.input_ids.len(),
+                    pooling,
+                    token_classification: false,
+                },
+                encoding,
+            })
+            .await;
 
         match batch_counter {
             None => self.notify_batching_task.notify_one(),
@@ -446,17 +469,20 @@ impl Infer {
         let (response_tx, response_rx) = oneshot::channel();
 
         // Append the request to the queue
-        self.queue.append(Entry {
-            metadata: Metadata {
-                response_tx,
-                tokenization: start_time.elapsed(),
-                queue_time: Instant::now(),
-                prompt_tokens: encoding.input_ids.len(),
-                pooling: true,
-                token_classification: false,
-            },
-            encoding,
-        });
+        self.queue
+            .append(Entry {
+                metadata: Metadata {
+                    client_batch: batch_counter.clone(),
+                    response_tx,
+                    tokenization: start_time.elapsed(),
+                    queue_time: Instant::now(),
+                    prompt_tokens: encoding.input_ids.len(),
+                    pooling: true,
+                    token_classification: false,
+                },
+                encoding,
+            })
+            .await;
 
         match batch_counter {
             None => self.notify_batching_task.notify_one(),
@@ -563,17 +589,20 @@ impl Infer {
 
         let (response_tx, response_rx) = oneshot::channel();
 
-        self.queue.append(Entry {
-            metadata: Metadata {
-                response_tx,
-                tokenization: start_time.elapsed(),
-                queue_time: Instant::now(),
-                prompt_tokens: encoding.input_ids.len(),
-                pooling: false,
-                token_classification: true,
-            },
-            encoding,
-        });
+        self.queue
+            .append(Entry {
+                metadata: Metadata {
+                    client_batch: batch_counter.clone(),
+                    response_tx,
+                    tokenization: start_time.elapsed(),
+                    queue_time: Instant::now(),
+                    prompt_tokens: encoding.input_ids.len(),
+                    pooling: false,
+                    token_classification: true,
+                },
+                encoding,
+            })
+            .await;
 
         match batch_counter {
             None => self.notify_batching_task.notify_one(),
@@ -669,38 +698,91 @@ impl Infer {
     }
 }
 
-#[instrument(skip_all)]
-async fn batching_task(queue: Queue, notify: Arc<Notify>, embed_sender: mpsc::Sender<NextBatch>) {
-    loop {
-        notify.notified().await;
+#[derive(Debug)]
+struct PipelineLifetime {
+    pool: BackendPool,
+    queue: Queue,
+}
+impl Drop for PipelineLifetime {
+    fn drop(&mut self) {
+        self.pool.close();
+        self.queue.close();
+    }
+}
 
-        {
-            let mut permit = embed_sender
-                .reserve()
-                .await
-                .expect("embed receiver was dropped. This is a bug.");
-
-            while let Some(next_batch) = queue.next_batch().await {
-                permit.send(next_batch);
-                permit = embed_sender
-                    .reserve()
-                    .await
-                    .expect("embed receiver was dropped. This is a bug.");
+struct DispatchedBatch(Option<NextBatch>);
+impl Drop for DispatchedBatch {
+    fn drop(&mut self) {
+        if let Some((metadata, _)) = self.0.take() {
+            for entry in metadata {
+                let _ = entry.response_tx.send(Err(BackendError::Unhealthy));
             }
         }
     }
 }
 
-#[instrument(skip_all)]
-async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextBatch>) {
-    while let Some(batch) = embed_receiver.recv().await {
+async fn batching_task(
+    pool: BackendPool,
+    queue: Queue,
+    notify: Arc<Notify>,
+    sender: mpsc::Sender<DispatchedBatch>,
+) {
+    let mut changed = pool.changes();
+    loop {
+        let arrival = notify.notified();
+        tokio::pin!(arrival);
+        arrival.as_mut().enable();
+        // Reserve the only shared parking slot before preparing any batch.
+        let permit = tokio::select! {
+            permit = sender.reserve() => match permit { Ok(p) => p, Err(_) => break },
+            _ = changed.changed() => { if pool.is_closed() { break; } continue; }
+        };
+        if pool.is_closed() {
+            break;
+        }
+        let started = Instant::now();
+        if let Some(batch) = queue.next_batch().await {
+            pool.observe_preparation(started.elapsed());
+            permit.send(DispatchedBatch(Some(batch)));
+        } else {
+            drop(permit);
+            tokio::select! { _ = arrival => {}, _ = changed.changed() => {} }
+        }
+    }
+    queue.close();
+}
+
+#[instrument(skip_all, fields(replica))]
+async fn backend_task(
+    backend: BackendPool,
+    queue: Queue,
+    receiver: Arc<Mutex<mpsc::Receiver<DispatchedBatch>>>,
+    replica: usize,
+) {
+    let mut changed = backend.changes();
+    loop {
+        if backend.is_closed() {
+            break;
+        }
+        let next = async { receiver.lock().await.recv().await };
+        let mut dispatched = tokio::select! {
+            batch = next => match batch { Some(b) => b, None => break },
+            _ = changed.changed() => { if backend.is_closed() { break; } continue; }
+        };
+        let execution = match backend.acquire_replica(replica).await {
+            Ok(execution) => execution,
+            Err(_) => break,
+        };
+        let Some(batch) = prune_canceled_batch(dispatched.0.take().unwrap()) else {
+            continue;
+        };
         match &backend.model_type {
             ModelType::Classifier => {
                 let token_classification = batch.0.iter().any(|m| m.token_classification);
 
                 if token_classification {
                     let encoding = batch.1.clone();
-                    let results = backend.predict_tokens(batch.1).await;
+                    let results = execution.predict_tokens(batch.1).await;
 
                     tokio::task::spawn_blocking(move || match results {
                         Ok((mut predictions, inference_duration)) => {
@@ -708,7 +790,10 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
                                 let infer_metadata = InferMetadata {
                                     prompt_tokens: m.prompt_tokens,
                                     tokenization: m.tokenization,
-                                    queue: m.queue_time.elapsed() - inference_duration,
+                                    queue: m
+                                        .queue_time
+                                        .elapsed()
+                                        .saturating_sub(inference_duration),
                                     inference: inference_duration,
                                 };
 
@@ -753,7 +838,7 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
                         }
                     });
                 } else {
-                    let results = backend.predict(batch.1).await;
+                    let results = execution.predict(batch.1).await;
 
                     tokio::task::spawn_blocking(move || match results {
                         Ok((mut predictions, inference_duration)) => {
@@ -761,7 +846,7 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
                                 let infer_metadata = InferMetadata {
                                     prompt_tokens: m.prompt_tokens,
                                     tokenization: m.tokenization,
-                                    queue: m.queue_time.elapsed() - inference_duration,
+                                    queue: m.queue_time.elapsed().saturating_sub(inference_duration),
                                     inference: inference_duration,
                                 };
 
@@ -784,7 +869,7 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
                 }
             }
             ModelType::Embedding(_) => {
-                let results = backend.embed(batch.1).await;
+                let results = execution.embed(batch.1).await;
 
                 tokio::task::spawn_blocking(move || match results {
                     Ok((mut embeddings, inference_duration)) => {
@@ -792,7 +877,7 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
                             let metadata = InferMetadata {
                                 prompt_tokens: m.prompt_tokens,
                                 tokenization: m.tokenization,
-                                queue: m.queue_time.elapsed() - inference_duration,
+                                queue: m.queue_time.elapsed().saturating_sub(inference_duration),
                                 inference: inference_duration,
                             };
 
@@ -826,6 +911,7 @@ async fn backend_task(backend: Backend, mut embed_receiver: mpsc::Receiver<NextB
             }
         };
     }
+    queue.close();
 }
 
 #[derive(Debug)]

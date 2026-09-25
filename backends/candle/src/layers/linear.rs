@@ -47,7 +47,8 @@ impl Linear {
         let _enter = self.span.enter();
 
         #[allow(unused)]
-        if let (Device::Cuda(_), Some(cublaslt)) = (x.device(), get_cublas_lt_wrapper()) {
+        if let (Device::Cuda(_), Some(cublaslt)) = (x.device(), get_cublas_lt_wrapper(x.device())?)
+        {
             match x.dims() {
                 &[bsize, _, _] => cublaslt.batch_matmul(
                     &self.weight.broadcast_left(bsize)?,
