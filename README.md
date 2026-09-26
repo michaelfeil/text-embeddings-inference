@@ -78,6 +78,10 @@ it. Single-GPU batching keeps its existing behavior unless this variable is set.
 Per-replica batch, token, and inference-duration metrics are exposed on `/metrics`.
 Each replica logs inference throughput every 100 batches.
 
+### BPE tokenization
+
+Embedding text inputs automatically use `fastokens-b10` when the tokenizer configuration is supported. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Fast encoding uses a shared CPU pool bounded by `--tokenization-workers`.
+
 ## Get Started
 
 ### Supported Models
