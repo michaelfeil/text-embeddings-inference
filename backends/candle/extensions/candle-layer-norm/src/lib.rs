@@ -95,15 +95,11 @@ impl LayerNorm {
 
         let is_rms_norm = if self.is_rms_norm { 1 } else { 0 };
 
-        // We will store the results of the residual add next to the main results
-        // so out has the same shape as inp * 2
-        let out_shape = Shape::from((rows * 2, cols));
+        // A second output is needed only when returning a residual sum.
+        let out_rows = if r.is_some() { rows * 2 } else { rows };
+        let out_shape = Shape::from((out_rows, cols));
 
         let mut out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
-
-        // Alloc internal buffers
-        let mut mu = unsafe { dev.alloc::<f32>(rows) }?;
-        let mut rsigma = unsafe { dev.alloc::<f32>(rows) }?;
 
         // If beta is et, get ids device pointer
         let beta_storage = self.beta.as_ref().map(Tensor::storage_and_layout);
@@ -181,18 +177,15 @@ impl LayerNorm {
         let (out_ptr, out_guard) = out.device_ptr_mut(&stream);
         guards.push(out_guard);
         let dst_ptr = out_ptr as *const core::ffi::c_void;
-        let dst_add_ptr =
-            (out_ptr as usize + rows * cols * std::mem::size_of::<T>()) as *const core::ffi::c_void;
-        let mu_ptr = ({
-            let (ptr, guard) = mu.device_ptr_mut(&stream);
-            guards.push(guard);
-            ptr
-        }) as *const core::ffi::c_void;
-        let rsigma_ptr = ({
-            let (ptr, guard) = rsigma.device_ptr_mut(&stream);
-            guards.push(guard);
-            ptr
-        }) as *const core::ffi::c_void;
+        let dst_add_ptr = if r.is_some() {
+            (out_ptr as usize + rows * cols * std::mem::size_of::<T>()) as *const core::ffi::c_void
+        } else {
+            std::ptr::null()
+        };
+        // Inference does not consume saved means or inverse standard deviations.
+        // The kernel still computes these values internally for normalization.
+        let mu_ptr = std::ptr::null();
+        let rsigma_ptr = std::ptr::null();
 
         let multi_processors_count = dev
             .cuda_stream()
