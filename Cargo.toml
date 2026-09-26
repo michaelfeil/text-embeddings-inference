@@ -23,7 +23,7 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.8.7"
+version = "1.8.9-rc0"
 edition = "2021"
 authors = ["Olivier Dehaene", "Nicolas Patry", "Alvaro Bartolome"]
 homepage = "https://github.com/huggingface/text-embeddings-inference"
@@ -60,10 +60,10 @@ half = { version = "2.3.1", features = ["num-traits"] }
 radix_mlp = { version = "0.0.2" }
 
 [patch.crates-io]
-candle = { git = "https://github.com/michaelfeil/candle", rev = "b14cda1466e915ce045ecfa4813b79ff4ea4a813", package = "candle-core" }
-candle-nn = { git = "https://github.com/michaelfeil/candle", rev = "b14cda1466e915ce045ecfa4813b79ff4ea4a813", package = "candle-nn" }
-candle-transformers = { git = "https://github.com/michaelfeil/candle", rev = "b14cda1466e915ce045ecfa4813b79ff4ea4a813", package = "candle-transformers" }
-candle-flash-attn = { git = "https://github.com/michaelfeil/candle", rev = "b14cda1466e915ce045ecfa4813b79ff4ea4a813", package = "candle-flash-attn" }
+candle = { git = "https://github.com/michaelfeil/candle", rev = "58c5155d963bebc7129172e25c34a5a73c79b8b9", package = "candle-core" }
+candle-nn = { git = "https://github.com/michaelfeil/candle", rev = "58c5155d963bebc7129172e25c34a5a73c79b8b9", package = "candle-nn" }
+candle-transformers = { git = "https://github.com/michaelfeil/candle", rev = "58c5155d963bebc7129172e25c34a5a73c79b8b9", package = "candle-transformers" }
+candle-flash-attn = { git = "https://github.com/michaelfeil/candle", rev = "58c5155d963bebc7129172e25c34a5a73c79b8b9", package = "candle-flash-attn" }
 
 [profile.release]
 debug = 0
