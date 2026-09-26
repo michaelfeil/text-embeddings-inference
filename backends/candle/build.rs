@@ -5,6 +5,23 @@ fn main() {
     if let Ok(compute_cap) = set_compute_cap() {
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={compute_cap}");
     }
+    #[cfg(feature = "cuda")]
+    {
+        println!("cargo:rerun-if-changed=src/kernels/gated_activation.cu");
+        let bindings = cudaforge::KernelBuilder::new()
+            .source_dir("src/kernels")
+            .arg("-std=c++17")
+            .arg("-O3")
+            .arg("--expt-relaxed-constexpr")
+            .build_ptx()
+            .expect("compile activation kernels");
+        bindings
+            .write(
+                std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())
+                    .join("activation_ptx.rs"),
+            )
+            .expect("write activation PTX bindings");
+    }
 }
 
 fn set_compute_cap() -> Result<usize> {
