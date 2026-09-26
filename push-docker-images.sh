@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="1.8.8"
+VERSION="1.8.9rc0"
 REGISTRIES=(
     # "registry.internal.huggingface.tech/api-inference/text-embeddings-inference"
     # "ghcr.io/huggingface/text-embeddings-inference"
@@ -90,6 +90,8 @@ build_and_push_variant() {
         "--build-arg" "GIT_SHA=$(git rev-parse --short HEAD)"
         "--build-arg" "DOCKER_LABEL=sha-$(git rev-parse --short HEAD)"
         "--build-arg" "SCCACHE_GHA_ENABLED=false"
+        "--build-arg" "CARGO_BUILD_JOBS=${CARGO_BUILD_JOBS:-8}"
+        "--build-arg" "RAYON_NUM_THREADS=${RAYON_NUM_THREADS:-8}"
     )
 
     # Add extra build args if specified
