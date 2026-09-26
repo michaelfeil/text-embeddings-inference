@@ -317,7 +317,7 @@ impl Execution {
                 r.batches += 1;
                 r.tokens += tokens;
                 r.inference_time += *duration;
-                if r.batches % 100 == 0 {
+                if r.batches.is_multiple_of(100) {
                     tracing::info!(
                         replica = self.id,
                         batches = r.batches,
