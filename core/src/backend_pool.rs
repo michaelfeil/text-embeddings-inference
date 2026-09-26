@@ -13,9 +13,6 @@ struct Replica {
     busy: bool,
     healthy: bool,
     batches: u64,
-    tokens: usize,
-    sequences: usize,
-    inference_time: Duration,
 }
 
 #[derive(Debug)]
@@ -94,9 +91,6 @@ impl BackendPool {
                             busy: false,
                             healthy: true,
                             batches: 0,
-                            tokens: 0,
-                            sequences: 0,
-                            inference_time: Duration::ZERO,
                         })
                         .collect(),
                     idle: (0..backends.len()).collect(),
@@ -326,25 +320,18 @@ impl Execution {
                 .increment(tokens as u64);
             if !duration.is_zero() {
                 r.batches += 1;
-                r.tokens += tokens;
-                r.sequences += sequences;
-                r.inference_time += *duration;
                 if r.batches.is_multiple_of(100) {
-                    // Rates use native inference time, excluding queueing and idle time.
-                    let inference_seconds = r.inference_time.as_secs_f64();
+                    // Sample the latest batch, using native inference time only.
+                    let inference_seconds = duration.as_secs_f64();
                     tracing::info!(
                         replica = self.id,
                         batches = r.batches,
-                        window_batches = 100,
-                        sequences = r.sequences,
-                        tokens = r.tokens,
+                        sequences,
+                        tokens,
                         inference_seconds,
-                        tokens_per_second = r.tokens as f64 / inference_seconds,
-                        "Replica inference throughput (last 100 batches)"
+                        tokens_per_second = tokens as f64 / inference_seconds,
+                        "Replica inference throughput (latest batch)"
                     );
-                    r.tokens = 0;
-                    r.sequences = 0;
-                    r.inference_time = Duration::ZERO;
                 }
                 metrics::histogram!("te_replica_inference_duration", "replica" => self.id.to_string())
                     .record(duration.as_secs_f64());
