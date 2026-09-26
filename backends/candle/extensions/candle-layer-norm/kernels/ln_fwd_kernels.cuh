@@ -47,7 +47,7 @@ void ln_fwd_kernel(FwdParams params) {
     using stats_t = typename Stats::stats_t;
 
     const bool has_residual = params.residual != nullptr;
-    const bool save_x = has_residual || Is_dropout || Has_colscale || (params.rowscale != nullptr) || Has_subset || !(std::is_same<input_t, residual_t>::value);
+    const bool save_x = params.x != nullptr && (has_residual || Is_dropout || Has_colscale || (params.rowscale != nullptr) || Has_subset || !(std::is_same<input_t, residual_t>::value));
 
     extern __shared__ char smem_[];
 
