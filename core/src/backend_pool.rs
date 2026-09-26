@@ -13,8 +13,6 @@ struct Replica {
     busy: bool,
     healthy: bool,
     batches: u64,
-    tokens: usize,
-    inference_time: Duration,
 }
 
 #[derive(Debug)]
@@ -93,8 +91,6 @@ impl BackendPool {
                             busy: false,
                             healthy: true,
                             batches: 0,
-                            tokens: 0,
-                            inference_time: Duration::ZERO,
                         })
                         .collect(),
                     idle: (0..backends.len()).collect(),
@@ -217,7 +213,7 @@ impl BackendPool {
                     .health()
                     .await
                     .map(|_| ((), Duration::ZERO));
-                execution.finish(0, &result);
+                execution.finish(0, 0, &result);
             }
             let state = pool.inner.state.lock().unwrap();
             if state.closed || state.healthy() != state.replicas.len() {
@@ -232,7 +228,12 @@ impl BackendPool {
 }
 
 impl Execution {
-    async fn run<T, F, Fut>(self, tokens: usize, call: F) -> Result<(T, Duration), BackendError>
+    async fn run<T, F, Fut>(
+        self,
+        tokens: usize,
+        sequences: usize,
+        call: F,
+    ) -> Result<(T, Duration), BackendError>
     where
         T: Send + 'static,
         F: FnOnce(Backend) -> Fut + Send + 'static,
@@ -246,7 +247,7 @@ impl Execution {
             let backend = execution.pool.inner.backends[execution.id].clone();
             execution.started();
             let result = call(backend).await;
-            execution.finish(tokens, &result);
+            execution.finish(tokens, sequences, &result);
             result
         })
         .await
@@ -255,10 +256,9 @@ impl Execution {
 
     pub async fn embed(self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
         let tokens = compute_tokens(&batch, self.pool.padded_model);
-        self.run(
-            tokens,
-            move |backend| async move { backend.embed(batch).await },
-        )
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend.embed(batch).await
+        })
         .await
     }
 
@@ -267,7 +267,7 @@ impl Execution {
         batch: Batch,
     ) -> Result<(text_embeddings_backend::Predictions, Duration), BackendError> {
         let tokens = compute_tokens(&batch, self.pool.padded_model);
-        self.run(tokens, move |backend| async move {
+        self.run(tokens, batch.len(), move |backend| async move {
             backend.predict(batch).await
         })
         .await
@@ -277,7 +277,7 @@ impl Execution {
         batch: Batch,
     ) -> Result<(text_embeddings_backend::TokenPredictions, Duration), BackendError> {
         let tokens = compute_tokens(&batch, self.pool.padded_model);
-        self.run(tokens, move |backend| async move {
+        self.run(tokens, batch.len(), move |backend| async move {
             backend.predict_tokens(batch).await
         })
         .await
@@ -305,7 +305,12 @@ impl Execution {
             .record(self.reserved_at.elapsed().as_secs_f64());
     }
 
-    fn finish<T>(mut self, tokens: usize, result: &Result<(T, Duration), BackendError>) {
+    fn finish<T>(
+        mut self,
+        tokens: usize,
+        sequences: usize,
+        result: &Result<(T, Duration), BackendError>,
+    ) {
         let mut state = self.pool.inner.state.lock().unwrap();
         let r = &mut state.replicas[self.id];
         r.busy = false;
@@ -315,17 +320,18 @@ impl Execution {
                 .increment(tokens as u64);
             if !duration.is_zero() {
                 r.batches += 1;
-                r.tokens += tokens;
-                r.inference_time += *duration;
                 if r.batches.is_multiple_of(100) {
+                    // Sample the latest batch, using native inference time only.
+                    let inference_seconds = duration.as_secs_f64();
                     tracing::info!(
                         replica = self.id,
                         batches = r.batches,
-                        tokens_per_second = r.tokens as f64 / r.inference_time.as_secs_f64(),
-                        "Replica inference throughput (last 100 batches)"
+                        sequences,
+                        tokens,
+                        inference_seconds,
+                        tokens_per_second = tokens as f64 / inference_seconds,
+                        "Replica inference throughput (latest batch)"
                     );
-                    r.tokens = 0;
-                    r.inference_time = Duration::ZERO;
                 }
                 metrics::histogram!("te_replica_inference_duration", "replica" => self.id.to_string())
                     .record(duration.as_secs_f64());
