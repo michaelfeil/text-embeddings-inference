@@ -9,7 +9,7 @@ fn main() {
     {
         println!("cargo:rerun-if-changed=src/kernels/gated_activation.cu");
         let bindings = cudaforge::KernelBuilder::new()
-            .source_dir("src/kernels")
+            .source_files(["src/kernels/gated_activation.cu"])
             .arg("-std=c++17")
             .arg("-O3")
             .arg("--expt-relaxed-constexpr")
@@ -21,6 +21,20 @@ fn main() {
                     .join("activation_ptx.rs"),
             )
             .expect("write activation PTX bindings");
+        println!("cargo:rerun-if-changed=src/kernels/qk_norm_rope.cu");
+        println!("cargo:rerun-if-changed=extensions/candle-layer-norm/kernels");
+        cudaforge::KernelBuilder::new()
+            .source_files(["src/kernels/qk_norm_rope.cu"])
+            .include_path("extensions/candle-layer-norm/kernels")
+            .arg("-std=c++17")
+            .arg("-O3")
+            .arg("--use_fast_math")
+            .arg("--expt-relaxed-constexpr")
+            .arg("--expt-extended-lambda")
+            .build_ptx()
+            .expect("compile Q/K normalization and RoPE kernel")
+            .write(std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("qk_ptx.rs"))
+            .expect("write Q/K PTX bindings");
     }
 }
 
