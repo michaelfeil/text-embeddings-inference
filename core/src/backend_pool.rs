@@ -339,8 +339,6 @@ impl Execution {
                         sequences = r.sequences,
                         tokens = r.tokens,
                         inference_seconds,
-                        batches_per_second = 100.0 / inference_seconds,
-                        sequences_per_second = r.sequences as f64 / inference_seconds,
                         tokens_per_second = r.tokens as f64 / inference_seconds,
                         "Replica inference throughput (last 100 batches)"
                     );
