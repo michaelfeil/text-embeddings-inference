@@ -1,6 +1,7 @@
 /// Text Embedding Inference Webserver
 mod logging;
 mod prometheus;
+mod replicas;
 
 #[cfg(feature = "http")]
 mod http;
@@ -67,7 +68,8 @@ pub async fn run(
     otlp_service_name: String,
     prometheus_port: u16,
     cors_allow_origin: Option<Vec<String>>,
-    device_id: usize,
+    device_id: Option<usize>,
+    backend_device_ids: Option<String>,
 ) -> Result<()> {
     let model_id_path = Path::new(&model_id);
     let (model_root, api_repo) = if model_id_path.exists() && model_id_path.is_dir() {
@@ -282,43 +284,67 @@ pub async fn run(
     );
 
     // Create backend
+    let devices = replicas::resolve_devices(backend_device_ids.as_deref(), device_id)?;
     tracing::info!("Starting model backend");
-    let backend = text_embeddings_backend::Backend::new(
-        model_root,
-        api_repo,
-        dtype.clone(),
-        backend_model_type,
-        dense_path,
-        uds_path.unwrap_or("/tmp/text-embeddings-inference-server".to_string()),
-        otlp_endpoint.clone(),
-        otlp_service_name.clone(),
-        device_id,
-    )
-    .await
-    .context("Could not create backend")?;
-    backend
-        .health()
-        .await
-        .context("Model backend is not healthy")?;
-
-    tracing::info!("Warming up model");
-    backend
-        .warmup(
-            max_input_length,
-            max_batch_tokens,
-            max_batch_requests,
-            backend.padded_model,
-        )
-        .await
-        .context("Model backend is not healthy")?;
-
-    let max_batch_requests = backend
-        .max_batch_size
-        .inspect(|&s| {
-            tracing::warn!("Backend does not support a batch size > {s}");
-            tracing::warn!("forcing `max_batch_requests={s}`");
-        })
-        .or(max_batch_requests);
+    let api_repo = api_repo.map(std::sync::Arc::new);
+    let backends = replicas::initialize_all(devices.iter().enumerate().map(|(replica, &device)| {
+        let model_root = model_root.clone();
+        let api_repo = api_repo.clone();
+        let dtype = dtype.clone();
+        let backend_model_type = backend_model_type.clone();
+        let dense_path = dense_path.clone();
+        let uds_path = uds_path.clone();
+        let otlp_endpoint = otlp_endpoint.clone();
+        let otlp_service_name = otlp_service_name.clone();
+        async move {
+            let started = std::time::Instant::now();
+            tracing::info!(
+                device,
+                replica,
+                "Initializing backend replica"
+            );
+            let backend = text_embeddings_backend::Backend::new_shared(
+                model_root,
+                api_repo,
+                dtype,
+                backend_model_type,
+                dense_path,
+                uds_path
+                    .unwrap_or("/tmp/text-embeddings-inference-server".to_string()),
+                otlp_endpoint,
+                otlp_service_name,
+                device,
+            )
+            .await
+            .with_context(|| format!("Could not create backend on device {device}"))?;
+            backend
+                .health()
+                .await
+                .with_context(|| format!("Model backend on device {device} is not healthy"))?;
+            let replica_batch_limit = match (max_batch_requests, backend.max_batch_size) {
+                (Some(a), Some(b)) => Some(a.min(b)),
+                (a, b) => a.or(b),
+            };
+            backend
+                .warmup(
+                    max_input_length,
+                    max_batch_tokens,
+                    replica_batch_limit,
+                    backend.padded_model,
+                )
+                .await
+                .with_context(|| format!("Warmup failed on device {device}"))?;
+            tracing::info!(device, replica, elapsed = ?started.elapsed(), "Backend replica ready");
+            Ok(backend)
+        }
+    }))
+    .await?;
+    let backend = text_embeddings_core::backend_pool::BackendPool::new(backends)?;
+    let max_batch_requests = match (max_batch_requests, backend.max_batch_size) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    };
+    tracing::info!(replicas = devices.len(), "Backend pool ready");
 
     // Queue logic
     let radix_mlp_threshold = if config.model_type == "bert"
@@ -351,16 +377,17 @@ pub async fn run(
         tracing::info!("RadixMLP disabled");
     }
 
-    let queue = Queue::new(
+    let queue = Queue::with_replicas(
         backend.padded_model,
         max_batch_tokens,
         max_batch_requests,
         radix_mlp_threshold,
         max_concurrent_requests,
+        devices.len(),
     );
 
     // Create infer task
-    let infer = Infer::new(tokenization, queue, max_concurrent_requests, backend);
+    let infer = Infer::with_pool(tokenization, queue, max_concurrent_requests, backend);
 
     // Endpoint info
     let info = Info {

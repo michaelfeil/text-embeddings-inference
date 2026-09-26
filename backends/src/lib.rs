@@ -9,7 +9,7 @@ use std::process::Command;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use text_embeddings_backend_core::{Backend as CoreBackend, Predictions};
+use text_embeddings_backend_core::Backend as CoreBackend;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{instrument, Span};
 
@@ -18,7 +18,7 @@ use serde::Deserialize;
 
 pub use crate::dtype::DType;
 pub use text_embeddings_backend_core::{
-    BackendError, Batch, Embedding, Embeddings, ModelType, Pool, TokenPredictions,
+    BackendError, Batch, Embedding, Embeddings, ModelType, Pool, Predictions, TokenPredictions,
 };
 
 #[cfg(feature = "candle")]
@@ -85,6 +85,32 @@ impl Backend {
     pub async fn new(
         model_path: PathBuf,
         api_repo: Option<ApiRepo>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        uds_path: String,
+        otlp_endpoint: Option<String>,
+        otlp_service_name: String,
+        device_id: usize,
+    ) -> Result<Self, BackendError> {
+        Self::new_shared(
+            model_path,
+            api_repo.map(Arc::new),
+            dtype,
+            model_type,
+            dense_path,
+            uds_path,
+            otlp_endpoint,
+            otlp_service_name,
+            device_id,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_shared(
+        model_path: PathBuf,
+        api_repo: Option<Arc<ApiRepo>>,
         dtype: DType,
         model_type: ModelType,
         dense_path: Option<String>,
@@ -406,7 +432,7 @@ impl Backend {
 #[allow(unused, clippy::too_many_arguments)]
 async fn init_backend(
     model_path: PathBuf,
-    api_repo: Option<ApiRepo>,
+    api_repo: Option<Arc<ApiRepo>>,
     dtype: DType,
     model_type: ModelType,
     dense_path: Option<String>,
@@ -416,7 +442,6 @@ async fn init_backend(
     device_id: usize,
 ) -> Result<Box<dyn CoreBackend + Send>, BackendError> {
     let mut backend_start_failed = false;
-    let api_repo = api_repo.map(Arc::new);
 
     if cfg!(feature = "ort") {
         #[cfg(feature = "ort")]
@@ -522,13 +547,22 @@ async fn init_backend(
                 }
             };
 
-            let backend = CandleBackend::new(
-                &model_path,
-                dtype.to_string(),
-                model_type.clone(),
-                dense_paths,
-                device_id,
-            );
+            let path = model_path.clone();
+            let candle_dtype = dtype.to_string();
+            let candle_model_type = model_type.clone();
+            let backend = tokio::task::spawn_blocking(move || {
+                CandleBackend::new(
+                    &path,
+                    candle_dtype,
+                    candle_model_type,
+                    dense_paths,
+                    device_id,
+                )
+            })
+            .await
+            .map_err(|err| {
+                BackendError::Start(format!("Candle initialization worker failed: {err}"))
+            })?;
             match backend {
                 Ok(b) => return Ok(Box::new(b)),
                 Err(err) => {
@@ -882,4 +916,36 @@ async fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBu
     }
 
     Ok(config_path.parent().unwrap().to_path_buf())
+}
+
+pub fn supports_device_replication() -> bool {
+    cfg!(all(
+        feature = "candle",
+        any(
+            feature = "cuda",
+            feature = "flash-attn",
+            feature = "flash-attn-v1"
+        ),
+        not(feature = "ort"),
+        not(feature = "python")
+    ))
+}
+
+pub fn visible_cuda_device_count() -> Result<usize, BackendError> {
+    #[cfg(all(
+        feature = "candle",
+        any(feature = "cuda", feature = "flash-attn", feature = "flash-attn-v1")
+    ))]
+    {
+        text_embeddings_backend_candle::visible_cuda_device_count()
+    }
+    #[cfg(not(all(
+        feature = "candle",
+        any(feature = "cuda", feature = "flash-attn", feature = "flash-attn-v1")
+    )))]
+    {
+        Err(BackendError::Start(
+            "GPU replicas require the Candle CUDA backend".into(),
+        ))
+    }
 }

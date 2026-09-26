@@ -59,6 +59,25 @@ Ember, GTE and E5. TEI implements many features such as:
 * [ONNX](https://github.com/onnx/onnx) weight loading
 * Production ready (distributed tracing with Open Telemetry, Prometheus metrics)
 
+## GPU replicas
+
+Candle CUDA uses all visible GPUs by default, loading a complete model on each GPU
+in parallel. Each replica consumes work from one shared request queue and one shared
+prepared-batch slot. Faster replicas naturally accept more batches. Any backend
+failure makes the whole service unhealthy.
+
+Use `CUDA_VISIBLE_DEVICES=0,1` to expose two GPUs, `--device-id 0` to select just one,
+or `--backend-device-ids 0,1` to select visible CUDA ordinals explicitly. Each GPU
+must have enough memory for the complete model and its batch. CPU and Metal retain
+one backend.
+
+With multiple GPUs, batches have a soft early-dispatch target of 5,000 tokens while
+the queued backlog is below 20,000 tokens per replica. Larger backlogs use the normal
+batch limits. Set `TEI_EARLY_DISPATCH_TOKENS` to override the target, or `0` to disable
+it. Single-GPU batching keeps its existing behavior unless this variable is set.
+Per-replica batch, token, and inference-duration metrics are exposed on `/metrics`.
+Each replica logs inference throughput every 100 batches.
+
 ## Get Started
 
 ### Supported Models

@@ -1,41 +1,32 @@
 use crate::layers::HiddenAct;
 use candle::{Device, Result, Tensor};
-use std::sync::Once;
-
 #[cfg(feature = "cuda")]
 use candle_cublaslt::{fused_batch_matmul, fused_matmul, Activation, CublasLt};
 
-static INIT: Once = Once::new();
-static mut CUBLASLT: Option<CublasLtWrapper> = None;
+#[cfg(feature = "cuda")]
+thread_local! {
+    // A handle belongs to the tensor's device/stream and its native worker.
+    // Never share GPU 0's handle across replicas.
+    static CUBLASLT: std::cell::RefCell<std::collections::HashMap<
+        candle::cuda_backend::DeviceId, CublasLtWrapper
+    >> = std::cell::RefCell::new(std::collections::HashMap::new());
+}
 
-pub fn get_cublas_lt_wrapper() -> Option<&'static CublasLtWrapper> {
-    unsafe {
-        INIT.call_once(|| {
-            #[cfg(not(feature = "cuda"))]
-            {
-                CUBLASLT = None;
+pub fn get_cublas_lt_wrapper(device: &Device) -> Result<Option<CublasLtWrapper>> {
+    #[cfg(feature = "cuda")]
+    if let Device::Cuda(cuda) = device {
+        return CUBLASLT.with(|handles| {
+            let mut handles = handles.borrow_mut();
+            if let std::collections::hash_map::Entry::Vacant(entry) = handles.entry(cuda.id()) {
+                entry.insert(CublasLtWrapper {
+                    cublaslt: CublasLt::new(device)?,
+                });
             }
-
-            #[cfg(feature = "cuda")]
-            {
-                // Check if we can call the driver
-                // Then check if we can create a device
-                // Then check that the device is CUDA
-                use candle::cuda_backend::cudarc::driver;
-                CUBLASLT = driver::result::init()
-                    .ok()
-                    .and_then(|_| Device::cuda_if_available(0).ok())
-                    .and_then(|device| match device {
-                        Device::Cuda(_) => Some(CublasLtWrapper {
-                            cublaslt: CublasLt::new(&device).unwrap(),
-                        }),
-                        _ => None,
-                    });
-            }
+            Ok(handles.get(&cuda.id()).cloned())
         });
-        #[allow(static_mut_refs)]
-        CUBLASLT.as_ref()
     }
+    let _ = device;
+    Ok(None)
 }
 
 #[derive(Debug, Clone)]

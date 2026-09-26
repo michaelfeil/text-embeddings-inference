@@ -1,22 +1,31 @@
 use candle::Tensor;
-use std::sync::Once;
-
-static INIT: Once = Once::new();
-static mut RUNTIME_COMPUTE_CAP: usize = 0;
-fn init_runtime_compute_cap() {
-    unsafe {
-        INIT.call_once(|| {
-            use crate::compute_cap::get_runtime_compute_cap;
-            RUNTIME_COMPUTE_CAP = get_runtime_compute_cap().unwrap();
-        });
-    }
+thread_local! {
+    static COMPUTE_CAPS: std::cell::RefCell<std::collections::HashMap<
+        candle::cuda_backend::DeviceId, usize
+    >> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-pub fn get_runtime_compute_cap() -> usize {
-    unsafe {
-        init_runtime_compute_cap();
-        RUNTIME_COMPUTE_CAP
-    }
+fn runtime_compute_cap(device: &candle::Device) -> candle::Result<usize> {
+    let candle::Device::Cuda(cuda) = device else {
+        candle::bail!("Flash attention requires a CUDA tensor");
+    };
+    COMPUTE_CAPS.with(|caps| {
+        let mut caps = caps.borrow_mut();
+        if let Some(&cap) = caps.get(&cuda.id()) {
+            return Ok(cap);
+        }
+        use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::{
+            CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR as MAJOR,
+            CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR as MINOR,
+        };
+        let stream = cuda.cuda_stream();
+        let context = stream.context();
+        let major = context.attribute(MAJOR).map_err(candle::Error::wrap)?;
+        let minor = context.attribute(MINOR).map_err(candle::Error::wrap)?;
+        let cap = (major * 10 + minor) as usize;
+        caps.insert(cuda.id(), cap);
+        Ok(cap)
+    })
 }
 
 #[allow(clippy::too_many_arguments, unused)]
@@ -34,7 +43,7 @@ pub(crate) fn flash_attn_varlen(
     window_size_left: Option<usize>,
     window_size_right: Option<usize>,
 ) -> Result<Tensor, candle::Error> {
-    let runtime_compute_cap = get_runtime_compute_cap();
+    let runtime_compute_cap = runtime_compute_cap(q.device())?;
 
     if runtime_compute_cap == 75 {
         if alibi_slopes.is_some() {

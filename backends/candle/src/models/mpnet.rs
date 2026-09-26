@@ -157,7 +157,7 @@ impl MPNetAttention {
 
         #[allow(unused_variables)]
         let context_layer =
-            if let (Device::Cuda(_), Some(cublaslt)) = (device, get_cublas_lt_wrapper()) {
+            if let (Device::Cuda(_), Some(cublaslt)) = (device, get_cublas_lt_wrapper(device)?) {
                 #[cfg(feature = "cuda")]
                 {
                     // cuBLASLt batch matmul implementation requires inputs to be dims3
