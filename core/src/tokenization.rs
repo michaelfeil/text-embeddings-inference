@@ -1,6 +1,7 @@
 /// Payload tokenization logic
 use crate::TextEmbeddingsError;
 use std::collections::HashMap;
+use std::sync::Arc;
 use tokenizers::tokenizer::Tokenizer;
 pub use tokenizers::Encoding as RawEncoding;
 use tokenizers::{TruncationDirection, TruncationParams, TruncationStrategy};
@@ -43,14 +44,17 @@ impl Tokenization {
         // Spawn a background thread that creates all workers
         // since tokenizer.clone() require 0.2s.
         std::thread::spawn(move || {
+            let fast_tokenizer = crate::fast_tokenization::load(&tokenizer, workers).map(Arc::new);
             for _ in 0..workers {
                 let tokenizer_clone = tokenizer.clone();
+                let fast_tokenizer = fast_tokenizer.clone();
                 let receiver_clone = receiver.clone();
                 let default_prompt_clone = default_prompt.clone();
                 let prompts_clone = prompts.clone();
                 std::thread::spawn(move || {
                     tokenizer_worker(
                         tokenizer_clone,
+                        fast_tokenizer,
                         max_input_length,
                         position_offset,
                         default_prompt_clone,
@@ -72,6 +76,31 @@ impl Tokenization {
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
+        self.encode_request(inputs, truncate, truncation_direction, prompt_name, false)
+            .await
+    }
+
+    /// Encode embedding inputs without requesting token text or source offsets.
+    #[instrument(skip_all)]
+    pub async fn encode_embedding(
+        &self,
+        inputs: EncodingInput,
+        truncate: bool,
+        truncation_direction: TruncationDirection,
+        prompt_name: Option<String>,
+    ) -> Result<ValidEncoding, TextEmbeddingsError> {
+        self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
+            .await
+    }
+
+    async fn encode_request(
+        &self,
+        inputs: EncodingInput,
+        truncate: bool,
+        truncation_direction: TruncationDirection,
+        prompt_name: Option<String>,
+        embedding: bool,
+    ) -> Result<ValidEncoding, TextEmbeddingsError> {
         // Check if inputs is empty
         if inputs.is_empty() {
             return Err(TextEmbeddingsError::Empty(
@@ -89,6 +118,7 @@ impl Tokenization {
                 truncate,
                 truncation_direction,
                 prompt_name,
+                embedding,
                 response_sender,
                 Span::current(),
             ))
@@ -168,8 +198,10 @@ impl Tokenization {
 }
 
 /// Start tokenization workers
+#[allow(clippy::too_many_arguments)]
 fn tokenizer_worker(
     mut tokenizer: Tokenizer,
+    fast_tokenizer: Option<Arc<crate::fast_tokenization::FastTokenizer>>,
     max_input_length: usize,
     position_offset: usize,
     default_prompt: Option<String>,
@@ -184,6 +216,7 @@ fn tokenizer_worker(
                 truncate,
                 truncation_direction,
                 prompt_name,
+                embedding,
                 response_tx,
                 parent_span,
             ) => {
@@ -206,6 +239,11 @@ fn tokenizer_worker(
                             prompt_name,
                             prompts.as_ref(),
                             &mut tokenizer,
+                            if embedding {
+                                fast_tokenizer.as_deref()
+                            } else {
+                                None
+                            },
                         ));
                     }
                 })
@@ -235,6 +273,7 @@ fn tokenizer_worker(
                             prompt_name,
                             prompts.as_ref(),
                             &mut tokenizer,
+                            None,
                         ));
                     }
                 })
@@ -294,6 +333,7 @@ fn tokenize_input(
     prompt_name: Option<String>,
     prompts: Option<&HashMap<String, String>>,
     tokenizer: &mut Tokenizer,
+    fast_tokenizer: Option<&crate::fast_tokenization::FastTokenizer>,
 ) -> Result<(Option<String>, RawEncoding), TextEmbeddingsError> {
     let pre_prompt = prepare_pre_prompt(default_prompt, prompt_name, prompts)?;
 
@@ -318,9 +358,22 @@ fn tokenize_input(
                 s
             };
 
-            let encoding = tokenizer
-                .with_truncation(truncate_params)?
-                .encode::<&str>(&s, add_special_tokens)?;
+            tokenizer.with_truncation(truncate_params)?;
+            let encoding = match fast_tokenizer {
+                Some(fast) => {
+                    match crate::fast_tokenization::encode(fast, tokenizer, &s, add_special_tokens)
+                    {
+                        Ok(encoding) => encoding,
+                        Err(err) => {
+                            tracing::debug!(
+                                "Fast BPE encoding failed; using Hugging Face tokenizer: {err}"
+                            );
+                            tokenizer.encode::<&str>(&s, add_special_tokens)?
+                        }
+                    }
+                }
+                None => tokenizer.encode::<&str>(&s, add_special_tokens)?,
+            };
 
             (Some(s), encoding)
         }
@@ -375,6 +428,7 @@ fn encode_input(
     prompt_name: Option<String>,
     prompts: Option<&HashMap<String, String>>,
     tokenizer: &mut Tokenizer,
+    fast_tokenizer: Option<&crate::fast_tokenization::FastTokenizer>,
 ) -> Result<ValidEncoding, TextEmbeddingsError> {
     // Default truncation params
     let truncate_params = truncate.then_some(TruncationParams {
@@ -393,6 +447,7 @@ fn encode_input(
         prompt_name,
         prompts,
         tokenizer,
+        fast_tokenizer,
     )?;
     let seq_len = encoding.len();
 
@@ -408,8 +463,16 @@ fn encode_input(
         token_type_ids: encoding.get_type_ids().to_vec(),
         position_ids: (position_offset as u32..(seq_len + position_offset) as u32)
             .collect::<Vec<_>>(),
-        tokens: encoding.get_tokens().to_vec(),
-        offsets: encoding.get_offsets().to_vec(),
+        tokens: if fast_tokenizer.is_some() {
+            Vec::new()
+        } else {
+            encoding.get_tokens().to_vec()
+        },
+        offsets: if fast_tokenizer.is_some() {
+            Vec::new()
+        } else {
+            encoding.get_offsets().to_vec()
+        },
     })
 }
 
@@ -484,6 +547,7 @@ enum TokenizerRequest {
         bool,
         TruncationDirection,
         Option<String>,
+        bool, // Embedding request: token strings and source offsets are not consumed.
         oneshot::Sender<Result<ValidEncoding, TextEmbeddingsError>>,
         Span,
     ),
@@ -651,5 +715,142 @@ mod tests {
                 }
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod fast_embedding_tests {
+    use super::*;
+
+    #[test]
+    fn workers_preserve_prompts_truncation_and_metadata_endpoints() {
+        let mut hf = crate::fast_tokenization::test_tokenizer();
+        hf.add_special_tokens(&[
+            tokenizers::AddedToken::from("<s>", true),
+            tokenizers::AddedToken::from("</s>", true),
+        ]);
+        hf.with_post_processor(Some(
+            tokenizers::processors::template::TemplateProcessing::builder()
+                .try_single("<s>:0 $A:0 </s>:0")
+                .unwrap()
+                .try_pair("<s>:0 $A:0 </s>:0 $B:1 </s>:1")
+                .unwrap()
+                .special_tokens(vec![("<s>", 256), ("</s>", 257)])
+                .build()
+                .unwrap(),
+        ));
+        let raw_ids = hf.encode("hello", false).unwrap().get_ids().to_vec();
+        let tokenizer = Tokenization::new(
+            2,
+            hf,
+            32,
+            2,
+            Some("default: ".into()),
+            Some(HashMap::from([("query".into(), "query: ".into())])),
+        );
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            for direction in [TruncationDirection::Left, TruncationDirection::Right] {
+                for prompt in [None, Some("query".to_owned())] {
+                    for input in [
+                        EncodingInput::Single("hello 東京 👩🏽‍💻 <s> longer text".into()),
+                        EncodingInput::Ids(raw_ids.clone()),
+                    ] {
+                        // Clone via the variants: EncodingInput intentionally has no Clone impl.
+                        let duplicate = match &input {
+                            EncodingInput::Single(s) => EncodingInput::Single(s.clone()),
+                            EncodingInput::Ids(ids) => EncodingInput::Ids(ids.clone()),
+                            _ => unreachable!(),
+                        };
+                        let actual = tokenizer
+                            .encode_embedding(input, true, direction, prompt.clone())
+                            .await
+                            .unwrap();
+                        let expected = tokenizer
+                            .encode(duplicate, true, direction, prompt.clone())
+                            .await
+                            .unwrap();
+                        assert_eq!(actual.input_ids, expected.input_ids);
+                        assert_eq!(actual.token_type_ids, expected.token_type_ids);
+                        assert_eq!(actual.position_ids, expected.position_ids);
+                        assert!(!expected.offsets.is_empty());
+                        let decoded = tokenizer
+                            .decode(expected.input_ids.clone(), false)
+                            .await
+                            .unwrap();
+                        assert!(!decoded.is_empty());
+                    }
+                }
+            }
+            // The metadata endpoint must keep actual strings and source offsets.
+            let (_, tokens) = tokenizer
+                .tokenize(EncodingInput::Single("hi".into()), true, None)
+                .await
+                .unwrap();
+            assert!(tokens.get_offsets().iter().any(|&(start, end)| end > start));
+            assert!(tokens.get_tokens().iter().all(|token| !token.is_empty()));
+            assert!(tokenizer
+                .encode_embedding(
+                    EncodingInput::Single("hello".into()),
+                    true,
+                    TruncationDirection::Right,
+                    Some("missing".into())
+                )
+                .await
+                .is_err());
+            assert!(tokenizer
+                .encode_embedding(
+                    EncodingInput::Single("x".repeat(100)),
+                    false,
+                    TruncationDirection::Right,
+                    None
+                )
+                .await
+                .is_err());
+        });
+    }
+
+    #[test]
+    fn concurrent_requests_preserve_fast_and_fallback_ids() {
+        let tokenizer = Tokenization::new(
+            4,
+            crate::fast_tokenization::test_tokenizer(),
+            256,
+            0,
+            None,
+            None,
+        );
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let mut tasks = tokio::task::JoinSet::new();
+            for i in 0..32 {
+                let tokenizer = tokenizer.clone();
+                tasks.spawn(async move {
+                    let pair = (format!("query {i}"), "東京 passage".to_string());
+                    let expected = tokenizer
+                        .encode(pair.clone().into(), true, TruncationDirection::Right, None)
+                        .await
+                        .unwrap();
+                    let actual = tokenizer
+                        .encode_embedding(pair.into(), true, TruncationDirection::Right, None)
+                        .await
+                        .unwrap();
+                    assert_eq!(actual.input_ids, expected.input_ids);
+                    assert_eq!(actual.token_type_ids, expected.token_type_ids);
+                    let text = format!("request {i} 東京 👩🏽‍💻");
+                    let expected = tokenizer
+                        .encode(text.clone().into(), true, TruncationDirection::Left, None)
+                        .await
+                        .unwrap();
+                    let actual = tokenizer
+                        .encode_embedding(text.into(), true, TruncationDirection::Left, None)
+                        .await
+                        .unwrap();
+                    assert_eq!(actual.input_ids, expected.input_ids);
+                    assert_eq!(actual.token_type_ids, expected.token_type_ids);
+                });
+            }
+            while let Some(result) = tasks.join_next().await {
+                result.unwrap();
+            }
+        });
     }
 }

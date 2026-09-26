@@ -13,6 +13,8 @@ serde_json = { workspace = true }
 text-embeddings-backend = { path = "../backends" }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
+rayon = "1.11"
+fastokens = { package = "fastokens-b10", version = "=0.2.17", default-features = false }
 tracing = { workspace = true }
 tokio = { workspace = true }
 radix_mlp = {workspace = true}

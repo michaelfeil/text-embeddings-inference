@@ -378,7 +378,7 @@ impl Infer {
         // Tokenization
         let encoding = self
             .tokenization
-            .encode(inputs.into(), truncate, truncation_direction, prompt_name)
+            .encode_embedding(inputs.into(), truncate, truncation_direction, prompt_name)
             .await
             .map_err(|err| {
                 let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
