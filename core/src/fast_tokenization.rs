@@ -19,8 +19,20 @@ pub(crate) fn load(tokenizer: &Tokenizer, workers: usize) -> Option<FastTokenize
     let result = serde_json::to_value(tokenizer)
         .map_err(|e| e.to_string())
         .and_then(|json| {
-            if json["model"]["dropout"].as_f64().is_some_and(|p| p > 0.0) {
-                return Err("BPE dropout requires the Hugging Face tokenizer".to_string());
+            // These settings are accepted but not implemented by fastokens 0.2.17.
+            // Encoding succeeds with different IDs, so error fallback is insufficient.
+            if ["continuing_subword_prefix", "end_of_word_suffix"]
+                .iter()
+                .any(|key| json["model"][key].as_str().is_some_and(|s| !s.is_empty()))
+                || json["model"]["dropout"].as_f64().is_some_and(|p| p > 0.0)
+                || json["added_tokens"].as_array().is_some_and(|tokens| {
+                    tokens.iter().any(|token| {
+                        token["single_word"].as_bool() == Some(true)
+                            || token["rstrip"].as_bool() == Some(true)
+                    })
+                })
+            {
+                return Err("Tokenizer semantics require Hugging Face encoding".into());
             }
             let tokenizer = fastokens::Tokenizer::from_json(json).map_err(|e| e.to_string())?;
             // Fastokens parallelizes splits internally. Bound it to the configured
@@ -153,5 +165,58 @@ mod tests {
         json["model"]["dropout"] = serde_json::json!(0.1);
         let tokenizer = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
         assert!(load(&tokenizer, 1).is_none());
+    }
+    #[test]
+    fn unsupported_semantics_fall_back_before_silent_id_mismatches() {
+        let base = serde_json::json!({
+            "version":"1.0", "truncation":null, "padding":null,
+            "added_tokens":[], "normalizer":null, "pre_tokenizer":null,
+            "post_processor":null, "decoder":null,
+            "model":{"type":"BPE", "vocab":{"a":0,"b":1,"##b":2,"b</w>":3,"a</w>":4,"x":5," ":6},"merges":[]}
+        });
+        for (kind, input) in [
+            ("single_word", "xab"),
+            ("rstrip", "ab b"),
+            ("continuing_subword_prefix", "ab"),
+            ("end_of_word_suffix", "ab"),
+        ] {
+            let mut json = base.clone();
+            if kind == "single_word" || kind == "rstrip" {
+                json["added_tokens"] = serde_json::json!([{
+                    "id":7,"content":"ab","single_word":kind == "single_word",
+                    "lstrip":false,"rstrip":kind == "rstrip","normalized":false,"special":false
+                }]);
+            } else {
+                json["model"][kind] = serde_json::json!(if kind == "continuing_subword_prefix" {
+                    "##"
+                } else {
+                    "</w>"
+                });
+            }
+            let hf = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
+            let expected = hf.encode(input, false).unwrap();
+            let raw = fastokens::Tokenizer::from_json(json).unwrap();
+            assert_ne!(raw.encode(input).unwrap(), expected.get_ids(), "{kind}");
+            assert!(load(&hf, 1).is_none(), "{kind}");
+        }
+    }
+
+    #[test]
+    fn normalized_added_tokens_remain_accelerated() {
+        let json = serde_json::json!({
+            "version":"1.0", "truncation":null, "padding":null,
+            "added_tokens":[{"id":1,"content":"café","single_word":false,"lstrip":false,
+                             "rstrip":false,"normalized":true,"special":false}],
+            "normalizer":{"type":"NFC"}, "pre_tokenizer":null,
+            "post_processor":null, "decoder":null,
+            "model":{"type":"BPE", "vocab":{"a":0},"merges":[]}
+        });
+        let hf = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
+        let input = "cafe\u{301}";
+        let expected = hf.encode(input, false).unwrap();
+        let fast = load(&hf, 1).unwrap();
+        let actual = encode(&fast, &hf, input, false).unwrap();
+        assert_eq!(actual.get_ids(), expected.get_ids());
+        assert_eq!(actual.get_ids(), &[1]);
     }
 }

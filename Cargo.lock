@@ -1368,9 +1368,9 @@ dependencies = [
 
 [[package]]
 name = "fastokens-b10"
-version = "0.2.16"
+version = "0.2.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d8e8bcd3a58a41f5f8417159f90e432e2cde40bb66686bdca2d60fae0c78eb7a"
+checksum = "d6edd96c0416bf927aedcfba8e49f2a67200fccb4b79586a9632ba623fb44859"
 dependencies = [
  "chrono",
  "daachorse 1.0.1",
