@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 
 use crate::flash_attn::flash_attn_varlen;
-use crate::layers::{get_cos_sin, get_inv_freqs, index_select, LayerNormNoBias, Linear};
+use crate::layers::{
+    get_cos_sin, get_inv_freqs, index_select, residual_add, LayerNormNoBias, Linear,
+};
 use crate::models::modernbert::{
     ClassificationHead, ModernBertClassificationHead, ModernBertConfig, ModernBertEmbeddings,
     ModernBertMLP,
@@ -178,13 +180,13 @@ impl ModernBertEncoderLayer {
 
         let attn_outputs = self.attn.forward(&attn_norm, cu_seqlens, cos, sin, max_s)?;
 
-        let hidden_states = residual.add(&attn_outputs)?;
+        let hidden_states = residual_add(&residual, &attn_outputs)?;
 
         let mlp_output = self
             .mlp
             .forward(&self.mlp_norm.forward(&hidden_states, None)?)?;
 
-        hidden_states.add(&mlp_output)
+        residual_add(&hidden_states, &mlp_output)
     }
 }
 
