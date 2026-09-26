@@ -10,6 +10,7 @@ anyhow = { workspace = true }
 accelerate-src = { version = "0.3.2", optional = true }
 intel-mkl-src = { workspace = true, optional = true }
 candle = { workspace = true }
+half = { workspace = true }
 candle-nn = { workspace = true }
 candle-transformers = { workspace = true }
 candle-flash-attn = { workspace = true, optional = true}
@@ -37,12 +38,13 @@ serial_test = { workspace = true }
 
 [build-dependencies]
 anyhow = { version = "1", features = ["backtrace"] }
+cudaforge = { version = "0.1", optional = true }
 
 [features]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate"]
 metal = ["candle/metal", "candle-nn/metal"]
 mkl = ["dep:intel-mkl-src", "candle/mkl"]
-cuda = ["candle/cuda", "candle-nn/cuda", "dep:candle-cublaslt", "dep:candle-layer-norm", "dep:candle-rotary", "dep:candle-index-select-cu"]
+cuda = ["candle/cuda", "candle-nn/cuda", "dep:candle-cublaslt", "dep:candle-layer-norm", "dep:candle-rotary", "dep:candle-index-select-cu", "dep:cudaforge"]
 cuda-static-linking = ["candle/cuda-static-linking", "candle-flash-attn?/static-linking"]
 cuda-dynamic-linking = ["candle/cuda-dynamic-linking"]
 flash-attn-v1 = ["dep:candle-flash-attn-v1", "cuda"]

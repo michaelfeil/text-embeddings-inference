@@ -4848,6 +4848,8 @@ dependencies = [
  "candle-nn",
  "candle-rotary",
  "candle-transformers",
+ "cudaforge",
+ "half",
  "hf-hub",
  "insta",
  "intel-mkl-src",
