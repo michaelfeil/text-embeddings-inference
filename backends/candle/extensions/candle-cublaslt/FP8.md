@@ -18,7 +18,9 @@ artifact. Load the ordinary full-precision checkpoint. MLP gate/up/down weights
 are converted once to E4M3 with an FP32 scale per output channel. Activations are
 converted at inference with an FP32 scale per token. Each scale is the row's
 maximum absolute value (floored at 1e-12) divided by 448. Accumulation is FP32,
-with cuBLASLt fast accumulation enabled and FP16 outputs. Attention, normalization,
+with FP16 outputs. cuBLASLt fast accumulation is used when a tactic exists;
+otherwise the same FP8 inputs use full accumulation (needed for some short,
+wide projections on CUDA 12.9). This may change last-bit rounding between shapes. Attention, normalization,
 residuals, activation arithmetic, embedding tables and output heads retain their
 existing precision. Gate/up share one activation conversion through the existing
 combined projection. Only finite FP16 inputs are supported by the quantizer.

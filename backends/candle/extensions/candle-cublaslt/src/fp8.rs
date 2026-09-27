@@ -53,6 +53,8 @@ struct Plan {
     b: Layout,
     c: Layout,
     algo: sys::cublasLtMatmulHeuristicResult_t,
+    #[cfg(test)]
+    fast_accum: bool,
 }
 
 /// Experimental GEMM executor tied to one Candle CUDA device/stream.
@@ -212,9 +214,19 @@ impl Fp8Matmul {
                 )
                 .map_err(err)?;
             }
-            let algo = unsafe {
+            let query = || unsafe {
                 lt::get_matmul_algo_heuristic(self.handle.0, d.0, a.0, b.0, c.0, c.0, pref.0)
-                    .map_err(err)?
+            };
+            let (algo, _fast_accum) = match query() {
+                Ok(algo) => (algo, true),
+                Err(error) if error.0 == sys::cublasStatus_t::CUBLAS_STATUS_NOT_SUPPORTED => {
+                    // CUDA 12.9 lacks fast-accumulation tactics for some short,
+                    // wide-K projections. Keep the same FP8 inputs and scales,
+                    // and request full accumulation instead. Other errors propagate.
+                    d.set(CUBLASLT_MATMUL_DESC_FAST_ACCUM, &0i8)?;
+                    (query().map_err(err)?, false)
+                }
+                Err(error) => return Err(err(error)),
             };
             self.plans.insert(
                 key,
@@ -224,6 +236,8 @@ impl Fp8Matmul {
                     b,
                     c,
                     algo,
+                    #[cfg(test)]
+                    fast_accum: _fast_accum,
                 },
             );
         }
@@ -368,7 +382,15 @@ impl Fp8Linear {
             candle::bail!("FP8 linear input dimension/device mismatch")
         }
         let (x, sx) = quantize_rows(x)?;
-        executor.scaled_mm(&x, &self.weight, &sx, &self.scales)
+        executor
+            .scaled_mm(&x, &self.weight, &sx, &self.scales)
+            .map_err(|error| {
+                error.context(format!(
+                    "dynamic FP8 linear: input {:?}, weight {:?}",
+                    x.dims(),
+                    self.weight.dims()
+                ))
+            })
     }
 }
 
@@ -531,7 +553,14 @@ mod tests {
                     .forward(x, &mut executor)?
                     .flatten_all()?
                     .to_vec1::<f16>()?;
-                let expected = tensors[&format!("{prefix}.expected")]
+                let (m, k) = x.dims2()?;
+                let n = weight.dim(0)?;
+                let suffix = if executor.plans[&(m, n, k)].fast_accum {
+                    "expected"
+                } else {
+                    "expected_full_accum"
+                };
+                let expected = tensors[&format!("{prefix}.{suffix}")]
                     .flatten_all()?
                     .to_vec1::<f16>()?;
                 assert_eq!(output.len(), expected.len());
