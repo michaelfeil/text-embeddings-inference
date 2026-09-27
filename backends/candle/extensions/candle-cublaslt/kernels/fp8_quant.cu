@@ -98,3 +98,45 @@ extern "C" __global__ void quant_f16_generic(const half *x, __nv_fp8_e4m3 *y,
     y[size_t(row) * k + i] =
         __nv_fp8_e4m3(__fdiv_rn(float(x[size_t(row) * k + i]), s));
 }
+
+// SPDX-License-Identifier: MIT
+// Preserve the intermediate FP16 rounding of Candle's separate SwiGLU ops.
+__device__ __forceinline__ half fp8_precise_silu(half x) {
+    const half exp_value = hexp(-x);
+    const half denominator = half(1) + exp_value;
+    return x / denominator;
+}
+template<int K,int T> __device__ void packed_quant_glu(const half* x,__nv_fp8_e4m3* y,float* scales){
+ __shared__ float partial[T/32];int row=blockIdx.x,lane=threadIdx.x%32,warp=threadIdx.x/32;
+ float4 values[(K+T*4-1)/(T*4)];float mx=0;
+ #pragma unroll
+ for(int j=0;j<(K+T*4-1)/(T*4);j++){
+  int i=(threadIdx.x+j*T)*4;float4 v=make_float4(0,0,0,0);
+  if(i<K){
+   const half* gate=x+size_t(row)*2*K+i;
+   const half* up=gate+K;
+   v=make_float4(float(fp8_precise_silu(gate[0])*up[0]),float(fp8_precise_silu(gate[1])*up[1]),float(fp8_precise_silu(gate[2])*up[2]),float(fp8_precise_silu(gate[3])*up[3]));
+  }
+  values[j]=v;mx=fmaxf(mx,fmaxf(fmaxf(fabsf(v.x),fabsf(v.y)),fmaxf(fabsf(v.z),fabsf(v.w))));
+ }
+ for(int d=16;d;d/=2)mx=fmaxf(mx,__shfl_down_sync(0xffffffff,mx,d));
+ if(lane==0)partial[warp]=mx;__syncthreads();
+ if(warp==0){mx=lane<T/32?partial[lane]:0;for(int d=16;d;d/=2)mx=fmaxf(mx,__shfl_down_sync(0xffffffff,mx,d));if(lane==0)partial[0]=__fmul_rn(fmaxf(mx,1e-12f),1.f/448.f);}
+ __syncthreads();float s=partial[0];if(threadIdx.x==0)scales[row]=s;
+ #pragma unroll
+ for(int j=0;j<(K+T*4-1)/(T*4);j++){
+  int i=(threadIdx.x+j*T)*4;auto v=values[j];
+  if(i<K){v.x=__fdiv_rn(v.x,s);v.y=__fdiv_rn(v.y,s);v.z=__fdiv_rn(v.z,s);v.w=__fdiv_rn(v.w,s);((__nv_fp8x4_e4m3*)(y+size_t(row)*K))[i/4]=__nv_fp8x4_e4m3(v);}
+ }
+}
+
+template<int K,int T> __global__ void fused(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<K,T>(x,y,s);}
+extern "C" __global__ void swiglu_quant_3072_256(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<3072,256>(x,y,s);}
+extern "C" __global__ void swiglu_quant_3072_512(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<3072,512>(x,y,s);}
+extern "C" __global__ void swiglu_quant_3072_1024(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<3072,1024>(x,y,s);}
+extern "C" __global__ void swiglu_quant_8192_256(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<8192,256>(x,y,s);}
+extern "C" __global__ void swiglu_quant_8192_512(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<8192,512>(x,y,s);}
+extern "C" __global__ void swiglu_quant_8192_1024(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<8192,1024>(x,y,s);}
+extern "C" __global__ void swiglu_quant_12288_256(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<12288,256>(x,y,s);}
+extern "C" __global__ void swiglu_quant_12288_512(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<12288,512>(x,y,s);}
+extern "C" __global__ void swiglu_quant_12288_1024(const half*x,__nv_fp8_e4m3*y,float*s){packed_quant_glu<12288,1024>(x,y,s);}

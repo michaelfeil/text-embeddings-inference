@@ -374,6 +374,76 @@ pub fn quantize_rows(x: &Tensor) -> Result<(Tensor, Tensor)> {
     ))
 }
 
+/// Experimental fused packed SwiGLU and row conversion. Unsupported shapes
+/// return None so the caller can retain the established separate operations.
+pub fn quantize_packed_swiglu(x: &Tensor) -> Result<Option<(Tensor, Tensor)>> {
+    use cudarc::driver::{LaunchConfig, PushKernelArg};
+    if x.rank() != 2
+        || x.dtype() != DType::F16
+        || !x.is_contiguous()
+        || x.storage_and_layout().1.start_offset() != 0
+    {
+        return Ok(None);
+    }
+    let (m, packed) = x.dims2()?;
+    if m == 0 || m > i32::MAX as usize || packed % 2 != 0 {
+        return Ok(None);
+    }
+    let k = packed / 2;
+    let threads = match k {
+        3072 => {
+            if m <= 128 {
+                1024
+            } else {
+                256
+            }
+        }
+        8192 => 1024,
+        12288 => {
+            if m <= 128 {
+                1024
+            } else {
+                512
+            }
+        }
+        _ => return Ok(None),
+    };
+    let dev = x.device().as_cuda_device()?;
+    let (storage, _) = x.storage_and_layout();
+    let Storage::Cuda(storage) = &*storage else {
+        candle::bail!("FP8 SwiGLU requires CUDA")
+    };
+    let input = storage.as_cuda_slice::<f16>()?;
+    let mut out = unsafe { dev.alloc::<float8::F8E4M3>(m * k)? };
+    let mut scales = unsafe { dev.alloc::<f32>(m)? };
+    let name = format!("swiglu_quant_{k}_{threads}");
+    let function = dev.get_or_load_custom_func(
+        &name,
+        "tei-fp8-quantize",
+        include_str!(concat!(env!("OUT_DIR"), "/fp8_quant.ptx")),
+    )?;
+    let mut builder = function.builder();
+    builder.arg(input).arg(&mut out).arg(&mut scales);
+    unsafe {
+        builder.launch(LaunchConfig {
+            grid_dim: (m as u32, 1, 1),
+            block_dim: (threads, 1, 1),
+            shared_mem_bytes: 0,
+        })
+    }
+    .map_err(candle::Error::wrap)?;
+    Ok(Some((
+        Tensor::from((
+            Storage::Cuda(candle::CudaStorage::wrap_cuda_slice(out, dev.clone())),
+            candle::Shape::from((m, k)),
+        )),
+        Tensor::from((
+            Storage::Cuda(candle::CudaStorage::wrap_cuda_slice(scales, dev.clone())),
+            candle::Shape::from(m),
+        )),
+    )))
+}
+
 /// Experimental bias-free FP8 linear layer. Weight conversion happens once;
 /// the caller retains a worker-owned GEMM executor across layer invocations.
 pub struct Fp8Linear {
@@ -388,6 +458,24 @@ impl Fp8Linear {
         }
         let (weight, scales) = quantize_rows(weight)?;
         Ok(Self { weight, scales })
+    }
+    pub fn forward_packed_swiglu(
+        &self,
+        x: &Tensor,
+        executor: &mut Fp8Matmul,
+    ) -> Result<Option<Tensor>> {
+        if x.dim(1)? != self.weight.dim(1)? * 2 || !x.device().same_device(self.weight.device()) {
+            candle::bail!("FP8 packed SwiGLU input dimension/device mismatch")
+        }
+        let Some((x, sx)) = quantize_packed_swiglu(x)? else {
+            return Ok(None);
+        };
+        Ok(Some(executor.scaled_mm(
+            &x,
+            &self.weight,
+            &sx,
+            &self.scales,
+        )?))
     }
     pub fn forward(&self, x: &Tensor, executor: &mut Fp8Matmul) -> Result<Tensor> {
         let (_, k) = x.dims2()?;
@@ -410,6 +498,47 @@ impl Fp8Linear {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn fused_swiglu_matches_candle_conversion() -> Result<()> {
+        let dev = candle::Device::new_cuda(0)?;
+        for k in [3072, 8192, 12288] {
+            for m in [1, 17, 129] {
+                let values = (0..m * 2 * k)
+                    .map(|i| f16::from_f32(((i * 37 % 257) as f32 - 128.) / 16.))
+                    .collect::<Vec<_>>();
+                let x = Tensor::from_vec(values, (m, 2 * k), &dev)?;
+                let gate = x.narrow(1, 0, k)?.contiguous()?;
+                let up = x.narrow(1, k, k)?.contiguous()?;
+                let reference = quantize_rows(&(gate.silu()? * up)?)?;
+                let fused = quantize_packed_swiglu(&x)?.expect("supported shape");
+                let bytes = |q: &Tensor| -> Result<Vec<u8>> {
+                    Ok(q.flatten_all()?
+                        .to_vec1::<float8::F8E4M3>()?
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect())
+                };
+                assert_eq!(bytes(&reference.0)?, bytes(&fused.0)?, "m={m} k={k}");
+                assert_eq!(
+                    reference
+                        .1
+                        .to_vec1::<f32>()?
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>(),
+                    fused
+                        .1
+                        .to_vec1::<f32>()?
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+        assert!(quantize_packed_swiglu(&Tensor::zeros((1, 2048), DType::F16, &dev)?)?.is_none());
+        Ok(())
+    }
+
     #[test]
     fn row_scales_and_irregular_m() -> Result<()> {
         let dev = candle::Device::new_cuda(0)?;
