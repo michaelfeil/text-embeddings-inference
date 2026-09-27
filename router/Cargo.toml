@@ -79,6 +79,7 @@ vergen = { version = "8.0.0", features = ["build", "git", "gitcl"] }
 tonic-build = { version = "0.11.0", optional = true }
 
 [features]
+experimental-fa4 = ["candle-cuda", "text-embeddings-backend/experimental-fa4"]
 default = ["candle", "http", "dynamic-linking"]
 http = ["dep:axum", "dep:axum-tracing-opentelemetry", "dep:base64", "dep:tower-http", "dep:utoipa", "dep:utoipa-swagger-ui"]
 grpc = ["metrics-exporter-prometheus/http-listener", "dep:prost", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:tonic-build", "dep:async-stream", "dep:tokio-stream"]

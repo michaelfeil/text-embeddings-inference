@@ -45,6 +45,26 @@ pub(crate) fn flash_attn_varlen(
 ) -> Result<Tensor, candle::Error> {
     let runtime_compute_cap = runtime_compute_cap(q.device())?;
 
+    #[cfg(feature = "experimental-fa4")]
+    if runtime_compute_cap == 90
+        && std::env::var("TEI_PERF_FA4").as_deref() == Ok("1")
+        && alibi_slopes.is_none()
+    {
+        if let Some(output) = crate::fa4_native::try_forward(
+            q,
+            k,
+            v,
+            seqlens_q,
+            seqlens_k,
+            softmax_scale,
+            causal,
+            window_size_left,
+            window_size_right,
+        )? {
+            return Ok(output);
+        }
+    }
+
     if runtime_compute_cap == 75 {
         if alibi_slopes.is_some() {
             candle::bail!("Flash attention v1 does not support alibi");

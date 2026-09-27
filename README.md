@@ -628,3 +628,18 @@ docker build . -f Dockerfile --platform=linux/arm64
 
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
+
+### Experimental FA4 on Hopper
+
+The `experimental-fa4` build feature adds the shared
+[`candle-flash-attn-v4`](https://github.com/michaelfeil/candle-flash-attn-v4)
+wrapper. Build its pinned native bundle first and set `FA4_NATIVE_LIB_DIR`
+during the TEI build; include that bundle in `LD_LIBRARY_PATH` when serving.
+Enable dispatch with `TEI_PERF_FA4=1` (off by default).
+
+This initial integration covers packed FP16/BF16 BERT and ModernBERT attention
+with head dimension 64, and Qwen3 causal attention with head dimension 128
+and a 4:1 query/KV head ratio, on SM90. Unsupported configurations retain the
+existing attention backend. Native execution errors are returned, not retried.
+This is an experimental performance option; model-level quality and latency
+must be qualified for a workload before deployment.
