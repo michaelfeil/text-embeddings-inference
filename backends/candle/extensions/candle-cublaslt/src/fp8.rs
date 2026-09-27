@@ -348,6 +348,24 @@ pub fn quantize_rows(x: &Tensor) -> Result<(Tensor, Tensor)> {
         12288 => ("quant_f16_12288", 128, true),
         _ => ("quant_f16_generic", 128, false),
     };
+    // Hopper measurements: short matrices benefit from more threads per row;
+    // large matrices need enough resident rows to sustain memory throughput.
+    let (name, threads, special) = if major == 9 && minor == 0 {
+        match k {
+            1024 if m <= 1024 => ("quant_f16_1024_t256", 256, true),
+            4096 if m <= 512 => ("quant_f16_4096_t512", 512, true),
+            4096 if m <= 1024 => ("quant_f16_4096_t256", 256, true),
+            8192 if m <= 128 => ("quant_f16_8192_t1024", 1024, true),
+            8192 if m <= 1024 => ("quant_f16_8192_t512", 512, true),
+            8192 => ("quant_f16_8192_t256", 256, true),
+            12288 if m <= 128 => ("quant_f16_12288_t1024", 1024, true),
+            12288 if m <= 1024 => ("quant_f16_12288_t512", 512, true),
+            12288 => ("quant_f16_12288_t256", 256, true),
+            _ => (name, threads, special),
+        }
+    } else {
+        (name, threads, special)
+    };
     let function = dev.get_or_load_custom_func(
         name,
         "tei-fp8-quantize",
@@ -410,6 +428,45 @@ impl Fp8Linear {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn row_dispatch_boundaries_preserve_bytes_and_scales() -> Result<()> {
+        let dev = candle::Device::new_cuda(0)?;
+        for k in [1024, 4096, 8192, 12288] {
+            let mut values = (0..3 * k)
+                .map(|i| f16::from_f32(((i * 37 % 513) as f32 - 256.) / 32.))
+                .collect::<Vec<_>>();
+            values[..k].fill(f16::ZERO);
+            values[k] = f16::MAX;
+            let (q, scales) = quantize_rows(&Tensor::from_vec(values.clone(), (3, k), &dev)?)?;
+            let reference = q.flatten_all()?.to_vec1::<float8::F8E4M3>()?;
+            let scales = scales.to_vec1::<f32>()?;
+            for m in [128, 129, 512, 513, 1024, 1025] {
+                let data = values
+                    .iter()
+                    .copied()
+                    .cycle()
+                    .take(m * k)
+                    .collect::<Vec<_>>();
+                let (q, s) = quantize_rows(&Tensor::from_vec(data, (m, k), &dev)?)?;
+                let q = q.flatten_all()?.to_vec1::<float8::F8E4M3>()?;
+                let s = s.to_vec1::<f32>()?;
+                assert!(
+                    q.iter()
+                        .zip(reference.iter().cycle())
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "M={m} K={k} bytes"
+                );
+                assert!(
+                    s.iter()
+                        .zip(scales.iter().cycle())
+                        .all(|(a, b)| a.to_bits() == b.to_bits()),
+                    "M={m} K={k} scales"
+                );
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn row_scales_and_irregular_m() -> Result<()> {
         let dev = candle::Device::new_cuda(0)?;

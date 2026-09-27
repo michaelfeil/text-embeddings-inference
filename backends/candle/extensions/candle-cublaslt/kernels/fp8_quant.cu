@@ -69,6 +69,21 @@ SPECIAL(3072, 128)
 SPECIAL(4096, 128)
 SPECIAL(8192, 128)
 SPECIAL(12288, 128)
+// Alternate Hopper launch sizes; the Rust dispatcher selects by row count.
+#define ROW_LAUNCH(K, T) \
+  extern "C" __global__ void quant_f16_##K##_t##T(const half *x, __nv_fp8_e4m3 *y, float *s) { \
+    packed_quant<K, T>(x, y, s); \
+  }
+ROW_LAUNCH(1024, 256)
+ROW_LAUNCH(4096, 256)
+ROW_LAUNCH(4096, 512)
+ROW_LAUNCH(8192, 256)
+ROW_LAUNCH(8192, 512)
+ROW_LAUNCH(8192, 1024)
+ROW_LAUNCH(12288, 256)
+ROW_LAUNCH(12288, 512)
+ROW_LAUNCH(12288, 1024)
+#undef ROW_LAUNCH
 // clang-format on
 
 extern "C" __global__ void quant_f16_generic(const half *x, __nv_fp8_e4m3 *y,
