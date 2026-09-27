@@ -45,3 +45,28 @@ Research whole-transformer speedups were approximately 27% for Qwen8B and
 Native linear GPU timings show that input conversion can outweigh GEMM savings
 on small shapes. They exclude serving overhead. Measure latency, throughput and
 representative task accuracy for the actual model before enabling this option.
+
+## Native H100 serving validation
+
+Qwen3-Embedding-8B, CUDA 12.9, one H100, FP16 baseline versus dynamic FP8 MLPs.
+Each shape uses five warmups and 20 serial HTTP requests; values are medians,
+including response transport. These are fixed-batch measurements, not sustained
+concurrent-load or P99 guarantees.
+
+| Sequences × tokens | FP16 latency | FP8 latency | Throughput change |
+| --- | ---: | ---: | ---: |
+| 8 × 512 | 106.8 ms | 76.9 ms | +38.9% |
+| 32 × 512 | 418.4 ms | 306.2 ms | +36.6% |
+| 2 × 8192 | 507.8 ms | 396.0 ms | +28.2% |
+
+Native SciFact evaluation (300 queries, 5,183 documents) gives NDCG@10
+78.639 → 78.355 points. The paired bootstrap 95% interval for the difference is
+[-0.712, +0.121] points. An interval crossing zero does not prove equivalent
+accuracy. Keep this experimental option disabled unless the application's own
+quality evaluation accepts the tradeoff.
+
+Five native Rust tests pass under Compute Sanitizer with zero reported errors.
+Independent conversion and linear fixtures agree bitwise with their reference,
+including both accumulation modes. This verifies the quantization implementation;
+it does not imply FP8 model outputs match FP16. Qwen2, Qwen3-0.6B and Llama3B
+also pass functional loading/inference checks, without broad quality qualification.
