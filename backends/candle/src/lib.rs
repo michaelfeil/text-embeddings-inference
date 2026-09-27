@@ -203,6 +203,18 @@ impl CandleBackend {
         let config: String = std::fs::read_to_string(model_path.join("config.json"))
             .context("Unable to read config file")
             .map_err(|err| BackendError::Start(format!("{err:?}")))?;
+        if enable_fp8_dynamic {
+            let metadata: serde_json::Value = serde_json::from_str(&config)
+                .map_err(|err| BackendError::Start(err.to_string()))?;
+            if metadata
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(BackendError::Start(
+                    "Dynamic FP8 requires an unquantized checkpoint; checkpoint-provided quantization scales are not supported".into(),
+                ));
+            }
+        }
         let config: Config = serde_json::from_str(&config)
             .context("Model is not supported")
             .map_err(|err| BackendError::Start(format!("{err:?}")))?;
