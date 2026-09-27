@@ -287,9 +287,9 @@ impl CandleBackend {
                 return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16, flash attention and Qwen2/Qwen3/Llama/Mistral".into()));
             }
             #[cfg(feature = "cuda")]
-            if get_runtime_compute_cap(device_id).unwrap_or(0) < 89 {
+            if get_runtime_compute_cap(device_id).unwrap_or(0) != 90 {
                 return Err(BackendError::Start(
-                    "Dynamic FP8 requires compute capability 8.9 or newer".into(),
+                    "Dynamic FP8 row scaling requires Hopper (compute capability 9.0)".into(),
                 ));
             }
             tracing::warn!("Experimental dynamic FP8 MLP enabled: per-row weights quantized at load, per-token activations at inference; accuracy may change");

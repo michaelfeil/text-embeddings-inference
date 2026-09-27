@@ -69,6 +69,19 @@ pub struct Fp8Matmul {
 impl Fp8Matmul {
     pub fn new(device: &candle::Device) -> Result<Self> {
         let dev = device.as_cuda_device()?;
+        use cudarc::driver::sys::CUdevice_attribute::*;
+        let stream = dev.cuda_stream();
+        let major = stream
+            .context()
+            .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
+            .map_err(candle::Error::wrap)?;
+        let minor = stream
+            .context()
+            .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
+            .map_err(candle::Error::wrap)?;
+        if (major, minor) != (9, 0) {
+            candle::bail!("FP8 outer-vector scaling requires Hopper (compute capability 9.0)");
+        }
         dev.cuda_stream()
             .context()
             .bind_to_thread()

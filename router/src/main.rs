@@ -82,7 +82,7 @@ struct Args {
     #[clap(long, env)]
     max_batch_requests: Option<usize>,
 
-    /// Experimental calibration-free FP8 MLPs (CUDA FP16 Qwen2/Qwen3/Llama/Mistral).
+    /// Experimental calibration-free FP8 MLPs (Hopper FP16 Qwen2/Qwen3/Llama/Mistral).
     /// Requires a build with experimental-fp8. May change embedding accuracy.
     #[clap(long, env)]
     enable_fp8_dynamic: bool,

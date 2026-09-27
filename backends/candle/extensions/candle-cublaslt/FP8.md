@@ -2,12 +2,14 @@
 
 Build the router with `--no-default-features --features http,experimental-fp8,dynamic-linking`
 using CUDA toolkit 12.9 or newer. `Dockerfile-cuda` includes this build feature
-for compute capabilities 8.9 and newer. Enable with `--enable-fp8-dynamic` or
+for Hopper (compute capability 9.0). Enable with `--enable-fp8-dynamic` or
 `ENABLE_FP8_DYNAMIC=true`, and select `--dtype float16`.
 
 The runtime option defaults to false. Initial support is the CUDA flash-attention
-implementation of Qwen2, Qwen3, Llama and Mistral. Compute capability 8.9 or newer
-is required; validation so far uses H100. Other architectures, CPU/Metal, BF16,
+implementation of Qwen2, Qwen3, Llama and Mistral. Hopper (compute capability 9.0)
+is required; validation so far uses H100. cuBLAS outer-vector scaling is
+[Hopper-only in CUDA 12.9 and 13.1](https://docs.nvidia.com/cuda/archive/13.1.0/cublas/index.html#narrow-precision-data-types-usage),
+even though other FP8 scaling modes support additional GPU architectures. Other architectures, CPU/Metal, BF16,
 and builds without `experimental-fp8` reject the option. BERT and ModernBERT
 remain research work: their bias/activation and accuracy tradeoffs need separate
 validation. An explicitly requested FP8 configuration does not silently fall
