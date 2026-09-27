@@ -70,3 +70,17 @@ Independent conversion and linear fixtures agree bitwise with their reference,
 including both accumulation modes. This verifies the quantization implementation;
 it does not imply FP8 model outputs match FP16. Qwen2, Qwen3-0.6B and Llama3B
 also pass functional loading/inference checks, without broad quality qualification.
+
+## Fused SwiGLU conversion
+
+With dynamic FP8 enabled, supported packed FP16 SwiGLU inputs combine the
+activation and row conversion in one kernel. Intermediate widths 3072, 8192,
+and 12288 are supported; other layouts, widths, and activations retain separate
+operations. There is no additional runtime flag. FP16 inference is unchanged.
+
+The kernel preserves FP16 intermediate rounding before FP8 conversion. Tests
+compare quantized bytes and scale bits with the separate Candle operations.
+Qwen3 0.6B and 8B serving fixtures were bitwise equal to the unfused FP8 path,
+with approximately 1–3% throughput gains on the measured larger batches.
+These checks establish no additional drift in those fixtures, not equivalence
+between FP8 and FP16 or accuracy qualification for other models.

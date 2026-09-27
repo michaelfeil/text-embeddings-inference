@@ -31,15 +31,11 @@ impl MlpLinear {
     pub(crate) fn forward_gated(&self, x: &Tensor, act: &super::HiddenAct) -> Result<Tensor> {
         #[cfg(feature = "experimental-fp8")]
         if matches!(act, super::HiddenAct::Silu) {
-            // Lab-only control: default path remains the evaluated unfused recipe.
-            static FUSE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-            if *FUSE.get_or_init(|| std::env::var("TEI_PERF_FP8_SWIGLU").as_deref() == Ok("1")) {
-                if let Self::Fp8(linear) = self {
-                    if let Some(y) =
-                        with_fp8_executor(x, |executor| linear.forward_packed_swiglu(x, executor))?
-                    {
-                        return Ok(y);
-                    }
+            if let Self::Fp8(linear) = self {
+                if let Some(y) =
+                    with_fp8_executor(x, |executor| linear.forward_packed_swiglu(x, executor))?
+                {
+                    return Ok(y);
                 }
             }
         }
