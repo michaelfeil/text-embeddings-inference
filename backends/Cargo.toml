@@ -31,3 +31,5 @@ mkl = ["text-embeddings-backend-candle?/mkl"]
 accelerate = ["text-embeddings-backend-candle?/accelerate"]
 flash-attn = ["text-embeddings-backend-candle?/flash-attn"]
 flash-attn-v1 = ["text-embeddings-backend-candle?/flash-attn-v1"]
+
+experimental-deberta = ["text-embeddings-backend-candle?/experimental-deberta"]
