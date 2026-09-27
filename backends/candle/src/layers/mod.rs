@@ -4,6 +4,8 @@ mod gated_activation;
 mod index_select;
 mod layer_norm;
 mod linear;
+#[cfg(feature = "cuda")]
+mod mean_pool;
 mod radix_mlp;
 #[cfg(feature = "cuda")]
 mod residual_add;
@@ -17,6 +19,8 @@ pub use gated_activation::gated_activation;
 pub use index_select::index_select;
 pub use layer_norm::{LayerNorm, LayerNormNoBias};
 pub use linear::{HiddenAct, Linear};
+#[cfg(feature = "cuda")]
+pub use mean_pool::mean_pool;
 #[allow(unused_imports)]
 pub use radix_mlp::CompactUnfoldTensors;
 #[allow(unused_imports)]
