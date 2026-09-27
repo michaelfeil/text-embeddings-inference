@@ -7,6 +7,17 @@ fn main() {
     }
     #[cfg(feature = "cuda")]
     {
+        println!("cargo:rerun-if-changed=src/pooling_kernels/mean_pool.cu");
+        cudaforge::KernelBuilder::new()
+            .source_dir("src/pooling_kernels")
+            .arg("-std=c++17")
+            .arg("-O3")
+            .build_ptx()
+            .expect("compile pooling kernels")
+            .write(
+                std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("pooling_ptx.rs"),
+            )
+            .expect("write pooling PTX bindings");
         println!("cargo:rerun-if-changed=src/kernels/gated_activation.cu");
         let bindings = cudaforge::KernelBuilder::new()
             .source_dir("src/kernels")

@@ -307,29 +307,11 @@ impl FlashDistilBertModel {
                     }
                 }
                 // Mean pooling
-                Pool::Mean => {
-                    if batch_size > 1 {
-                        // for each request that requires pooling
-                        let results: Result<Vec<Tensor>> = batch
-                            .pooled_indices
-                            .into_iter()
-                            .map(|i| {
-                                let i = i as usize;
-                                let start = batch.cumulative_seq_lengths[i];
-                                let len = batch.cumulative_seq_lengths[i + 1] - start;
-
-                                // Mean
-                                let embeddings = outputs.narrow(0, start as usize, len as usize)?;
-                                embeddings.sum_keepdim(0)? / (len as f64)
-                            })
-                            .collect();
-
-                        // Concatenate all results
-                        Tensor::cat(&results?, 0)?
-                    } else {
-                        (outputs.sum_keepdim(0)? / (batch.max_length as f64))?
-                    }
-                }
+                Pool::Mean => crate::layers::mean_pool(
+                    &outputs,
+                    &batch.cumulative_seq_lengths,
+                    &batch.pooled_indices,
+                )?,
                 Pool::Splade => {
                     // Unwrap is safe here
                     let splade_head = self.splade.as_ref().unwrap();
