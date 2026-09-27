@@ -52,3 +52,5 @@ cuda-static-linking = ["candle/cuda-static-linking", "candle-flash-attn?/static-
 cuda-dynamic-linking = ["candle/cuda-dynamic-linking"]
 flash-attn-v1 = ["dep:candle-flash-attn-v1", "cuda"]
 flash-attn = ["dep:candle-flash-attn", "cuda"]
+
+experimental-deberta = ["cuda", "dep:candle-flash-attn-v4", "candle-flash-attn-v4/deberta"]

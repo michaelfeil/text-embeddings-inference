@@ -89,3 +89,25 @@ Find the appropriate Docker image for your hardware in the following table:
 
 **Warning**: Flash Attention is turned off by default for the Turing image as it suffers from precision issues.
 You can turn Flash Attention v1 ON by using the `USE_FLASH_ATTENTION=True` environment variable.
+
+### Experimental packed DeBERTa-v2/v3 (Hopper)
+
+The `experimental-deberta` build feature adds Candle inference for
+`model_type: deberta-v2`, including Microsoft's DeBERTa-v3 and mDeBERTa-v3
+backbones. It requires the FA4 native bundle built with `--deberta` and
+`FA4_NATIVE_LIB_DIR` at build time (plus its shared libraries at runtime).
+The current kernel supports H100/SM90, FP16/BF16, and head dimension 64.
+
+Tokens remain packed through embeddings, transformer layers, and pooling.
+Relative attention uses token-by-bucket tables and a linear relative-position
+lookup; no padded batch or sequence-by-sequence attention matrix is built.
+The scheduler budgets actual tokens. Relative tables still consume memory
+proportional to total tokens, head count, and relative bucket count.
+
+Supports shared/separate position projections, bucketed/clipped relative
+positions, optional input position/type embeddings, and per-sequence v2
+convolution. Standard sequence/token classification heads are supported;
+GLiNER-specific heads and schemas are not provided by this feature. Original
+DeBERTa-v1 and masked-LM heads are not implemented. Configurations outside the
+supported geometry fail explicitly. This is experimental pending model/task
+accuracy qualification; it is not a bitwise replacement for eager attention.
