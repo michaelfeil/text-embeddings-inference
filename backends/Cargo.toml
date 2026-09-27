@@ -19,6 +19,7 @@ tracing = { workspace = true }
 rand = { workspace = true }
 
 [features]
+experimental-fp8 = ["candle", "text-embeddings-backend-candle/experimental-fp8"]
 clap = ["dep:clap", "text-embeddings-backend-core/clap"]
 python = ["dep:text-embeddings-backend-python"]
 ort = ["dep:text-embeddings-backend-ort"]

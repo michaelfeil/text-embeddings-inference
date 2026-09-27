@@ -135,6 +135,22 @@ impl CandleBackend {
         dense_paths: Option<Vec<String>>,
         device_id: usize,
     ) -> Result<Self, BackendError> {
+        Self::new_with_fp8(model_path, dtype, model_type, dense_paths, device_id, false)
+    }
+
+    pub fn new_with_fp8(
+        model_path: &Path,
+        dtype: String,
+        model_type: ModelType,
+        dense_paths: Option<Vec<String>>,
+        device_id: usize,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self, BackendError> {
+        if enable_fp8_dynamic && !cfg!(feature = "experimental-fp8") {
+            return Err(BackendError::Start(
+                "Dynamic FP8 requires an experimental-fp8 build".into(),
+            ));
+        }
         // Default files
         let default_safetensors = model_path.join("model.safetensors");
         let default_pytorch = model_path.join("pytorch_model.bin");
@@ -242,6 +258,29 @@ impl CandleBackend {
             return Err(BackendError::Start(
                 "bfloat16 CUDA inference requires compute capability 8.0 or newer".into(),
             ));
+        }
+
+        if enable_fp8_dynamic {
+            if dtype != DType::F16
+                || !device.is_cuda()
+                || !matches!(
+                    &config,
+                    Config::Qwen2(_) | Config::Qwen3(_) | Config::Llama(_) | Config::Mistral(_)
+                )
+                || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
+                || !std::env::var("USE_FLASH_ATTENTION")
+                    .unwrap_or("true".into())
+                    .eq_ignore_ascii_case("true")
+            {
+                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16, flash attention and Qwen2/Qwen3/Llama/Mistral".into()));
+            }
+            #[cfg(feature = "cuda")]
+            if get_runtime_compute_cap(device_id).unwrap_or(0) < 89 {
+                return Err(BackendError::Start(
+                    "Dynamic FP8 requires compute capability 8.9 or newer".into(),
+                ));
+            }
+            tracing::warn!("Experimental dynamic FP8 MLP enabled: per-row weights quantized at load, per-token activations at inference; accuracy may change");
         }
 
         let vb = if model_files.len() == 1 && model_files[0].extension().unwrap() == "bin" {
@@ -489,7 +528,7 @@ impl CandleBackend {
                 }
                 tracing::info!("Starting FlashMistral model on {:?}", device);
                 Ok(Box::new(
-                    FlashMistralModel::load(vb, &config, model_type).s()?,
+                    FlashMistralModel::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -512,7 +551,7 @@ impl CandleBackend {
                     use_bidirectional_attention: config.use_bidirectional_attention,
                 };
                 Ok(Box::new(
-                    FlashMistralModel::load(vb, &cfg_mistral, model_type).s()?,
+                    FlashMistralModel::load(vb, &cfg_mistral, model_type, enable_fp8_dynamic).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -567,7 +606,7 @@ impl CandleBackend {
                 }
                 tracing::info!("Starting FlashQwen2 model on {:?}", device);
                 Ok(Box::new(
-                    FlashQwen2Model::load(vb, &config, model_type).s()?,
+                    FlashQwen2Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -584,7 +623,7 @@ impl CandleBackend {
                 } else {
                     tracing::info!("Starting FlashQwen3 model on {:?}", device);
                     Ok(Box::new(
-                        FlashQwen3Model::load(vb, &config, model_type).s()?,
+                        FlashQwen3Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
                     ))
                 }
             }

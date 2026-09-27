@@ -41,6 +41,7 @@ anyhow = { version = "1", features = ["backtrace"] }
 cudaforge = { version = "0.1", optional = true }
 
 [features]
+experimental-fp8 = ["cuda", "candle-cublaslt/experimental-fp8"]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate"]
 metal = ["candle/metal", "candle-nn/metal"]
 mkl = ["dep:intel-mkl-src", "candle/mkl"]

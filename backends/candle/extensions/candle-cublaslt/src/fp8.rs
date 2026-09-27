@@ -1,4 +1,4 @@
-//! Experimental row-scaled E4M3 GEMM. Not connected to serving paths.
+//! Experimental row-scaled E4M3 GEMM for opt-in dynamic FP8 MLP inference.
 use candle::{DType, Result, Storage, Tensor};
 use cudarc::cublaslt::{result as lt, sys};
 use cudarc::driver::{DevicePtr, DevicePtrMut};
@@ -203,13 +203,14 @@ impl Fp8Matmul {
             );
             let pref = Preference(lt::create_matmul_pref().map_err(err)?);
             unsafe {
+                let attr = sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES;
                 lt::set_matmul_pref_attribute(
-            pref.0,
-            sys::cublasLtMatmulPreferenceAttributes_t::CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,
-            &workspace_bytes as *const _ as *const _,
-            size_of::<usize>(),
-        )
-        .map_err(err)?;
+                    pref.0,
+                    attr,
+                    &workspace_bytes as *const _ as *const _,
+                    size_of::<usize>(),
+                )
+                .map_err(err)?;
             }
             let algo = unsafe {
                 lt::get_matmul_algo_heuristic(self.handle.0, d.0, a.0, b.0, c.0, c.0, pref.0)

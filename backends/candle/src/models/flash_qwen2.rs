@@ -1,4 +1,5 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::MlpLinear;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
 };
@@ -135,8 +136,8 @@ impl Qwen2Attention {
 }
 
 struct Qwen2MLP {
-    gate_up_proj: Linear,
-    down_proj: Linear,
+    gate_up_proj: MlpLinear,
+    down_proj: MlpLinear,
 
     act: HiddenAct,
 
@@ -144,7 +145,7 @@ struct Qwen2MLP {
 }
 
 impl Qwen2MLP {
-    pub fn load(vb: VarBuilder, config: &Qwen2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Qwen2Config, enable_fp8_dynamic: bool) -> Result<Self> {
         let intermediate_size = config.intermediate_size;
 
         let gate_proj_weight = vb
@@ -156,12 +157,12 @@ impl Qwen2MLP {
             .get((intermediate_size, config.hidden_size), "weight")?;
 
         let gate_up_proj_weight = Tensor::cat(&[&gate_proj_weight, &up_proj_weight], 0)?;
-        let gate_up_proj = Linear::new(gate_up_proj_weight, None, None);
+        let gate_up_proj = MlpLinear::new(gate_up_proj_weight, enable_fp8_dynamic)?;
 
         let down_proj_weight = vb
             .pp("down_proj")
             .get((config.hidden_size, intermediate_size), "weight")?;
-        let down_proj = Linear::new(down_proj_weight, None, None);
+        let down_proj = MlpLinear::new(down_proj_weight, enable_fp8_dynamic)?;
 
         Ok(Self {
             gate_up_proj,
@@ -192,9 +193,9 @@ struct Qwen2Layer {
 }
 
 impl Qwen2Layer {
-    pub fn load(vb: VarBuilder, config: &Qwen2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Qwen2Config, enable_fp8_dynamic: bool) -> Result<Self> {
         let attention = Qwen2Attention::load(vb.pp("self_attn"), config)?;
-        let mlp = Qwen2MLP::load(vb.pp("mlp"), config)?;
+        let mlp = Qwen2MLP::load(vb.pp("mlp"), config, enable_fp8_dynamic)?;
 
         let input_layer_norm = RMSNorm::load(
             vb.pp("input_layernorm"),
@@ -260,7 +261,12 @@ pub struct FlashQwen2Model {
 }
 
 impl FlashQwen2Model {
-    pub fn load(vb: VarBuilder, config: &Qwen2Config, model_type: ModelType) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &Qwen2Config,
+        model_type: ModelType,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         match vb.device() {
             Device::Cuda(_) => {}
             _ => candle::bail!("FlashQwen2 requires Cuda"),
@@ -294,7 +300,9 @@ impl FlashQwen2Model {
         );
 
         let layers = (0..config.num_hidden_layers)
-            .map(|index| Qwen2Layer::load(vb.pp(format!("layers.{index}")), config))
+            .map(|index| {
+                Qwen2Layer::load(vb.pp(format!("layers.{index}")), config, enable_fp8_dynamic)
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;

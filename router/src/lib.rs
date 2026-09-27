@@ -52,6 +52,7 @@ pub async fn run(
     max_batch_tokens: usize,
     max_batch_requests: Option<usize>,
     radix_mlp_threshold: f32,
+    enable_fp8_dynamic: bool,
     max_client_batch_size: usize,
     auto_truncate: bool,
     default_prompt: Option<String>,
@@ -303,7 +304,7 @@ pub async fn run(
                 replica,
                 "Initializing backend replica"
             );
-            let backend = text_embeddings_backend::Backend::new_shared(
+            let backend = text_embeddings_backend::Backend::new_shared_with_fp8(
                 model_root,
                 api_repo,
                 dtype,
@@ -314,6 +315,7 @@ pub async fn run(
                 otlp_endpoint,
                 otlp_service_name,
                 device,
+                enable_fp8_dynamic,
             )
             .await
             .with_context(|| format!("Could not create backend on device {device}"))?;
@@ -403,6 +405,7 @@ pub async fn run(
         max_client_batch_size,
         auto_truncate,
         radix_mlp_threshold,
+        enable_fp8_dynamic,
         version: env!("CARGO_PKG_VERSION"),
         sha: option_env!("VERGEN_GIT_SHA"),
         docker_label: option_env!("DOCKER_LABEL"),
@@ -662,6 +665,8 @@ pub struct Info {
     pub tokenization_workers: usize,
     #[cfg_attr(feature = "http", schema(example = "0.5"))]
     pub radix_mlp_threshold: f32,
+    /// Experimental per-token activation and per-row weight FP8 MLP quantization.
+    pub enable_fp8_dynamic: bool,
     /// Router Info
     #[cfg_attr(feature = "http", schema(example = "0.5.0"))]
     pub version: &'static str,
