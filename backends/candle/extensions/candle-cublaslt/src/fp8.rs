@@ -273,6 +273,104 @@ pub fn scaled_mm(x: &Tensor, w: &Tensor, sx: &Tensor, sw: &Tensor) -> Result<Ten
     Fp8Matmul::new(x.device())?.scaled_mm(x, w, sx, sw)
 }
 
+/// Quantize finite contiguous FP16 rows to E4M3 and FP32 row scales.
+/// Matches the dynamic-row research recipe, including scale rounding. The same
+/// operation quantizes weight rows once at load time and activations per batch.
+pub fn quantize_rows(x: &Tensor) -> Result<(Tensor, Tensor)> {
+    use cudarc::driver::{LaunchConfig, PushKernelArg};
+    let (m, k) = x.dims2()?;
+    if x.dtype() != DType::F16
+        || !x.is_contiguous()
+        || x.storage_and_layout().1.start_offset() != 0
+        || m == 0
+        || k == 0
+    {
+        candle::bail!("FP8 conversion requires nonempty zero-offset contiguous FP16 matrices")
+    }
+    let rows = i32::try_from(m).map_err(candle::Error::wrap)?;
+    let width = i32::try_from(k).map_err(candle::Error::wrap)?;
+    let dev = x.device().as_cuda_device()?;
+    use cudarc::driver::sys::CUdevice_attribute::*;
+    let ctx = dev.cuda_stream();
+    let major = ctx
+        .context()
+        .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
+        .map_err(candle::Error::wrap)?;
+    let minor = ctx
+        .context()
+        .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
+        .map_err(candle::Error::wrap)?;
+    if major * 10 + minor < 89 {
+        candle::bail!("FP8 conversion requires compute capability 8.9 or newer")
+    }
+    let (storage, _) = x.storage_and_layout();
+    let Storage::Cuda(storage) = &*storage else {
+        candle::bail!("FP8 conversion requires CUDA")
+    };
+    let input = storage.as_cuda_slice::<f16>()?;
+    let mut out = unsafe { dev.alloc::<float8::F8E4M3>(x.elem_count())? };
+    let mut scales = unsafe { dev.alloc::<f32>(m)? };
+    let (name, threads, special) = match k {
+        768 => ("quant_f16_768", 64, true),
+        1024 => ("quant_f16_1024", 64, true),
+        1152 => ("quant_f16_1152", 64, true),
+        3072 => ("quant_f16_3072", 128, true),
+        4096 => ("quant_f16_4096", 128, true),
+        8192 => ("quant_f16_8192", 128, true),
+        12288 => ("quant_f16_12288", 128, true),
+        _ => ("quant_f16_generic", 128, false),
+    };
+    let function = dev.get_or_load_custom_func(
+        name,
+        "tei-fp8-quantize",
+        include_str!(concat!(env!("OUT_DIR"), "/fp8_quant.ptx")),
+    )?;
+    let mut builder = function.builder();
+    builder.arg(input).arg(&mut out).arg(&mut scales);
+    if !special {
+        builder.arg(&width);
+    }
+    unsafe {
+        builder.launch(LaunchConfig {
+            grid_dim: (rows as u32, 1, 1),
+            block_dim: (threads, 1, 1),
+            shared_mem_bytes: 0,
+        })
+    }
+    .map_err(candle::Error::wrap)?;
+    let out = candle::CudaStorage::wrap_cuda_slice(out, dev.clone());
+    let scales = candle::CudaStorage::wrap_cuda_slice(scales, dev.clone());
+    Ok((
+        Tensor::from((Storage::Cuda(out), candle::Shape::from((m, k)))),
+        Tensor::from((Storage::Cuda(scales), candle::Shape::from(m))),
+    ))
+}
+
+/// Experimental bias-free FP8 linear layer. Weight conversion happens once;
+/// the caller retains a worker-owned GEMM executor across layer invocations.
+pub struct Fp8Linear {
+    weight: Tensor,
+    scales: Tensor,
+}
+impl Fp8Linear {
+    pub fn new(weight: &Tensor) -> Result<Self> {
+        let (n, k) = weight.dims2()?;
+        if n == 0 || k == 0 || n % 16 != 0 || k % 16 != 0 {
+            candle::bail!("FP8 linear dimensions must be nonzero multiples of 16")
+        }
+        let (weight, scales) = quantize_rows(weight)?;
+        Ok(Self { weight, scales })
+    }
+    pub fn forward(&self, x: &Tensor, executor: &mut Fp8Matmul) -> Result<Tensor> {
+        let (_, k) = x.dims2()?;
+        if k != self.weight.dim(1)? || !x.device().same_device(self.weight.device()) {
+            candle::bail!("FP8 linear input dimension/device mismatch")
+        }
+        let (x, sx) = quantize_rows(x)?;
+        executor.scaled_mm(&x, &self.weight, &sx, &self.scales)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -374,6 +472,100 @@ mod tests {
                 .to_vec1::<f32>()?;
             assert!(result.iter().all(|v| *v == expected));
         }
+        Ok(())
+    }
+    #[test]
+    fn native_conversion_matches_finite_reference() -> Result<()> {
+        let dev = candle::Device::new_cuda(0)?;
+        for k in [17, 768, 777, 1024, 1152, 3072, 4096, 8192, 12288] {
+            let mut values = vec![f16::ZERO; 3 * k];
+            for i in k..3 * k {
+                values[i] = f16::from_f32(((i * 37 % 513) as f32 - 256.) / 32.);
+            }
+            values[k] = f16::MAX;
+            values[2 * k] = f16::from_bits(1);
+            let x = Tensor::from_vec(values.clone(), (3, k), &dev)?;
+            let (q, s) = quantize_rows(&x)?;
+            let q = q.flatten_all()?.to_vec1::<float8::F8E4M3>()?;
+            let s = s.to_vec1::<f32>()?;
+            for row in 0..3 {
+                let amax = values[row * k..(row + 1) * k]
+                    .iter()
+                    .map(|v| v.to_f32().abs())
+                    .fold(1e-12f32, f32::max);
+                let scale = amax * (1f32 / 448f32);
+                assert_eq!(s[row].to_bits(), scale.to_bits());
+                for col in 0..k {
+                    let reference = float8::F8E4M3::from_f32(
+                        (values[row * k + col].to_f32() / scale).clamp(-448., 448.),
+                    );
+                    assert_eq!(
+                        q[row * k + col].to_bits(),
+                        reference.to_bits(),
+                        "K={k} row={row} col={col}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires TEI_FP8_FIXTURE from the independent Torch/Triton reference"]
+    fn native_conversion_matches_external_fixture() -> Result<()> {
+        let dev = candle::Device::new_cuda(0)?;
+        let path = std::env::var("TEI_FP8_FIXTURE").map_err(candle::Error::wrap)?;
+        let tensors = candle::safetensors::load(path, &dev)?;
+        let mut checked = 0;
+        for (name, x) in &tensors {
+            if !name.ends_with(".input") {
+                continue;
+            }
+            checked += 1;
+            let prefix = name.trim_end_matches(".input");
+            if let Some(weight) = tensors.get(&format!("{prefix}.weight")) {
+                let layer = Fp8Linear::new(weight)?;
+                let mut executor = Fp8Matmul::new(&dev)?;
+                let output = layer
+                    .forward(x, &mut executor)?
+                    .flatten_all()?
+                    .to_vec1::<f16>()?;
+                let expected = tensors[&format!("{prefix}.expected")]
+                    .flatten_all()?
+                    .to_vec1::<f16>()?;
+                assert_eq!(output.len(), expected.len());
+                assert_eq!(
+                    output
+                        .iter()
+                        .zip(&expected)
+                        .filter(|(a, b)| a.to_bits() != b.to_bits())
+                        .count(),
+                    0,
+                    "linear {prefix}"
+                );
+            }
+
+            let (q, s) = quantize_rows(x)?;
+            let actual = q.flatten_all()?.to_vec1::<float8::F8E4M3>()?;
+            let expected = tensors[&format!("{prefix}.fp8")]
+                .flatten_all()?
+                .to_vec1::<float8::F8E4M3>()?;
+            assert_eq!(
+                actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{prefix}"
+            );
+            let actual = s.flatten_all()?.to_vec1::<f32>()?;
+            let expected = tensors[&format!("{prefix}.scale")]
+                .flatten_all()?
+                .to_vec1::<f32>()?;
+            assert_eq!(
+                actual.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                expected.iter().map(|v| v.to_bits()).collect::<Vec<_>>(),
+                "{prefix}"
+            );
+        }
+        assert!(checked > 0, "fixture has no inputs");
         Ok(())
     }
 }
