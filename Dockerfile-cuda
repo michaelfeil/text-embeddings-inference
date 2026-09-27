@@ -22,6 +22,17 @@ COPY scripts/cargo-static-cuda.sh /usr/local/bin/cargo-static-cuda
 RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
 RUN cargo install cargo-chef --version $CARGO_CHEF --locked
 
+FROM base-builder AS fa4-builder
+ARG CUDA_COMPUTE_CAP=80
+COPY backends/candle/Cargo.toml /tmp/candle-deps.toml
+COPY scripts/build-fa4-native.sh /usr/local/bin/build-fa4-native
+RUN --mount=type=cache,target=/root/.cache/pip \
+    mkdir -p /opt/fa4 && \
+    if [ "$CUDA_COMPUTE_CAP" = 90 ]; then \
+        apt-get update && apt-get install -y --no-install-recommends python3-venv python3-pip && \
+        build-fa4-native /tmp/candle-deps.toml /opt/fa4; \
+    fi
+
 FROM base-builder AS planner
 
 WORKDIR /usr/src
@@ -35,6 +46,8 @@ COPY Cargo.lock ./
 RUN cargo chef prepare  --recipe-path recipe.json
 
 FROM base-builder AS builder
+COPY --from=fa4-builder /opt/fa4 /opt/fa4
+ENV FA4_NATIVE_LIB_DIR=/opt/fa4
 
 ARG CUDA_COMPUTE_CAP=80
 ARG GIT_SHA
@@ -79,7 +92,7 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     then \
         cargo-static-cuda chef cook --release --features candle-cuda-turing --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
     else \
-        cargo-static-cuda chef cook --release --features candle-cuda --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
+        cargo-static-cuda chef cook --release --features candle-cuda $(if [ "$CUDA_COMPUTE_CAP" = 90 ]; then printf %s --features=fa4; fi) --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
     fi;
 
 COPY backends backends
@@ -96,7 +109,7 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     then \
         cargo-static-cuda build --release --bin text-embeddings-router -F candle-cuda-turing -F static-linking -F http --no-default-features && sccache -s; \
     else \
-        cargo-static-cuda build --release --bin text-embeddings-router -F candle-cuda -F static-linking -F http --no-default-features && sccache -s; \
+        cargo-static-cuda build --release --bin text-embeddings-router -F candle-cuda $(if [ "$CUDA_COMPUTE_CAP" = 90 ]; then printf %s --features=fa4; fi) -F static-linking -F http --no-default-features && sccache -s; \
     fi;
 
 FROM builder AS grpc-builder
@@ -119,10 +132,12 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     then \
         cargo-static-cuda build --release --bin text-embeddings-router -F candle-cuda-turing -F static-linking -F grpc --no-default-features && sccache -s; \
     else \
-        cargo-static-cuda build --release --bin text-embeddings-router -F candle-cuda -F static-linking -F grpc --no-default-features && sccache -s; \
+        cargo-static-cuda build --release --bin text-embeddings-router -F candle-cuda $(if [ "$CUDA_COMPUTE_CAP" = 90 ]; then printf %s --features=fa4; fi) -F static-linking -F grpc --no-default-features && sccache -s; \
     fi;
 
 FROM nvidia/cuda:12.9.0-base-ubuntu22.04 AS base
+COPY --from=fa4-builder /opt/fa4 /opt/fa4
+ENV LD_LIBRARY_PATH=/opt/fa4:${LD_LIBRARY_PATH}
 
 ARG DEFAULT_USE_FLASH_ATTENTION=True
 

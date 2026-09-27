@@ -8,6 +8,18 @@ thread_local! {
     static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
 }
 
+// Auto is the default. Keep a rollback control and honor the old opt-out.
+pub(crate) fn enabled() -> Result<bool> {
+    match std::env::var("TEI_ATTENTION_BACKEND").as_deref() {
+        Ok("auto") => Ok(true),
+        Ok("fa2") => Ok(false),
+        Err(std::env::VarError::NotPresent) => {
+            Ok(std::env::var("TEI_PERF_FA4").as_deref() != Ok("0"))
+        }
+        _ => candle::bail!("TEI_ATTENTION_BACKEND must be auto or fa2"),
+    }
+}
+
 pub(crate) struct BatchGuard {
     // None denotes an inactive scope; Some(None) an active scope with no parent.
     previous: Option<Option<(Tensor, Seqlens)>>,
@@ -22,7 +34,10 @@ impl Drop for BatchGuard {
 }
 
 pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<BatchGuard> {
-    if std::env::var("TEI_PERF_FA4").as_deref() != Ok("1") {
+    if !offsets.device().is_cuda()
+        || crate::flash_attn::runtime_compute_cap(offsets.device())? != 90
+        || !enabled()?
+    {
         return Ok(BatchGuard {
             previous: None,
             _thread: std::marker::PhantomData,
@@ -53,6 +68,21 @@ pub(crate) fn try_forward(
     if offsets_q.id() != offsets_k.id() || d != kd || !matches!(q.dtype(), DType::F16 | DType::BF16)
     {
         return Ok(None);
+    }
+    if v.dims() != k.dims() || h == 0 || hk == 0 {
+        return Ok(None);
+    }
+    for t in [q, k, v] {
+        if t.dtype() != q.dtype()
+            || !t.device().same_device(q.device())
+            || t.stride()[2] != 1
+            || t.stride()[1] != t.dims()[2]
+            || t.stride()[0] < t.dims()[1] * t.dims()[2]
+            || !t.stride()[0].is_multiple_of(8)
+            || !t.layout().start_offset().is_multiple_of(8)
+        {
+            return Ok(None);
+        }
     }
     let mask = match (d, h == hk, causal, left, right) {
         (64, true, false, None, None) => Mask::Global,
@@ -97,4 +127,54 @@ pub(crate) fn try_forward(
         });
         Ok(Some(output))
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candle::Device;
+
+    #[test]
+    #[ignore = "requires SM90, FA4 native bundle, and automatic backend selection"]
+    fn ragged_metadata_scopes_restore_on_return_and_error() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        assert!(enabled()?);
+        let offsets = Tensor::new(&[0u32, 1, 5], &device)?;
+        let qk = Tensor::zeros((5, 1, 64), DType::F16, &device)?;
+        let values: Vec<f32> = [9., 1., 2., 3., 4.]
+            .into_iter()
+            .flat_map(|v| [v; 64])
+            .collect();
+        let v = Tensor::from_vec(values, (5, 1, 64), &device)?.to_dtype(DType::F16)?;
+        let run = || try_forward(&qk, &qk, &v, &offsets, &offsets, 0.125, false, None, None);
+        assert!(run()?.is_none());
+        {
+            let _outer = prepare_batch(&offsets, &[0, 1, 5])?;
+            let expected = run()?
+                .expect("auto must select FA4")
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?;
+            assert!(expected[..64].iter().all(|v| (*v - 9.).abs() < 0.001));
+            assert!(expected[64..].iter().all(|v| (*v - 2.5).abs() < 0.001));
+            assert!(prepare_batch(&offsets, &[0, 4, 3]).is_err());
+            assert!(run()?.is_some());
+            {
+                let inner_offsets = Tensor::new(&[0u32, 5], &device)?;
+                let _inner = prepare_batch(&inner_offsets, &[0, 5])?;
+                assert!(run().is_err(), "stale sequence boundaries must not be used");
+            }
+            let restored = run()?
+                .unwrap()
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?;
+            assert_eq!(expected, restored);
+        }
+        assert!(
+            run()?.is_none(),
+            "a completed batch must not leak its metadata"
+        );
+        Ok(())
+    }
 }

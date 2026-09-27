@@ -279,6 +279,9 @@ impl FlashGTEModel {
             batch_size + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
 
         let word_embeddings = self.word_embeddings.forward(&input_ids)?;
         let token_type_embeddings = self

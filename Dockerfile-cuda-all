@@ -1,4 +1,4 @@
-FROM nvidia/cuda:12.2.0-devel-ubuntu22.04 AS base-builder
+FROM nvidia/cuda:12.9.0-devel-ubuntu22.04 AS base-builder
 
 ENV SCCACHE=0.10.0
 ENV RUSTC_WRAPPER=/usr/local/bin/sccache
@@ -21,6 +21,13 @@ COPY rust-toolchain.toml rust-toolchain.toml
 RUN curl https://sh.rustup.rs -sSf | bash -s -- -y
 RUN cargo install cargo-chef --version $CARGO_CHEF --locked
 
+FROM base-builder AS fa4-builder
+COPY backends/candle/Cargo.toml /tmp/candle-deps.toml
+COPY scripts/build-fa4-native.sh /usr/local/bin/build-fa4-native
+RUN --mount=type=cache,target=/root/.cache/pip \
+    apt-get update && apt-get install -y --no-install-recommends python3-venv python3-pip && \
+    build-fa4-native /tmp/candle-deps.toml /opt/fa4
+
 FROM base-builder AS planner
 
 WORKDIR /usr/src
@@ -34,6 +41,8 @@ COPY Cargo.lock ./
 RUN cargo chef prepare  --recipe-path recipe.json
 
 FROM base-builder AS builder
+COPY --from=fa4-builder /opt/fa4 /opt/fa4
+ENV FA4_NATIVE_LIB_DIR=/opt/fa4
 
 ARG GIT_SHA
 ARG DOCKER_LABEL
@@ -64,7 +73,7 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    CUDA_COMPUTE_CAP=90 cargo chef cook --release --features candle-cuda --recipe-path recipe.json && sccache -s;
+    CUDA_COMPUTE_CAP=90 cargo chef cook --release --features candle-cuda,fa4 --recipe-path recipe.json && sccache -s;
 
 COPY backends backends
 COPY core core
@@ -86,11 +95,13 @@ RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/te
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    CUDA_COMPUTE_CAP=90 cargo build --release --bin text-embeddings-router -F candle-cuda && sccache -s;
+    CUDA_COMPUTE_CAP=90 cargo build --release --bin text-embeddings-router -F candle-cuda,fa4 && sccache -s;
 
 RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-90
 
-FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04 AS base
+FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04 AS base
+COPY --from=fa4-builder /opt/fa4 /opt/fa4
+ENV LD_LIBRARY_PATH=/opt/fa4:${LD_LIBRARY_PATH}
 
 ARG DEFAULT_USE_FLASH_ATTENTION=True
 

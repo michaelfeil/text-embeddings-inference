@@ -1,7 +1,7 @@
 mod alibi;
 #[cfg(feature = "cuda")]
 mod compute_cap;
-#[cfg(feature = "experimental-fa4")]
+#[cfg(feature = "fa4")]
 mod fa4_native;
 #[cfg(feature = "cuda")]
 mod flash_attn;

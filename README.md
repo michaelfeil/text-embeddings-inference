@@ -629,17 +629,27 @@ docker build . -f Dockerfile --platform=linux/arm64
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
 
-### Experimental FA4 on Hopper
+### Automatic FA4 on Hopper
 
-The `experimental-fa4` build feature adds the shared
-[`candle-flash-attn-v4`](https://github.com/michaelfeil/candle-flash-attn-v4)
-wrapper. Build its pinned native bundle first and set `FA4_NATIVE_LIB_DIR`
-during the TEI build; include that bundle in `LD_LIBRARY_PATH` when serving.
-Enable dispatch with `TEI_PERF_FA4=1` (off by default).
+Hopper CUDA images build and include the pinned FA4 native bundle. Supported
+FP16/BF16 packed attention selects FA4 automatically; no runtime opt-in is needed.
+`TEI_ATTENTION_BACKEND=fa2` forces the compatibility backend. `auto` is the default.
+The old `TEI_PERF_FA4=0` opt-out is retained when the new setting is absent.
 
-This initial integration covers packed FP16/BF16 BERT and ModernBERT attention
-with head dimension 64, and Qwen3 causal attention with head dimension 128
-and a 4:1 query/KV head ratio, on SM90. Unsupported configurations retain the
-existing attention backend. Native execution errors are returned, not retried.
-This is an experimental performance option; model-level quality and latency
-must be qualified for a workload before deployment.
+All models using the shared flash-attention dispatcher register their variable-length
+boundaries once per batch. The current native bundle supports SM90 d64 MHA global
+and two-sided local attention, and d128 causal GQA with a 4:1 query/KV head ratio.
+Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
+backend. FA4 execution errors propagate. Other architectures retain their existing
+backend until their native bundles are runtime-qualified.
+
+Source builds use `--features fa4` and `FA4_NATIVE_LIB_DIR` pointing to the native
+bundle; include its shared libraries in `LD_LIBRARY_PATH`. `experimental-fa4`
+remains an alias. `scripts/build-fa4-native.sh` builds the pinned bundle without
+a GPU; Python dependencies stay in the build environment.
+
+**Quality qualification:** FA4 is not bitwise identical to FA2. Local ModernBERT
+FP16 retrieval results changed by -0.0285 NFCorpus and -0.1171 SciFact NDCG@10
+points. Confidence intervals included zero, but equivalence is not established.
+This default-promotion proposal must be reviewed with those results; no universal
+accuracy-neutrality or performance claim is made.

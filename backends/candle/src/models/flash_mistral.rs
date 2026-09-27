@@ -325,6 +325,9 @@ impl FlashMistralModel {
             batch_size + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
 
         let cos = index_select(&self.cos_cache, &compact_tensors.position_ids_compact, 0)?;
         let sin = index_select(&self.sin_cache, &compact_tensors.position_ids_compact, 0)?;
