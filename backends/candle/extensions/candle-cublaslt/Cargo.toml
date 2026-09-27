@@ -3,7 +3,11 @@ name = "candle-cublaslt"
 version = "0.0.1"
 edition = "2021"
 license = "MIT OR Apache-2.0"
+[features]
+experimental-fp8 = ["dep:float8"]
+
 [dependencies]
+float8 = { version = "0.7", optional = true }
 candle = { workspace = true, features = ["cuda"] }
 half = { workspace = true }
 cudarc = { workspace = true }

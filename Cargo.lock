@@ -574,6 +574,7 @@ dependencies = [
  "candle-core",
  "candle-nn",
  "cudarc",
+ "float8",
  "half",
  "num_cpus",
  "rayon",
