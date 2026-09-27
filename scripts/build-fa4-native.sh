@@ -32,7 +32,7 @@ print(pathlib.Path(tvm_ffi.__file__).parent)
 PY
 )
 "$python_bin" "$work_path/source/scripts/build_aot.py" "$bundle_path" \
-    --compile-only --runtime-dir "$runtime_path" --ffi-root "$ffi_path"
+    --compile-only --deberta --runtime-dir "$runtime_path" --ffi-root "$ffi_path"
 mkdir -p "$bundle_path/licenses/wrapper"
 cp "$work_path/source"/LICENSE* "$bundle_path/licenses/wrapper/"
 "$python_bin" - "$bundle_path/licenses" <<'PY'

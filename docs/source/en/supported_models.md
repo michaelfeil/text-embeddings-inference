@@ -92,6 +92,10 @@ You can turn Flash Attention v1 ON by using the `USE_FLASH_ATTENTION=True` envir
 
 ### Experimental packed DeBERTa-v2/v3 (Hopper)
 
+The Hopper and CUDA-all images include this backend and its native kernels.
+It is selected for supported DeBERTa models independently of `ATTN_BACKEND`;
+DeBERTa's relative attention has no FA2 fallback in this implementation.
+
 The `experimental-deberta` build feature adds Candle inference for
 `model_type: deberta-v2`, including Microsoft's DeBERTa-v3 and mDeBERTa-v3
 backbones. It requires the FA4 native bundle built with `--deberta` and
