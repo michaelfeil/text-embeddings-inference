@@ -631,7 +631,7 @@ docker build . -f Dockerfile --platform=linux/arm64
 
 ### Opt-in FA4 on Hopper
 
-Hopper CUDA images build and include the pinned FA4 native bundle. Supported
+Hopper CUDA images build and include the pinned FA4 native bundle.
 FA2 is the default. Set `ATTN_BACKEND=fa4` to opt into supported FP16/BF16 packed
 FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
 `TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
@@ -649,7 +649,9 @@ remains an alias. `scripts/build-fa4-native.sh` builds the pinned bundle without
 a GPU; Python dependencies stay in the build environment.
 
 **Quality qualification:** the pinned bundle aligns FA4's softmax denominator
-reduction order with FA2. This fixes the observed ModernBERT discrepancy: raw and
+reduction order and causal d128 key-tile boundaries with FA2. This fixes the observed ModernBERT discrepancy: raw and
 pooled outputs match FA2 bitwise on the tested FP16/BF16 cases, and the measured
-STS-B, SciFact and NFCorpus score differences disappear. FA4 remains opt-in;
+STS-B, SciFact and NFCorpus score differences disappear. The causal tile change
+also removes the tested Qwen3-8B long-input differences in both precisions.
+FA4 remains opt-in;
 these checks do not establish equivalence for every model, shape or architecture.
