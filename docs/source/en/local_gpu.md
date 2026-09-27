@@ -18,6 +18,8 @@ rendered properly in your Markdown viewer.
 
 You can install `text-embeddings-inference` locally to run it on your own machine with a GPU.
 To make sure that your hardware is supported, check out the [Supported models and hardware](supported_models) page.
+For the mf-TEI backend selection policy and experimental options, see
+[Choosing an attention backend](attention_backends).
 
 ## Step 1: CUDA and NVIDIA drivers
 
