@@ -5,6 +5,8 @@ mod index_select;
 mod layer_norm;
 mod linear;
 mod radix_mlp;
+#[cfg(feature = "cuda")]
+mod residual_add;
 #[allow(dead_code, unused)]
 mod rms_norm;
 mod rotary;
@@ -23,3 +25,6 @@ pub use rotary::{apply_rotary, get_cos_sin, get_inv_freqs, RopeScaling};
 
 #[cfg(feature = "cuda")]
 pub(crate) mod qk_norm_rope;
+
+#[cfg(feature = "cuda")]
+pub use residual_add::residual_add;
