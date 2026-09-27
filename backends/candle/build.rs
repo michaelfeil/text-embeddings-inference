@@ -9,7 +9,7 @@ fn main() {
     {
         println!("cargo:rerun-if-changed=src/kernels/gated_activation.cu");
         let bindings = cudaforge::KernelBuilder::new()
-            .source_dir("src/kernels")
+            .source_files(["src/kernels/gated_activation.cu"])
             .arg("-std=c++17")
             .arg("-O3")
             .arg("--expt-relaxed-constexpr")
@@ -21,6 +21,18 @@ fn main() {
                     .join("activation_ptx.rs"),
             )
             .expect("write activation PTX bindings");
+        println!("cargo:rerun-if-changed=src/kernels/residual_add.cu");
+        cudaforge::KernelBuilder::new()
+            .source_files(["src/kernels/residual_add.cu"])
+            .arg("-std=c++17")
+            .arg("-O3")
+            .arg("--expt-relaxed-constexpr")
+            .build_ptx()
+            .expect("compile residual addition kernel")
+            .write(
+                std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("residual_ptx.rs"),
+            )
+            .expect("write residual addition PTX bindings");
     }
 }
 
