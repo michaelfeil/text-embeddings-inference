@@ -145,6 +145,6 @@ fn packed_deberta_matches_transformers() -> anyhow::Result<()> {
             }
         }
     }
-    assert!(tested >= 7, "expected all seven architecture fixtures");
+    assert!(tested >= 8, "expected all eight architecture fixtures");
     Ok(())
 }

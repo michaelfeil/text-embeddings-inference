@@ -178,6 +178,8 @@ impl Layer {
             out_norm: norm(vb.pp("output.LayerNorm"), c)?,
             heads: h,
             dim: d,
+            // Match HF: pos_att_type controls scaling even if relative_attention
+            // is false. Only projection/table construction is gated by that flag.
             scale: Tensor::new(
                 &[(((1 + c2p as usize + p2c as usize) * d) as f32).sqrt()],
                 vb.device(),

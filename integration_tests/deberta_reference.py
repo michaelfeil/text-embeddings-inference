@@ -33,7 +33,9 @@ def main():
              norm_rel_ebd='layer_norm', position_biased_input=False),
         dict(relative_attention=False, pos_att_type=[], position_biased_input=True),
     ]
-    variants += [dict(variants[0], task="sequence"), dict(variants[0], task="token")]
+    variants += [dict(variants[0], task="sequence"), dict(variants[0], task="token"),
+                 dict(relative_attention=False, pos_att_type=["c2p", "p2c"],
+                      position_biased_input=True)]
     for i, extra in enumerate(variants):
         extra = dict(extra)
         task = extra.pop("task", None)
