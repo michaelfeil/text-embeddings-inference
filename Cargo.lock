@@ -607,7 +607,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn-v4"
 version = "0.1.0-alpha.1"
-source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=4a875ff77caa41d4efbf6eb26c21713b1f447a34#4a875ff77caa41d4efbf6eb26c21713b1f447a34"
+source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=f98710e4caefe825eaeceae6559a5d7ad96cd7c0#f98710e4caefe825eaeceae6559a5d7ad96cd7c0"
 dependencies = [
  "candle-core",
  "half",
