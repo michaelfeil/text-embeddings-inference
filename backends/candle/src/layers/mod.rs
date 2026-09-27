@@ -28,4 +28,7 @@ pub use rms_norm::RMSNorm;
 pub use rotary::{apply_rotary, get_cos_sin, get_inv_freqs, RopeScaling};
 
 #[cfg(feature = "cuda")]
+pub(crate) mod qk_norm_rope;
+
+#[cfg(feature = "cuda")]
 pub use residual_add::residual_add;

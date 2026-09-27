@@ -147,12 +147,22 @@ impl Qwen3Attention {
             .concat(),
         )?;
 
-        // Apply normalization layers
-        let (q, _) = self.q_norm.forward(&q, None)?;
-        let (k, _) = self.k_norm.forward(&k, None)?;
-
-        // Apply RoPE in COMPACT space
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = match crate::layers::qk_norm_rope::try_forward(
+            &q,
+            &k,
+            &self.q_norm,
+            &self.k_norm,
+            &cos,
+            &sin,
+        )? {
+            Some(pair) => pair,
+            None => {
+                let (q, _) = self.q_norm.forward(&q, None)?;
+                let (k, _) = self.k_norm.forward(&k, None)?;
+                apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+                (q, k)
+            }
+        };
 
         // Expand Q, K, V to ORIGINAL layout for attention
         let q = compact_tensors.scatter_unfold(&q)?;
