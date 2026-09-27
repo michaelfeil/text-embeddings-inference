@@ -5,7 +5,7 @@ thread_local! {
     >> = std::cell::RefCell::new(std::collections::HashMap::new());
 }
 
-fn runtime_compute_cap(device: &candle::Device) -> candle::Result<usize> {
+pub(crate) fn runtime_compute_cap(device: &candle::Device) -> candle::Result<usize> {
     let candle::Device::Cuda(cuda) = device else {
         candle::bail!("Flash attention requires a CUDA tensor");
     };
@@ -44,6 +44,23 @@ pub(crate) fn flash_attn_varlen(
     window_size_right: Option<usize>,
 ) -> Result<Tensor, candle::Error> {
     let runtime_compute_cap = runtime_compute_cap(q.device())?;
+
+    #[cfg(feature = "fa4")]
+    if runtime_compute_cap == 90 && alibi_slopes.is_none() {
+        if let Some(output) = crate::fa4_native::try_forward(
+            q,
+            k,
+            v,
+            seqlens_q,
+            seqlens_k,
+            softmax_scale,
+            causal,
+            window_size_left,
+            window_size_right,
+        )? {
+            return Ok(output);
+        }
+    }
 
     if runtime_compute_cap == 75 {
         if alibi_slopes.is_some() {

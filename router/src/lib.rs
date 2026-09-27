@@ -549,6 +549,7 @@ fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type
 
 #[derive(Debug, Deserialize)]
 pub struct ModelConfig {
+    #[serde(default)]
     pub architectures: Vec<String>,
     pub model_type: String,
     pub dtype: Option<String>,

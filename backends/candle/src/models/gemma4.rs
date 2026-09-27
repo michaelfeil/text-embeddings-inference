@@ -803,6 +803,9 @@ impl Gemma4Model {
             batch.len() + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
         let positions = &compact.position_ids_compact;
         let rope = |cache: &(Tensor, Tensor)| -> Result<(Tensor, Tensor)> {
             Ok((

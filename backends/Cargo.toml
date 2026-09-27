@@ -19,6 +19,8 @@ tracing = { workspace = true }
 rand = { workspace = true }
 
 [features]
+experimental-fa4 = ["fa4"]
+fa4 = ["text-embeddings-backend-candle?/fa4"]
 clap = ["dep:clap", "text-embeddings-backend-core/clap"]
 python = ["dep:text-embeddings-backend-python"]
 ort = ["dep:text-embeddings-backend-ort"]
@@ -31,3 +33,5 @@ mkl = ["text-embeddings-backend-candle?/mkl"]
 accelerate = ["text-embeddings-backend-candle?/accelerate"]
 flash-attn = ["text-embeddings-backend-candle?/flash-attn"]
 flash-attn-v1 = ["text-embeddings-backend-candle?/flash-attn-v1"]
+
+experimental-deberta = ["text-embeddings-backend-candle?/experimental-deberta"]

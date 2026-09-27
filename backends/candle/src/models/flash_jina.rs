@@ -311,6 +311,9 @@ impl FlashJinaBertModel {
             batch_size + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
 
         let embedding_output = self
             .embeddings

@@ -1,6 +1,8 @@
 mod alibi;
 #[cfg(feature = "cuda")]
 mod compute_cap;
+#[cfg(feature = "fa4")]
+mod fa4_native;
 #[cfg(feature = "cuda")]
 mod flash_attn;
 mod layers;
@@ -92,6 +94,9 @@ impl<'de> Deserialize<'de> for BertConfigWrapper {
 #[derive(Deserialize)]
 #[serde(tag = "model_type", rename_all = "kebab-case")]
 enum Config {
+    #[cfg(feature = "experimental-deberta")]
+    #[serde(rename = "deberta-v2")]
+    Deberta(crate::models::DebertaConfig),
     Bert(BertConfigWrapper),
     Camembert(BertConfig),
     #[serde(rename(deserialize = "distilbert"))]
@@ -261,6 +266,11 @@ impl CandleBackend {
         .s()?;
 
         let model: Result<Box<dyn Model + Send>, BackendError> = match (config, &device) {
+            #[cfg(feature = "experimental-deberta")]
+            (Config::Deberta(config), _) => {
+                tracing::info!("Starting packed DeBERTa-v2/v3 with FA4 relative attention");
+                Ok(Box::new(crate::models::DebertaModel::load(vb, &config, model_type).s()?))
+            },
             #[cfg(not(feature = "cuda"))]
             (_, Device::Cuda(_)) => Err(BackendError::Start(
                 "`cuda` feature is not enabled".to_string(),

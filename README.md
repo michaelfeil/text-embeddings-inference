@@ -628,3 +628,30 @@ docker build . -f Dockerfile --platform=linux/arm64
 
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
+
+### Opt-in FA4 on Hopper
+
+Hopper CUDA images build and include the pinned FA4 native bundle.
+FA2 is the default. Set `ATTN_BACKEND=fa4` to opt into supported FP16/BF16 packed
+FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
+`TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
+
+When FA4 is enabled, models using the shared flash-attention dispatcher register
+their variable-length boundaries once per batch. The current native bundle supports SM90 d64 MHA global
+and two-sided local attention, and d128 causal GQA with a 4:1 query/KV head ratio.
+Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
+backend. FA4 execution errors propagate. Other architectures retain their existing
+backend until their native bundles are runtime-qualified.
+
+Source builds use `--features fa4` and `FA4_NATIVE_LIB_DIR` pointing to the native
+bundle; include its shared libraries in `LD_LIBRARY_PATH`. `experimental-fa4`
+remains an alias. `scripts/build-fa4-native.sh` builds the pinned bundle without
+a GPU; Python dependencies stay in the build environment.
+
+**Quality qualification:** the pinned bundle aligns FA4's softmax denominator
+reduction order and causal d128 key-tile boundaries with FA2. This fixes the observed ModernBERT discrepancy: raw and
+pooled outputs match FA2 bitwise on the tested FP16/BF16 cases, and the measured
+STS-B, SciFact and NFCorpus score differences disappear. The causal tile change
+also removes the tested Qwen3-8B long-input differences in both precisions.
+FA4 remains opt-in;
+these checks do not establish equivalence for every model, shape or architecture.
