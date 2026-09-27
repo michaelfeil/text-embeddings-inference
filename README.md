@@ -629,15 +629,15 @@ docker build . -f Dockerfile --platform=linux/arm64
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
 
-### Automatic FA4 on Hopper
+### Opt-in FA4 on Hopper
 
 Hopper CUDA images build and include the pinned FA4 native bundle. Supported
-FP16/BF16 packed attention selects FA4 automatically; no runtime opt-in is needed.
-`TEI_ATTENTION_BACKEND=fa2` forces the compatibility backend. `auto` is the default.
-The old `TEI_PERF_FA4=0` opt-out is retained when the new setting is absent.
+FA2 is the default. Set `ATTN_BACKEND=fa4` to opt into supported FP16/BF16 packed
+FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
+`TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
 
-All models using the shared flash-attention dispatcher register their variable-length
-boundaries once per batch. The current native bundle supports SM90 d64 MHA global
+When FA4 is enabled, models using the shared flash-attention dispatcher register
+their variable-length boundaries once per batch. The current native bundle supports SM90 d64 MHA global
 and two-sided local attention, and d128 causal GQA with a 4:1 query/KV head ratio.
 Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
 backend. FA4 execution errors propagate. Other architectures retain their existing
@@ -651,5 +651,5 @@ a GPU; Python dependencies stay in the build environment.
 **Quality qualification:** FA4 is not bitwise identical to FA2. Local ModernBERT
 FP16 retrieval results changed by -0.0285 NFCorpus and -0.1171 SciFact NDCG@10
 points. Confidence intervals included zero, but equivalence is not established.
-This default-promotion proposal must be reviewed with those results; no universal
+FA4 remains opt-in while these numerical differences are investigated; no universal
 accuracy-neutrality or performance claim is made.

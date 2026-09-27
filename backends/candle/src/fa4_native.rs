@@ -8,15 +8,16 @@ thread_local! {
     static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
 }
 
-// Auto is the default. Keep a rollback control and honor the old opt-out.
+// FA4 is experimental and must be selected explicitly.
 pub(crate) fn enabled() -> Result<bool> {
-    match std::env::var("TEI_ATTENTION_BACKEND").as_deref() {
-        Ok("auto") => Ok(true),
-        Ok("fa2") => Ok(false),
-        Err(std::env::VarError::NotPresent) => {
-            Ok(std::env::var("TEI_PERF_FA4").as_deref() != Ok("0"))
-        }
-        _ => candle::bail!("TEI_ATTENTION_BACKEND must be auto or fa2"),
+    parse_backend(std::env::var("ATTN_BACKEND"))
+}
+
+fn parse_backend(value: std::result::Result<String, std::env::VarError>) -> Result<bool> {
+    match value.as_deref() {
+        Ok("fa4") => Ok(true),
+        Ok("fa2") | Err(std::env::VarError::NotPresent) => Ok(false),
+        _ => candle::bail!("ATTN_BACKEND must be fa2 or fa4"),
     }
 }
 
@@ -34,9 +35,9 @@ impl Drop for BatchGuard {
 }
 
 pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<BatchGuard> {
-    if !offsets.device().is_cuda()
+    if !enabled()?
+        || !offsets.device().is_cuda()
         || crate::flash_attn::runtime_compute_cap(offsets.device())? != 90
-        || !enabled()?
     {
         return Ok(BatchGuard {
             previous: None,
@@ -135,7 +136,18 @@ mod tests {
     use candle::Device;
 
     #[test]
-    #[ignore = "requires SM90, FA4 native bundle, and automatic backend selection"]
+    fn backend_selection_requires_explicit_opt_in() {
+        assert!(!parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
+        assert!(!parse_backend(Ok("fa2".into())).unwrap());
+        assert!(parse_backend(Ok("fa4".into())).unwrap());
+        for invalid in ["auto", "", "FA4", "fa3"] {
+            assert!(parse_backend(Ok(invalid.into())).is_err());
+        }
+        assert!(parse_backend(Err(std::env::VarError::NotUnicode("invalid".into()))).is_err());
+    }
+
+    #[test]
+    #[ignore = "requires SM90, FA4 native bundle, and ATTN_BACKEND=fa4"]
     fn ragged_metadata_scopes_restore_on_return_and_error() -> Result<()> {
         let device = Device::new_cuda(0)?;
         assert!(enabled()?);
@@ -151,7 +163,7 @@ mod tests {
         {
             let _outer = prepare_batch(&offsets, &[0, 1, 5])?;
             let expected = run()?
-                .expect("auto must select FA4")
+                .expect("explicit opt-in must select FA4")
                 .to_dtype(DType::F32)?
                 .flatten_all()?
                 .to_vec1::<f32>()?;
