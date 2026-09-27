@@ -278,6 +278,14 @@ impl FlashMistralModel {
             ModelType::Embedding(pool) => pool,
         };
 
+        // Support both backbone checkpoints and ordinary ForCausalLM checkpoints,
+        // as the Qwen loaders do. Only the transformer backbone is used here.
+        let vb = if vb.contains_tensor("model.embed_tokens.weight") {
+            vb.pp("model")
+        } else {
+            vb
+        };
+
         let embeddings = Embedding::new(
             vb.pp("embed_tokens")
                 .get((config.vocab_size, config.hidden_size), "weight")?,
