@@ -648,8 +648,8 @@ bundle; include its shared libraries in `LD_LIBRARY_PATH`. `experimental-fa4`
 remains an alias. `scripts/build-fa4-native.sh` builds the pinned bundle without
 a GPU; Python dependencies stay in the build environment.
 
-**Quality qualification:** FA4 is not bitwise identical to FA2. Local ModernBERT
-FP16 retrieval results changed by -0.0285 NFCorpus and -0.1171 SciFact NDCG@10
-points. Confidence intervals included zero, but equivalence is not established.
-FA4 remains opt-in while these numerical differences are investigated; no universal
-accuracy-neutrality or performance claim is made.
+**Quality qualification:** the pinned bundle aligns FA4's softmax denominator
+reduction order with FA2. This fixes the observed ModernBERT discrepancy: raw and
+pooled outputs match FA2 bitwise on the tested FP16/BF16 cases, and the measured
+STS-B, SciFact and NFCorpus score differences disappear. FA4 remains opt-in;
+these checks do not establish equivalence for every model, shape or architecture.
