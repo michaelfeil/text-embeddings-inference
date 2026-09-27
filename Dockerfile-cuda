@@ -25,7 +25,7 @@ RUN cargo install cargo-chef --version $CARGO_CHEF --locked
 FROM base-builder AS fa4-builder
 ARG CUDA_COMPUTE_CAP=80
 COPY backends/candle/Cargo.toml /tmp/candle-deps.toml
-COPY scripts/build-fa4-native.sh /usr/local/bin/build-fa4-native
+COPY --chmod=755 scripts/build-fa4-native.sh /usr/local/bin/build-fa4-native
 RUN --mount=type=cache,target=/root/.cache/pip \
     mkdir -p /opt/fa4 && \
     if [ "$CUDA_COMPUTE_CAP" = 90 ]; then \
