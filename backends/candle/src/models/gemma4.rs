@@ -210,7 +210,7 @@ impl Gemma4Attention {
             self.head_dim,
         ))?;
         let q = self.q_norm.forward(&q)?.transpose(1, 2)?;
-        let q = apply_rotary(&q, cos, sin, self.head_dim)?
+        let q = apply_rotary_varlen(&q, cos, sin, self.head_dim)?
             .transpose(1, 2)?
             .squeeze(0)?
             .contiguous()?;
@@ -243,7 +243,7 @@ impl Gemma4Attention {
                 .unwrap()
                 .forward(&k_unrotated)?
                 .transpose(1, 2)?;
-            let k = apply_rotary(&k, cos, sin, self.head_dim)?
+            let k = apply_rotary_varlen(&k, cos, sin, self.head_dim)?
                 .transpose(1, 2)?
                 .squeeze(0)?
                 .contiguous()?;
@@ -1386,6 +1386,36 @@ fn decision_softcap(logits: &Tensor, cap: f64) -> Result<Tensor> {
         .to_dtype(DType::F32)?
         .broadcast_mul(&cap)?
         .to_dtype(dtype)
+}
+
+// Gemma4 normalizes Q/K in token-major order. Retain that layout through
+// rotary so varlen attention does not need an additional transpose copy.
+#[cfg(feature = "flash-attn")]
+fn apply_rotary_varlen(x: &Tensor, cos: &Tensor, sin: &Tensor, dim: usize) -> Result<Tensor> {
+    #[cfg(feature = "cuda")]
+    if x.device().is_cuda() && x.dtype() == DType::BF16 && x.dims().len() == 4 {
+        let (batch, heads, tokens, width) = x.dims4()?;
+        if batch == 1
+            && width == dim
+            && heads > 0
+            && tokens > 0
+            && dim > 0
+            && dim % 2 == 0
+            && cos.dims() == [1, 1, tokens, dim]
+            && sin.dims() == cos.dims()
+            && cos.dtype() == DType::BF16
+            && sin.dtype() == DType::BF16
+            && cos.is_contiguous()
+            && sin.is_contiguous()
+        {
+            let token_major = x.transpose(1, 2)?;
+            if token_major.is_contiguous() {
+                return crate::layers::gemma4_rope::forward(&token_major, cos, sin)?
+                    .transpose(1, 2);
+            }
+        }
+    }
+    crate::layers::apply_rotary(x, cos, sin, dim)
 }
 
 #[cfg(test)]

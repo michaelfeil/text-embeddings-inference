@@ -75,6 +75,15 @@ fn main() {
             .expect("compile Gemma4 normalization kernel")
             .write(out.join("gemma4_norm_ptx.rs"))
             .expect("write Gemma4 normalization PTX bindings");
+        println!("cargo:rerun-if-changed=src/kernels/gemma4_rope.cu");
+        cudaforge::KernelBuilder::new()
+            .source_files(["src/kernels/gemma4_rope.cu"])
+            .arg("-std=c++17")
+            .arg("-O3")
+            .build_ptx()
+            .expect("compile Gemma4 rotary kernel")
+            .write(out.join("gemma4_rope_ptx.rs"))
+            .expect("write Gemma4 rotary PTX bindings");
         println!("cargo:rerun-if-changed=src/kernels/residual_add.cu");
         cudaforge::KernelBuilder::new()
             .source_files(["src/kernels/residual_add.cu"])
