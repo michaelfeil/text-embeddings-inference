@@ -35,3 +35,6 @@ pub use residual_add::residual_add;
 
 #[cfg(gemma4_moe_cuda)]
 pub(crate) mod gemma4_moe;
+
+#[cfg(feature = "cuda")]
+pub(crate) mod gemma4_norm;

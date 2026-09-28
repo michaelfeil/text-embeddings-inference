@@ -66,6 +66,15 @@ fn main() {
             .expect("compile Q/K normalization and RoPE kernel")
             .write(std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap()).join("qk_ptx.rs"))
             .expect("write Q/K PTX bindings");
+        println!("cargo:rerun-if-changed=src/kernels/gemma4_norm.cu");
+        cudaforge::KernelBuilder::new()
+            .source_files(["src/kernels/gemma4_norm.cu"])
+            .arg("-std=c++17")
+            .arg("-O3")
+            .build_ptx()
+            .expect("compile Gemma4 normalization kernel")
+            .write(out.join("gemma4_norm_ptx.rs"))
+            .expect("write Gemma4 normalization PTX bindings");
         println!("cargo:rerun-if-changed=src/kernels/residual_add.cu");
         cudaforge::KernelBuilder::new()
             .source_files(["src/kernels/residual_add.cu"])
