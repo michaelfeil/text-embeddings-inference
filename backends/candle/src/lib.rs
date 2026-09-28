@@ -25,10 +25,9 @@ use crate::compute_cap::{
 };
 use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, Gemma3Config, Gemma3Model, Gemma4Config, Gemma4Model, JinaBertModel,
-    JinaCodeBertModel, LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model,
-    ModernBertConfig, ModernBertModel, NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config,
-    Qwen3Model,
+    GTEConfig, GTEModel, Gemma3Config, Gemma4Config, Gemma4Model, JinaBertModel, JinaCodeBertModel,
+    LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
+    NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
 };
 #[cfg(feature = "cuda")]
 use crate::models::{
@@ -357,16 +356,9 @@ impl CandleBackend {
                     DistilBertModel::load(vb, &config, model_type).s()?,
                 ))
             }
-            (Config::Gemma3(config), Device::Cpu | Device::Metal(_)) => {
-                if dtype != DType::F32 {
-                    Err(BackendError::Start(
-                        "Gemma3 is only supported in fp32 precision".to_string(),
-                    ))
-                } else {
-                    tracing::info!("Starting Gemma3 model on {:?}", device);
-                    Ok(Box::new(Gemma3Model::load(vb, &config, model_type).s()?))
-                }
-            }
+            (Config::Gemma3(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
+                "Gemma3 requires CUDA bfloat16 with packed FlashAttention".into(),
+            )),
             (Config::Gemma4(config), Device::Cpu | Device::Metal(_)) => {
                 if !matches!(dtype, DType::F32 | DType::BF16) {
                     Err(BackendError::Start(
@@ -500,13 +492,15 @@ impl CandleBackend {
             }
             #[cfg(feature = "cuda")]
             (Config::Gemma3(config), Device::Cuda(_)) => {
-                if dtype != DType::F32 {
-                    Err(BackendError::Start(
-                        "Gemma3 is only supported in fp32 precision".to_string(),
-                    ))
-                } else {
-                    tracing::info!("Starting Gemma3 model on {:?}", device);
-                    Ok(Box::new(Gemma3Model::load(vb, &config, model_type).s()?))
+                #[cfg(feature = "flash-attn")]
+                {
+                    tracing::info!("Starting packed Gemma3 model on {:?}", device);
+                    Ok(Box::new(crate::models::Gemma3Model::load(vb, &config, model_type).s()?))
+                }
+                #[cfg(not(feature = "flash-attn"))]
+                {
+                    let _ = config;
+                    Err(BackendError::Start("Gemma3 requires CUDA bfloat16 with packed FlashAttention".into()))
                 }
             }
             #[cfg(feature = "cuda")]

@@ -1,3 +1,5 @@
+#![cfg(feature = "flash-attn")]
+
 mod common;
 
 use crate::common::{sort_embeddings, SnapshotEmbeddings};
@@ -7,6 +9,7 @@ use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, ModelType, Pool};
 
 #[test]
+#[ignore = "requires CUDA and access to the gated EmbeddingGemma checkpoint"]
 #[serial_test::serial]
 fn test_gemma3() -> Result<()> {
     let (model_root, dense_paths) = download_artifacts("google/embeddinggemma-300m", None, None)?;
@@ -14,11 +17,13 @@ fn test_gemma3() -> Result<()> {
 
     let backend = CandleBackend::new(
         &model_root,
-        "float32".to_string(),
+        "bfloat16".to_string(),
         ModelType::Embedding(Pool::Mean),
         dense_paths,
         0,
     )?;
+
+    assert!(!backend.is_padded());
 
     let input_batch = batch(
         vec![

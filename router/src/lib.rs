@@ -532,9 +532,9 @@ fn get_backend_model_type(
 fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type: &str) -> DType {
     match requested {
         None | Some(DType::Auto) => {
-            // Keep the existing defaults for backends/models requiring FP32.
+            // EmbeddingGemma activations require BF16; FP16 is not supported.
             if model_type == "gemma3_text" {
-                return DType::Float32;
+                return DType::Bfloat16;
             }
             #[cfg(all(
                 any(feature = "candle", feature = "python"),
@@ -852,6 +852,23 @@ mod auto_dtype_tests {
             assert_eq!(from_config(&json, Some(DType::Auto)), DType::Bfloat16);
             assert_eq!(from_config(&json, Some(DType::Float16)), DType::Float16);
         }
+    }
+
+    #[test]
+    fn embeddinggemma_defaults_to_bf16_even_for_fp32_checkpoint() {
+        assert_eq!(
+            resolve_dtype(None, Some("float32"), "gemma3_text"),
+            DType::Bfloat16
+        );
+        assert_eq!(
+            resolve_dtype(Some(DType::Auto), Some("float32"), "gemma3_text"),
+            DType::Bfloat16
+        );
+        // An explicit unsupported precision is rejected by the model loader.
+        assert_eq!(
+            resolve_dtype(Some(DType::Float32), None, "gemma3_text"),
+            DType::Float32
+        );
     }
 
     #[test]
