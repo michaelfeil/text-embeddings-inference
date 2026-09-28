@@ -67,11 +67,8 @@ mod packed {
                 Some(residual) => hidden_states.add(residual)?,
                 None => hidden_states.clone(),
             };
-            let normalized = crate::layers::gemma_rms_norm::forward(
-                &residual_add.contiguous()?,
-                &self.scale,
-                self.epsilon,
-            )?;
+            let normalized =
+                crate::layers::gemma_rms_norm::forward(&residual_add, &self.scale, self.epsilon)?;
             Ok((normalized, residual_add))
         }
     }
@@ -207,21 +204,20 @@ mod packed {
             let qkv = self.qkv_proj.forward(states)?;
             let tokens = states.dim(0)?;
             let q_size = self.num_attention_heads * self.attention_head_size;
-            let kv_size = self.num_key_value_heads * self.attention_head_size;
-            let q = qkv.narrow(1, 0, q_size)?.reshape((
+            // Reshape the contiguous projection before slicing heads: Candle's
+            // reshape of a strided slice would materialize a copy.
+            let qkv = qkv.reshape((
                 tokens,
-                self.num_attention_heads,
+                self.num_attention_heads + 2 * self.num_key_value_heads,
                 self.attention_head_size,
             ))?;
-            let k = qkv.narrow(1, q_size, kv_size)?.reshape((
-                tokens,
+            let q = qkv.narrow(1, 0, self.num_attention_heads)?;
+            let k = qkv.narrow(1, self.num_attention_heads, self.num_key_value_heads)?;
+            let v = qkv.narrow(
+                1,
+                self.num_attention_heads + self.num_key_value_heads,
                 self.num_key_value_heads,
-                self.attention_head_size,
-            ))?;
-            let v = qkv
-                .narrow(1, q_size + kv_size, kv_size)?
-                .reshape((tokens, self.num_key_value_heads, self.attention_head_size))?
-                .contiguous()?;
+            )?;
             let (q, _) = self.q_norm.forward(&q, None)?;
             let (k, _) = self.k_norm.forward(&k, None)?;
             // RMSNorm produces fresh contiguous Q/K buffers. The existing CUDA
@@ -363,11 +359,11 @@ mod packed {
                 self.self_attn
                     .forward_packed(&normalized, cumulative, max_length, cos, sin)?;
             let (attention, _) = self.post_attention_layernorm.forward(&attention, None)?;
-            let states = (states + attention)?;
+            let states = crate::layers::residual_add(states, &attention)?;
             let (normalized, _) = self.pre_feedforward_layernorm.forward(&states, None)?;
             let mlp = self.mlp.forward(&normalized)?;
             let (mlp, _) = self.post_feedforward_layernorm.forward(&mlp, None)?;
-            states + mlp
+            crate::layers::residual_add(&states, &mlp)
         }
     }
 
