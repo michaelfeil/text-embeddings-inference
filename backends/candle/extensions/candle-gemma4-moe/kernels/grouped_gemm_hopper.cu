@@ -18,7 +18,7 @@ using namespace cute;
 using Element = cutlass::bfloat16_t;
 using Problem = cutlass::gemm::GroupProblemShape<Shape<int, int, int>>;
 template <typename Output> struct Hopper {
-    // Wider N tiles reduce repeated expert-weight reads for large batches.
+    // Wider N tiles reuse input tiles across more output columns.
     using Tile = Shape<_128, _256, _64>;
     using Cluster = Shape<_1, _1, _1>;
     using Epilogue = typename cutlass::epilogue::collective::CollectiveBuilder<

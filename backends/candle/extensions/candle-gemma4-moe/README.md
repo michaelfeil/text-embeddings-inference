@@ -10,7 +10,9 @@ It is selected for at least 2048 compact tokens on runtime SM90 devices;
 smaller batches and other builds use the portable grouped GEMM. Both paths
 share routing, packing, GELU and combination kernels, including scalar fallbacks
 for unaligned input/output views. Hopper reserves 2 MiB of additional GEMM
-workspace and checks the CUTLASS requirement before launch.
+workspace and checks the CUTLASS requirement before launch. The Hopper tile is
+128 x 256 x 64; this improved the tested long-request medians by another
+2–6% over the initial 128 x 128 x 64 tile, with unchanged regression scores.
 
 Routing, token grouping, both expert GEMMs, GELU gating and weighted reduction
 run on the caller's CUDA stream. Routing counts stay on the device. The Rust
