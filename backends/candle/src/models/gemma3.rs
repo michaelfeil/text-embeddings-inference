@@ -30,7 +30,7 @@ mod packed {
     use super::*;
     use crate::layers::{apply_rotary, get_cos_sin, get_inv_freqs, Linear};
     use crate::models::Model;
-    use candle::{DType, Device, Result, Tensor, D};
+    use candle::{DType, Device, Result, Tensor};
     use candle_nn::{Embedding, Module, VarBuilder};
     use text_embeddings_backend_core::{Batch, ModelType, Pool};
     #[derive(Debug)]
@@ -67,25 +67,12 @@ mod packed {
                 Some(residual) => hidden_states.add(residual)?,
                 None => hidden_states.clone(),
             };
-            let dtype = residual_add.dtype();
-            let states = residual_add.to_dtype(DType::F32)?;
-            #[cfg(feature = "cuda")]
-            if matches!(states.device(), Device::Cuda(_)) {
-                let shape = states.shape();
-                let normalized = candle_layer_norm::rms_norm(
-                    &states.flatten_to(D::Minus2)?,
-                    &self.scale,
-                    None,
-                    self.epsilon,
-                )?;
-                return Ok((normalized.reshape(shape)?.to_dtype(dtype)?, residual_add));
-            }
-            let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
-            let normalized = states.broadcast_div(&(variance + self.epsilon as f64)?.sqrt()?)?;
-            Ok((
-                normalized.broadcast_mul(&self.scale)?.to_dtype(dtype)?,
-                residual_add,
-            ))
+            let normalized = crate::layers::gemma_rms_norm::forward(
+                &residual_add.contiguous()?,
+                &self.scale,
+                self.epsilon,
+            )?;
+            Ok((normalized, residual_add))
         }
     }
 
@@ -265,8 +252,6 @@ mod packed {
         down_proj: Linear,
         hidden_activation: HiddenAct,
 
-        intermediate_size: usize,
-
         span: tracing::Span,
     }
 
@@ -292,7 +277,6 @@ mod packed {
                 gate_up_proj,
                 down_proj,
                 hidden_activation: config.hidden_activation.clone(),
-                intermediate_size: config.intermediate_size,
                 span: tracing::span!(tracing::Level::TRACE, "mlp"),
             })
         }
@@ -302,13 +286,9 @@ mod packed {
 
             let gate_up_states = self.gate_up_proj.forward(hidden_states)?;
 
-            let gate_states = gate_up_states.narrow(D::Minus1, 0, self.intermediate_size)?;
-            let gate_states = self.hidden_activation.forward(&gate_states)?;
-
-            let up_states =
-                gate_up_states.narrow(D::Minus1, self.intermediate_size, self.intermediate_size)?;
-
-            self.down_proj.forward(&(gate_states * up_states)?)
+            let activated =
+                crate::layers::gated_activation(&gate_up_states, Some(&self.hidden_activation))?;
+            self.down_proj.forward(&activated)
         }
     }
 

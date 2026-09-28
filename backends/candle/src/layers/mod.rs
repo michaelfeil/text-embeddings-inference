@@ -36,3 +36,6 @@ pub(crate) mod qk_norm_rope;
 
 #[cfg(feature = "cuda")]
 pub use residual_add::residual_add;
+
+#[cfg(feature = "cuda")]
+pub(crate) mod gemma_rms_norm;
