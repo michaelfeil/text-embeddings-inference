@@ -244,14 +244,7 @@ impl FlashJinaBertModel {
             _ => candle::bail!("not supported"),
         };
 
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashJinaBertModel requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashJinaBertModel requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let (pool, classifier) = match model_type {
             ModelType::Classifier => {
@@ -385,7 +378,10 @@ impl FlashJinaBertModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

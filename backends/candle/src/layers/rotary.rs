@@ -121,3 +121,41 @@ pub fn apply_rotary(
     let rope = (x.broadcast_mul(cos)? + rotate_x.broadcast_mul(sin)?)?;
     Ok(rope)
 }
+
+/// NeoX rotation on packed tokens; preserve the existing CUDA kernel when available.
+pub(crate) fn apply_packed_rotary(
+    q: &Tensor,
+    k: &Tensor,
+    cos: &Tensor,
+    sin: &Tensor,
+) -> Result<(Tensor, Tensor)> {
+    #[cfg(feature = "cuda")]
+    if q.device().is_cuda() {
+        candle_rotary::apply_rotary_inplace(q, k, cos, sin, true)?;
+        return Ok((q.clone(), k.clone()));
+    }
+    let rotary_width = cos.dim(D::Minus1)? * 2;
+    let cos = Tensor::cat(&[cos, cos], D::Minus1)?.unsqueeze(1)?;
+    let sin = Tensor::cat(&[sin, sin], D::Minus1)?.unsqueeze(1)?;
+    let rotate = |x: &Tensor| -> Result<Tensor> {
+        let width = x.dim(D::Minus1)?;
+        let rotated = apply_rotary(
+            &x.narrow(D::Minus1, 0, rotary_width)?,
+            &cos,
+            &sin,
+            rotary_width,
+        )?;
+        if rotary_width == width {
+            Ok(rotated)
+        } else {
+            Tensor::cat(
+                &[
+                    &rotated,
+                    &x.narrow(D::Minus1, rotary_width, width - rotary_width)?,
+                ],
+                D::Minus1,
+            )
+        }
+    };
+    Ok((rotate(q)?, rotate(k)?))
+}

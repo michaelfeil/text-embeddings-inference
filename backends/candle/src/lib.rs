@@ -3,7 +3,6 @@ mod alibi;
 mod compute_cap;
 #[cfg(feature = "fa4")]
 mod fa4_native;
-#[cfg(feature = "cuda")]
 mod flash_attn;
 mod layers;
 mod models;
@@ -29,12 +28,11 @@ use crate::models::{
     LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
     NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
 };
-#[cfg(feature = "cuda")]
 use crate::models::{
     FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
-    FlashJinaCodeBertModel, FlashMistralModel, FlashModernBertModel, FlashNomicBertModel,
-    FlashQwen2Model, FlashQwen3Model,
+    FlashJinaCodeBertModel, FlashModernBertModel, FlashNomicBertModel,
 };
+use crate::models::{FlashMistralModel, FlashQwen2Model, FlashQwen3Model};
 
 /// This enum is needed to be able to differentiate between jina models that also use
 /// the `bert` model type and valid Bert models.
@@ -317,6 +315,10 @@ impl CandleBackend {
         }
         .s()?;
 
+        let cpu_ragged = matches!(dtype, DType::F32 | DType::F16)
+            && std::env::var("USE_FLASH_ATTENTION")
+                .unwrap_or_else(|_| "true".into())
+                .eq_ignore_ascii_case("true");
         let model: Result<Box<dyn Model + Send>, BackendError> = match (config, &device) {
             #[cfg(feature = "experimental-deberta")]
             (Config::Deberta(config), _) => {
@@ -327,6 +329,53 @@ impl CandleBackend {
             (_, Device::Cuda(_)) => Err(BackendError::Start(
                 "`cuda` feature is not enabled".to_string(),
             )),
+            (Config::Mistral(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashMistralModel::load(vb, &config, model_type, false).s()?)),
+            (Config::Qwen2(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen2Model::load(vb, &config, model_type, false).s()?)),
+            (Config::Qwen3(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen3Model::load(vb, &config, model_type, false).s()?)),
+            (Config::Llama(config), Device::Cpu) if cpu_ragged => {
+                if config.attention_bias.unwrap_or(false)
+                    || config.mlp_bias
+                    || config.num_attention_heads == 0
+                    || !config.hidden_size.is_multiple_of(config.num_attention_heads)
+                    || config.head_dim.is_some_and(|dim| dim != config.hidden_size / config.num_attention_heads)
+                {
+                    return Err(BackendError::Start(
+                        "CPU packed Llama requires bias-free projections and head_dim = hidden_size / num_attention_heads".into(),
+                    ));
+                }
+                let cfg_mistral = MistralConfig {
+                    vocab_size: config.vocab_size,
+                    hidden_size: config.hidden_size,
+                    intermediate_size: config.intermediate_size,
+                    num_hidden_layers: config.num_hidden_layers,
+                    num_attention_heads: config.num_attention_heads,
+                    num_key_value_heads: config.num_key_value_heads,
+                    hidden_act: config.hidden_act,
+                    max_position_embeddings: config.max_position_embeddings,
+                    initializer_range: config.initializer_range,
+                    rms_norm_eps: config.rms_norm_eps,
+                    model_type: config.model_type.clone(),
+                    rope_theta: config.rope_theta,
+                    sliding_window: config.sliding_window,
+                    rope_scaling: config.rope_scaling,
+                    use_bidirectional_attention: config.use_bidirectional_attention,
+                };
+                Ok(Box::new(FlashMistralModel::load(vb, &cfg_mistral, model_type, false).s()?))
+            }
+            (Config::Bert(config), Device::Cpu) if cpu_ragged => {
+                tracing::info!("Starting packed CPU BERT-family model");
+                match config {
+                    BertConfigWrapper::Bert(config) => Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?)),
+                    BertConfigWrapper::JinaBert(config) => Ok(Box::new(FlashJinaBertModel::load(vb, &config, model_type).s()?)),
+                    BertConfigWrapper::JinaCodeBert(config) => Ok(Box::new(FlashJinaCodeBertModel::load(vb, &config, model_type).s()?)),
+                }
+            }
+            (Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config), Device::Cpu) if cpu_ragged =>
+                Ok(Box::new(FlashBertModel::load_roberta(vb, &config, model_type).s()?)),
+            (Config::DistilBert(config), Device::Cpu) if cpu_ragged && !matches!(&model_type, ModelType::Classifier) => Ok(Box::new(FlashDistilBertModel::load(vb, &config, model_type).s()?)),
+            (Config::Gte(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?)),
+            (Config::ModernBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashModernBertModel::load(vb, &config, model_type).s()?)),
+            (Config::NomicBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashNomicBertModel::load(vb, &config, model_type).s()?)),
             (Config::Bert(config), Device::Cpu | Device::Metal(_)) => match config {
                 BertConfigWrapper::JinaBert(config) => {
                     tracing::info!("Starting JinaBert model on {:?}", device);
@@ -380,11 +429,11 @@ impl CandleBackend {
                 Ok(Box::new(MPNetModel::load(vb, &config, model_type).s()?))
             }
             (Config::Mistral(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Mistral is only supported on Cuda devices in fp16 or bf16 with flash attention enabled"
+                "Mistral requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
                     .to_string(),
             )),
             (Config::Llama(_config), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Llama is only supported on Cuda devices in fp16 or bf16 with flash attention enabled"
+                "Llama requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
                     .to_string(),
             )),
             (Config::ModernBert(config), Device::Cpu | Device::Metal(_)) => {
@@ -398,7 +447,7 @@ impl CandleBackend {
                 Ok(Box::new(NomicBertModel::load(vb, &config, model_type).s()?))
             }
             (Config::Qwen2(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Qwen2 is only supported on Cuda devices in fp16 or bf16 with flash attention enabled"
+                "Qwen2 requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
                     .to_string(),
             )),
             (Config::Qwen3(config), Device::Cpu | Device::Metal(_)) => {
