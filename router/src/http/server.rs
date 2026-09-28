@@ -88,6 +88,19 @@ struct DecideResponse {
     compact_tokens: usize,
 }
 
+fn decision_index(scores: &[f32]) -> usize {
+    scores
+        .iter()
+        .enumerate()
+        .max_by(|a, b| {
+            a.1.partial_cmp(b.1)
+                .expect("Decision scores are finite")
+                .then_with(|| b.0.cmp(&a.0))
+        })
+        .expect("Decision groups contain at least one finite score")
+        .0
+}
+
 #[utoipa::path(post, path = "/decide", request_body = DecideRequest,
     responses((status = 200, body = DecideResponse), (status = 413, body = ErrorResponse)))]
 async fn decide(
@@ -125,13 +138,7 @@ async fn decide(
         .map_err(ErrorResponse::from)?;
     let mut groups = std::collections::BTreeMap::new();
     for group in scores {
-        let index = group
-            .log_scores
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.total_cmp(b.1))
-            .unwrap()
-            .0;
+        let index = decision_index(&group.log_scores);
         let maximum = group.log_scores[index];
         let mut probabilities: Vec<f32> = group
             .log_scores
@@ -2271,6 +2278,13 @@ impl From<serde_json::Error> for ErrorResponse {
 #[cfg(test)]
 mod decision_request_tests {
     use super::*;
+    #[test]
+    fn exact_score_ties_select_the_first_candidate() {
+        assert_eq!(decision_index(&[-2., -1., -1.]), 1);
+        assert_eq!(decision_index(&[-1., -1., -1.]), 0);
+        assert_eq!(decision_index(&[-1., -2., 0.]), 2);
+        assert_eq!(decision_index(&[-0., 0.]), 0);
+    }
     #[test]
     fn accepts_messages_and_rejects_unsupported_shapes() {
         let request = serde_json::json!({"messages":[{"role":"system","content":"Policy"},{"role":"user","content":"Facts"}],"questions":{"answer":{"type":"boolean"}}});
