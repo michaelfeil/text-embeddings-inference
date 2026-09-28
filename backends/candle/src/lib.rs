@@ -101,6 +101,8 @@ enum Config {
     #[serde(rename(deserialize = "distilbert"))]
     DistilBert(DistilBertConfig),
     #[serde(rename(deserialize = "gemma3_text"))]
+    // Parsed on CPU builds so unsupported Gemma3 execution gets an explicit error.
+    #[cfg_attr(not(feature = "flash-attn"), allow(dead_code))]
     Gemma3(Gemma3Config),
     #[serde(rename = "gemma4", alias = "gemma4_unified")]
     Gemma4(Gemma4Config),
