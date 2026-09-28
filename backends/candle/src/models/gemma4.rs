@@ -1214,11 +1214,12 @@ impl Model for Gemma4Model {
             for (chunk_index, chunk) in rows.chunks(16).enumerate() {
                 let indices = Tensor::from_vec(chunk.to_vec(), chunk.len(), &self.device)?;
                 let states = index_select(&hidden, &indices, 0)?;
-                let logits = states.matmul(&weight.t()?)?.to_dtype(DType::F32)?;
+                let logits = states.matmul(&weight.t()?)?;
                 let logits = match self.final_logit_softcapping {
-                    Some(cap) => ((logits / cap)?.tanh()? * cap)?,
+                    Some(cap) => decision_softcap(&logits, cap)?,
                     None => logits,
-                };
+                }
+                .to_dtype(DType::F32)?;
                 let log_probs = candle_nn::ops::log_softmax(&logits, 1)?.flatten_all()?;
                 let start = chunk_index * 16;
                 let mut selected = Vec::new();
@@ -1264,5 +1265,56 @@ impl Model for Gemma4Model {
                 candle::bail!("`predict` is not available for a Gemma4 embedding model")
             }
         }
+    }
+}
+
+/// Match the checkpoint reference: each softcap operation rounds to the logits
+/// dtype. Python scalar division/multiplication use FP32 opmath for BF16/FP16;
+/// Candle's scalar affine would instead pre-round the reciprocal to that dtype.
+#[cfg(any(feature = "flash-attn", test))]
+fn decision_softcap(logits: &Tensor, cap: f64) -> Result<Tensor> {
+    let dtype = logits.dtype();
+    let cap = Tensor::new(cap as f32, logits.device())?;
+    logits
+        .to_dtype(DType::F32)?
+        .broadcast_div(&cap)?
+        .to_dtype(dtype)?
+        .tanh()?
+        .to_dtype(DType::F32)?
+        .broadcast_mul(&cap)?
+        .to_dtype(dtype)
+}
+
+#[cfg(test)]
+mod decision_softcap_tests {
+    use super::*;
+    #[test]
+    fn bf16_softcap_matches_reference_rounding() -> Result<()> {
+        // PyTorch: (x / 30.0).tanh() * 30.0 with BF16 x, recorded as u16 bits.
+        let input = [
+            -60f32,
+            -10.6875,
+            -1.7890625,
+            -0.3125,
+            0.310546875,
+            1.78125,
+            10.625,
+            60.,
+        ];
+        let expected = [49640u16, 49444, 49125, 48800, 16031, 16356, 16675, 16872];
+        let x = Tensor::new(&input, &Device::Cpu)?.to_dtype(DType::BF16)?;
+        let output = decision_softcap(&x, 30.)?.to_vec1::<half::bf16>()?;
+        assert_eq!(
+            output.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            expected
+        );
+        let old = ((x.to_dtype(DType::F32)? / 30.)?.tanh()? * 30.)?
+            .to_dtype(DType::BF16)?
+            .to_vec1::<half::bf16>()?;
+        assert_ne!(
+            old.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
+            expected
+        );
+        Ok(())
     }
 }
