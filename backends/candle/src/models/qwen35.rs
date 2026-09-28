@@ -312,7 +312,7 @@ impl Qwen35Model {
         } else {
             None
         };
-        let moe_config:Qwen3Config=serde_json::from_value(serde_json::json!({"attention_bias":false,"vocab_size":c.vocab_size,"hidden_size":c.hidden_size,"intermediate_size":c.moe_intermediate_size,"num_hidden_layers":c.num_hidden_layers,"num_attention_heads":c.num_attention_heads,"num_key_value_heads":c.num_key_value_heads,"hidden_act":"silu","max_position_embeddings":c.max_position_embeddings,"rms_norm_eps":c.rms_norm_eps,"rope_theta":10000000.,"use_sliding_window":false,"eos_token_id":0,"num_experts":c.num_experts,"num_experts_per_tok":c.num_experts_per_tok,"moe_intermediate_size":c.moe_intermediate_size})).map_err(candle::Error::wrap)?;
+        let moe_config = c.moe_config()?;
         let layers = (0..c.num_hidden_layers)
             .map(|i| Layer::load(model.pp(format!("layers.{i}")), c, i, &moe_config))
             .collect::<Result<Vec<_>>>()?;

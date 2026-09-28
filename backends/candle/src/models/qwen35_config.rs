@@ -62,6 +62,8 @@ pub struct Qwen35TextConfig {
     pub rope_parameters: Rope,
     pub num_experts: usize,
     pub num_experts_per_tok: usize,
+    #[serde(default = "default_norm_topk_prob")]
+    pub norm_topk_prob: bool,
     pub moe_intermediate_size: usize,
     pub shared_expert_intermediate_size: usize,
     pub linear_num_key_heads: usize,
@@ -79,7 +81,35 @@ pub struct Qwen35TextConfig {
     #[serde(default)]
     pub mlp_only_layers: Vec<usize>,
 }
+fn default_norm_topk_prob() -> bool {
+    true
+}
+
 impl Qwen35TextConfig {
+    pub(crate) fn moe_config(&self) -> Result<super::Qwen3Config> {
+        serde_json::from_value(serde_json::json!({
+            "attention_bias": false,
+            "vocab_size": self.vocab_size,
+            "hidden_size": self.hidden_size,
+            "intermediate_size": self.moe_intermediate_size,
+            "num_hidden_layers": self.num_hidden_layers,
+            "num_attention_heads": self.num_attention_heads,
+            "num_key_value_heads": self.num_key_value_heads,
+            "head_dim": self.head_dim,
+            "hidden_act": "silu",
+            "max_position_embeddings": self.max_position_embeddings,
+            "rms_norm_eps": self.rms_norm_eps,
+            "rope_theta": self.rope_parameters.rope_theta,
+            "use_sliding_window": false,
+            "eos_token_id": 0,
+            "num_experts": self.num_experts,
+            "num_experts_per_tok": self.num_experts_per_tok,
+            "moe_intermediate_size": self.moe_intermediate_size,
+            "norm_topk_prob": self.norm_topk_prob
+        }))
+        .map_err(candle::Error::wrap)
+    }
+
     pub fn rotary_dim(&self) -> usize {
         (self.head_dim as f64 * self.rope_parameters.partial_rotary_factor) as usize
     }
@@ -161,6 +191,19 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn preserve_topk_normalization_setting() -> Result<()> {
+        let defaults: Qwen35TextConfig = serde_json::from_value(value()).unwrap();
+        assert!(defaults.moe_config()?.norm_topk_prob);
+        for renormalize in [false, true] {
+            let mut config = value();
+            config["norm_topk_prob"] = serde_json::json!(renormalize);
+            let text: Qwen35TextConfig = serde_json::from_value(config).unwrap();
+            assert_eq!(text.moe_config()?.norm_topk_prob, renormalize);
+        }
+        Ok(())
+    }
+
     #[test]
     fn reject_unsupported_architecture() {
         for (key, value) in [
