@@ -8,35 +8,48 @@
 #include <cutlass/epilogue/thread/linear_combination.h>
 
 using Element = cutlass::bfloat16_t;
-using Epilogue = cutlass::epilogue::thread::LinearCombination<Element, 8, float, float>;
+template <typename Output>
+using Epilogue = cutlass::epilogue::thread::LinearCombination<
+    Output, 128 / cutlass::sizeof_bits<Output>::value, float, float>;
+template <typename Output>
 using Kernel = typename cutlass::gemm::kernel::DefaultGemmGrouped<
     Element, cutlass::layout::RowMajor, cutlass::ComplexTransform::kNone, 8,
     Element, cutlass::layout::ColumnMajor, cutlass::ComplexTransform::kNone, 8,
-    Element, cutlass::layout::RowMajor, float,
+    Output, cutlass::layout::RowMajor, float,
     cutlass::arch::OpClassTensorOp, cutlass::arch::Sm80,
-    cutlass::gemm::GemmShape<64, 128, 32>,
-    cutlass::gemm::GemmShape<32, 64, 32>,
-    cutlass::gemm::GemmShape<16, 8, 16>, Epilogue,
+    cutlass::gemm::GemmShape<64, 64, 64>,
+    cutlass::gemm::GemmShape<32, 32, 64>,
+    cutlass::gemm::GemmShape<16, 8, 16>, Epilogue<Output>,
     cutlass::gemm::threadblock::GemmBatchedIdentityThreadblockSwizzle, 3,
     cutlass::gemm::kernel::GroupScheduleMode::kDeviceOnly>::GemmKernel;
-using Gemm = cutlass::gemm::device::GemmGrouped<Kernel>;
+template <typename Output>
+using Gemm = cutlass::gemm::device::GemmGrouped<Kernel<Output>>;
 
-extern "C" int gemma4_grouped_gemm_bf16(
+template <typename Output>
+int grouped_gemm(
     void *problem_sizes, int groups, void *a_ptrs, void *b_ptrs, void *c_ptrs,
     void *lda, void *ldb, void *ldc, cudaStream_t stream) {
     if (groups <= 0) return int(cutlass::Status::kErrorInvalidProblem);
-    const int blocks = Gemm::sufficient();
+    using Operation = Gemm<Output>;
+    const int blocks = Operation::sufficient();
     if (blocks <= 0) return int(cutlass::Status::kErrorInternal);
-    typename Gemm::Arguments args(
+    typename Operation::Arguments args(
         static_cast<cutlass::gemm::GemmCoord *>(problem_sizes), groups, blocks,
         {1.f, 0.f}, static_cast<Element **>(a_ptrs), static_cast<Element **>(b_ptrs),
-        static_cast<Element **>(c_ptrs), static_cast<Element **>(c_ptrs),
+        static_cast<Output **>(c_ptrs), static_cast<Output **>(c_ptrs),
         static_cast<int64_t *>(lda), static_cast<int64_t *>(ldb),
         static_cast<int64_t *>(ldc), static_cast<int64_t *>(ldc));
-    Gemm op;
+    Operation op;
     auto status = op.initialize(args, nullptr, stream);
     if (status != cutlass::Status::kSuccess) return int(status);
     return int(op.run(stream));
+}
+
+// Standalone primitive entry point used by the grouped-GEMM diagnostic.
+extern "C" int gemma4_grouped_gemm_bf16(
+    void *sizes, int groups, void *a, void *b, void *c,
+    void *lda, void *ldb, void *ldc, cudaStream_t stream) {
+    return grouped_gemm<Element>(sizes, groups, a, b, c, lda, ldb, ldc, stream);
 }
 
 #include "../../../src/kernels/gemma4_moe.cu"
@@ -57,9 +70,11 @@ struct Buffers {
     int *counts, *offsets, *cursors;
     uint32_t *ids, *mapping;
     float *weights;
-    Element *packed, *gate_up, *activated, *expert_output;
+    Element *packed, *gate_up, *activated;
+    float *expert_output;
     cutlass::gemm::GemmCoord *problems;
     Element **a, **b, **c;
+    float **c_f32;
     int64_t *lda, *ldb, *ldc;
     Buffers(Workspace &w, size_t tokens, size_t hidden, size_t intermediate) {
         const size_t slots = tokens * 8;
@@ -68,15 +83,17 @@ struct Buffers {
         packed = w.take<Element>(slots * hidden);
         gate_up = w.take<Element>(slots * 2 * intermediate);
         activated = w.take<Element>(slots * intermediate);
-        expert_output = w.take<Element>(slots * hidden);
+        expert_output = w.take<float>(slots * hidden);
         problems = w.take<cutlass::gemm::GemmCoord>(128);
         a = w.take<Element *>(128); b = w.take<Element *>(128); c = w.take<Element *>(128);
+        c_f32 = w.take<float *>(128);
         lda = w.take<int64_t>(128); ldb = w.take<int64_t>(128); ldc = w.take<int64_t>(128);
     }
 };
+template <typename Output>
 __global__ void setup_problems(const int *counts, const int *offsets,
-    Element *input, Element *weight, Element *output, int input_width, int output_width,
-    cutlass::gemm::GemmCoord *problems, Element **a, Element **b, Element **c,
+    Element *input, Element *weight, Output *output, int input_width, int output_width,
+    cutlass::gemm::GemmCoord *problems, Element **a, Element **b, Output **c,
     int64_t *lda, int64_t *ldb, int64_t *ldc) {
     int e = threadIdx.x;
     problems[e] = cutlass::gemm::GemmCoord(counts[e], output_width, input_width);
@@ -115,16 +132,16 @@ extern "C" int gemma4_moe_forward_bf16(
         reinterpret_cast<__nv_bfloat16 *>(b.packed),slots,hidden);
     setup_problems<<<1,128,0,stream>>>(b.counts,b.offsets,b.packed,static_cast<Element *>(gate_up_weight),b.gate_up,
         hidden,2*intermediate,b.problems,b.a,b.b,b.c,b.lda,b.ldb,b.ldc);
-    int status = gemma4_grouped_gemm_bf16(b.problems,128,b.a,b.b,b.c,b.lda,b.ldb,b.ldc,stream);
+    int status = grouped_gemm<Element>(b.problems,128,b.a,b.b,b.c,b.lda,b.ldb,b.ldc,stream);
     if (status) return status;
     gemma4_moe_gelu_mul<<<(uint64_t(slots)*intermediate+255)/256,256,0,stream>>>(
         reinterpret_cast<__nv_bfloat16 *>(b.gate_up),reinterpret_cast<__nv_bfloat16 *>(b.activated),slots,intermediate);
     setup_problems<<<1,128,0,stream>>>(b.counts,b.offsets,b.activated,static_cast<Element *>(down_weight),b.expert_output,
-        intermediate,hidden,b.problems,b.a,b.b,b.c,b.lda,b.ldb,b.ldc);
-    status = gemma4_grouped_gemm_bf16(b.problems,128,b.a,b.b,b.c,b.lda,b.ldb,b.ldc,stream);
+        intermediate,hidden,b.problems,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc);
+    status = grouped_gemm<float>(b.problems,128,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc,stream);
     if (status) return status;
     gemma4_moe_unpermute_combine<<<(uint64_t(tokens)*hidden+255)/256,256,0,stream>>>(
-        reinterpret_cast<__nv_bfloat16 *>(b.expert_output),b.mapping,b.weights,
+        b.expert_output,b.mapping,b.weights,
         static_cast<__nv_bfloat16 *>(output),tokens,hidden);
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
 }

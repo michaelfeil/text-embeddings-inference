@@ -572,6 +572,9 @@ struct Gemma4PleLayer {
     activation: HiddenAct,
 }
 
+// Non-SM80 builds keep the model type but reject MoE loading before allocating
+// these tensors. Its forward implementation is only available with the kernels.
+#[cfg_attr(not(gemma4_moe_cuda), allow(dead_code))]
 struct Gemma4Moe {
     router_norm: Gemma4RmsNorm,
     router_scale: Tensor,

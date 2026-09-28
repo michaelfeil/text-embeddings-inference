@@ -14,6 +14,12 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--model", type=Path, required=True)
 parser.add_argument("--library", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--tokens", type=int, nargs="+", default=[1, 17, 257, 1024])
+parser.add_argument(
+    "--concentrated",
+    action="store_true",
+    help="Route every token to the same eight experts",
+)
 args = parser.parse_args()
 lib = ctypes.CDLL(str(args.library.resolve()))
 P = ctypes.c_void_p
@@ -23,6 +29,29 @@ lib.gemma4_moe_workspace_bytes.argtypes = [I, I, I]
 lib.gemma4_moe_workspace_bytes.restype = S
 fn = lib.gemma4_moe_forward_bf16
 fn.argtypes = [P] * 6 + [I] * 3 + [P, S, P]
+
+
+# BF16 GELU must round before multiplication, as in vLLM and PyTorch.
+gelufn = lib.gemma4_test_gelu
+gelufn.argtypes = [P, P, I, I, P]
+torch.manual_seed(421)
+for scale in [0.01, 0.1, 1, 3, 10, 100]:
+    activations = (torch.randn(1024, 1408, device="cuda") * scale).bfloat16()
+    actual = torch.empty(1024, 704, device="cuda", dtype=torch.bfloat16)
+    expected = torch.empty_like(actual)
+    assert (
+        gelufn(
+            activations.data_ptr(),
+            actual.data_ptr(),
+            1024,
+            704,
+            torch.cuda.current_stream().cuda_stream,
+        )
+        == 0
+    )
+    torch.ops._C.gelu_tanh_and_mul(expected, activations)
+    assert torch.equal(actual, expected), ("GELU rounding differs", scale)
+print("GELU rounding: exact agreement across six input scales", flush=True)
 
 
 def weight(name):
@@ -39,9 +68,12 @@ w2 = weight(prefix + "experts.down_proj")
 scales = weight(prefix + "router.per_expert_scale").float()
 torch.manual_seed(20)
 results = []
-for t in [1, 17, 257, 1024]:
+for t in args.tokens:
+    assert t > 0
     x = torch.randn(t, 2816, device="cuda", dtype=torch.bfloat16)
     logits = torch.randn(t, 128, device="cuda")
+    if args.concentrated:
+        logits[:, 8:] = -10000.0
     out = torch.empty_like(x)
     scratch = torch.empty(
         lib.gemma4_moe_workspace_bytes(t, 2816, 704), device="cuda", dtype=torch.uint8
@@ -114,5 +146,5 @@ for t in [1, 17, 257, 1024]:
     }
     print(item, flush=True)
     results.append(item)
-    assert rms < 0.01 and cos > 0.9999, item
+    assert rms < 0.001 and cos > 0.999999, item
 args.output.write_text(json.dumps(results, indent=2))

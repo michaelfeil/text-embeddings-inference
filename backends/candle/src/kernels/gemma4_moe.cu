@@ -123,11 +123,14 @@ extern "C" __global__ void gemma4_moe_gelu_mul(
         const float up = __bfloat162float(gate_up[row * (2 * width) + width + column]);
         const float gelu = 0.5f * gate * (1.f + tanhf(0.7978845608028654f *
             (gate + 0.044715f * gate * gate * gate)));
-        output[i] = __float2bfloat16_rn(gelu * up);
+        // Match the checkpoint's BF16 GELU followed by BF16 multiplication.
+        // vLLM's gelu_tanh_and_mul preserves this intermediate rounding too.
+        const float rounded_gelu = __bfloat162float(__float2bfloat16_rn(gelu));
+        output[i] = __float2bfloat16_rn(rounded_gelu * up);
     }
 }
 extern "C" __global__ void gemma4_moe_unpermute_combine(
-    const __nv_bfloat16 *expert_outputs, const uint32_t *mapping, const float *weights,
+    const float *expert_outputs, const uint32_t *mapping, const float *weights,
     __nv_bfloat16 *output, uint64_t tokens, uint32_t hidden) {
     const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
     if (i < tokens * hidden) {
@@ -136,7 +139,10 @@ extern "C" __global__ void gemma4_moe_unpermute_combine(
         float sum = 0.f;
         for (int k = 0; k < 8; ++k) {
             const uint64_t slot = token * 8 + k;
-            sum += __bfloat162float(expert_outputs[uint64_t(mapping[slot]) * hidden + column]) * weights[slot];
+            // vLLM weights the FP32 down-projection accumulator before the
+            // per-expert BF16 cast, then sums the eight rounded values in FP32.
+            const float weighted = expert_outputs[uint64_t(mapping[slot]) * hidden + column] * weights[slot];
+            sum += __bfloat162float(__float2bfloat16_rn(weighted));
         }
         output[i] = __float2bfloat16_rn(sum);
     }
