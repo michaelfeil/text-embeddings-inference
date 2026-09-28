@@ -3,6 +3,7 @@
 #error "experimental-fp8 requires CUDA toolkit 12.9 or newer"
 #endif
 #include <cuda_fp16.h>
+#include <cuda_bf16.h>
 #include <cuda_fp8.h>
 // Match the evaluated per-token recipe: FP32 absmax times the FP32 reciprocal
 // of 448, followed by correctly-rounded division and saturating E4M3
@@ -86,8 +87,8 @@ ROW_LAUNCH(12288, 1024)
 #undef ROW_LAUNCH
 // clang-format on
 
-extern "C" __global__ void quant_f16_generic(const half *x, __nv_fp8_e4m3 *y,
-                                             float *scales, int k) {
+template <typename T>
+__device__ void generic_quant(const T *x, __nv_fp8_e4m3 *y, float *scales, int k) {
   __shared__ float partial[4];
   int row = blockIdx.x, lane = threadIdx.x % 32, warp = threadIdx.x / 32;
   float mx = 0;
@@ -112,6 +113,17 @@ extern "C" __global__ void quant_f16_generic(const half *x, __nv_fp8_e4m3 *y,
   for (int i = threadIdx.x; i < k; i += 128)
     y[size_t(row) * k + i] =
         __nv_fp8_e4m3(__fdiv_rn(float(x[size_t(row) * k + i]), s));
+}
+
+extern "C" __global__ void quant_f16_generic(const half *x, __nv_fp8_e4m3 *y,
+                                             float *scales, int k) {
+  generic_quant(x, y, scales, k);
+}
+
+extern "C" __global__ void quant_bf16_generic(const __nv_bfloat16 *x,
+                                              __nv_fp8_e4m3 *y,
+                                              float *scales, int k) {
+  generic_quant(x, y, scales, k);
 }
 
 // Preserve the intermediate FP16 rounding of Candle's separate SwiGLU ops.
