@@ -5,6 +5,10 @@ mod index_select;
 mod layer_norm;
 mod linear;
 #[cfg(feature = "cuda")]
+mod mlp_linear;
+#[cfg(feature = "cuda")]
+pub(crate) use mlp_linear::MlpLinear;
+#[cfg(feature = "cuda")]
 mod mean_pool;
 mod radix_mlp;
 #[cfg(feature = "cuda")]

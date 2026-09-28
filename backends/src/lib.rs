@@ -119,6 +119,34 @@ impl Backend {
         otlp_service_name: String,
         device_id: usize,
     ) -> Result<Self, BackendError> {
+        Self::new_shared_with_fp8(
+            model_path,
+            api_repo,
+            dtype,
+            model_type,
+            dense_path,
+            uds_path,
+            otlp_endpoint,
+            otlp_service_name,
+            device_id,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_shared_with_fp8(
+        model_path: PathBuf,
+        api_repo: Option<Arc<ApiRepo>>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        uds_path: String,
+        otlp_endpoint: Option<String>,
+        otlp_service_name: String,
+        device_id: usize,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self, BackendError> {
         let (backend_sender, backend_receiver) = mpsc::channel(8);
 
         let backend = init_backend(
@@ -131,6 +159,7 @@ impl Backend {
             otlp_endpoint,
             otlp_service_name,
             device_id,
+            enable_fp8_dynamic,
         )
         .await?;
         let padded_model = backend.is_padded();
@@ -440,10 +469,16 @@ async fn init_backend(
     otlp_endpoint: Option<String>,
     otlp_service_name: String,
     device_id: usize,
+    enable_fp8_dynamic: bool,
 ) -> Result<Box<dyn CoreBackend + Send>, BackendError> {
+    if enable_fp8_dynamic && !cfg!(feature = "experimental-fp8") {
+        return Err(BackendError::Start(
+            "Dynamic FP8 requires an experimental-fp8 build".into(),
+        ));
+    }
     let mut backend_start_failed = false;
 
-    if cfg!(feature = "ort") {
+    if cfg!(feature = "ort") && !enable_fp8_dynamic {
         #[cfg(feature = "ort")]
         {
             if let Some(api_repo) = api_repo.as_ref() {
@@ -551,12 +586,13 @@ async fn init_backend(
             let candle_dtype = dtype.to_string();
             let candle_model_type = model_type.clone();
             let backend = tokio::task::spawn_blocking(move || {
-                CandleBackend::new(
+                CandleBackend::new_with_fp8(
                     &path,
                     candle_dtype,
                     candle_model_type,
                     dense_paths,
                     device_id,
+                    enable_fp8_dynamic,
                 )
             })
             .await
@@ -566,6 +602,9 @@ async fn init_backend(
             match backend {
                 Ok(b) => return Ok(Box::new(b)),
                 Err(err) => {
+                    if enable_fp8_dynamic {
+                        return Err(err);
+                    }
                     tracing::error!("Could not start Candle backend: {err}");
                     backend_start_failed = true;
                 }

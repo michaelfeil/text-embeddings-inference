@@ -42,6 +42,7 @@ anyhow = { version = "1", features = ["backtrace"] }
 cudaforge = { version = "0.1", optional = true }
 
 [features]
+experimental-fp8 = ["cuda", "candle-cublaslt/experimental-fp8"]
 experimental-fa4 = ["fa4"]
 fa4 = ["flash-attn", "dep:candle-flash-attn-v4"]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate"]

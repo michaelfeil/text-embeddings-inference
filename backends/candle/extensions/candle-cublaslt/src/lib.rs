@@ -1,3 +1,6 @@
+#[cfg(feature = "experimental-fp8")]
+pub mod fp8;
+
 pub use cudarc::cublaslt::Activation;
 use std::ffi::c_int;
 
