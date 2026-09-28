@@ -22,9 +22,22 @@ pub(super) struct QueryPlan {
 #[cfg(feature = "flash-attn")]
 impl QueryPlan {
     pub fn new(batch: &Batch, device: &Device) -> Result<Option<Self>> {
-        let (Some(scatter), Some(fold)) = (&batch.scatter_unfold, &batch.fold_gather) else {
+        let (Some(ids), Some(positions), Some(scatter), Some(fold)) = (
+            &batch.compact_input_ids,
+            &batch.compact_position_ids,
+            &batch.scatter_unfold,
+            &batch.fold_gather,
+        ) else {
             return Ok(None);
         };
+        // Match CompactUnfoldTensors: a partial set of compact metadata uses
+        // the original expanded input and cannot use a compact query plan.
+        if ids.len() != positions.len()
+            || ids.len() != fold.len()
+            || scatter.len() != batch.input_ids.len()
+        {
+            return Ok(None);
+        }
         let Some(RawPlan {
             queries,
             output,
