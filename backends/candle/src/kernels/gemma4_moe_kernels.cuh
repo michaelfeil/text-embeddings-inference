@@ -44,3 +44,5 @@ extern "C" __global__ void qwen3_moe_route_128_8_f32(
     const float *logits, uint32_t *ids, float *weights, bool renormalize);
 extern "C" __global__ void qwen3_moe_silu_mul(
     const __nv_bfloat16 *gate_up, __nv_bfloat16 *output, uint64_t slots, uint32_t width);
+
+extern "C" __global__ void qwen35_moe_route_256_8_f32(const float *, uint32_t *, float *, bool);

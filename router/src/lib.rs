@@ -109,15 +109,7 @@ pub async fn run(
     let config = fs::read_to_string(config_path).context("`config.json` not found")?;
     let mut config: ModelConfig =
         serde_json::from_str(&config).context("Failed to parse `config.json`")?;
-    if matches!(config.model_type.as_str(), "gemma4" | "gemma4_unified")
-        && config.max_position_embeddings == 0
-    {
-        config.max_position_embeddings = config
-            .text_config
-            .as_ref()
-            .map(|text| text.max_position_embeddings)
-            .context("Gemma4 `text_config.max_position_embeddings` is missing")?;
-    }
+    config.resolve_text_config()?;
     anyhow::ensure!(
         config.max_position_embeddings > 0,
         "`max_position_embeddings` must be positive"
@@ -566,9 +558,38 @@ pub struct ModelConfig {
     pub use_bidirectional_attention: Option<bool>,
 }
 
+impl ModelConfig {
+    fn resolve_text_config(&mut self) -> anyhow::Result<()> {
+        if matches!(
+            self.model_type.as_str(),
+            "gemma4" | "gemma4_unified" | "qwen3_5_moe"
+        ) {
+            if self.max_position_embeddings == 0 {
+                self.max_position_embeddings = self
+                    .text_config
+                    .as_ref()
+                    .context("Model text_config.max_position_embeddings is missing")?
+                    .max_position_embeddings;
+            }
+            if self.model_type == "qwen3_5_moe"
+                && self.dtype.is_none()
+                && self.torch_dtype.is_none()
+            {
+                if let Some(text) = &self.text_config {
+                    self.dtype = text.dtype.clone();
+                    self.torch_dtype = text.torch_dtype.clone();
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Deserialize)]
 pub struct TextPositionConfig {
     pub max_position_embeddings: usize,
+    pub dtype: Option<String>,
+    pub torch_dtype: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -848,6 +869,16 @@ mod auto_dtype_tests {
             assert_eq!(from_config(&json, Some(DType::Auto)), DType::Bfloat16);
             assert_eq!(from_config(&json, Some(DType::Float16)), DType::Float16);
         }
+    }
+
+    #[test]
+    fn qwen35_nested_context_and_dtype() {
+        let mut config: ModelConfig = serde_json::from_str(
+            r#"{"model_type":"qwen3_5_moe","text_config":{"max_position_embeddings":262144,"dtype":"bfloat16"}}"#,
+        ).unwrap();
+        config.resolve_text_config().unwrap();
+        assert_eq!(config.max_position_embeddings, 262144);
+        assert_eq!(config.dtype.as_deref(), Some("bfloat16"));
     }
 
     #[test]

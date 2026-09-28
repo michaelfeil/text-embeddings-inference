@@ -40,6 +40,42 @@ unsafe extern "C" {
         stream: *mut c_void,
     ) -> i32;
 }
+unsafe extern "C" {
+    fn qwen35_moe_workspace_bytes(tokens: i32, hidden: i32, intermediate: i32) -> usize;
+    fn qwen35_moe_forward_bf16(
+        logits: *const f32,
+        input: *const c_void,
+        gate_up: *const c_void,
+        down: *const c_void,
+        output: *mut c_void,
+        tokens: i32,
+        hidden: i32,
+        intermediate: i32,
+        renormalize: i32,
+        scratch: *mut c_void,
+        scratch_bytes: usize,
+        stream: *mut c_void,
+    ) -> i32;
+}
+
+#[cfg(gemma4_moe_hopper)]
+unsafe extern "C" {
+    fn hopper_qwen35_moe_workspace_bytes(tokens: i32, hidden: i32, intermediate: i32) -> usize;
+    fn hopper_qwen35_moe_forward_bf16(
+        logits: *const f32,
+        input: *const c_void,
+        gate_up: *const c_void,
+        down: *const c_void,
+        output: *mut c_void,
+        tokens: i32,
+        hidden: i32,
+        intermediate: i32,
+        renormalize: i32,
+        scratch: *mut c_void,
+        scratch_bytes: usize,
+        stream: *mut c_void,
+    ) -> i32;
+}
 
 pub fn experts(
     input: &Tensor,
@@ -49,7 +85,7 @@ pub fn experts(
     renormalize: bool,
 ) -> Result<Tensor> {
     let (tokens, hidden) = input.dims2()?;
-    let (_, _, intermediate) = down.dims3()?;
+    let (experts, _, intermediate) = down.dims3()?;
     if tokens == 0
         || tokens > i32::MAX as usize / 8
         || hidden == 0
@@ -58,11 +94,12 @@ pub fn experts(
         || !intermediate.is_multiple_of(8)
         || hidden > i32::MAX as usize
         || intermediate > i32::MAX as usize / 2
-        || logits.dims() != [tokens, 128]
-        || gate_up.dims() != [128, 2 * intermediate, hidden]
-        || down.dims() != [128, hidden, intermediate]
+        || !matches!(experts, 128 | 256)
+        || logits.dims() != [tokens, experts]
+        || gate_up.dims() != [experts, 2 * intermediate, hidden]
+        || down.dims() != [experts, hidden, intermediate]
     {
-        candle::bail!("Qwen3 MoE requires aligned BF16 expert dimensions, 128 experts and eight routes per token");
+        candle::bail!("Qwen3 MoE requires aligned BF16 expert dimensions, 128 or 256 experts and eight routes per token");
     }
     for t in [input, gate_up, down] {
         if t.dtype() != DType::BF16 {
@@ -160,6 +197,35 @@ impl CustomOp3 for Experts {
         };
         #[cfg(not(gemma4_moe_hopper))]
         let launch_fn = qwen3_moe_forward_bf16;
+        let experts = gl.dims()[0];
+        let workspace_fn = if experts == 256 {
+            #[cfg(gemma4_moe_hopper)]
+            if use_hopper {
+                hopper_qwen35_moe_workspace_bytes
+            } else {
+                qwen35_moe_workspace_bytes
+            }
+            #[cfg(not(gemma4_moe_hopper))]
+            {
+                qwen35_moe_workspace_bytes
+            }
+        } else {
+            workspace_fn
+        };
+        let launch_fn = if experts == 256 {
+            #[cfg(gemma4_moe_hopper)]
+            if use_hopper {
+                hopper_qwen35_moe_forward_bf16
+            } else {
+                qwen35_moe_forward_bf16
+            }
+            #[cfg(not(gemma4_moe_hopper))]
+            {
+                qwen35_moe_forward_bf16
+            }
+        } else {
+            launch_fn
+        };
         let bytes = unsafe { workspace_fn(tokens as i32, hidden as i32, self.intermediate as i32) };
         if bytes == 0 {
             candle::bail!("Invalid Qwen3 MoE workspace shape");

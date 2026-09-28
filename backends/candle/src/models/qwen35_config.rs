@@ -1,0 +1,185 @@
+#![cfg_attr(not(all(feature = "cuda", feature = "flash-attn")), allow(dead_code))]
+use candle::Result;
+use serde::Deserialize;
+#[derive(Debug, Clone, Deserialize)]
+#[serde(untagged)]
+pub enum Qwen35Config {
+    Multimodal {
+        text_config: Qwen35TextConfig,
+        #[serde(default)]
+        tie_word_embeddings: bool,
+        #[serde(default)]
+        quantization_config: Option<serde_json::Value>,
+    },
+    Text(Qwen35TextConfig),
+}
+impl Qwen35Config {
+    pub fn text(&self) -> &Qwen35TextConfig {
+        match self {
+            Self::Multimodal { text_config, .. } => text_config,
+            Self::Text(c) => c,
+        }
+    }
+    pub fn tied(&self) -> bool {
+        match self {
+            Self::Multimodal {
+                tie_word_embeddings,
+                ..
+            } => *tie_word_embeddings,
+            Self::Text(c) => c.tie_word_embeddings,
+        }
+    }
+    pub fn validate(&self) -> Result<()> {
+        if matches!(
+            self,
+            Self::Multimodal {
+                quantization_config: Some(_),
+                ..
+            }
+        ) {
+            candle::bail!("Quantized Qwen3.5-MoE checkpoints are unsupported")
+        };
+        self.text().validate()
+    }
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct Rope {
+    pub rope_type: String,
+    pub rope_theta: f32,
+    pub partial_rotary_factor: f64,
+}
+#[derive(Debug, Clone, Deserialize)]
+pub struct Qwen35TextConfig {
+    pub hidden_size: usize,
+    pub vocab_size: usize,
+    pub num_hidden_layers: usize,
+    pub num_attention_heads: usize,
+    pub num_key_value_heads: usize,
+    pub head_dim: usize,
+    pub max_position_embeddings: usize,
+    pub rms_norm_eps: f64,
+    pub layer_types: Vec<String>,
+    pub rope_parameters: Rope,
+    pub num_experts: usize,
+    pub num_experts_per_tok: usize,
+    pub moe_intermediate_size: usize,
+    pub shared_expert_intermediate_size: usize,
+    pub linear_num_key_heads: usize,
+    pub linear_num_value_heads: usize,
+    pub linear_key_head_dim: usize,
+    pub linear_value_head_dim: usize,
+    pub linear_conv_kernel_dim: usize,
+    #[serde(default)]
+    pub attention_bias: bool,
+    #[serde(default)]
+    pub tie_word_embeddings: bool,
+    #[serde(default)]
+    pub quantization_config: Option<serde_json::Value>,
+    pub hidden_act: String,
+    #[serde(default)]
+    pub mlp_only_layers: Vec<usize>,
+}
+impl Qwen35TextConfig {
+    pub fn rotary_dim(&self) -> usize {
+        (self.head_dim as f64 * self.rope_parameters.partial_rotary_factor) as usize
+    }
+    pub fn validate(&self) -> Result<()> {
+        if !self.mlp_only_layers.is_empty()
+            || self.quantization_config.is_some()
+            || self.attention_bias
+            || self.hidden_act != "silu"
+            || self.rope_parameters.rope_type != "default"
+        {
+            candle::bail!("Unsupported Qwen3.5-MoE quantization, attention bias, activation or RoPE configuration")
+        }
+        if self.max_position_embeddings == 0
+            || !self.rms_norm_eps.is_finite()
+            || self.rms_norm_eps <= 0.
+            || !self.rope_parameters.rope_theta.is_finite()
+            || self.rope_parameters.rope_theta <= 0.
+            || self.num_hidden_layers == 0
+            || self.layer_types.len() != self.num_hidden_layers
+            || self
+                .layer_types
+                .iter()
+                .any(|x| x != "linear_attention" && x != "full_attention")
+            || self.hidden_size == 0
+            || self.vocab_size == 0
+            || self.num_attention_heads == 0
+            || self.num_key_value_heads == 0
+            || !self
+                .num_attention_heads
+                .is_multiple_of(self.num_key_value_heads)
+            || self.head_dim == 0
+            || self.rotary_dim() == 0
+            || !self.rotary_dim().is_multiple_of(2)
+            || self.rotary_dim() > self.head_dim
+            || self.linear_key_head_dim != 128
+            || self.linear_value_head_dim != 128
+            || self.linear_num_key_heads == 0
+            || self.linear_num_value_heads == 0
+            || self.linear_num_value_heads > 128
+            || !self
+                .linear_num_value_heads
+                .is_multiple_of(self.linear_num_key_heads)
+            || self.linear_conv_kernel_dim == 0
+            || self.linear_conv_kernel_dim > 16
+            || self.num_experts != 256
+            || self.num_experts_per_tok != 8
+            || self.moe_intermediate_size == 0
+            || self.shared_expert_intermediate_size == 0
+        {
+            candle::bail!("Unsupported Qwen3.5-MoE architecture dimensions")
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    fn value() -> serde_json::Value {
+        serde_json::json!({
+            "hidden_size":2048,"vocab_size":248320,"num_hidden_layers":4,
+            "num_attention_heads":16,"num_key_value_heads":2,"head_dim":256,
+            "max_position_embeddings":262144,"rms_norm_eps":1e-6,
+            "layer_types":["linear_attention","linear_attention","linear_attention","full_attention"],
+            "rope_parameters":{"rope_type":"default","rope_theta":10000000.,"partial_rotary_factor":0.25},
+            "num_experts":256,"num_experts_per_tok":8,"moe_intermediate_size":512,"shared_expert_intermediate_size":512,
+            "linear_num_key_heads":16,"linear_num_value_heads":32,"linear_key_head_dim":128,"linear_value_head_dim":128,"linear_conv_kernel_dim":4,"hidden_act":"silu"
+        })
+    }
+    #[test]
+    fn wrapped_and_text_configs() -> Result<()> {
+        for config in [
+            value(),
+            serde_json::json!({"text_config":value(),"tie_word_embeddings":true}),
+        ] {
+            let c: Qwen35Config = serde_json::from_value(config).unwrap();
+            c.validate()?;
+            assert_eq!(c.text().rotary_dim(), 64);
+        }
+        Ok(())
+    }
+    #[test]
+    fn reject_unsupported_architecture() {
+        for (key, value) in [
+            ("num_experts", serde_json::json!(128)),
+            ("linear_key_head_dim", serde_json::json!(64)),
+            ("layer_types", serde_json::json!(["full_attention"])),
+            (
+                "quantization_config",
+                serde_json::json!({"quant_method":"fp8"}),
+            ),
+        ] {
+            let mut v = self::value();
+            v[key] = value;
+            let c: Qwen35Config = serde_json::from_value(v).unwrap();
+            assert!(c.validate().is_err());
+        }
+        let v =
+            serde_json::json!({"text_config":value(),"quantization_config":{"quant_method":"fp8"}});
+        let c: Qwen35Config = serde_json::from_value(v).unwrap();
+        assert!(c.validate().is_err());
+    }
+}
