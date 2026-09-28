@@ -1,12 +1,12 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
 use crate::layers::MlpLinear;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
 };
 use crate::models::{Model, Qwen2Config};
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen2Attention {
@@ -105,7 +105,7 @@ impl Qwen2Attention {
             self.num_key_value_heads,
         )?;
 
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
 
         // Expand Q, K, V to ORIGINAL layout for attention
         let q = compact_tensors.scatter_unfold(&q)?;
@@ -214,6 +214,7 @@ impl Qwen2Layer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
@@ -264,14 +265,7 @@ impl FlashQwen2Model {
         model_type: ModelType,
         enable_fp8_dynamic: bool,
     ) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashQwen2 requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashQwen2 requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
             ModelType::Classifier => {
@@ -434,7 +428,10 @@ impl FlashQwen2Model {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 let shape = batch.input_ids.len();
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);

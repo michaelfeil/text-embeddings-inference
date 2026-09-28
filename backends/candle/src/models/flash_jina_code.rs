@@ -116,8 +116,8 @@ impl JinaCodeAttention {
         let key_layer = &qkv[1].flatten_from(candle::D::Minus2)?;
 
         // Layer norm on q and k
-        let query_layer = self.layer_norm_q.forward(&query_layer, None)?;
-        let key_layer = self.layer_norm_k.forward(&key_layer, None)?;
+        let query_layer = self.layer_norm_q.forward(query_layer, None)?;
+        let key_layer = self.layer_norm_k.forward(key_layer, None)?;
 
         // Reshape back
         let mut new_qk_shape = query_layer.dims().to_vec();
@@ -295,14 +295,7 @@ impl FlashJinaCodeBertModel {
             _ => candle::bail!("not supported"),
         };
 
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashJinaCodeBertModel requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashJinaCodeBertModel requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
             ModelType::Classifier => {
@@ -431,7 +424,10 @@ impl FlashJinaCodeBertModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

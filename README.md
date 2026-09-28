@@ -512,6 +512,15 @@ grpcurl -d '{"inputs": "What is Deep Learning"}' -plaintext 0.0.0.0:8080 tei.v1.
 
 ### CPU
 
+Candle CPU inference uses packed (ragged) attention by default for float32 and
+float16 BERT/RoBERTa, DistilBERT, Jina, GTE, Nomic, ModernBERT, Qwen2/Qwen3,
+and Llama/Mistral models. Tokens remain unpadded throughout these model paths;
+attention respects each sequence's boundaries. Set `USE_FLASH_ATTENTION=false`
+to use the previous padded implementation where available. CPU BF16, MPNet,
+and Metal continue using their existing paths. Gemma3 still requires CUDA BF16.
+The CPU batch-size cap remains four sequences.
+
+
 You can also opt to install `text-embeddings-inference` locally.
 
 First [install Rust](https://rustup.rs/):

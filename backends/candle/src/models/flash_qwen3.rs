@@ -1,12 +1,12 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
 use crate::layers::MlpLinear;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
 };
 use crate::models::{Model, Qwen3Config};
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen3Attention {
@@ -148,20 +148,23 @@ impl Qwen3Attention {
             .concat(),
         )?;
 
-        let (q, k) = match crate::layers::qk_norm_rope::try_forward(
+        #[cfg(feature = "cuda")]
+        let fused = crate::layers::qk_norm_rope::try_forward(
             &q,
             &k,
             &self.q_norm,
             &self.k_norm,
             &cos,
             &sin,
-        )? {
+        )?;
+        #[cfg(not(feature = "cuda"))]
+        let fused: Option<(Tensor, Tensor)> = None;
+        let (q, k) = match fused {
             Some(pair) => pair,
             None => {
                 let (q, _) = self.q_norm.forward(&q, None)?;
                 let (k, _) = self.k_norm.forward(&k, None)?;
-                apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
-                (q, k)
+                apply_packed_rotary(&q, &k, cos, sin)?
             }
         };
 
@@ -272,6 +275,7 @@ impl Qwen3Layer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
@@ -326,14 +330,7 @@ impl FlashQwen3Model {
         model_type: ModelType,
         enable_fp8_dynamic: bool,
     ) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashQwen3 requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashQwen3 requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
             ModelType::Classifier => {
@@ -503,7 +500,10 @@ impl FlashQwen3Model {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let shape = batch.input_ids.len();
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);

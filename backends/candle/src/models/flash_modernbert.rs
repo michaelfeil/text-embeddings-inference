@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, residual_add, LayerNormNoBias, Linear,
 };
@@ -9,9 +10,8 @@ use crate::models::modernbert::{
     ModernBertMLP,
 };
 use crate::models::Model;
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct ModernBertAttention {
@@ -52,7 +52,7 @@ impl ModernBertAttention {
 
         let softmax_scale = (1. / (attention_head_size as f64).sqrt()) as f32;
 
-        let use_local_attention = index % config.global_attn_every_n_layers != 0;
+        let use_local_attention = !index.is_multiple_of(config.global_attn_every_n_layers);
 
         Ok(Self {
             wqkv,
@@ -60,7 +60,7 @@ impl ModernBertAttention {
             num_attention_heads: config.num_attention_heads,
             attention_head_size,
             softmax_scale,
-            local_attention: config.local_attention / 2 as usize,
+            local_attention: config.local_attention / 2,
             use_local_attention,
             span: tracing::span!(tracing::Level::TRACE, "attention"),
         })
@@ -89,7 +89,7 @@ impl ModernBertAttention {
         let k = qkv.narrow(1, self.num_attention_heads, self.num_attention_heads)?;
         let v = qkv.narrow(1, self.num_attention_heads * 2, self.num_attention_heads)?;
 
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
 
         let window_size = if self.use_local_attention {
             Some(self.local_attention)
@@ -251,14 +251,7 @@ pub struct FlashModernBertModel {
 
 impl FlashModernBertModel {
     pub fn load(vb: VarBuilder, config: &ModernBertConfig, model_type: ModelType) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashModernBert requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashModernBert requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let (pool, classifier) = match model_type {
             ModelType::Classifier => {
@@ -348,8 +341,8 @@ impl FlashModernBertModel {
         for use_local_attention in [true, false] {
             let (cos, sin) = &self.rotary_cache[&use_local_attention];
 
-            let cos = index_select(&cos, &position_ids, 0)?;
-            let sin = index_select(&sin, &position_ids, 0)?;
+            let cos = index_select(cos, &position_ids, 0)?;
+            let sin = index_select(sin, &position_ids, 0)?;
 
             rotary_cache.insert(use_local_attention, (cos, sin));
         }
@@ -414,7 +407,10 @@ impl FlashModernBertModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {
                     let i = i as usize;

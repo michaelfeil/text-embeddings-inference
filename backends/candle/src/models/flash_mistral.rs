@@ -1,12 +1,12 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
 use crate::layers::MlpLinear;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
 };
 use crate::models::{MistralConfig, Model};
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct MistralAttention {
@@ -27,7 +27,13 @@ struct MistralAttention {
 
 impl MistralAttention {
     pub fn load(vb: VarBuilder, config: &MistralConfig) -> Result<Self> {
-        let window_size_left = config.sliding_window;
+        // HF's causal window counts the current token; the attention kernel
+        // takes the inclusive distance to the leftmost visible token.
+        let window_size_left = if config.use_bidirectional_attention {
+            config.sliding_window
+        } else {
+            config.sliding_window.map(|window| window.saturating_sub(1))
+        };
         let use_bidirectional_attention = config.use_bidirectional_attention;
         let num_attention_heads = config.num_attention_heads;
         let attention_head_size = config.hidden_size / config.num_attention_heads;
@@ -98,7 +104,7 @@ impl MistralAttention {
             self.num_key_value_heads,
         )?;
 
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
 
         let q = compact_tensors.scatter_unfold(&q)?;
         let k = compact_tensors.scatter_unfold(&k)?;
@@ -173,8 +179,7 @@ impl MistralMLP {
         let up_states = gate_up_states.narrow(1, self.intermediate_size, self.intermediate_size)?;
 
         let gate_states = self.act.forward(&gate_states)?;
-        let r = self.down_proj.forward(&(gate_states * up_states)?);
-        r
+        self.down_proj.forward(&(gate_states * up_states)?)
     }
 }
 
@@ -212,6 +217,7 @@ impl MistralLayer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
@@ -262,14 +268,7 @@ impl FlashMistralModel {
         model_type: ModelType,
         enable_fp8_dynamic: bool,
     ) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashMistral requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashMistral requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
             ModelType::Classifier => {
@@ -429,7 +428,10 @@ impl FlashMistralModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {
