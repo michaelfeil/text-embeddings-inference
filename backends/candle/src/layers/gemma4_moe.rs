@@ -22,6 +22,25 @@ unsafe extern "C" {
     ) -> i32;
 }
 
+#[cfg(gemma4_moe_hopper)]
+unsafe extern "C" {
+    fn hopper_gemma4_moe_workspace_bytes(tokens: i32, hidden: i32, intermediate: i32) -> usize;
+    fn hopper_gemma4_moe_forward_bf16(
+        logits: *const f32,
+        scales: *const f32,
+        input: *const c_void,
+        gate_up: *const c_void,
+        down: *const c_void,
+        output: *mut c_void,
+        tokens: i32,
+        hidden: i32,
+        intermediate: i32,
+        scratch: *mut c_void,
+        scratch_bytes: usize,
+        stream: *mut c_void,
+    ) -> i32;
+}
+
 pub fn experts(
     input: &Tensor,
     logits: &Tensor,
@@ -114,7 +133,35 @@ impl CustomOp3 for Experts {
         let logits = logits.slice(ll.start_offset()..ll.start_offset() + ll.shape().elem_count());
         let scales = ss.as_cuda_slice::<f32>()?;
         let scales = scales.slice(sl.start_offset()..sl.start_offset() + sl.shape().elem_count());
-        let bytes = unsafe { gemma4_moe_workspace_bytes(tokens as i32, hidden as i32, 704) };
+        #[cfg(gemma4_moe_hopper)]
+        let use_hopper = if tokens >= 2048 {
+            use candle::cuda_backend::cudarc::driver::sys::CUdevice_attribute::{
+                CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR as MAJOR,
+                CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR as MINOR,
+            };
+            let context = stream.context();
+            context.attribute(MAJOR).map_err(candle::Error::wrap)? == 9
+                && context.attribute(MINOR).map_err(candle::Error::wrap)? == 0
+        } else {
+            false
+        };
+        #[cfg(gemma4_moe_hopper)]
+        let workspace_fn = if use_hopper {
+            hopper_gemma4_moe_workspace_bytes
+        } else {
+            gemma4_moe_workspace_bytes
+        };
+        #[cfg(not(gemma4_moe_hopper))]
+        let workspace_fn = gemma4_moe_workspace_bytes;
+        #[cfg(gemma4_moe_hopper)]
+        let launch_fn = if use_hopper {
+            hopper_gemma4_moe_forward_bf16
+        } else {
+            gemma4_moe_forward_bf16
+        };
+        #[cfg(not(gemma4_moe_hopper))]
+        let launch_fn = gemma4_moe_forward_bf16;
+        let bytes = unsafe { workspace_fn(tokens as i32, hidden as i32, 704) };
         if bytes == 0 {
             candle::bail!("Invalid Gemma4 MoE workspace shape");
         }
@@ -130,7 +177,7 @@ impl CustomOp3 for Experts {
             let (wp, _wg) = scratch.device_ptr_mut(&stream);
             let (op, _og) = output.device_ptr_mut(&stream);
             let status = unsafe {
-                gemma4_moe_forward_bf16(
+                launch_fn(
                     lp as *const f32,
                     sp as *const f32,
                     ip as *const c_void,

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Gemma4-26B routing: softmax over all 128 experts, select eight,
 // renormalize selected probabilities, then apply learned expert scales.
+#include "gemma4_moe_kernels.cuh"
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>

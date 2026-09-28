@@ -15,6 +15,7 @@ parser.add_argument("--model", type=Path, required=True)
 parser.add_argument("--library", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--tokens", type=int, nargs="+", default=[1, 17, 257, 1024])
+parser.add_argument("--hopper", action="store_true", help="Test the SM90a expert entry point")
 parser.add_argument(
     "--concentrated",
     action="store_true",
@@ -30,9 +31,11 @@ lib = ctypes.CDLL(str(args.library.resolve()))
 P = ctypes.c_void_p
 I = ctypes.c_int
 S = ctypes.c_size_t
-lib.gemma4_moe_workspace_bytes.argtypes = [I, I, I]
-lib.gemma4_moe_workspace_bytes.restype = S
-fn = lib.gemma4_moe_forward_bf16
+symbol_prefix = "hopper_" if args.hopper else ""
+workspace_fn = getattr(lib, symbol_prefix + "gemma4_moe_workspace_bytes")
+workspace_fn.argtypes = [I, I, I]
+workspace_fn.restype = S
+fn = getattr(lib, symbol_prefix + "gemma4_moe_forward_bf16")
 fn.argtypes = [P] * 6 + [I] * 3 + [P, S, P]
 
 
@@ -86,7 +89,7 @@ for t in args.tokens:
             t, 2816
         )
     scratch = torch.empty(
-        lib.gemma4_moe_workspace_bytes(t, 2816, 704), device="cuda", dtype=torch.uint8
+        workspace_fn(t, 2816, 704), device="cuda", dtype=torch.uint8
     )
     status = fn(
         logits.data_ptr(),

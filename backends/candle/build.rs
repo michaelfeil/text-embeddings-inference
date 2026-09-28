@@ -2,6 +2,7 @@ use anyhow::{bail, Context, Result};
 
 fn main() {
     println!("cargo:rustc-check-cfg=cfg(gemma4_moe_cuda)");
+    println!("cargo:rustc-check-cfg=cfg(gemma4_moe_hopper)");
     println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
     if let Ok(compute_cap) = set_compute_cap() {
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={compute_cap}");
@@ -9,6 +10,10 @@ fn main() {
     #[cfg(feature = "cuda")]
     {
         println!("cargo:rerun-if-changed=src/kernels/gemma4_moe.cu");
+        println!("cargo:rerun-if-changed=src/kernels/gemma4_moe_kernels.cuh");
+        println!(
+            "cargo:rerun-if-changed=extensions/candle-gemma4-moe/kernels/grouped_gemm_hopper.cu"
+        );
         println!("cargo:rerun-if-changed=extensions/candle-gemma4-moe/kernels/grouped_gemm.cu");
         let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
         // Routed BF16 experts need Ampere Tensor Cores. Keep older CUDA
@@ -24,6 +29,23 @@ fn main() {
                 .expect("compile Gemma4 grouped MoE kernels");
             println!("cargo:rustc-link-search=native={}", out.display());
             println!("cargo:rustc-link-lib=static=gemma4_moe");
+            // SM90a instructions are compiled only into Hopper-targeted builds.
+            // Other targets retain the portable grouped GEMM implementation.
+            if set_compute_cap().expect("CUDA compute capability") == 90 {
+                cudaforge::KernelBuilder::new()
+                    .source_files(["extensions/candle-gemma4-moe/kernels/grouped_gemm_hopper.cu"])
+                    .with_compute_override_arch("grouped_gemm_hopper.cu", "90a")
+                    // CUTLASS device assertions otherwise serialize WGMMA instructions.
+                    .arg("-DNDEBUG")
+                    .with_cutlass(Some("e406c186f510a15091cce01f782020ceb7ba8eb5"))
+                    .arg("-std=c++17")
+                    .arg("-O3")
+                    .arg("--expt-relaxed-constexpr")
+                    .build_lib(out.join("libgemma4_moe_hopper.a"))
+                    .expect("compile Hopper Gemma4 grouped MoE kernels");
+                println!("cargo:rustc-link-lib=static=gemma4_moe_hopper");
+                println!("cargo:rustc-cfg=gemma4_moe_hopper");
+            }
             println!("cargo:rustc-link-lib=stdc++");
             println!("cargo:rustc-cfg=gemma4_moe_cuda");
         }
