@@ -49,6 +49,11 @@ FROM base-builder AS builder
 COPY --from=fa4-builder /opt/fa4 /opt/fa4
 ENV FA4_NATIVE_LIB_DIR=/opt/fa4
 
+# Images run on hosts other than the builder. Avoid emitting builder-specific
+# CPU instructions (for example AVX-512) in the Rust serving binary.
+ARG RUSTFLAGS="-C target-cpu=x86-64-v3"
+ENV RUSTFLAGS=${RUSTFLAGS}
+
 ARG CUDA_COMPUTE_CAP=80
 ARG GIT_SHA
 ARG DOCKER_LABEL
