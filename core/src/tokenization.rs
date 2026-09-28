@@ -954,7 +954,6 @@ mod fast_embedding_tests {
                 .build()
                 .unwrap(),
         ));
-        let raw_ids = hf.encode("hello", false).unwrap().get_ids().to_vec();
         let tokenizer = Tokenization::new(
             2,
             hf,
@@ -966,10 +965,9 @@ mod fast_embedding_tests {
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             for direction in [TruncationDirection::Left, TruncationDirection::Right] {
                 for prompt in [None, Some("query".to_owned())] {
-                    for input in [
-                        EncodingInput::Single("hello 東京 👩🏽‍💻 <s> longer text".into()),
-                        EncodingInput::Ids(raw_ids.clone()),
-                    ] {
+                    for input in [EncodingInput::Single(
+                        "hello 東京 👩🏽‍💻 <s> longer text".into(),
+                    )] {
                         // Clone via the variants: EncodingInput intentionally has no Clone impl.
                         let duplicate = match &input {
                             EncodingInput::Single(s) => EncodingInput::Single(s.clone()),

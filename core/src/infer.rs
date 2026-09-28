@@ -12,6 +12,26 @@ use tokenizers::TruncationDirection;
 use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::instrument;
 
+/// Every embedding batch member must release the batching barrier, including
+/// failed validation and cancellation before enqueueing.
+struct EmbeddingBatchMember<'a> {
+    counter: Option<Arc<AtomicUsize>>,
+    notify: &'a Notify,
+}
+
+impl Drop for EmbeddingBatchMember<'_> {
+    fn drop(&mut self) {
+        match &self.counter {
+            None => self.notify.notify_one(),
+            Some(counter) => {
+                if counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                    self.notify.notify_one();
+                }
+            }
+        }
+    }
+}
+
 /// Inference struct
 #[derive(Debug, Clone)]
 pub struct Infer {
@@ -362,6 +382,10 @@ impl Infer {
         _permit: OwnedSemaphorePermit,
         batch_counter: Option<Arc<AtomicUsize>>,
     ) -> Result<InferResult, TextEmbeddingsError> {
+        let batch_member = EmbeddingBatchMember {
+            counter: batch_counter.clone(),
+            notify: &self.notify_batching_task,
+        };
         if self.is_classifier() {
             let counter = metrics::counter!("te_request_failure", "err" => "model_type");
             counter.increment(1);
@@ -406,14 +430,8 @@ impl Infer {
             })
             .await;
 
-        match batch_counter {
-            None => self.notify_batching_task.notify_one(),
-            Some(counter) => {
-                if counter.fetch_sub(1, Ordering::SeqCst) == 1 {
-                    self.notify_batching_task.notify_one();
-                }
-            }
-        }
+        // Release before waiting for inference; Drop also covers earlier errors.
+        drop(batch_member);
 
         let response = response_rx
             .await
@@ -955,4 +973,31 @@ pub struct PooledEmbeddingsInferResponse {
 pub struct AllEmbeddingsInferResponse {
     pub results: Vec<Vec<f32>>,
     pub metadata: InferMetadata,
+}
+
+#[cfg(test)]
+mod embedding_batch_progress_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn failed_embedding_member_releases_valid_sibling() {
+        let counter = Arc::new(AtomicUsize::new(2));
+        let notify = Notify::new();
+        let valid = EmbeddingBatchMember {
+            counter: Some(counter.clone()),
+            notify: &notify,
+        };
+        let invalid = EmbeddingBatchMember {
+            counter: Some(counter.clone()),
+            notify: &notify,
+        };
+        // Simulate one member finishing enqueue and its sibling failing validation.
+        drop(valid);
+        assert_eq!(counter.load(Ordering::SeqCst), 1);
+        drop(invalid);
+        assert_eq!(counter.load(Ordering::SeqCst), 0);
+        tokio::time::timeout(Duration::from_secs(1), notify.notified())
+            .await
+            .unwrap();
+    }
 }
