@@ -116,10 +116,34 @@ extern "C" __global__ void gemma4_moe_pack(
 }
 extern "C" __global__ void gemma4_moe_gelu_mul(
     const __nv_bfloat16 *gate_up, __nv_bfloat16 *output, uint64_t slots, uint32_t width) {
-    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-    if (i < slots * width) {
-        const uint64_t row = i / width;
-        const uint32_t column = i % width;
+    // One block per expert row avoids per-element division. Aligned rows
+    // load eight BF16 values at a time without changing activation rounding.
+    const uint64_t row = blockIdx.x;
+    if (row >= slots) return;
+    if (width % 8 == 0 && (reinterpret_cast<uintptr_t>(gate_up) & 15) == 0 &&
+        (reinterpret_cast<uintptr_t>(output) & 15) == 0) {
+        for (uint32_t column = threadIdx.x * 8; column < width; column += blockDim.x * 8) {
+            __align__(16) __nv_bfloat16 gates[8], ups[8], result[8];
+            *reinterpret_cast<uint4 *>(gates) = *reinterpret_cast<const uint4 *>(
+                gate_up + row * (2 * width) + column);
+            *reinterpret_cast<uint4 *>(ups) = *reinterpret_cast<const uint4 *>(
+                gate_up + row * (2 * width) + width + column);
+            #pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                const float gate = __bfloat162float(gates[j]);
+                const float up = __bfloat162float(ups[j]);
+                const float gelu = 0.5f * gate * (1.f + tanhf(0.7978845608028654f *
+                    (gate + 0.044715f * gate * gate * gate)));
+                const float rounded_gelu = __bfloat162float(__float2bfloat16_rn(gelu));
+                result[j] = __float2bfloat16_rn(rounded_gelu * up);
+            }
+            *reinterpret_cast<uint4 *>(output + row * width + column) =
+                *reinterpret_cast<const uint4 *>(result);
+        }
+        return;
+    }
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        const uint64_t i = row * width + column;
         const float gate = __bfloat162float(gate_up[row * (2 * width) + column]);
         const float up = __bfloat162float(gate_up[row * (2 * width) + width + column]);
         const float gelu = 0.5f * gate * (1.f + tanhf(0.7978845608028654f *

@@ -22,6 +22,7 @@ extern "C" __global__ void gemma4_moe_assign(const uint32_t *ids, const int *off
 extern "C" __global__ void gemma4_moe_pack(const __nv_bfloat16 *input, const uint32_t *mapping,
                                            __nv_bfloat16 *packed, uint64_t slots, uint32_t hidden);
 
+// Launch one block per expert row (slots); columns are traversed within the block.
 extern "C" __global__ void gemma4_moe_gelu_mul(const __nv_bfloat16 *gate_up, __nv_bfloat16 *output,
                                                uint64_t slots, uint32_t width);
 

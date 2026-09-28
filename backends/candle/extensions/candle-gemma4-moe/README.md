@@ -50,7 +50,10 @@ It also records CUDA-event timings. These tolerances are not model-quality
 acceptance criteria. Keep a separate full-model decision/scoring comparison.
 
 The harness also checks exact GELU-plus-multiply agreement with vLLM across six
-input scales, to catch changes to intermediate BF16 rounding.
+input scales, to catch changes to intermediate BF16 rounding. It additionally
+checks every BF16 gate bit pattern against the original scalar arithmetic,
+with unit/random up values, widths 13/704 and aligned/offset buffers. NaNs
+are treated as equivalent; finite outputs must match bit for bit.
 
 For the Hopper implementation, build both translation units and select its
 entry points in the harness:

@@ -141,7 +141,7 @@ extern "C" int gemma4_moe_forward_bf16(
         hidden,2*intermediate,b.problems,b.a,b.b,b.c,b.lda,b.ldb,b.ldc);
     int status = grouped_gemm<Element>(b.problems,128,b.a,b.b,b.c,b.lda,b.ldb,b.ldc,stream);
     if (status) return status;
-    gemma4_moe_gelu_mul<<<(uint64_t(slots)*intermediate+255)/256,256,0,stream>>>(
+    gemma4_moe_gelu_mul<<<slots,128,0,stream>>>(
         reinterpret_cast<__nv_bfloat16 *>(b.gate_up),reinterpret_cast<__nv_bfloat16 *>(b.activated),slots,intermediate);
     setup_problems<<<1,128,0,stream>>>(b.counts,b.offsets,b.activated,static_cast<Element *>(down_weight),b.expert_output,
         intermediate,hidden,b.problems,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc);

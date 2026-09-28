@@ -15,7 +15,9 @@ parser.add_argument("--model", type=Path, required=True)
 parser.add_argument("--library", type=Path, required=True)
 parser.add_argument("--output", type=Path, required=True)
 parser.add_argument("--tokens", type=int, nargs="+", default=[1, 17, 257, 1024])
-parser.add_argument("--hopper", action="store_true", help="Test the SM90a expert entry point")
+parser.add_argument(
+    "--hopper", action="store_true", help="Test the SM90a expert entry point"
+)
 parser.add_argument(
     "--concentrated",
     action="store_true",
@@ -61,6 +63,50 @@ for scale in [0.01, 0.1, 1, 3, 10, 100]:
     assert torch.equal(actual, expected), ("GELU rounding differs", scale)
 print("GELU rounding: exact agreement across six input scales", flush=True)
 
+# Cover every BF16 gate bit pattern, vector/scalar paths and storage offsets.
+reference_gelu = lib.gemma4_test_gelu_reference
+reference_gelu.argtypes = [P, P, I, I, P]
+for width in [13, 704]:
+    tokens = (65536 + width - 1) // width
+    gate = torch.arange(tokens * width, device="cuda", dtype=torch.int32)
+    gate = gate.to(torch.int16).view(torch.bfloat16).view(tokens, width)
+    for offset in [0, 1]:
+        for unit_up in [True, False]:
+            up = torch.ones_like(gate) if unit_up else torch.randn_like(gate)
+            value = torch.cat((gate, up), dim=1)
+            if offset:
+                value = torch.cat((value.new_zeros(1), value.flatten()))[1:]
+            value = value.view(tokens, 2 * width)
+            outputs = []
+            for launch in [gelufn, reference_gelu]:
+                output = torch.empty(
+                    tokens * width + offset, device="cuda", dtype=torch.bfloat16
+                )
+                output = output[offset:].view(tokens, width)
+                assert (
+                    launch(
+                        value.data_ptr(),
+                        output.data_ptr(),
+                        tokens,
+                        width,
+                        torch.cuda.current_stream().cuda_stream,
+                    )
+                    == 0
+                )
+                outputs.append(output)
+            equal = (outputs[0].view(torch.int16) == outputs[1].view(torch.int16)) | (
+                outputs[0].isnan() & outputs[1].isnan()
+            )
+            assert equal.all().item(), (
+                "GELU vectorization differs",
+                width,
+                offset,
+                unit_up,
+            )
+print(
+    "GELU vectorization: all BF16 gate patterns agree with scalar reference", flush=True
+)
+
 
 def weight(name):
     for f in args.model.glob("*.safetensors"):
@@ -88,9 +134,7 @@ for t in args.tokens:
         out = torch.empty(t * 2816 + 1, device="cuda", dtype=torch.bfloat16)[1:].view(
             t, 2816
         )
-    scratch = torch.empty(
-        workspace_fn(t, 2816, 704), device="cuda", dtype=torch.uint8
-    )
+    scratch = torch.empty(workspace_fn(t, 2816, 704), device="cuda", dtype=torch.uint8)
     status = fn(
         logits.data_ptr(),
         scales.data_ptr(),

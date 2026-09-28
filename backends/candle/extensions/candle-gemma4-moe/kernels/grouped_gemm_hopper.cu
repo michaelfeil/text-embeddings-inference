@@ -181,7 +181,7 @@ extern "C" int hopper_gemma4_moe_forward_bf16(const float *logits, const float *
                                        b.workspace, stream);
     if (status)
         return status;
-    gemma4_moe_gelu_mul<<<(uint64_t(slots) * intermediate + 255) / 256, 256, 0, stream>>>(
+    gemma4_moe_gelu_mul<<<slots, 128, 0, stream>>>(
         reinterpret_cast<__nv_bfloat16 *>(b.gate_up),
         reinterpret_cast<__nv_bfloat16 *>(b.activated), slots, intermediate);
     setup_problems<<<1, 128, 0, stream>>>(
