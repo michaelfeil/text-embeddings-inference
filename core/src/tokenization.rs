@@ -292,6 +292,9 @@ fn tokenizer_worker(
                 })
             }
             TokenizerRequest::Chat(renderer, messages, candidate, sender) => {
+                if sender.is_closed() {
+                    continue;
+                }
                 let result = renderer
                     .render(&messages, candidate.as_deref())
                     .and_then(|text| {

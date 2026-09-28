@@ -87,7 +87,7 @@ impl Infer {
         max_length: usize,
     ) -> Result<(Vec<crate::decision::ScoredGroup>, usize, usize), TextEmbeddingsError> {
         let _permit = self.try_acquire_permit()?;
-        let Some(_style) = self.backend.decision_prompt_style else {
+        if self.backend.decision_prompt_style.is_none() {
             return Err(TextEmbeddingsError::Validation(
                 "Decision scoring requires a supported causal language model with LM weights"
                     .into(),
