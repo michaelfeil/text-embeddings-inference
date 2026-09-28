@@ -29,17 +29,21 @@ impl MlpLinear {
     }
 
     pub(crate) fn forward_gated(&self, x: &Tensor, act: &super::HiddenAct) -> Result<Tensor> {
-        #[cfg(feature = "experimental-fp8")]
-        if matches!(act, super::HiddenAct::Silu) {
-            if let Self::Fp8(linear) = self {
-                if let Some(y) =
-                    with_fp8_executor(x, |executor| linear.forward_packed_swiglu(x, executor))?
-                {
-                    return Ok(y);
+        match self {
+            Self::Dense(linear) => linear.forward(&super::gated_activation(x, Some(act))?),
+            #[cfg(feature = "experimental-fp8")]
+            Self::Fp8(linear) => {
+                if matches!(act, super::HiddenAct::Silu) {
+                    if let Some(y) =
+                        with_fp8_executor(x, |executor| linear.forward_packed_swiglu(x, executor))?
+                    {
+                        return Ok(y);
+                    }
                 }
+                let activated = super::gated_activation(x, Some(act))?;
+                with_fp8_executor(&activated, |executor| linear.forward(&activated, executor))
             }
         }
-        self.forward(&super::gated_activation(x, Some(act))?)
     }
 
     pub(crate) fn forward(&self, x: &Tensor) -> Result<Tensor> {
@@ -70,4 +74,42 @@ fn with_fp8_executor<T>(
         let (_, executor) = slot.as_mut().expect("executor initialized above");
         f(executor)
     })
+}
+
+#[cfg(all(test, feature = "experimental-fp8"))]
+mod tests {
+    use super::*;
+    use candle::{DType, Device};
+
+    #[test]
+    #[ignore = "requires a CUDA device"]
+    fn disabled_fp8_preserves_dense_outputs_without_executor() -> Result<()> {
+        // A fresh thread isolates the lazy executor from other GPU tests.
+        std::thread::spawn(|| -> Result<()> {
+            let device = Device::new_cuda(0)?;
+            let weight = Tensor::arange(0f32, 256f32, &device)?
+                .reshape((16, 16))?
+                .affine(0.001, -0.1)?
+                .to_dtype(DType::F16)?;
+            let dense = Linear::new(weight.clone(), None, None);
+            let disabled = MlpLinear::new(weight, false)?;
+            assert!(matches!(&disabled, MlpLinear::Dense(_)));
+            let x = Tensor::arange(0f32, 64f32, &device)?
+                .reshape((4, 16))?
+                .affine(0.01, -0.2)?
+                .to_dtype(DType::F16)?;
+            let values = |t: Tensor| t.to_dtype(DType::F32)?.to_vec2::<f32>();
+            assert_eq!(values(disabled.forward(&x)?)?, values(dense.forward(&x)?)?);
+            let packed = Tensor::cat(&[&x, &x], 1)?;
+            let act = super::super::HiddenAct::Silu;
+            assert_eq!(
+                values(disabled.forward_gated(&packed, &act)?)?,
+                values(dense.forward(&super::super::gated_activation(&packed, Some(&act))?)?)?
+            );
+            FP8_EXECUTOR.with(|slot| assert!(slot.borrow().is_none()));
+            Ok(())
+        })
+        .join()
+        .expect("disabled FP8 test thread panicked")
+    }
 }

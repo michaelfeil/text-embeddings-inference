@@ -3,8 +3,8 @@ use candle_nn::VarBuilder;
 
 #[derive(Debug)]
 pub struct RMSNorm {
-    weight: Tensor,
-    epsilon: f32,
+    pub(super) weight: Tensor,
+    pub(super) epsilon: f32,
     span: tracing::Span,
 }
 

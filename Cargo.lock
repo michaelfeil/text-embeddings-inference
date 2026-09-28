@@ -340,7 +340,7 @@ dependencies = [
 
 [[package]]
 name = "backend-grpc-client"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "grpc-metadata",
  "prost 0.11.9",
@@ -603,6 +603,15 @@ dependencies = [
  "half",
  "num_cpus",
  "rayon",
+]
+
+[[package]]
+name = "candle-flash-attn-v4"
+version = "0.1.0-alpha.1"
+source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=f98710e4caefe825eaeceae6559a5d7ad96cd7c0#f98710e4caefe825eaeceae6559a5d7ad96cd7c0"
+dependencies = [
+ "candle-core",
+ "half",
 ]
 
 [[package]]
@@ -4819,7 +4828,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-backend"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "clap",
  "hf-hub",
@@ -4836,7 +4845,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-backend-candle"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "accelerate-src",
  "anyhow",
@@ -4844,6 +4853,7 @@ dependencies = [
  "candle-cublaslt",
  "candle-flash-attn",
  "candle-flash-attn-v1",
+ "candle-flash-attn-v4",
  "candle-index-select-cu",
  "candle-layer-norm",
  "candle-nn",
@@ -4869,7 +4879,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-backend-core"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "clap",
  "nohash-hasher",
@@ -4879,7 +4889,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-backend-ort"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "anyhow",
  "ndarray",
@@ -4896,7 +4906,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-backend-python"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "backend-grpc-client",
  "nohash-hasher",
@@ -4910,7 +4920,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-core"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "async-channel",
  "fastokens-b10",
@@ -4928,7 +4938,7 @@ dependencies = [
 
 [[package]]
 name = "text-embeddings-router"
-version = "1.8.11-rc.0"
+version = "1.8.11-rc.1"
 dependencies = [
  "anyhow",
  "async-stream",

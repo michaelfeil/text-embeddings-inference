@@ -83,7 +83,7 @@ struct Args {
     max_batch_requests: Option<usize>,
 
     /// Experimental calibration-free FP8 MLPs (Hopper FP16 Qwen2/Qwen3/Llama/Mistral).
-    /// Requires a build with experimental-fp8. May change embedding accuracy.
+    /// Bundled in official Hopper images; disabled by default. May change embedding accuracy.
     #[clap(long, env)]
     enable_fp8_dynamic: bool,
 

@@ -6,6 +6,7 @@ authors.workspace = true
 homepage.workspace = true
 
 [dependencies]
+candle-flash-attn-v4 = { git = "https://github.com/michaelfeil/candle-flash-attn-v4", rev = "f98710e4caefe825eaeceae6559a5d7ad96cd7c0", optional = true }
 anyhow = { workspace = true }
 accelerate-src = { version = "0.3.2", optional = true }
 intel-mkl-src = { workspace = true, optional = true }
@@ -42,6 +43,8 @@ cudaforge = { version = "0.1", optional = true }
 
 [features]
 experimental-fp8 = ["cuda", "candle-cublaslt/experimental-fp8"]
+experimental-fa4 = ["fa4"]
+fa4 = ["flash-attn", "dep:candle-flash-attn-v4"]
 accelerate = ["dep:accelerate-src", "candle/accelerate", "candle-nn/accelerate"]
 metal = ["candle/metal", "candle-nn/metal"]
 mkl = ["dep:intel-mkl-src", "candle/mkl"]
@@ -50,3 +53,5 @@ cuda-static-linking = ["candle/cuda-static-linking", "candle-flash-attn?/static-
 cuda-dynamic-linking = ["candle/cuda-dynamic-linking"]
 flash-attn-v1 = ["dep:candle-flash-attn-v1", "cuda"]
 flash-attn = ["dep:candle-flash-attn", "cuda"]
+
+experimental-deberta = ["cuda", "dep:candle-flash-attn-v4", "candle-flash-attn-v4/deberta"]

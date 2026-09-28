@@ -5,7 +5,17 @@ using CUDA toolkit 12.9 or newer. `Dockerfile-cuda` includes this build feature
 for Hopper (compute capability 9.0). Enable with `--enable-fp8-dynamic` or
 `ENABLE_FP8_DYNAMIC=true`, and select `--dtype float16`.
 
-The runtime option defaults to false. Initial support is the CUDA flash-attention
+## Bundled, disabled by default
+
+Official Hopper images bundle FP8 support in both HTTP and gRPC builds. No
+custom image is needed to opt in. The runtime option defaults to false.
+When disabled, MLP projections use the existing dense linear and activation
+kernels: no FP8 weight copies, quantization kernels, FP8 executor, workspace or
+shape-plan cache are created. An enum dispatch selects the dense implementation;
+this is not a claim of literally zero CPU instructions of dispatch overhead.
+Other GPU image targets do not bundle this Hopper-only implementation.
+
+ Initial support is the CUDA flash-attention
 implementation of Qwen2, Qwen3, Llama and Mistral. Hopper (compute capability 9.0)
 is required; validation so far uses H100. cuBLAS outer-vector scaling is
 [Hopper-only in CUDA 12.9 and 13.1](https://docs.nvidia.com/cuda/archive/13.1.0/cublas/index.html#narrow-precision-data-types-usage),

@@ -344,6 +344,9 @@ impl FlashQwen2Model {
             batch_size + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
 
         // sin and cos are applied on the compact formation, therefore should be on the compact array
         let cos = index_select(&self.cos_cache, &compact_tensors.position_ids_compact, 0)?;
@@ -417,29 +420,11 @@ impl FlashQwen2Model {
                     }
                 }
                 // Mean pooling
-                Pool::Mean => {
-                    if batch_size > 1 {
-                        // for each request that requires pooling
-                        let results: Result<Vec<Tensor>> = batch
-                            .pooled_indices
-                            .into_iter()
-                            .map(|i| {
-                                let i = i as usize;
-                                let start = batch.cumulative_seq_lengths[i];
-                                let len = batch.cumulative_seq_lengths[i + 1] - start;
-
-                                // Mean
-                                let embeddings = outputs.narrow(0, start as usize, len as usize)?;
-                                embeddings.sum_keepdim(0)? / (len as f64)
-                            })
-                            .collect();
-
-                        // Concatenate all results
-                        Some(Tensor::cat(&results?, 0)?)
-                    } else {
-                        Some((outputs.sum_keepdim(0)? / (batch.max_length as f64))?)
-                    }
-                }
+                Pool::Mean => Some(crate::layers::mean_pool(
+                    &outputs,
+                    &batch.cumulative_seq_lengths,
+                    &batch.pooled_indices,
+                )?),
                 Pool::Splade => {
                     unreachable!();
                 }
