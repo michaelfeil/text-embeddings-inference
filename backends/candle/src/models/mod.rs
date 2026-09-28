@@ -56,7 +56,9 @@ mod flash_qwen3;
 pub use bert::{BertConfig, BertModel, PositionEmbeddingType};
 pub use dense::{Dense, DenseConfig, DenseLayer};
 pub use distilbert::{DistilBertConfig, DistilBertModel};
-pub use gemma3::{Gemma3Config, Gemma3Model};
+pub use gemma3::Gemma3Config;
+#[cfg(feature = "flash-attn")]
+pub use gemma3::Gemma3Model;
 pub use gemma4::{Gemma4Config, Gemma4Model};
 pub use gte::{GTEConfig, GTEModel};
 pub use jina::JinaBertModel;
