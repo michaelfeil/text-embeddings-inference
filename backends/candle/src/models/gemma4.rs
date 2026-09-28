@@ -1,7 +1,12 @@
+#[cfg(any(feature = "flash-attn", test))]
+#[path = "gemma4_query_plan.rs"]
+mod query_plan;
 use crate::layers::{apply_rotary, get_cos_sin, get_inv_freqs, HiddenAct, Linear};
 #[cfg(feature = "flash-attn")]
 use crate::layers::{index_select, CompactUnfoldTensors};
 use crate::models::Model;
+#[cfg(feature = "flash-attn")]
+use query_plan::QueryPlan;
 
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
@@ -192,6 +197,7 @@ impl Gemma4Attention {
         max_length: usize,
         causal: bool,
         compact: &CompactUnfoldTensors,
+        query_plan: Option<&QueryPlan>,
         shared_kv: &mut SharedKv,
     ) -> Result<Tensor> {
         use crate::flash_attn::flash_attn_varlen;
@@ -215,7 +221,15 @@ impl Gemma4Attention {
             .transpose(1, 2)?
             .squeeze(0)?
             .contiguous()?;
-        let q = unfold_heads(q, self.num_attention_heads)?;
+        let q = if let Some(plan) = query_plan {
+            index_select(&q.flatten_from(1)?.contiguous()?, &plan.queries, 0)?.reshape((
+                plan.queries.elem_count(),
+                self.num_attention_heads,
+                self.head_dim,
+            ))?
+        } else {
+            unfold_heads(q, self.num_attention_heads)?
+        };
 
         let (k, v) = if self.is_kv_shared {
             shared_kv
@@ -277,9 +291,9 @@ impl Gemma4Attention {
             &k,
             &v,
             None,
+            query_plan.map_or(cu_seqlens, |p| &p.cu_queries),
             cu_seqlens,
-            cu_seqlens,
-            max_length,
+            query_plan.map_or(max_length, |p| p.max_queries),
             max_length,
             1.0,
             causal,
@@ -287,7 +301,12 @@ impl Gemma4Attention {
             window_right,
         )?
         .flatten_from(D::Minus2)?;
-        self.o_proj.forward(&compact.fold_gather(&output)?)
+        let output = if let Some(plan) = query_plan {
+            index_select(&output, &plan.output, 0)?
+        } else {
+            compact.fold_gather(&output)?
+        };
+        self.o_proj.forward(&output)
     }
 
     fn load(vb: VarBuilder, config: &Gemma4TextConfig, layer_idx: usize) -> Result<Self> {
@@ -688,6 +707,7 @@ impl Gemma4Layer {
         max_length: usize,
         causal: bool,
         compact: &CompactUnfoldTensors,
+        query_plan: Option<&QueryPlan>,
         shared_kv: &mut SharedKv,
     ) -> Result<Tensor> {
         let residual = states;
@@ -700,6 +720,7 @@ impl Gemma4Layer {
             max_length,
             causal,
             compact,
+            query_plan,
             shared_kv,
         )?;
         let states = (residual + self.post_attention_layernorm.forward(&attention)?)?;
@@ -897,6 +918,21 @@ impl Gemma4Model {
         if !causal && batch.compact_input_ids.is_some() {
             candle::bail!("Bidirectional Gemma4 inference cannot fold causal prefixes")
         }
+        // Validate additional backends before changing their attention tiling.
+        // The Hopper FA2 path preserves 128-aligned absolute query positions.
+        let prefix_attention = causal
+            && batch.scatter_unfold.is_some()
+            && self.dtype == DType::BF16
+            && self.local_head_dim == 256
+            && self.full_head_dim == 512
+            && crate::flash_attn::runtime_compute_cap(&self.device)? == 90;
+        #[cfg(feature = "fa4")]
+        let prefix_attention = prefix_attention && !crate::fa4_native::enabled()?;
+        let query_plan = if prefix_attention {
+            QueryPlan::new(batch, &self.device)?
+        } else {
+            None
+        };
         let (input_ids, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
         let embeddings = (self.embeddings.forward(&input_ids)? * self.embedding_scale)?;
         let per_layer_inputs = match &self.ple {
@@ -947,6 +983,7 @@ impl Gemma4Model {
                 batch.max_length as usize,
                 causal,
                 &compact,
+                query_plan.as_ref(),
                 &mut shared_kv,
             )?;
         }
