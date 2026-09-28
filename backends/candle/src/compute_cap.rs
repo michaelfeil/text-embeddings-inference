@@ -11,9 +11,9 @@ pub fn get_compile_compute_cap() -> Result<usize, anyhow::Error> {
         .context("Could not retrieve compile time CUDA_COMPUTE_CAP")
 }
 
-pub fn get_runtime_compute_cap() -> Result<usize, anyhow::Error> {
+pub fn get_runtime_compute_cap(device_id: usize) -> Result<usize, anyhow::Error> {
     driver::result::init().context("CUDA is not available")?;
-    let device = CudaContext::new(0).context("CUDA is not available")?;
+    let device = CudaContext::new(device_id).context("CUDA is not available")?;
     let major = device
         .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR)
         .context("Could not retrieve device compute capability major")?;
@@ -36,9 +36,9 @@ fn compute_cap_matching(runtime_compute_cap: usize, compile_compute_cap: usize) 
     }
 }
 
-pub fn compatible_compute_cap() -> Result<bool, anyhow::Error> {
+pub fn compatible_compute_cap(device_id: usize) -> Result<bool, anyhow::Error> {
     let compile_compute_cap = get_compile_compute_cap()?;
-    let runtime_compute_cap = get_runtime_compute_cap()?;
+    let runtime_compute_cap = get_runtime_compute_cap(device_id)?;
     Ok(compute_cap_matching(
         runtime_compute_cap,
         compile_compute_cap,

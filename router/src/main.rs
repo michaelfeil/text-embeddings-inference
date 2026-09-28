@@ -141,10 +141,13 @@ struct Args {
     #[clap(long, env)]
     dense_path: Option<String>,
 
-    /// The CUDA device ID where the model will be loaded. Defaults to 0 i.e., the first available device.
-    /// Only used with the candle backend.
-    #[clap(long, env, default_value = "0")]
-    device_id: usize,
+    /// Use one explicit CUDA device. Candle CUDA otherwise uses all visible GPUs.
+    #[clap(long, env)]
+    device_id: Option<usize>,
+
+    /// Visible CUDA ordinals for data-parallel replicas, e.g. 0,1, or auto.
+    #[clap(long, env, conflicts_with = "device_id")]
+    backend_device_ids: Option<String>,
 
     /// [DEPRECATED IN FAVOR OF `--hf-token`] Your Hugging Face Hub token
     #[clap(long, env, hide = true)]
@@ -276,6 +279,7 @@ async fn main() -> Result<()> {
         args.prometheus_port,
         args.cors_allow_origin,
         args.device_id,
+        args.backend_device_ids,
     )
     .await?;
 

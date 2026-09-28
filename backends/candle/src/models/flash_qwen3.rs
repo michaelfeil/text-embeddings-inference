@@ -147,12 +147,22 @@ impl Qwen3Attention {
             .concat(),
         )?;
 
-        // Apply normalization layers
-        let (q, _) = self.q_norm.forward(&q, None)?;
-        let (k, _) = self.k_norm.forward(&k, None)?;
-
-        // Apply RoPE in COMPACT space
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = match crate::layers::qk_norm_rope::try_forward(
+            &q,
+            &k,
+            &self.q_norm,
+            &self.k_norm,
+            &cos,
+            &sin,
+        )? {
+            Some(pair) => pair,
+            None => {
+                let (q, _) = self.q_norm.forward(&q, None)?;
+                let (k, _) = self.k_norm.forward(&k, None)?;
+                apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+                (q, k)
+            }
+        };
 
         // Expand Q, K, V to ORIGINAL layout for attention
         let q = compact_tensors.scatter_unfold(&q)?;
@@ -187,7 +197,6 @@ struct Qwen3MLP {
     down_proj: Linear,
 
     act: HiddenAct,
-    intermediate_size: usize,
 
     span: tracing::Span,
 }
@@ -215,7 +224,6 @@ impl Qwen3MLP {
         Ok(Self {
             gate_up_proj,
             down_proj,
-            intermediate_size,
             act: config.hidden_act.clone(),
             span: tracing::span!(tracing::Level::TRACE, "mlp"),
         })
@@ -225,12 +233,10 @@ impl Qwen3MLP {
         let _enter = self.span.enter();
 
         let gate_up_states = self.gate_up_proj.forward(hidden_states)?;
-        let gate_states = gate_up_states.narrow(1, 0, self.intermediate_size)?;
-        let up_states = gate_up_states.narrow(1, self.intermediate_size, self.intermediate_size)?;
-
-        let gate_states = self.act.forward(&gate_states)?;
-
-        self.down_proj.forward(&(gate_states * up_states)?)
+        self.down_proj.forward(&crate::layers::gated_activation(
+            &gate_up_states,
+            Some(&self.act),
+        )?)
     }
 }
 
@@ -303,7 +309,6 @@ impl Qwen3Layer {
 
 pub struct FlashQwen3Model {
     lm_head: Option<Tensor>,
-    eos_token_id: u32,
     embeddings: Embedding,
     layers: Vec<Qwen3Layer>,
     norm: RMSNorm,
@@ -389,7 +394,6 @@ impl FlashQwen3Model {
 
         Ok(Self {
             lm_head,
-            eos_token_id: config.eos_token_id as u32,
             embeddings,
             layers,
             norm,
@@ -430,6 +434,9 @@ impl FlashQwen3Model {
             batch_size + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
 
         // sin and cos are applied on the compact formation, therefore should be on the compact array
         let cos = index_select(&self.cos_cache, &compact_tensors.position_ids_compact, 0)?;
@@ -517,29 +524,11 @@ impl FlashQwen3Model {
                     }
                 }
                 // Mean pooling
-                Pool::Mean => {
-                    if batch_size > 1 {
-                        // for each request that requires pooling
-                        let results: Result<Vec<Tensor>> = batch
-                            .pooled_indices
-                            .into_iter()
-                            .map(|i| {
-                                let i = i as usize;
-                                let start = batch.cumulative_seq_lengths[i];
-                                let len = batch.cumulative_seq_lengths[i + 1] - start;
-
-                                // Mean
-                                let embeddings = outputs.narrow(0, start as usize, len as usize)?;
-                                embeddings.sum_keepdim(0)? / (len as f64)
-                            })
-                            .collect();
-
-                        // Concatenate all results
-                        Some(Tensor::cat(&results?, 0)?)
-                    } else {
-                        Some((outputs.sum_keepdim(0)? / (batch.max_length as f64))?)
-                    }
-                }
+                Pool::Mean => Some(crate::layers::mean_pool(
+                    &outputs,
+                    &batch.cumulative_seq_lengths,
+                    &batch.pooled_indices,
+                )?),
                 Pool::Splade => {
                     unreachable!();
                 }
@@ -621,18 +610,14 @@ impl Model for FlashQwen3Model {
         for (bounds, &prompt_length) in batch.cumulative_seq_lengths.windows(2).zip(prompt_lengths)
         {
             let mut branch = Vec::new();
-            for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize) {
+            for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize - 1) {
                 let row = batch.scatter_unfold.as_ref().map_or(pos as u32, |s| s[pos]);
                 let next = rows.len();
                 let index = *row_map.entry(row).or_insert_with(|| {
                     rows.push(row);
                     next
                 });
-                let target = if pos + 1 == bounds[1] as usize {
-                    self.eos_token_id
-                } else {
-                    batch.input_ids[pos + 1]
-                };
+                let target = batch.input_ids[pos + 1];
                 branch.push((index, target as usize));
             }
             edges.push(branch);
@@ -811,10 +796,13 @@ mod decision_tests {
             let mut model = tiny_model(tied)?;
             assert!(model.supports_decision_scoring());
             // Shared option prefixes, prefix-of-another option, different lengths,
-            // and >32 predictor rows exercise EOS and chunk boundaries.
+            // and >32 predictor rows exercise explicit terminators and chunk boundaries.
             let mut long = vec![1, 2, 3];
             long.extend((4..44).map(|i| i % 60));
-            let sequences = vec![vec![1, 2, 3], vec![1, 2, 3, 4], vec![1, 2, 5, 6], long];
+            let mut sequences = vec![vec![1, 2, 3], vec![1, 2, 3, 4], vec![1, 2, 5, 6], long];
+            for sequence in &mut sequences {
+                sequence.push(63);
+            }
             let prompt_lengths = [2, 3, 1, 2];
             let scores = model.score_options(batch(&sequences, true), &prompt_lengths)?;
             let expanded_scores = model.score_options(batch(&sequences, false), &prompt_lengths)?;
@@ -824,7 +812,7 @@ mod decision_tests {
                     .matmul(&model.lm_head.as_ref().unwrap().t()?)?
                     .to_dtype(DType::F32)?;
                 let probabilities = candle_nn::ops::log_softmax(&logits, 1)?.to_vec2::<f32>()?;
-                let mut expected = probabilities[sequence.len() - 1][63];
+                let mut expected = 0.;
                 for token in prompt_lengths[i]..sequence.len() {
                     expected += probabilities[token - 1][sequence[token] as usize];
                 }

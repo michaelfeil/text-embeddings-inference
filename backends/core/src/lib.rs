@@ -68,7 +68,7 @@ pub trait Backend {
     }
 
     /// Score complete candidate sequences in one forward pass.
-    /// Each branch has its own prompt length; only its continuation and EOS are scored.
+    /// Each branch has its own prompt length; all supplied continuation tokens (including template suffix) are scored.
     fn score_options(
         &self,
         _batch: Batch,

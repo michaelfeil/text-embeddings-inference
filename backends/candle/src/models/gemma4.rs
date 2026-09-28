@@ -763,8 +763,6 @@ enum Gemma4Output {
 
 pub struct Gemma4Model {
     lm_head: Option<Tensor>,
-    #[cfg(feature = "flash-attn")]
-    end_of_turn_token_id: u32,
     embeddings: Embedding,
     embedding_scale: f64,
     ple: Option<Gemma4Ple>,
@@ -806,6 +804,9 @@ impl Gemma4Model {
             batch.len() + 1,
             &self.device,
         )?;
+        #[cfg(feature = "fa4")]
+        let _fa4_batch =
+            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
         let positions = &compact.position_ids_compact;
         let rope = |cache: &(Tensor, Tensor)| -> Result<(Tensor, Tensor)> {
             Ok((
@@ -899,15 +900,6 @@ impl Gemma4Model {
             (config.tie_word_embeddings || text.tie_word_embeddings)
                 .then(|| embeddings.embeddings().clone())
         });
-        #[cfg(feature = "flash-attn")]
-        let end_of_turn_token_id = config
-            .eos_token_id
-            .as_ref()
-            .and_then(serde_json::Value::as_array)
-            .and_then(|ids| ids.last())
-            .and_then(serde_json::Value::as_u64)
-            .map(|id| id as u32)
-            .unwrap_or(106);
         let ple = Gemma4Ple::load(vb.clone(), text)?;
         let layers = (0..text.num_hidden_layers)
             .map(|idx| Gemma4Layer::load(vb.pp(format!("layers.{idx}")), text, idx))
@@ -945,8 +937,6 @@ impl Gemma4Model {
 
         Ok(Self {
             lm_head,
-            #[cfg(feature = "flash-attn")]
-            end_of_turn_token_id,
             embeddings,
             embedding_scale: (text.hidden_size as f64).sqrt(),
             ple,
@@ -1198,7 +1188,7 @@ impl Model for Gemma4Model {
                 batch.cumulative_seq_lengths.windows(2).zip(prompt_lengths)
             {
                 let mut branch = Vec::new();
-                for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize) {
+                for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize - 1) {
                     let row = batch
                         .scatter_unfold
                         .as_ref()
@@ -1208,11 +1198,7 @@ impl Model for Gemma4Model {
                         rows.push(row);
                         next
                     });
-                    let target = if pos + 1 == bounds[1] as usize {
-                        self.end_of_turn_token_id
-                    } else {
-                        batch.input_ids[pos + 1]
-                    };
+                    let target = batch.input_ids[pos + 1];
                     branch.push((index, target as usize));
                 }
                 edges.push(branch);

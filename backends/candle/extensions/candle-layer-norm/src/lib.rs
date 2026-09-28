@@ -37,6 +37,7 @@ impl LayerNorm {
         x_l: &Layout,
         r: Option<&candle::CudaStorage>,
         r_l: Option<&Layout>,
+        return_residual: bool,
     ) -> Result<(candle::CudaStorage, Shape)> {
         // Assume all tensors are on the same device and take device of x
         let dev = x.device();
@@ -95,15 +96,12 @@ impl LayerNorm {
 
         let is_rms_norm = if self.is_rms_norm { 1 } else { 0 };
 
-        // We will store the results of the residual add next to the main results
-        // so out has the same shape as inp * 2
-        let out_shape = Shape::from((rows * 2, cols));
+        // A second output is needed only when returning a residual sum.
+        let return_residual = return_residual && r.is_some();
+        let out_rows = if return_residual { rows * 2 } else { rows };
+        let out_shape = Shape::from((out_rows, cols));
 
         let mut out = unsafe { dev.alloc::<T>(out_shape.elem_count()) }?;
-
-        // Alloc internal buffers
-        let mut mu = unsafe { dev.alloc::<f32>(rows) }?;
-        let mut rsigma = unsafe { dev.alloc::<f32>(rows) }?;
 
         // If beta is et, get ids device pointer
         let beta_storage = self.beta.as_ref().map(Tensor::storage_and_layout);
@@ -181,18 +179,15 @@ impl LayerNorm {
         let (out_ptr, out_guard) = out.device_ptr_mut(&stream);
         guards.push(out_guard);
         let dst_ptr = out_ptr as *const core::ffi::c_void;
-        let dst_add_ptr =
-            (out_ptr as usize + rows * cols * std::mem::size_of::<T>()) as *const core::ffi::c_void;
-        let mu_ptr = ({
-            let (ptr, guard) = mu.device_ptr_mut(&stream);
-            guards.push(guard);
-            ptr
-        }) as *const core::ffi::c_void;
-        let rsigma_ptr = ({
-            let (ptr, guard) = rsigma.device_ptr_mut(&stream);
-            guards.push(guard);
-            ptr
-        }) as *const core::ffi::c_void;
+        let dst_add_ptr = if return_residual {
+            (out_ptr as usize + rows * cols * std::mem::size_of::<T>()) as *const core::ffi::c_void
+        } else {
+            std::ptr::null()
+        };
+        // Inference does not consume saved means or inverse standard deviations.
+        // The kernel still computes these values internally for normalization.
+        let mu_ptr = std::ptr::null();
+        let rsigma_ptr = std::ptr::null();
 
         let multi_processors_count = dev
             .cuda_stream()
@@ -248,9 +243,9 @@ impl candle::CustomOp1 for LayerNorm {
         x_l: &Layout,
     ) -> Result<(candle::CudaStorage, Shape)> {
         match x.dtype() {
-            DType::F16 => self.fwd::<f16>(x, x_l, None, None),
-            DType::BF16 => self.fwd::<bf16>(x, x_l, None, None),
-            DType::F32 => self.fwd::<f32>(x, x_l, None, None),
+            DType::F16 => self.fwd::<f16>(x, x_l, None, None, false),
+            DType::BF16 => self.fwd::<bf16>(x, x_l, None, None, false),
+            DType::F32 => self.fwd::<f32>(x, x_l, None, None, false),
             dt => {
                 candle::bail!("fused-layer-norm is only supported for f32, f16 and bf16 ({dt:?})")
             }
@@ -281,14 +276,68 @@ impl candle::CustomOp2 for LayerNorm {
         r_l: &Layout,
     ) -> Result<(candle::CudaStorage, Shape)> {
         match x.dtype() {
-            DType::F16 => self.fwd::<f16>(x, x_l, Some(r), Some(r_l)),
-            DType::BF16 => self.fwd::<bf16>(x, x_l, Some(r), Some(r_l)),
-            DType::F32 => self.fwd::<f32>(x, x_l, Some(r), Some(r_l)),
+            DType::F16 => self.fwd::<f16>(x, x_l, Some(r), Some(r_l), true),
+            DType::BF16 => self.fwd::<bf16>(x, x_l, Some(r), Some(r_l), true),
+            DType::F32 => self.fwd::<f32>(x, x_l, Some(r), Some(r_l), true),
             dt => {
                 candle::bail!("fused-layer-norm is only supported for f32, f16 and bf16 ({dt:?})")
             }
         }
     }
+}
+
+// Keep the existing residual-returning operation available for pre-norm models.
+struct NormalizedResidual(LayerNorm);
+
+impl candle::CustomOp2 for NormalizedResidual {
+    fn name(&self) -> &'static str {
+        "fused-layer-norm"
+    }
+
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("no cpu support for fused-layer-norm")
+    }
+
+    fn cuda_fwd(
+        &self,
+        x: &candle::CudaStorage,
+        x_l: &Layout,
+        r: &candle::CudaStorage,
+        r_l: &Layout,
+    ) -> Result<(candle::CudaStorage, Shape)> {
+        match x.dtype() {
+            DType::F16 => self.0.fwd::<f16>(x, x_l, Some(r), Some(r_l), false),
+            DType::BF16 => self.0.fwd::<bf16>(x, x_l, Some(r), Some(r_l), false),
+            DType::F32 => self.0.fwd::<f32>(x, x_l, Some(r), Some(r_l), false),
+            dt => {
+                candle::bail!("fused-layer-norm is only supported for f32, f16 and bf16 ({dt:?})")
+            }
+        }
+    }
+}
+
+/// Normalize `x + res` without materializing the unused residual sum.
+/// Uses the same FP32 residual-sum statistics as `fused_add_layer_norm`.
+pub fn layer_norm_with_residual(
+    x: &Tensor,
+    res: &Tensor,
+    gamma: &Tensor,
+    beta: Option<&Tensor>,
+    epsilon: f32,
+) -> Result<Tensor> {
+    let op = NormalizedResidual(LayerNorm {
+        epsilon,
+        gamma: gamma.clone(),
+        beta: beta.cloned(),
+        is_rms_norm: false,
+    });
+    x.apply_op2_no_bwd(res, &op)
 }
 
 /// Layer Normalization Layer
@@ -471,6 +520,41 @@ mod tests {
             .max_all()?
             .to_scalar::<f32>()?;
         assert!(error <= 0.016, "BF16 RMSNorm error: {error}");
+        Ok(())
+    }
+
+    #[test]
+    fn normalization_only_matches_residual_returning_operation() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for dtype in [DType::F16, DType::BF16, DType::F32] {
+            for rows in [1, 7, 128] {
+                for cols in [8, 768, 1024, 4096] {
+                    let values: Vec<f32> = (0..rows * cols)
+                        .map(|i| ((i * 37 % 1001) as f32 - 500.) / 128.)
+                        .collect();
+                    let x = Tensor::from_vec(values, (rows, cols), &device)?.to_dtype(dtype)?;
+                    let residual =
+                        Tensor::full(0.125f32, (rows, cols), &device)?.to_dtype(dtype)?;
+                    let gamma = Tensor::full(0.75f32, cols, &device)?.to_dtype(dtype)?;
+                    let bias = Tensor::full(-0.1f32, cols, &device)?.to_dtype(dtype)?;
+                    for beta in [None, Some(&bias)] {
+                        let (expected, _) =
+                            fused_add_layer_norm(&x, &residual, &gamma, beta, 1e-5)?;
+                        let actual = layer_norm_with_residual(&x, &residual, &gamma, beta, 1e-5)?;
+                        assert_eq!(actual.shape(), x.shape());
+                        let bits = |t: Tensor| -> Result<Vec<u32>> {
+                            Ok(t.to_dtype(DType::F32)?
+                                .flatten_all()?
+                                .to_vec1::<f32>()?
+                                .into_iter()
+                                .map(f32::to_bits)
+                                .collect())
+                        };
+                        assert_eq!(bits(actual)?, bits(expected)?, "{dtype:?} {rows}x{cols}");
+                    }
+                }
+            }
+        }
         Ok(())
     }
 

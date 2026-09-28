@@ -130,3 +130,8 @@ pub(crate) trait Model {
         candle::bail!("`predict_tokens` is not implemented for this model");
     }
 }
+
+#[cfg(feature = "experimental-deberta")]
+mod deberta;
+#[cfg(feature = "experimental-deberta")]
+pub use deberta::{DebertaConfig, DebertaModel};

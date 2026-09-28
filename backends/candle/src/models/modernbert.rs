@@ -83,7 +83,6 @@ pub struct ModernBertMLP {
     wi: Linear,
     wo: Linear,
     activation: Option<HiddenAct>,
-    intermediate_size: usize,
     span: tracing::Span,
 }
 
@@ -108,7 +107,6 @@ impl ModernBertMLP {
             wi,
             wo,
             activation,
-            intermediate_size: config.intermediate_size,
             span: tracing::span!(tracing::Level::TRACE, "mlp"),
         })
     }
@@ -118,19 +116,10 @@ impl ModernBertMLP {
 
         let hidden_states = self.wi.forward(hidden_states)?;
 
-        let input = hidden_states.narrow(D::Minus1, 0, self.intermediate_size)?;
-        let gate =
-            hidden_states.narrow(D::Minus1, self.intermediate_size, self.intermediate_size)?;
-
-        let input = if let Some(activation) = &self.activation {
-            activation.forward(&input)
-        } else {
-            Ok(input)
-        };
-
-        let hidden_states = self.wo.forward(&(input * gate)?)?;
-
-        Ok(hidden_states)
+        self.wo.forward(&crate::layers::gated_activation(
+            &hidden_states,
+            self.activation.as_ref(),
+        )?)
     }
 }
 
@@ -217,7 +206,7 @@ impl ModernBertAttention {
 
         #[allow(unused_variables)]
         let context_layer =
-            if let (Device::Cuda(_), Some(cublaslt)) = (device, get_cublas_lt_wrapper()) {
+            if let (Device::Cuda(_), Some(cublaslt)) = (device, get_cublas_lt_wrapper(device)?) {
                 #[cfg(feature = "cuda")]
                 {
                     let (batch_size, _, seq_len, _) = key_layer.shape().dims4()?;

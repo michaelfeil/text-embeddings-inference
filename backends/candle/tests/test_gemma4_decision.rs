@@ -96,7 +96,13 @@ fn gemma4_decision_scores_agree_with_unfolded_sequences() -> Result<()> {
     assert!(prompt.contains(&106)); // <turn|>
     let options: Vec<Vec<u32>> = [r#"{"answer":"yes"}"#, r#"{"answer":"no"}"#]
         .into_iter()
-        .map(|option| tokenizer.encode(option, false).unwrap().get_ids().to_vec())
+        .map(|option| {
+            tokenizer
+                .encode(format!("{option}<turn|>\n"), false)
+                .unwrap()
+                .get_ids()
+                .to_vec()
+        })
         .collect();
     let mut embedding_batch = option_batch(&prompt, &options, false);
     embedding_batch.pooled_indices = vec![0, 1];

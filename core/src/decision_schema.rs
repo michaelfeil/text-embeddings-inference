@@ -41,15 +41,19 @@ impl Iterator for Options {
         if self.next == self.plan.count {
             return None;
         }
-        let value = self.plan.value(self.next).to_string();
+        let mut value = self.plan.value(self.next);
+        value.sort_all_objects();
+        let value = value.to_string();
         self.next += 1;
         Some(value)
     }
 }
 
 pub fn options(schema: &Value, max_options: usize) -> Result<Options, TextEmbeddingsError> {
+    let mut schema = schema.clone();
+    schema.sort_all_objects();
     Ok(Options {
-        plan: expand(schema, max_options)?,
+        plan: expand(&schema, max_options)?,
         next: 0,
     })
 }

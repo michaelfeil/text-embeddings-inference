@@ -48,11 +48,25 @@ use utoipa_swagger_ui::SwaggerUi;
 #[derive(serde::Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 struct DecideRequest {
-    /// Shared context, without chat-template tokens.
-    context: String,
+    /// Conversation history. The model chat template is applied automatically.
+    messages: Vec<DecisionMessage>,
     /// Named finite JSON Schemas. Optional `group` selects an independent group;
     /// omitted markers share the "default" group. All combinations within a group are scored.
     questions: std::collections::BTreeMap<String, serde_json::Value>,
+}
+
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
+struct DecisionMessage {
+    role: DecisionRole,
+    content: String,
+}
+#[derive(serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "lowercase")]
+enum DecisionRole {
+    System,
+    User,
+    Assistant,
 }
 
 #[derive(serde::Serialize, utoipa::ToSchema)]
@@ -61,7 +75,7 @@ struct DecisionGroupResponse {
     /// Joint answers for this group, keyed by question name.
     decision: serde_json::Value,
     options: Vec<String>,
-    /// Sum of continuation token log probabilities including EOS, in option order.
+    /// Sum of continuation token log probabilities including the complete template suffix, in option order.
     log_scores: Vec<f32>,
     /// Relative likelihoods normalized within this group, not calibrated confidence.
     probabilities: Vec<f32>,
@@ -82,13 +96,31 @@ async fn decide(
     Json(request): Json<DecideRequest>,
 ) -> Result<Json<DecideResponse>, (StatusCode, Json<ErrorResponse>)> {
     let groups = text_embeddings_core::decision::groups(
-        &request.context,
+        request
+            .messages
+            .into_iter()
+            .map(|m| text_embeddings_core::chat::Message {
+                role: match m.role {
+                    DecisionRole::System => text_embeddings_core::chat::Role::System,
+                    DecisionRole::User => text_embeddings_core::chat::Role::User,
+                    DecisionRole::Assistant => text_embeddings_core::chat::Role::Assistant,
+                },
+                content: m.content,
+            })
+            .collect(),
         request.questions,
         info.max_batch_tokens,
     )
     .map_err(ErrorResponse::from)?;
     let (scores, expanded_tokens, compact_tokens) = infer
-        .decide(groups, info.max_batch_tokens, info.max_input_length)
+        .decide(
+            groups,
+            info.max_batch_requests
+                .unwrap_or(info.max_batch_tokens)
+                .min(info.max_batch_tokens),
+            info.max_batch_tokens,
+            info.max_input_length,
+        )
         .await
         .map_err(ErrorResponse::from)?;
     let mut groups = std::collections::BTreeMap::new();
@@ -1949,6 +1981,8 @@ pub async fn run(
     components(
     schemas(
     DecideRequest,
+    DecisionMessage,
+    DecisionRole,
     DecideResponse,
     DecisionGroupResponse,
     PredictInput,
@@ -2231,5 +2265,28 @@ impl From<serde_json::Error> for ErrorResponse {
             error: err.to_string(),
             error_type: ErrorType::Validation,
         }
+    }
+}
+
+#[cfg(test)]
+mod decision_request_tests {
+    use super::*;
+    #[test]
+    fn accepts_messages_and_rejects_unsupported_shapes() {
+        let request = serde_json::json!({"messages":[{"role":"system","content":"Policy"},{"role":"user","content":"Facts"}],"questions":{"answer":{"type":"boolean"}}});
+        assert!(serde_json::from_value::<DecideRequest>(request.clone()).is_ok());
+        for message in [
+            serde_json::json!({"role":"tool","content":"x"}),
+            serde_json::json!({"role":"user","content":[{"type":"text","text":"x"}]}),
+            serde_json::json!({"role":"user","content":"x","tool_calls":[]}),
+        ] {
+            let mut invalid = request.clone();
+            invalid["messages"] = serde_json::json!([message]);
+            assert!(serde_json::from_value::<DecideRequest>(invalid).is_err());
+        }
+        let mut legacy = request;
+        legacy.as_object_mut().unwrap().remove("messages");
+        legacy["context"] = "Facts".into();
+        assert!(serde_json::from_value::<DecideRequest>(legacy).is_err());
     }
 }

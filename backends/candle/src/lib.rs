@@ -1,6 +1,8 @@
 mod alibi;
 #[cfg(feature = "cuda")]
 mod compute_cap;
+#[cfg(feature = "fa4")]
+mod fa4_native;
 #[cfg(feature = "cuda")]
 mod flash_attn;
 mod layers;
@@ -92,6 +94,9 @@ impl<'de> Deserialize<'de> for BertConfigWrapper {
 #[derive(Deserialize)]
 #[serde(tag = "model_type", rename_all = "kebab-case")]
 enum Config {
+    #[cfg(feature = "experimental-deberta")]
+    #[serde(rename = "deberta-v2")]
+    Deberta(crate::models::DebertaConfig),
     Bert(BertConfigWrapper),
     Camembert(BertConfig),
     #[serde(rename(deserialize = "distilbert"))]
@@ -194,19 +199,19 @@ impl CandleBackend {
         // Get candle device
         let device = if candle::utils::cuda_is_available() {
             #[cfg(feature = "cuda")]
-            match compatible_compute_cap() {
+            match compatible_compute_cap(device_id) {
                 Ok(true) => Device::new_cuda(device_id),
                 Ok(false) => {
                     return Err(BackendError::Start(format!(
                         "Runtime compute cap {} is not compatible with compile time compute cap {}",
-                        get_runtime_compute_cap().unwrap(),
+                        get_runtime_compute_cap(device_id).unwrap(),
                         get_compile_compute_cap().unwrap()
                     )));
                 }
                 Err(err) => {
-                    tracing::warn!("Could not find a compatible CUDA device on host: {err:?}");
-                    tracing::warn!("Using CPU instead");
-                    Ok(Device::Cpu)
+                    return Err(BackendError::Start(format!(
+                        "Could not initialize CUDA device {device_id}: {err:?}"
+                    )));
                 }
             }
             #[cfg(not(feature = "cuda"))]
@@ -235,7 +240,10 @@ impl CandleBackend {
         }?;
 
         #[cfg(feature = "cuda")]
-        if dtype == DType::BF16 && device.is_cuda() && get_runtime_compute_cap().unwrap_or(0) < 80 {
+        if dtype == DType::BF16
+            && device.is_cuda()
+            && get_runtime_compute_cap(device_id).unwrap_or(0) < 80
+        {
             return Err(BackendError::Start(
                 "bfloat16 CUDA inference requires compute capability 8.0 or newer".into(),
             ));
@@ -258,6 +266,11 @@ impl CandleBackend {
         .s()?;
 
         let model: Result<Box<dyn Model + Send>, BackendError> = match (config, &device) {
+            #[cfg(feature = "experimental-deberta")]
+            (Config::Deberta(config), _) => {
+                tracing::info!("Starting packed DeBERTa-v2/v3 with FA4 relative attention");
+                Ok(Box::new(crate::models::DebertaModel::load(vb, &config, model_type).s()?))
+            },
             #[cfg(not(feature = "cuda"))]
             (_, Device::Cuda(_)) => Err(BackendError::Start(
                 "`cuda` feature is not enabled".to_string(),
@@ -476,7 +489,7 @@ impl CandleBackend {
             (Config::Mistral(config), Device::Cuda(_)) => {
                 if !matches!(dtype, DType::F16 | DType::BF16)
                     || !cfg!(feature = "flash-attn")
-                    || get_runtime_compute_cap().unwrap() < 80
+                    || get_runtime_compute_cap(device_id).unwrap() < 80
                     || &std::env::var("USE_FLASH_ATTENTION")
                         .unwrap_or("True".to_string())
                         .to_lowercase()
@@ -823,4 +836,11 @@ impl<O> WrapErr<O> for Result<O, candle::Error> {
     fn e(self) -> Result<O, BackendError> {
         self.map_err(|e| BackendError::Inference(e.to_string()))
     }
+}
+
+#[cfg(feature = "cuda")]
+pub fn visible_cuda_device_count() -> Result<usize, BackendError> {
+    candle::cuda_backend::cudarc::driver::CudaContext::device_count()
+        .map(|count| count as usize)
+        .map_err(|err| BackendError::Start(format!("Cannot enumerate CUDA devices: {err}")))
 }

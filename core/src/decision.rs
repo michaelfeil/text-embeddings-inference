@@ -6,30 +6,28 @@ use text_embeddings_backend::Batch;
 /// A group is a joint Cartesian product; groups never condition on each other.
 pub struct Group {
     pub name: String,
-    context: std::sync::Arc<str>,
+    messages: std::sync::Arc<[crate::chat::Message]>,
     schema: serde_json::Value,
     pub options: crate::decision_schema::Options,
 }
 
 impl Group {
-    pub fn prompt(&self, style: text_embeddings_backend::DecisionPromptStyle) -> String {
-        // Context precedes the group's schema so independent groups share its
-        // causal prefix. Render lazily to avoid copying context for every group.
-        let context = &self.context;
-        let schema = &self.schema;
-        let instructions = format!("Answer the questions using the context and their descriptions. Return only a JSON object matching the supplied schema.\nContext:\n{context}\n\nQuestions (JSON Schema):\n{schema}");
-        match style {
-            text_embeddings_backend::DecisionPromptStyle::Gemma4 => {
-                format!("<bos><|turn>user\n{instructions}<turn|>\n<|turn>model\n")
-            }
-            text_embeddings_backend::DecisionPromptStyle::Qwen3 => format!(
-                "<|im_start|>system\n\
-             Answer the questions using the context and their descriptions. \
-             Return only a JSON object matching the supplied schema.\n\
-             <|im_end|>\n<|im_start|>user\nContext:\n{context}\n\n\
-             Questions (JSON Schema):\n{schema}<|im_end|>\n<|im_start|>assistant\n"
-            ),
+    pub fn messages(&self) -> Vec<crate::chat::Message> {
+        let mut messages = self.messages.to_vec();
+        let task = format!("Answer the questions using the conversation and their descriptions. Return only a JSON object matching the supplied schema.\nQuestions (JSON Schema):\n{}", self.schema);
+        if let Some(last) = messages
+            .last_mut()
+            .filter(|m| m.role == crate::chat::Role::User)
+        {
+            last.content.push_str("\n\n");
+            last.content.push_str(&task);
+        } else {
+            messages.push(crate::chat::Message {
+                role: crate::chat::Role::User,
+                content: task,
+            });
         }
+        messages
     }
 }
 
@@ -40,14 +38,15 @@ pub struct ScoredGroup {
 }
 
 pub fn groups(
-    context: &str,
+    messages: Vec<crate::chat::Message>,
     questions: std::collections::BTreeMap<String, serde_json::Value>,
     max_options: usize,
 ) -> Result<Vec<Group>, TextEmbeddingsError> {
     use serde_json::{json, Map, Value};
     let invalid = |s: &str| TextEmbeddingsError::Validation(s.into());
-    if context.trim().is_empty() || questions.is_empty() {
-        return Err(invalid("context and questions must be nonempty"));
+    crate::chat::validate_messages(&messages)?;
+    if questions.is_empty() {
+        return Err(invalid("questions must be nonempty"));
     }
     let mut grouped = std::collections::BTreeMap::<String, Map<String, Value>>::new();
     for (name, mut schema) in questions {
@@ -64,21 +63,22 @@ pub fn groups(
         };
         grouped.entry(group).or_default().insert(name, schema);
     }
-    let context: std::sync::Arc<str> = context.into();
+    let messages: std::sync::Arc<[crate::chat::Message]> = messages.into();
     grouped
         .into_iter()
         .map(|(name, properties)| {
             let required: Vec<_> = properties.keys().cloned().collect();
-            let schema = json!({
+            let mut schema = json!({
                 "type": "object",
                 "properties": properties,
                 "required": required,
                 "additionalProperties": false,
             });
+            schema.sort_all_objects();
             let options = crate::decision_schema::options(&schema, max_options)?;
             Ok(Group {
                 name,
-                context: context.clone(),
+                messages: messages.clone(),
                 schema,
                 options,
             })
@@ -229,20 +229,34 @@ mod tests {
             "language": {"group":"language", "enum":["en","de","other"]}
         });
         let mut planned = groups(
-            "Refund after 45 days",
+            vec![crate::chat::Message {
+                role: crate::chat::Role::User,
+                content: "Refund after 45 days".into(),
+            }],
             serde_json::from_value(questions.clone()).unwrap(),
             100,
         )
         .unwrap();
         assert_eq!(planned.len(), 2);
         assert_eq!(planned[0].name, "default");
-        let style = text_embeddings_backend::DecisionPromptStyle::Qwen3;
-        assert!(planned[0].prompt(style).contains("Apply the refund policy"));
-        assert!(!planned[0].prompt(style).contains("language"));
-        assert!(!planned[1].prompt(style).contains("Apply the refund policy"));
-        let gemma = planned[0].prompt(text_embeddings_backend::DecisionPromptStyle::Gemma4);
-        assert!(gemma.starts_with("<bos><|turn>user\n"));
-        assert!(gemma.ends_with("<turn|>\n<|turn>model\n"));
+        assert!(planned[0]
+            .messages()
+            .last()
+            .unwrap()
+            .content
+            .contains("Apply the refund policy"));
+        assert!(!planned[0]
+            .messages()
+            .last()
+            .unwrap()
+            .content
+            .contains("language"));
+        assert!(!planned[1]
+            .messages()
+            .last()
+            .unwrap()
+            .content
+            .contains("Apply the refund policy"));
         let joint: Vec<_> = planned[0].options.by_ref().collect();
         assert_eq!(joint.len(), 6);
         assert_eq!(planned[1].options.by_ref().count(), 3);
@@ -253,13 +267,56 @@ mod tests {
             .unwrap()
             .remove("group");
         let mut all = groups(
-            "Refund after 45 days",
+            vec![crate::chat::Message {
+                role: crate::chat::Role::User,
+                content: "Refund after 45 days".into(),
+            }],
             serde_json::from_value(ungrouped).unwrap(),
             100,
         )
         .unwrap();
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].options.by_ref().count(), 18);
+    }
+
+    #[test]
+    fn preserves_history_and_appends_task_without_assistant_continuation() {
+        use crate::chat::{Message, Role};
+        let messages = vec![
+            Message {
+                role: Role::System,
+                content: "Policy".into(),
+            },
+            Message {
+                role: Role::User,
+                content: "Facts".into(),
+            },
+            Message {
+                role: Role::Assistant,
+                content: "Acknowledged".into(),
+            },
+        ];
+        let questions =
+            || serde_json::from_value(serde_json::json!({"answer":{"type":"boolean"}})).unwrap();
+        let grouped = groups(messages.clone(), questions(), 4).unwrap();
+        let rendered = grouped[0].messages();
+        assert_eq!(rendered.len(), 4);
+        assert_eq!(rendered[0].content, "Policy");
+        assert_eq!(rendered[2].content, "Acknowledged");
+        assert_eq!(rendered[3].role, Role::User);
+        assert!(rendered[3].content.starts_with("Answer the questions"));
+        let mut messages = messages;
+        messages.push(Message {
+            role: Role::User,
+            content: "Correction".into(),
+        });
+        let grouped = groups(messages, questions(), 4).unwrap();
+        let rendered = grouped[0].messages();
+        assert_eq!(rendered.len(), 4);
+        assert!(rendered[3]
+            .content
+            .starts_with("Correction\n\nAnswer the questions"));
+        assert!(groups(vec![], questions(), 4).is_err());
     }
 
     #[test]

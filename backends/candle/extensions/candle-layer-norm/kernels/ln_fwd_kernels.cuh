@@ -47,7 +47,7 @@ void ln_fwd_kernel(FwdParams params) {
     using stats_t = typename Stats::stats_t;
 
     const bool has_residual = params.residual != nullptr;
-    const bool save_x = has_residual || Is_dropout || Has_colscale || (params.rowscale != nullptr) || Has_subset || !(std::is_same<input_t, residual_t>::value);
+    const bool save_x = params.x != nullptr && (has_residual || Is_dropout || Has_colscale || (params.rowscale != nullptr) || Has_subset || !(std::is_same<input_t, residual_t>::value));
 
     extern __shared__ char smem_[];
 
@@ -160,13 +160,13 @@ void ln_fwd_kernel(FwdParams params) {
         compute_t mu = layer_norm::Get<0>::of<stats_t, compute_t>(s);
         compute_t m2 = layer_norm::Get<1>::of<stats_t, compute_t>(s);
 
-        if( bidn == 0 && warp_n == 0 && lane == 0 ) {
+        if( mu_ptr != nullptr && bidn == 0 && warp_n == 0 && lane == 0 ) {
             mu_ptr[row] = mu;
         }
 
         compute_t rs = rsqrtf(m2 * params.inverse_cols + params.epsilon + (!params.is_rms_norm ? 0.f : mu * mu));
 
-        if( bidn == 0 && warp_n == 0 && lane == 0 ) {
+        if( rs_ptr != nullptr && bidn == 0 && warp_n == 0 && lane == 0 ) {
             rs_ptr[row] = rs;
         }
 

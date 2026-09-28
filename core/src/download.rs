@@ -68,6 +68,14 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
 
     download_file(api, "config.json").await?;
     let path = download_file(api, "tokenizer.json").await?;
+    for name in [
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "chat_template.jinja",
+    ] {
+        // Optional for embeddings; required by the decision endpoint at request time.
+        let _ = download_file(api, name).await;
+    }
 
     tracing::info!("Model artifacts downloaded in {:?}", start.elapsed());
 

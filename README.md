@@ -61,6 +61,29 @@ Ember, GTE and E5. TEI implements many features such as:
 * [ONNX](https://github.com/onnx/onnx) weight loading
 * Production ready (distributed tracing with Open Telemetry, Prometheus metrics)
 
+## GPU replicas
+
+Candle CUDA uses all visible GPUs by default, loading a complete model on each GPU
+in parallel. Each replica consumes work from one shared request queue and one shared
+prepared-batch slot. Faster replicas naturally accept more batches. Any backend
+failure makes the whole service unhealthy.
+
+Use `CUDA_VISIBLE_DEVICES=0,1` to expose two GPUs, `--device-id 0` to select just one,
+or `--backend-device-ids 0,1` to select visible CUDA ordinals explicitly. Each GPU
+must have enough memory for the complete model and its batch. CPU and Metal retain
+one backend.
+
+With multiple GPUs, batches have a soft early-dispatch target of 5,000 tokens while
+the queued backlog is below 20,000 tokens per replica. Larger backlogs use the normal
+batch limits. Set `TEI_EARLY_DISPATCH_TOKENS` to override the target, or `0` to disable
+it. Single-GPU batching keeps its existing behavior unless this variable is set.
+Per-replica batch, token, and inference-duration metrics are exposed on `/metrics`.
+Each replica logs inference throughput every 100 batches.
+
+### BPE tokenization
+
+Embedding text inputs automatically use `fastokens-b10` when the tokenizer configuration is supported. No opt-in flag or environment variable is required. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Fast encoding uses a shared CPU pool bounded by `--tokenization-workers`.
+
 ## Get Started
 
 ### Supported Models
@@ -607,3 +630,30 @@ docker build . -f Dockerfile --platform=linux/arm64
 
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
+
+### Opt-in FA4 on Hopper
+
+Hopper CUDA images build and include the pinned FA4 native bundle.
+FA2 is the default. Set `ATTN_BACKEND=fa4` to opt into supported FP16/BF16 packed
+FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
+`TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
+
+When FA4 is enabled, models using the shared flash-attention dispatcher register
+their variable-length boundaries once per batch. The current native bundle supports SM90 d64 MHA global
+and two-sided local attention, and d128 causal GQA with a 4:1 query/KV head ratio.
+Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
+backend. FA4 execution errors propagate. Other architectures retain their existing
+backend until their native bundles are runtime-qualified.
+
+Source builds use `--features fa4` and `FA4_NATIVE_LIB_DIR` pointing to the native
+bundle; include its shared libraries in `LD_LIBRARY_PATH`. `experimental-fa4`
+remains an alias. `scripts/build-fa4-native.sh` builds the pinned bundle without
+a GPU; Python dependencies stay in the build environment.
+
+**Quality qualification:** the pinned bundle aligns FA4's softmax denominator
+reduction order and causal d128 key-tile boundaries with FA2. This fixes the observed ModernBERT discrepancy: raw and
+pooled outputs match FA2 bitwise on the tested FP16/BF16 cases, and the measured
+STS-B, SciFact and NFCorpus score differences disappear. The causal tile change
+also removes the tested Qwen3-8B long-input differences in both precisions.
+FA4 remains opt-in;
+these checks do not establish equivalence for every model, shape or architecture.

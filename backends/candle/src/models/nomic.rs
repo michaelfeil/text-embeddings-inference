@@ -498,7 +498,7 @@ impl NomicAttention {
 
         #[allow(unused_variables)]
         let context_layer = if let (Device::Cuda(_), Some(cublaslt)) =
-            (device, get_cublas_lt_wrapper())
+            (device, get_cublas_lt_wrapper(device)?)
         {
             #[cfg(feature = "cuda")]
             {

@@ -33,8 +33,8 @@ def run(base_url, tolerance):
     if tolerance is None:
         tolerance = 0.25 if info["model_dtype"] == "bfloat16" else 0.1
     payload = {
-        "context": 'Refund policy: approve within 30 days, reject after 30 days. '
-                   'Customer message: "I request a refund after 45 days. This is urgent."',
+        "messages": [{"role":"user", "content": 'Refund policy: approve within 30 days, reject after 30 days. '
+                   'Customer message: "I request a refund after 45 days. This is urgent."'}],
         "questions": {
             "action": {"description": "Choose the action under the refund policy.",
                        "enum": ["approve", "reject", "escalate"]},
@@ -60,7 +60,7 @@ def run(base_url, tolerance):
         require(group["decision"] == expected[name], f"Wrong answer: {group}")
         require(json.loads(group["options"][group["index"]]) == group["decision"], "Decision/index mismatch")
         require(group["log_scores"][group["index"]] == max(group["log_scores"]), "Winner is not maximal")
-        standalone = {"context": payload["context"], "questions": {
+        standalone = {"messages": payload["messages"], "questions": {
             key: value for key, value in payload["questions"].items() if value.get("group", "default") == name
         }}
         code, independent, _ = request(base_url, "/decide", standalone)
@@ -79,7 +79,7 @@ def run(base_url, tolerance):
     require(len(all_joint["groups"]["default"]["options"]) == 18, "Expected full Cartesian product")
     # Each copy fits individually; all independent groups together exceed capacity.
     copies = info["max_batch_tokens"] // result["expanded_tokens"] + 1
-    oversized = {"context": payload["context"], "questions": {}}
+    oversized = {"messages": payload["messages"], "questions": {}}
     for i in range(copies * 2):
         for key, schema in payload["questions"].items():
             oversized["questions"][f"{key}_{i}"] = dict(schema, group=f"{schema.get('group', 'default')}_{i}")
@@ -87,9 +87,9 @@ def run(base_url, tolerance):
     require(code == 413, f"Combined groups must respect server budget: {code}, {rejected}")
     report["guards"]["all_groups_over_budget"] = code
     for bad in [
-        {"context": "test", "questions": {}},
-        {"context": "test", "questions": {"x": {"type": "string"}}},
-        {"context": "test", "questions": {"x": {"enum": [True], "group": 1}}},
+        {"messages": [{"role":"user", "content":"test"}], "questions": {}},
+        {"messages": [{"role":"user", "content":"test"}], "questions": {"x": {"type": "string"}}},
+        {"messages": [{"role":"user", "content":"test"}], "questions": {"x": {"enum": [True], "group": 1}}},
     ]:
         code, rejected, _ = request(base_url, "/decide", bad)
         require(code == 413, f"Invalid question schema must fail: {code}, {rejected}")

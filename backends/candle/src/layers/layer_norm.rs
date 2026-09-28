@@ -51,7 +51,7 @@ impl LayerNormNoBias {
             Device::Cuda(_) => {
                 #[cfg(feature = "cuda")]
                 {
-                    use candle_layer_norm::{fused_add_layer_norm, layer_norm};
+                    use candle_layer_norm::{layer_norm, layer_norm_with_residual};
 
                     let original_shape = hidden_states.shape();
                     let hidden_states = hidden_states.flatten_to(D::Minus2)?;
@@ -59,7 +59,7 @@ impl LayerNormNoBias {
                     let result = if let Some(residual) = residual {
                         let residual = residual.flatten_to(D::Minus2)?;
 
-                        let (result, _) = fused_add_layer_norm(
+                        let result = layer_norm_with_residual(
                             &hidden_states,
                             &residual,
                             &self.weight,
@@ -133,7 +133,7 @@ impl LayerNorm {
             Device::Cuda(_) => {
                 #[cfg(feature = "cuda")]
                 {
-                    use candle_layer_norm::{fused_add_layer_norm, layer_norm};
+                    use candle_layer_norm::{layer_norm, layer_norm_with_residual};
 
                     let original_shape = hidden_states.shape();
                     let hidden_states = hidden_states.flatten_to(D::Minus2)?;
@@ -141,7 +141,7 @@ impl LayerNorm {
                     let result = if let Some(residual) = residual {
                         let residual = residual.flatten_to(D::Minus2)?;
 
-                        let (result, _) = fused_add_layer_norm(
+                        let result = layer_norm_with_residual(
                             &hidden_states,
                             &residual,
                             &self.weight,
