@@ -127,9 +127,16 @@ extern "C" int gemma4_moe_forward_bf16(
     gemma4_moe_count<<<(slots+255)/256,256,0,stream>>>(b.ids,b.counts,slots);
     gemma4_moe_offsets<<<1,128,0,stream>>>(b.counts,b.offsets);
     gemma4_moe_assign<<<(slots+255)/256,256,0,stream>>>(b.ids,b.offsets,b.cursors,b.mapping,slots);
-    gemma4_moe_pack<<<(uint64_t(slots)*hidden+255)/256,256,0,stream>>>(
-        static_cast<const __nv_bfloat16 *>(input),b.mapping,
-        reinterpret_cast<__nv_bfloat16 *>(b.packed),slots,hidden);
+    // Contiguous tensor views may have an unaligned starting offset.
+    if ((reinterpret_cast<uintptr_t>(input) & 15) == 0) {
+        gemma4_moe_pack_vec8<<<(uint64_t(slots)*(hidden/8)+255)/256,256,0,stream>>>(
+            static_cast<const __nv_bfloat16 *>(input),b.mapping,
+            reinterpret_cast<__nv_bfloat16 *>(b.packed),slots,hidden);
+    } else {
+        gemma4_moe_pack<<<(uint64_t(slots)*hidden+255)/256,256,0,stream>>>(
+            static_cast<const __nv_bfloat16 *>(input),b.mapping,
+            reinterpret_cast<__nv_bfloat16 *>(b.packed),slots,hidden);
+    }
     setup_problems<<<1,128,0,stream>>>(b.counts,b.offsets,b.packed,static_cast<Element *>(gate_up_weight),b.gate_up,
         hidden,2*intermediate,b.problems,b.a,b.b,b.c,b.lda,b.ldb,b.ldc);
     int status = grouped_gemm<Element>(b.problems,128,b.a,b.b,b.c,b.lda,b.ldb,b.ldc,stream);
@@ -140,8 +147,14 @@ extern "C" int gemma4_moe_forward_bf16(
         intermediate,hidden,b.problems,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc);
     status = grouped_gemm<float>(b.problems,128,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc,stream);
     if (status) return status;
-    gemma4_moe_unpermute_combine<<<(uint64_t(tokens)*hidden+255)/256,256,0,stream>>>(
-        b.expert_output,b.mapping,b.weights,
-        static_cast<__nv_bfloat16 *>(output),tokens,hidden);
+    if ((reinterpret_cast<uintptr_t>(output) & 15) == 0) {
+        gemma4_moe_combine_vec8<<<(uint64_t(tokens)*(hidden/8)+255)/256,256,0,stream>>>(
+            b.expert_output,b.mapping,b.weights,
+            static_cast<__nv_bfloat16 *>(output),tokens,hidden);
+    } else {
+        gemma4_moe_unpermute_combine<<<(uint64_t(tokens)*hidden+255)/256,256,0,stream>>>(
+            b.expert_output,b.mapping,b.weights,
+            static_cast<__nv_bfloat16 *>(output),tokens,hidden);
+    }
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
 }

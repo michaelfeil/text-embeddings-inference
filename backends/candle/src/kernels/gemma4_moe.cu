@@ -147,3 +147,50 @@ extern "C" __global__ void gemma4_moe_unpermute_combine(
         output[i] = __float2bfloat16_rn(sum);
     }
 }
+
+// Vectorized variants for the fixed Gemma4 MoE hidden width (2816).
+// Inputs and workspace are 16-byte aligned; each row is a multiple of 8 BF16s.
+// Preserve the scalar kernels for standalone diagnostics.
+extern "C" __global__ void gemma4_moe_pack_vec8(
+    const __nv_bfloat16 *input, const uint32_t *mapping,
+    __nv_bfloat16 *packed, uint64_t slots, uint32_t hidden) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    const uint32_t width = hidden / 8;
+    if (i < slots * width) {
+        const uint64_t slot = i / width;
+        const uint32_t column = i % width;
+        reinterpret_cast<uint4 *>(packed)[uint64_t(mapping[slot]) * width + column] =
+            reinterpret_cast<const uint4 *>(input)[(slot / 8) * width + column];
+    }
+}
+
+extern "C" __global__ void gemma4_moe_combine_vec8(
+    const float *expert_outputs, const uint32_t *mapping, const float *weights,
+    __nv_bfloat16 *output, uint64_t tokens, uint32_t hidden) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    const uint32_t width = hidden / 8;
+    if (i < tokens * width) {
+        const uint64_t token = i / width;
+        const uint32_t column = i % width;
+        float sum[8] = {};
+        #pragma unroll
+        for (int k = 0; k < 8; ++k) {
+            const uint64_t slot = token * 8 + k;
+            const float *p = expert_outputs + uint64_t(mapping[slot]) * hidden + column * 8;
+            const float4 a = *reinterpret_cast<const float4 *>(p);
+            const float4 b = *reinterpret_cast<const float4 *>(p + 4);
+            const float values[8] = {a.x, a.y, a.z, a.w, b.x, b.y, b.z, b.w};
+            const float weight = weights[slot];
+            // Keep the same expert order and per-expert BF16 rounding as the
+            // scalar path. Only the memory access width changes.
+            #pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                sum[j] += __bfloat162float(__float2bfloat16_rn(values[j] * weight));
+            }
+        }
+        __align__(16) __nv_bfloat16 result[8];
+        #pragma unroll
+        for (int j = 0; j < 8; ++j) result[j] = __float2bfloat16_rn(sum[j]);
+        reinterpret_cast<uint4 *>(output)[i] = *reinterpret_cast<const uint4 *>(result);
+    }
+}

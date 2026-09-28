@@ -20,6 +20,11 @@ parser.add_argument(
     action="store_true",
     help="Route every token to the same eight experts",
 )
+parser.add_argument(
+    "--unaligned-io",
+    action="store_true",
+    help="Exercise contiguous input/output views with a one-element storage offset",
+)
 args = parser.parse_args()
 lib = ctypes.CDLL(str(args.library.resolve()))
 P = ctypes.c_void_p
@@ -75,6 +80,11 @@ for t in args.tokens:
     if args.concentrated:
         logits[:, 8:] = -10000.0
     out = torch.empty_like(x)
+    if args.unaligned_io:
+        x = torch.cat((x.new_zeros(1), x.flatten()))[1:].view(t, 2816)
+        out = torch.empty(t * 2816 + 1, device="cuda", dtype=torch.bfloat16)[1:].view(
+            t, 2816
+        )
     scratch = torch.empty(
         lib.gemma4_moe_workspace_bytes(t, 2816, 704), device="cuda", dtype=torch.uint8
     )
