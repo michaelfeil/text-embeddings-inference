@@ -224,10 +224,7 @@ impl Qwen3MLP {
         let _enter = self.span.enter();
 
         let gate_up_states = self.gate_up_proj.forward(hidden_states)?;
-        self.down_proj.forward(&crate::layers::gated_activation(
-            &gate_up_states,
-            Some(&self.act),
-        )?)
+        self.down_proj.forward_gated(&gate_up_states, &self.act)
     }
 }
 
