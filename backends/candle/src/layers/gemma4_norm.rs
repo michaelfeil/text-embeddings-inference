@@ -1,9 +1,59 @@
 //! Gemma4 normalization with the original variance reduction and FP32 rounding.
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
-use candle::{CpuStorage, CudaStorage, CustomOp3, DType, Layout, Result, Shape, Tensor, D};
+use candle::{
+    CpuStorage, CudaStorage, CustomOp1, CustomOp3, DType, Layout, Result, Shape, Tensor, D,
+};
 mod ptx {
     include!(concat!(env!("OUT_DIR"), "/gemma4_norm_ptx.rs"));
+}
+
+pub(crate) fn square(input: &Tensor) -> Result<Tensor> {
+    if input.dtype() != DType::BF16
+        || !input.is_contiguous()
+        || input.elem_count() == 0
+        || input.elem_count().div_ceil(256) > i32::MAX as usize
+    {
+        candle::bail!("Gemma4 square requires a nonempty contiguous BF16 tensor");
+    }
+    input.apply_op1_no_bwd(&Square)
+}
+struct Square;
+impl CustomOp1 for Square {
+    fn name(&self) -> &'static str {
+        "gemma4-square"
+    }
+    fn cpu_fwd(&self, _: &CpuStorage, _: &Layout) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("Gemma4 square kernel requires CUDA")
+    }
+    fn cuda_fwd(&self, input: &CudaStorage, layout: &Layout) -> Result<(CudaStorage, Shape)> {
+        let device = input.device();
+        let n = layout.shape().elem_count();
+        let input = input.as_cuda_slice::<half::bf16>()?;
+        let input = input.slice(layout.start_offset()..layout.start_offset() + n);
+        // Every output element is written; LaunchBuilder tracks buffer lifetimes.
+        let mut output = unsafe { device.alloc::<f32>(n)? };
+        let function = device.get_or_load_custom_func(
+            "gemma4_square_bf16_f32",
+            "gemma4-square",
+            ptx::GEMMA4_NORM,
+        )?;
+        let count = n as u64;
+        let mut builder = function.builder();
+        builder.arg(&input).arg(&mut output).arg(&count);
+        unsafe {
+            builder.launch(LaunchConfig {
+                grid_dim: (n.div_ceil(256) as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            })
+        }
+        .map_err(candle::Error::wrap)?;
+        Ok((
+            CudaStorage::wrap_cuda_slice(output, device.clone()),
+            layout.shape().clone(),
+        ))
+    }
 }
 
 pub(crate) fn finish(
@@ -119,6 +169,24 @@ impl CustomOp3 for Finish {
 mod tests {
     use super::*;
     use candle::Device;
+
+    #[test]
+    fn square_preserves_all_bf16_values() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let values = (0..=65536)
+            .map(|i| half::bf16::from_bits(i as u16))
+            .collect::<Vec<_>>();
+        let input = Tensor::from_vec(values, 65537, &device)?.narrow(0, 1, 65536)?;
+        let expected = input.to_dtype(DType::F32)?.sqr()?.to_vec1::<f32>()?;
+        let actual = square(&input)?.to_vec1::<f32>()?;
+        for (i, (a, b)) in actual.iter().zip(&expected).enumerate() {
+            assert!(
+                (a.is_nan() && b.is_nan()) || a.to_bits() == b.to_bits(),
+                "element={i}: {a:?} != {b:?}"
+            );
+        }
+        Ok(())
+    }
 
     #[test]
     fn finish_preserves_candle_rounding() -> Result<()> {

@@ -123,13 +123,12 @@ impl Gemma4RmsNorm {
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
-        let states = hidden_states.to_dtype(DType::F32)?;
-        // Keep the reduction order: changing it can alter BF16 rounding and
-        // expert selection. The CUDA path only fuses the pointwise operations.
-        let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
         #[cfg(feature = "cuda")]
         if dtype == DType::BF16 && hidden_states.device().is_cuda() && hidden_states.is_contiguous()
         {
+            // Keep Candle's reduction order; changing it can alter expert routing.
+            let variance =
+                crate::layers::gemma4_norm::square(hidden_states)?.mean_keepdim(D::Minus1)?;
             return crate::layers::gemma4_norm::finish(
                 hidden_states,
                 &variance,
@@ -137,6 +136,8 @@ impl Gemma4RmsNorm {
                 self.epsilon,
             );
         }
+        let states = hidden_states.to_dtype(DType::F32)?;
+        let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
         let states = states.broadcast_div(&(variance + self.epsilon)?.sqrt()?)?;
         let states = match &self.weight {
             Some(weight) => states.broadcast_mul(&weight.to_dtype(DType::F32)?)?,

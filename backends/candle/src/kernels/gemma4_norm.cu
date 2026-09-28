@@ -16,3 +16,14 @@ extern "C" __global__ void gemma4_norm_finish_bf16(
         output[i] = __float2bfloat16_rn(value);
     }
 }
+
+// Casting BF16 to FP32 is exact. Fuse the cast with the original FP32 square,
+// leaving the subsequent Candle reduction and its summation order unchanged.
+extern "C" __global__ void gemma4_square_bf16_f32(
+    const __nv_bfloat16 *input, float *output, uint64_t count) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < count) {
+        const float value = __bfloat162float(input[i]);
+        output[i] = __fmul_rn(value, value);
+    }
+}
