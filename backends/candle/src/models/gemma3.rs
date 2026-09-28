@@ -28,7 +28,7 @@ pub struct Gemma3Config {
 #[cfg(feature = "flash-attn")]
 mod packed {
     use super::*;
-    use crate::layers::{apply_rotary, get_cos_sin, get_inv_freqs, Linear};
+    use crate::layers::{get_cos_sin, get_inv_freqs, Linear};
     use crate::models::Model;
     use candle::{DType, Device, Result, Tensor};
     use candle_nn::{Embedding, Module, VarBuilder};
@@ -224,8 +224,9 @@ mod packed {
                 .contiguous()?;
             let (q, _) = self.q_norm.forward(&q, None)?;
             let (k, _) = self.k_norm.forward(&k, None)?;
-            let q = apply_rotary(&q, cos, sin, self.attention_head_size)?.contiguous()?;
-            let k = apply_rotary(&k, cos, sin, self.attention_head_size)?.contiguous()?;
+            // RMSNorm produces fresh contiguous Q/K buffers. The existing CUDA
+            // kernel rotates both in place using half-width, packed NeoX caches.
+            candle_rotary::apply_rotary_inplace(&q, &k, cos, sin, true)?;
             let radius = self
                 .sliding_window
                 .map(|w| if self.causal { w - 1 } else { w / 2 });
@@ -468,8 +469,12 @@ mod packed {
                 .unwrap_or(config.hidden_size / config.num_attention_heads);
 
             let inv_freqs = get_inv_freqs(rotary_dim, config.rope_theta, vb.device(), None)?;
-            let rotary_cache =
-                get_cos_sin(config.max_position_embeddings, &inv_freqs, vb.dtype(), true)?;
+            let rotary_cache = get_cos_sin(
+                config.max_position_embeddings,
+                &inv_freqs,
+                vb.dtype(),
+                false,
+            )?;
 
             let inv_freqs_local =
                 get_inv_freqs(rotary_dim, config.rope_local_base_freq, vb.device(), None)?;
@@ -477,7 +482,7 @@ mod packed {
                 config.max_position_embeddings,
                 &inv_freqs_local,
                 vb.dtype(),
-                true,
+                false,
             )?;
 
             Ok(Self {
@@ -512,11 +517,11 @@ mod packed {
                     cache
                         .0
                         .index_select(&positions, 0)?
-                        .reshape((tokens, 1, self.rotary_dim))?,
+                        .reshape((tokens, self.rotary_dim / 2))?,
                     cache
                         .1
                         .index_select(&positions, 0)?
-                        .reshape((tokens, 1, self.rotary_dim))?,
+                        .reshape((tokens, self.rotary_dim / 2))?,
                 ))
             };
             let (cos, sin) = gather(&self.rotary_cache)?;
