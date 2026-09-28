@@ -1,6 +1,6 @@
 /// Payload tokenization logic
 use crate::TextEmbeddingsError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tokenizers::tokenizer::Tokenizer;
 pub use tokenizers::Encoding as RawEncoding;
@@ -208,6 +208,7 @@ fn tokenizer_worker(
     prompts: Option<HashMap<String, String>>,
     receiver: async_channel::Receiver<TokenizerRequest>,
 ) {
+    let vocabulary_ids: HashSet<u32> = tokenizer.get_vocab(true).into_values().collect();
     // Loop over requests
     while let Ok(request) = receiver.recv_blocking() {
         match request {
@@ -226,6 +227,22 @@ fn tokenizer_worker(
                             None => default_prompt.clone(),
                             Some(_) => None,
                         };
+
+                        if embedding {
+                            if let EncodingInput::Ids(ids) = inputs {
+                                let result = encode_embedding_ids(
+                                    ids,
+                                    truncate,
+                                    truncation_direction,
+                                    max_input_length,
+                                    position_offset,
+                                    prompt_name.as_deref(),
+                                    &vocabulary_ids,
+                                );
+                                let _ = response_tx.send(result);
+                                return;
+                            }
+                        }
 
                         // It's possible that the user dropped its request resulting in a send error.
                         // We just discard the error
@@ -416,6 +433,59 @@ fn tokenize_input(
     Ok(encoding)
 }
 
+/// Caller-supplied IDs are complete model inputs: never decode, add prompts, or
+/// insert special tokens. Segment IDs are zero; positions restart after truncation.
+fn encode_embedding_ids(
+    mut ids: Vec<u32>,
+    truncate: bool,
+    direction: TruncationDirection,
+    max_length: usize,
+    position_offset: usize,
+    prompt_name: Option<&str>,
+    vocabulary_ids: &HashSet<u32>,
+) -> Result<ValidEncoding, TextEmbeddingsError> {
+    if ids.is_empty() {
+        return Err(TextEmbeddingsError::Empty(
+            "`inputs` cannot be empty".into(),
+        ));
+    }
+    if prompt_name.is_some() {
+        return Err(TextEmbeddingsError::Validation(
+            "`prompt_name` cannot be used with token IDs; include the prompt in the supplied IDs"
+                .into(),
+        ));
+    }
+    // Validate even the portion that truncation will discard.
+    if let Some(id) = ids.iter().find(|id| !vocabulary_ids.contains(id)) {
+        return Err(TextEmbeddingsError::Validation(format!(
+            "token ID {id} is not in the model tokenizer vocabulary"
+        )));
+    }
+    if ids.len() > max_length {
+        if !truncate {
+            return Err(TextEmbeddingsError::Validation(format!(
+                "`inputs` must have at most {max_length} tokens. Given: {}",
+                ids.len()
+            )));
+        }
+        match direction {
+            TruncationDirection::Right => ids.truncate(max_length),
+            TruncationDirection::Left => {
+                ids.drain(..ids.len() - max_length);
+            }
+        }
+    }
+    let seq_len = ids.len();
+    metrics::histogram!("te_request_input_length").record(seq_len as f64);
+    Ok(ValidEncoding {
+        input_ids: ids,
+        token_type_ids: vec![0; seq_len],
+        position_ids: (position_offset as u32..(position_offset + seq_len) as u32).collect(),
+        tokens: Vec::new(),
+        offsets: Vec::new(),
+    })
+}
+
 /// Get input length and optionally truncate it
 #[allow(clippy::too_many_arguments)]
 fn encode_input(
@@ -603,6 +673,151 @@ pub fn into_tokens(encoding: tokenizers::Encoding, input: &str) -> Vec<SimpleTok
 mod tests {
     use super::*;
     use hf_hub::api::sync::ApiBuilder;
+
+    fn id_vocab() -> HashSet<u32> {
+        [0, 1, 2, 3, 101, 102].into_iter().collect()
+    }
+
+    #[test]
+    fn pretokenized_preserves_ids_positions_and_special_tokens() {
+        let ids = vec![101, 3, 1, 102];
+        let encoded = encode_embedding_ids(
+            ids.clone(),
+            false,
+            TruncationDirection::Right,
+            8,
+            2,
+            None,
+            &id_vocab(),
+        )
+        .unwrap();
+        assert_eq!(encoded.input_ids, ids);
+        assert_eq!(encoded.position_ids, vec![2, 3, 4, 5]);
+        assert_eq!(encoded.token_type_ids, vec![0; 4]);
+        assert!(encoded.tokens.is_empty());
+    }
+
+    #[test]
+    fn pretokenized_limits_and_validation() {
+        for direction in [TruncationDirection::Left, TruncationDirection::Right] {
+            let encoded = encode_embedding_ids(
+                vec![101, 1, 2, 102],
+                true,
+                direction,
+                2,
+                0,
+                None,
+                &id_vocab(),
+            )
+            .unwrap();
+            let expected = match direction {
+                TruncationDirection::Left => vec![2, 102],
+                TruncationDirection::Right => vec![101, 1],
+            };
+            assert_eq!(encoded.input_ids, expected);
+            assert_eq!(encoded.position_ids, vec![0, 1]);
+        }
+        for (ids, truncate, prompt) in [
+            (vec![], false, None),
+            (vec![101, 1, 102], false, None),
+            (vec![101, 999], true, None),
+            (vec![101, 1], false, Some("query")),
+        ] {
+            assert!(encode_embedding_ids(
+                ids,
+                truncate,
+                TruncationDirection::Right,
+                2,
+                0,
+                prompt,
+                &id_vocab()
+            )
+            .is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn pretokenized_matches_text_encoding() {
+        let model = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(
+                [
+                    (String::from("[UNK]"), 0),
+                    (String::from("hello"), 1),
+                    (String::from("world"), 2),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unk_token("[UNK]".into())
+            .build()
+            .unwrap();
+        let mut tokenizer = Tokenizer::new(model);
+        tokenizer.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::whitespace::Whitespace));
+        let ids = tokenizer
+            .encode("hello world", true)
+            .unwrap()
+            .get_ids()
+            .to_vec();
+        let tokenization = Tokenization::new(1, tokenizer, 8, 2, None, None);
+        let text = tokenization
+            .encode_embedding(
+                EncodingInput::Single("hello world".into()),
+                false,
+                TruncationDirection::Right,
+                None,
+            )
+            .await
+            .unwrap();
+        let direct = tokenization
+            .encode_embedding(
+                EncodingInput::Ids(ids),
+                false,
+                TruncationDirection::Right,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(direct.input_ids, text.input_ids);
+        assert_eq!(direct.token_type_ids, text.token_type_ids);
+        assert_eq!(direct.position_ids, text.position_ids);
+    }
+
+    #[tokio::test]
+    async fn pretokenized_bypasses_decode_and_default_prompt() {
+        // WordLevel cannot re-encode these IDs without a pre-tokenizer. The old
+        // decode/re-encode path would collapse them to UNK (or add the prompt).
+        let model = tokenizers::models::wordlevel::WordLevel::builder()
+            .vocab(
+                [
+                    (String::from("[UNK]"), 0),
+                    (String::from("hello"), 1),
+                    (String::from("world"), 2),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unk_token("[UNK]".into())
+            .build()
+            .unwrap();
+        let tokenization = Tokenization::new(
+            1,
+            Tokenizer::new(model),
+            8,
+            0,
+            Some("prefix: ".into()),
+            None,
+        );
+        let encoded = tokenization
+            .encode_embedding(
+                EncodingInput::Ids(vec![1, 2]),
+                false,
+                TruncationDirection::Right,
+                None,
+            )
+            .await
+            .unwrap();
+        assert_eq!(encoded.input_ids, vec![1, 2]);
+    }
 
     #[test]
     fn tokenizer() {

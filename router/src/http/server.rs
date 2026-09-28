@@ -2,13 +2,13 @@ use crate::http::ner::apply_aggregation;
 /// HTTP Server logic
 use crate::http::types::{
     DecodeRequest, DecodeResponse, EmbedAllRequest, EmbedAllResponse, EmbedRequest, EmbedResponse,
-    EmbedSparseRequest, EmbedSparseResponse, Embedding, EncodingFormat, Input, InputIds, InputType,
-    OpenAICompatEmbedding, OpenAICompatErrorResponse, OpenAICompatRequest, OpenAICompatResponse,
-    OpenAICompatUsage, PredictInput, PredictRequest, PredictResponse, PredictTokensRequest,
-    Prediction, Rank, RerankRequest, RerankResponse, Sequence, SimilarityInput,
-    SimilarityParameters, SimilarityRequest, SimilarityResponse, SimpleToken, SparseValue,
-    TokenPredictResponse, TokenizeInput, TokenizeRequest, TokenizeResponse, TruncationDirection,
-    VertexPrediction, VertexRequest, VertexResponse,
+    EmbedSparseRequest, EmbedSparseResponse, Embedding, EmbeddingInput, EncodingFormat, Input,
+    InputIds, InputType, OpenAICompatEmbedding, OpenAICompatErrorResponse, OpenAICompatRequest,
+    OpenAICompatResponse, OpenAICompatUsage, PredictInput, PredictRequest, PredictResponse,
+    PredictTokensRequest, Prediction, Rank, RerankRequest, RerankResponse, Sequence,
+    SimilarityInput, SimilarityParameters, SimilarityRequest, SimilarityResponse, SimpleToken,
+    SparseValue, TokenPredictResponse, TokenizeInput, TokenizeRequest, TokenizeResponse,
+    TruncationDirection, VertexPrediction, VertexRequest, VertexResponse,
 };
 use crate::{
     logging, shutdown, ClassifierModel, EmbeddingModel, ErrorResponse, ErrorType, Info, ModelType,
@@ -742,13 +742,13 @@ async fn similarity(
 
     // Convert request to embed request
     let mut inputs = Vec::with_capacity(req.inputs.sentences.len() + 1);
-    inputs.push(InputType::String(req.inputs.source_sentence));
+    inputs.push(req.inputs.source_sentence);
     for s in req.inputs.sentences {
-        inputs.push(InputType::String(s));
+        inputs.push(s);
     }
     let parameters = req.parameters.unwrap_or_default();
     let embed_req = EmbedRequest {
-        inputs: Input::Batch(inputs),
+        inputs: EmbeddingInput::Strings(inputs),
         truncate: parameters.truncate,
         truncation_direction: parameters.truncation_direction,
         prompt_name: parameters.prompt_name,
@@ -807,7 +807,7 @@ async fn embed(
 
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
-    let (response, metadata) = match req.inputs {
+    let (response, metadata) = match Input::from(req.inputs) {
         Input::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
@@ -1378,7 +1378,7 @@ async fn openai_embed(
 
     let truncate = info.auto_truncate;
 
-    let (embeddings, metadata) = match req.input {
+    let (embeddings, metadata) = match Input::from(req.input) {
         Input::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
@@ -1902,6 +1902,7 @@ pub async fn run(
     SimilarityResponse,
     SimpleToken,
     InputType,
+    EmbeddingInput,
     InputIds,
     DecodeRequest,
     DecodeResponse,
