@@ -34,9 +34,53 @@ pub struct Qwen3Config {
     pub linear_output_size: usize,
     #[serde(default)]
     pub num_labels: Option<usize>,
+    #[serde(default)]
+    pub num_experts: usize,
+    #[serde(default)]
+    pub num_experts_per_tok: usize,
+    #[serde(default)]
+    pub moe_intermediate_size: usize,
+    #[serde(default = "default_sparse_step")]
+    pub decoder_sparse_step: usize,
+    #[serde(default = "default_norm_topk")]
+    pub norm_topk_prob: bool,
+    #[serde(default)]
+    pub mlp_only_layers: Vec<usize>,
+    #[serde(default)]
+    pub rope_scaling: Option<serde_json::Value>,
+    #[serde(default)]
+    pub quantization_config: Option<serde_json::Value>,
+}
+
+fn default_sparse_step() -> usize {
+    1
+}
+fn default_norm_topk() -> bool {
+    true
 }
 
 impl Qwen3Config {
+    pub(crate) fn is_moe_layer(&self, index: usize) -> Result<bool> {
+        if self.num_experts == 0 {
+            return Ok(false);
+        }
+        if self.quantization_config.is_some() {
+            candle::bail!("Quantized Qwen3-MoE checkpoints are not supported");
+        }
+        if self.rope_scaling.is_some() {
+            candle::bail!("Scaled RoPE is not yet supported for Qwen3-MoE");
+        }
+        if self.decoder_sparse_step == 0
+            || self.num_experts_per_tok == 0
+            || self.num_experts_per_tok > self.num_experts
+            || self.moe_intermediate_size == 0
+        {
+            candle::bail!("Invalid Qwen3-MoE routing or expert dimensions");
+        }
+        Ok(!self.mlp_only_layers.contains(&index)
+            && (index + 1).is_multiple_of(self.decoder_sparse_step))
+    }
+
     pub(crate) fn load_output_projection(
         &self,
         root: &VarBuilder,
@@ -352,9 +396,29 @@ impl Qwen3MLP {
     }
 }
 
+enum Qwen3FeedForward {
+    Dense(Qwen3MLP),
+    Moe(super::qwen3_moe::Qwen3Moe),
+}
+impl Qwen3FeedForward {
+    fn load(vb: VarBuilder, config: &Qwen3Config, index: usize) -> Result<Self> {
+        if config.is_moe_layer(index)? {
+            Ok(Self::Moe(super::qwen3_moe::Qwen3Moe::load(vb, config)?))
+        } else {
+            Ok(Self::Dense(Qwen3MLP::load(vb, config)?))
+        }
+    }
+    fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Dense(mlp) => mlp.forward(hidden),
+            Self::Moe(moe) => moe.forward(hidden),
+        }
+    }
+}
+
 struct Qwen3Layer {
     attention: Qwen3Attention,
-    mlp: Qwen3MLP,
+    mlp: Qwen3FeedForward,
     input_layer_norm: RMSNorm,
     post_attention_layer_norm: RMSNorm,
 
@@ -362,9 +426,9 @@ struct Qwen3Layer {
 }
 
 impl Qwen3Layer {
-    pub fn load(vb: VarBuilder, config: &Qwen3Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Qwen3Config, index: usize) -> Result<Self> {
         let attention = Qwen3Attention::load(vb.pp("self_attn"), config)?;
-        let mlp = Qwen3MLP::load(vb.pp("mlp"), config)?;
+        let mlp = Qwen3FeedForward::load(vb.pp("mlp"), config, index)?;
 
         let input_layer_norm = RMSNorm::load(
             vb.pp("input_layernorm"),
@@ -457,7 +521,7 @@ impl Qwen3Model {
         );
 
         let layers = (0..config.num_hidden_layers)
-            .map(|index| Qwen3Layer::load(vb.pp(format!("layers.{index}")), config))
+            .map(|index| Qwen3Layer::load(vb.pp(format!("layers.{index}")), config, index))
             .collect::<Result<Vec<_>>>()?;
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;

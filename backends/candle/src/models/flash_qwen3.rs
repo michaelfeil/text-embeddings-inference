@@ -240,9 +240,29 @@ impl Qwen3MLP {
     }
 }
 
+enum Qwen3FeedForward {
+    Dense(Qwen3MLP),
+    Moe(super::qwen3_moe::Qwen3Moe),
+}
+impl Qwen3FeedForward {
+    fn load(vb: VarBuilder, config: &Qwen3Config, index: usize) -> Result<Self> {
+        if config.is_moe_layer(index)? {
+            Ok(Self::Moe(super::qwen3_moe::Qwen3Moe::load(vb, config)?))
+        } else {
+            Ok(Self::Dense(Qwen3MLP::load(vb, config)?))
+        }
+    }
+    fn forward(&self, hidden: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Dense(mlp) => mlp.forward(hidden),
+            Self::Moe(moe) => moe.forward(hidden),
+        }
+    }
+}
+
 struct Qwen3Layer {
     attention: Qwen3Attention,
-    mlp: Qwen3MLP,
+    mlp: Qwen3FeedForward,
     input_layer_norm: RMSNorm,
     post_attention_layer_norm: RMSNorm,
 
@@ -250,9 +270,9 @@ struct Qwen3Layer {
 }
 
 impl Qwen3Layer {
-    pub fn load(vb: VarBuilder, config: &Qwen3Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Qwen3Config, index: usize) -> Result<Self> {
         let attention = Qwen3Attention::load(vb.pp("self_attn"), config)?;
-        let mlp = Qwen3MLP::load(vb.pp("mlp"), config)?;
+        let mlp = Qwen3FeedForward::load(vb.pp("mlp"), config, index)?;
 
         let input_layer_norm = RMSNorm::load(
             vb.pp("input_layernorm"),
@@ -372,7 +392,7 @@ impl FlashQwen3Model {
         });
 
         let layers = (0..config.num_hidden_layers)
-            .map(|index| Qwen3Layer::load(vb.pp(format!("layers.{index}")), config))
+            .map(|index| Qwen3Layer::load(vb.pp(format!("layers.{index}")), config, index))
             .collect::<Result<Vec<_>>>()?;
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;

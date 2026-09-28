@@ -41,3 +41,6 @@ pub(crate) mod gemma4_norm;
 
 #[cfg(all(feature = "cuda", any(feature = "flash-attn", test)))]
 pub(crate) mod gemma4_rope;
+
+#[cfg(gemma4_moe_cuda)]
+pub(crate) mod qwen3_moe;

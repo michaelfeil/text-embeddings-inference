@@ -72,3 +72,32 @@ Use `--unaligned-io` and `--concentrated` separately to exercise offset views
 and routing concentrated on eight experts (including 120 empty experts).
 `-DNDEBUG` avoids CUTLASS device assertions that serialize WGMMA instructions;
 host shape, workspace and launch-status checks remain enabled.
+
+## Qwen3-MoE
+
+The same grouped-GEMM library also implements Qwen3's 128-expert/top-8 MLP,
+with configurable hidden/intermediate widths, SiLU gating and optional routing
+probability renormalization. It does not apply Gemma's learned expert scales.
+The `qwen3_moe` model type uses the Qwen3 attention, pooling and decision API.
+Both per-expert `gate_proj/up_proj/down_proj.weight` and fused expert tensors
+are accepted, including configurations with dense MLP layers between MoE layers.
+
+CUDA BF16 with 128 experts/top-8 uses device-only routing and grouped GEMMs.
+Other dtypes, expert counts and CPU/Metal use the tensor reference path;
+that path copies routing probabilities to the host and is slower. Scaled RoPE
+and quantized checkpoints are rejected. Qwen3-Next and Qwen3.5 are distinct
+architectures and are not selected by this model-type alias.
+
+Example for the unquantized checkpoint (one full model per visible GPU):
+
+```sh
+text-embeddings-router --model-id Qwen/Qwen3-30B-A3B \
+  --dtype bfloat16 --pooling last-token --max-batch-tokens 8192
+```
+
+For the real-weight Qwen3 diagnostic, add `tests/qwen3_probe.cu` to the Hopper
+probe build above, then run `tests/compare_qwen3_vllm.py` with `--model`,
+`--library` and `--output`. The test checks routing with/without renormalization,
+SiLU rounding, and portable/Hopper expert outputs against vLLM. Full-model
+score and decision comparisons are still required; primitive agreement alone
+is not a model-quality result.

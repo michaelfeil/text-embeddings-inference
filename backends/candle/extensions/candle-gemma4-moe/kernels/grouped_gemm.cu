@@ -104,26 +104,36 @@ __global__ void setup_problems(const int *counts, const int *offsets,
 }
 }
 
-extern "C" size_t gemma4_moe_workspace_bytes(int tokens, int hidden, int intermediate) {
-    if (tokens <= 0 || tokens > INT_MAX / 8 || hidden != 2816 || intermediate != 704) return 0;
+static size_t routed_workspace_bytes(int tokens, int hidden, int intermediate) {
+    if (tokens <= 0 || tokens > INT_MAX / 8 || hidden <= 0 || hidden % 8 || intermediate <= 0 || intermediate % 8 || intermediate > INT_MAX / 2) return 0;
+    if (uint64_t(tokens) * 8 > (SIZE_MAX - 4 * 1024 * 1024) /
+        (uint64_t(hidden) * 6 + uint64_t(intermediate) * 6 + 64)) return 0;
     Workspace w{nullptr}; Buffers b(w, tokens, hidden, intermediate);
     return (w.offset + 255) & ~size_t(255);
 }
 
+extern "C" size_t gemma4_moe_workspace_bytes(int tokens, int hidden, int intermediate) {
+    return hidden == 2816 && intermediate == 704 ? routed_workspace_bytes(tokens, hidden, intermediate) : 0;
+}
+extern "C" size_t qwen3_moe_workspace_bytes(int tokens, int hidden, int intermediate) {
+    return routed_workspace_bytes(tokens, hidden, intermediate);
+}
+
 // The caller owns scratch storage and its stream lifetime. No allocation,
 // host transfer of routing metadata, or device synchronization occurs here.
-extern "C" int gemma4_moe_forward_bf16(
+static int routed_forward_bf16(
     const float *logits, const float *scales, const void *input,
     void *gate_up_weight, void *down_weight, void *output,
     int tokens, int hidden, int intermediate, void *scratch, size_t scratch_bytes,
-    cudaStream_t stream) {
-    const size_t required = gemma4_moe_workspace_bytes(tokens, hidden, intermediate);
+    cudaStream_t stream, bool qwen, bool renormalize) {
+    const size_t required = qwen ? routed_workspace_bytes(tokens, hidden, intermediate) : gemma4_moe_workspace_bytes(tokens, hidden, intermediate);
     if (!required || scratch_bytes < required || !scratch) return -1;
     Workspace w{static_cast<char *>(scratch)}; Buffers b(w, tokens, hidden, intermediate);
     int slots = tokens * 8;
     if (cudaMemsetAsync(b.counts, 0, 128 * sizeof(int), stream) != cudaSuccess ||
         cudaMemsetAsync(b.cursors, 0, 128 * sizeof(int), stream) != cudaSuccess) return -2;
-    gemma4_moe_route_128_8_f32<<<tokens,128,0,stream>>>(logits,scales,b.ids,b.weights);
+    if (qwen) qwen3_moe_route_128_8_f32<<<tokens,128,0,stream>>>(logits,b.ids,b.weights,renormalize);
+    else gemma4_moe_route_128_8_f32<<<tokens,128,0,stream>>>(logits,scales,b.ids,b.weights);
     gemma4_moe_count<<<(slots+255)/256,256,0,stream>>>(b.ids,b.counts,slots);
     gemma4_moe_offsets<<<1,128,0,stream>>>(b.counts,b.offsets);
     gemma4_moe_assign<<<(slots+255)/256,256,0,stream>>>(b.ids,b.offsets,b.cursors,b.mapping,slots);
@@ -141,8 +151,13 @@ extern "C" int gemma4_moe_forward_bf16(
         hidden,2*intermediate,b.problems,b.a,b.b,b.c,b.lda,b.ldb,b.ldc);
     int status = grouped_gemm<Element>(b.problems,128,b.a,b.b,b.c,b.lda,b.ldb,b.ldc,stream);
     if (status) return status;
+    if (qwen) {
+    qwen3_moe_silu_mul<<<slots,128,0,stream>>>(
+        reinterpret_cast<__nv_bfloat16 *>(b.gate_up),reinterpret_cast<__nv_bfloat16 *>(b.activated),slots,intermediate);
+    } else {
     gemma4_moe_gelu_mul<<<slots,128,0,stream>>>(
         reinterpret_cast<__nv_bfloat16 *>(b.gate_up),reinterpret_cast<__nv_bfloat16 *>(b.activated),slots,intermediate);
+    }
     setup_problems<<<1,128,0,stream>>>(b.counts,b.offsets,b.activated,static_cast<Element *>(down_weight),b.expert_output,
         intermediate,hidden,b.problems,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc);
     status = grouped_gemm<float>(b.problems,128,b.a,b.b,b.c_f32,b.lda,b.ldb,b.ldc,stream);
@@ -157,4 +172,20 @@ extern "C" int gemma4_moe_forward_bf16(
             static_cast<__nv_bfloat16 *>(output),tokens,hidden);
     }
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
+}
+
+extern "C" int gemma4_moe_forward_bf16(
+    const float *logits, const float *scales, const void *input,
+    void *gate_up_weight, void *down_weight, void *output,
+    int tokens, int hidden, int intermediate, void *scratch, size_t scratch_bytes,
+    cudaStream_t stream) {
+    return routed_forward_bf16(logits, scales, input, gate_up_weight, down_weight, output,
+        tokens, hidden, intermediate, scratch, scratch_bytes, stream, false, true);
+}
+extern "C" int qwen3_moe_forward_bf16(
+    const float *logits, const void *input, void *gate_up_weight, void *down_weight, void *output,
+    int tokens, int hidden, int intermediate, int renormalize, void *scratch, size_t scratch_bytes,
+    cudaStream_t stream) {
+    return routed_forward_bf16(logits, nullptr, input, gate_up_weight, down_weight, output,
+        tokens, hidden, intermediate, scratch, scratch_bytes, stream, true, renormalize != 0);
 }

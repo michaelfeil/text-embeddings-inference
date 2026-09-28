@@ -118,6 +118,7 @@ enum Config {
     #[allow(dead_code)]
     Qwen2(Qwen2Config),
     #[allow(dead_code)]
+    #[serde(alias = "qwen3_moe")]
     Qwen3(Qwen3Config),
     Roberta(BertConfig),
     XlmRoberta(BertConfig),
