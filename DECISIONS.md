@@ -104,3 +104,18 @@ canonical JSON answers and template suffixes. They are not grammar-renormalized
 probabilities. A global maximum of these scores need not equal vLLM's greedy
 structured generation, which chooses each next token under grammar constraints.
 Backend numeric parity and labeled decision quality must be evaluated separately.
+
+### Gemma 4 E4B validation limits
+
+On H100/BF16 with `google/gemma-4-E4B-it` revision
+`ee0ef6023621cff504d758262d4e04895a5af4a2`, a frozen synthetic diagnostic
+(64 requests, 76 groups) produced 75/76 matching candidate winners versus vLLM
+0.30.0 teacher-forced scoring. The difference was an unlabeled near-tie.
+Both scorers answered 40/48 labeled requests correctly; vLLM structured generation
+answered 41/48. These are integration diagnostics, not a production-quality benchmark.
+
+Raw scores are sensitive to BF16 batch shape: the grouped-versus-standalone smoke
+check exceeded its existing 0.25-nat tolerance (maximum 0.358486), despite unchanged
+winners and a maximum candidate-probability difference of 0.0000026 in that check.
+The tolerance remains unchanged. Exact score parity, universal winner agreement,
+and equivalence to structured generation are not guaranteed.
