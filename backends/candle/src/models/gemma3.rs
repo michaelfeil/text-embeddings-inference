@@ -28,7 +28,7 @@ pub struct Gemma3Config {
 #[cfg(feature = "flash-attn")]
 mod packed {
     use super::*;
-    use crate::layers::{apply_rotary, get_cos_sin, get_inv_freqs, Linear};
+    use crate::layers::{get_cos_sin, get_inv_freqs, Linear};
     use crate::models::Model;
     use candle::{DType, Device, Result, Tensor};
     use candle_nn::{Embedding, Module, VarBuilder};
@@ -67,11 +67,8 @@ mod packed {
                 Some(residual) => hidden_states.add(residual)?,
                 None => hidden_states.clone(),
             };
-            let normalized = crate::layers::gemma_rms_norm::forward(
-                &residual_add.contiguous()?,
-                &self.scale,
-                self.epsilon,
-            )?;
+            let normalized =
+                crate::layers::gemma_rms_norm::forward(&residual_add, &self.scale, self.epsilon)?;
             Ok((normalized, residual_add))
         }
     }
@@ -207,25 +204,25 @@ mod packed {
             let qkv = self.qkv_proj.forward(states)?;
             let tokens = states.dim(0)?;
             let q_size = self.num_attention_heads * self.attention_head_size;
-            let kv_size = self.num_key_value_heads * self.attention_head_size;
-            let q = qkv.narrow(1, 0, q_size)?.reshape((
+            // Reshape the contiguous projection before slicing heads: Candle's
+            // reshape of a strided slice would materialize a copy.
+            let qkv = qkv.reshape((
                 tokens,
-                self.num_attention_heads,
+                self.num_attention_heads + 2 * self.num_key_value_heads,
                 self.attention_head_size,
             ))?;
-            let k = qkv.narrow(1, q_size, kv_size)?.reshape((
-                tokens,
+            let q = qkv.narrow(1, 0, self.num_attention_heads)?;
+            let k = qkv.narrow(1, self.num_attention_heads, self.num_key_value_heads)?;
+            let v = qkv.narrow(
+                1,
+                self.num_attention_heads + self.num_key_value_heads,
                 self.num_key_value_heads,
-                self.attention_head_size,
-            ))?;
-            let v = qkv
-                .narrow(1, q_size + kv_size, kv_size)?
-                .reshape((tokens, self.num_key_value_heads, self.attention_head_size))?
-                .contiguous()?;
+            )?;
             let (q, _) = self.q_norm.forward(&q, None)?;
             let (k, _) = self.k_norm.forward(&k, None)?;
-            let q = apply_rotary(&q, cos, sin, self.attention_head_size)?.contiguous()?;
-            let k = apply_rotary(&k, cos, sin, self.attention_head_size)?.contiguous()?;
+            // RMSNorm produces fresh contiguous Q/K buffers. The existing CUDA
+            // kernel rotates both in place using half-width, packed NeoX caches.
+            candle_rotary::apply_rotary_inplace(&q, &k, cos, sin, true)?;
             let radius = self
                 .sliding_window
                 .map(|w| if self.causal { w - 1 } else { w / 2 });
@@ -362,11 +359,11 @@ mod packed {
                 self.self_attn
                     .forward_packed(&normalized, cumulative, max_length, cos, sin)?;
             let (attention, _) = self.post_attention_layernorm.forward(&attention, None)?;
-            let states = (states + attention)?;
+            let states = crate::layers::residual_add(states, &attention)?;
             let (normalized, _) = self.pre_feedforward_layernorm.forward(&states, None)?;
             let mlp = self.mlp.forward(&normalized)?;
             let (mlp, _) = self.post_feedforward_layernorm.forward(&mlp, None)?;
-            states + mlp
+            crate::layers::residual_add(&states, &mlp)
         }
     }
 
@@ -468,8 +465,12 @@ mod packed {
                 .unwrap_or(config.hidden_size / config.num_attention_heads);
 
             let inv_freqs = get_inv_freqs(rotary_dim, config.rope_theta, vb.device(), None)?;
-            let rotary_cache =
-                get_cos_sin(config.max_position_embeddings, &inv_freqs, vb.dtype(), true)?;
+            let rotary_cache = get_cos_sin(
+                config.max_position_embeddings,
+                &inv_freqs,
+                vb.dtype(),
+                false,
+            )?;
 
             let inv_freqs_local =
                 get_inv_freqs(rotary_dim, config.rope_local_base_freq, vb.device(), None)?;
@@ -477,7 +478,7 @@ mod packed {
                 config.max_position_embeddings,
                 &inv_freqs_local,
                 vb.dtype(),
-                true,
+                false,
             )?;
 
             Ok(Self {
@@ -512,11 +513,11 @@ mod packed {
                     cache
                         .0
                         .index_select(&positions, 0)?
-                        .reshape((tokens, 1, self.rotary_dim))?,
+                        .reshape((tokens, self.rotary_dim / 2))?,
                     cache
                         .1
                         .index_select(&positions, 0)?
-                        .reshape((tokens, 1, self.rotary_dim))?,
+                        .reshape((tokens, self.rotary_dim / 2))?,
                 ))
             };
             let (cos, sin) = gather(&self.rotary_cache)?;
