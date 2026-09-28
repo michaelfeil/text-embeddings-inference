@@ -1,4 +1,5 @@
 //! BF16 Gemma RMSNorm with FP32 scale and accumulation, without cast buffers.
+//! Packed Q/K views may have gaps between tokens; the result is contiguous.
 use candle::backend::BackendStorage;
 use candle::cuda_backend::cudarc::driver::{LaunchConfig, PushKernelArg};
 use candle::{CpuStorage, CudaStorage, CustomOp2, DType, Layout, Result, Shape, Tensor};
@@ -12,19 +13,29 @@ pub(crate) fn forward(x: &Tensor, scale: &Tensor, epsilon: f32) -> Result<Tensor
         || scale.dtype() != DType::F32
         || !x.device().is_cuda()
         || !scale.device().same_device(x.device())
-        || !x.is_contiguous()
+        || !supported_layout(x.layout())
         || !scale.is_contiguous()
         || scale.dims() != [width]
         || width == 0
         || width > 8192
         || x.elem_count() / width > i32::MAX as usize
     {
-        candle::bail!("Gemma RMSNorm requires contiguous CUDA BF16 activations and FP32 scale");
+        candle::bail!("Gemma RMSNorm requires row-contiguous CUDA BF16 activations and FP32 scale");
     }
     if x.elem_count() == 0 {
         return Ok(x.clone());
     }
     x.apply_op2_no_bwd(scale, &Norm { epsilon })
+}
+// Packed Q/K views have contiguous heads within each token and a gap between tokens.
+fn supported_layout(layout: &Layout) -> bool {
+    if layout.is_contiguous() {
+        return true;
+    }
+    let dims = layout.dims();
+    let strides = layout.stride();
+    (dims.len() == 2 && strides[1] == 1)
+        || (dims.len() == 3 && strides[2] == 1 && strides[1] == dims[2])
 }
 struct Norm {
     epsilon: f32,
@@ -52,9 +63,17 @@ impl CustomOp2 for Norm {
         let device = x.device();
         let n = xl.shape().elem_count();
         let width = *xl.dims().last().unwrap() as u32;
-        let x = x
-            .as_cuda_slice::<half::bf16>()?
-            .slice(xl.start_offset()..xl.start_offset() + n);
+        let heads = if xl.dims().len() == 3 {
+            xl.dims()[1]
+        } else {
+            1
+        } as u32;
+        let token_stride = if xl.is_contiguous() {
+            width as usize * heads as usize
+        } else {
+            xl.stride()[0]
+        } as u64;
+        let x = x.as_cuda_slice::<half::bf16>()?.slice(xl.start_offset()..);
         let scale = scale
             .as_cuda_slice::<f32>()?
             .slice(sl.start_offset()..sl.start_offset() + width as usize);
@@ -71,6 +90,8 @@ impl CustomOp2 for Norm {
             .arg(&scale)
             .arg(&mut out)
             .arg(&width)
+            .arg(&heads)
+            .arg(&token_stride)
             .arg(&self.epsilon);
         unsafe {
             launch.launch(LaunchConfig {
@@ -91,6 +112,37 @@ impl CustomOp2 for Norm {
 mod tests {
     use super::*;
     use candle::{Device, D};
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn strided_matches_contiguous() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for tokens in [1, 7, 511] {
+            for (heads, width) in [(1, 32), (3, 256), (4, 768)] {
+                let packed = Tensor::randn(0f32, 2f32, (tokens, (heads + 2) * width), &device)?
+                    .to_dtype(DType::BF16)?;
+                let scale = Tensor::randn(1f32, 0.2f32, width, &device)?;
+                let view = packed
+                    .reshape((tokens, heads + 2, width))?
+                    .narrow(1, 1, heads)?;
+                let expected = forward(&view.contiguous()?, &scale, 1e-6)?;
+                let actual = forward(&view, &scale, 1e-6)?;
+                assert_eq!(
+                    actual.flatten_all()?.to_vec1::<half::bf16>()?,
+                    expected.flatten_all()?.to_vec1::<half::bf16>()?
+                );
+                let view2 = packed.narrow(1, width, width)?;
+                assert_eq!(
+                    forward(&view2, &scale, 1e-6)?
+                        .flatten_all()?
+                        .to_vec1::<half::bf16>()?,
+                    forward(&view2.contiguous()?, &scale, 1e-6)?
+                        .flatten_all()?
+                        .to_vec1::<half::bf16>()?
+                );
+            }
+        }
+        Ok(())
+    }
     #[test]
     #[ignore = "requires CUDA; validates and times the fused Gemma normalization"]
     fn reference_and_timing() -> Result<()> {
