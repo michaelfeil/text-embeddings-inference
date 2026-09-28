@@ -129,14 +129,13 @@ impl Gemma4RmsNorm {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
         #[cfg(feature = "cuda")]
-        if dtype == DType::BF16 && hidden_states.device().is_cuda() && hidden_states.is_contiguous()
+        if dtype == DType::BF16
+            && hidden_states.device().is_cuda()
+            && hidden_states.is_contiguous()
+            && [256, 512, 1536, 2560, 2816].contains(&hidden_states.dim(D::Minus1)?)
         {
-            // Keep Candle's reduction order; changing it can alter expert routing.
-            let variance =
-                crate::layers::gemma4_norm::square(hidden_states)?.mean_keepdim(D::Minus1)?;
-            return crate::layers::gemma4_norm::finish(
+            return crate::layers::gemma4_norm::fused(
                 hidden_states,
-                &variance,
                 self.weight.as_ref(),
                 self.epsilon,
             );
