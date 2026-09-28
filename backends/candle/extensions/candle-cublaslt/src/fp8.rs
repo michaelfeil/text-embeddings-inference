@@ -2,7 +2,7 @@
 use candle::{DType, Result, Storage, Tensor};
 use cudarc::cublaslt::{result as lt, sys};
 use cudarc::driver::{DevicePtr, DevicePtrMut};
-use half::f16;
+use half::{bf16, f16};
 use std::mem::size_of;
 
 fn err(e: lt::CublasError) -> candle::Error {
@@ -62,7 +62,7 @@ struct Plan {
 /// No unsafe Send/Sync implementation: create/use it on its owning worker thread.
 pub struct Fp8Matmul {
     handle: Handle,
-    plans: std::collections::HashMap<(usize, usize, usize), Plan>,
+    plans: std::collections::HashMap<(usize, usize, usize, DType), Plan>,
     workspace: cudarc::driver::CudaSlice<u8>,
     device: candle::Device,
 }
@@ -104,6 +104,33 @@ impl Fp8Matmul {
         w: &Tensor,
         sx: &Tensor,
         sw: &Tensor,
+    ) -> Result<Tensor> {
+        self.scaled_mm_dtype(x, w, sx, sw, DType::F16)
+    }
+
+    /// Keep FP8 GEMM output in the model's native 16-bit dtype.
+    pub fn scaled_mm_dtype(
+        &mut self,
+        x: &Tensor,
+        w: &Tensor,
+        sx: &Tensor,
+        sw: &Tensor,
+        dtype: DType,
+    ) -> Result<Tensor> {
+        match dtype {
+            DType::F16 => self.scaled_mm_typed::<f16>(x, w, sx, sw, dtype),
+            DType::BF16 => self.scaled_mm_typed::<bf16>(x, w, sx, sw, dtype),
+            _ => candle::bail!("FP8 GEMM output must be FP16 or BF16"),
+        }
+    }
+
+    fn scaled_mm_typed<T: candle::cuda_backend::CudaDType + cudarc::driver::DeviceRepr>(
+        &mut self,
+        x: &Tensor,
+        w: &Tensor,
+        sx: &Tensor,
+        sw: &Tensor,
+        dtype: DType,
     ) -> Result<Tensor> {
         if !self.device.same_device(x.device()) {
             candle::bail!("FP8 executor belongs to a different CUDA device")
@@ -156,7 +183,7 @@ impl Fp8Matmul {
         let wa = ws.as_cuda_slice::<float8::F8E4M3>()?;
         let xscale = ssx.as_cuda_slice::<f32>()?;
         let wscale = ssw.as_cuda_slice::<f32>()?;
-        let mut output = unsafe { dev.alloc::<f16>(count)? };
+        let mut output = unsafe { dev.alloc::<T>(count)? };
         let workspace_bytes = 32usize << 20;
         // Keep all pointer records alive until after enqueueing the GEMM. This is
         // essential for producer-stream waits and safe asynchronous buffer reuse.
@@ -166,7 +193,7 @@ impl Fp8Matmul {
         let (spw, _rsw) = wscale.device_ptr(&stream);
         let (op, ro) = output.device_ptr_mut(&stream);
         let (scratch, rwork) = self.workspace.device_ptr_mut(&stream);
-        let key = (m, n, k);
+        let key = (m, n, k, dtype);
         if !self.plans.contains_key(&key) {
             if self.plans.len() >= 16 {
                 self.plans.clear();
@@ -209,7 +236,11 @@ impl Fp8Matmul {
             );
             let c = Layout(
                 lt::create_matrix_layout(
-                    sys::cudaDataType::CUDA_R_16F,
+                    if dtype == DType::BF16 {
+                        sys::cudaDataType::CUDA_R_16BF
+                    } else {
+                        sys::cudaDataType::CUDA_R_16F
+                    },
                     n as u64,
                     m as u64,
                     n as i64,
@@ -301,19 +332,19 @@ pub fn scaled_mm(x: &Tensor, w: &Tensor, sx: &Tensor, sw: &Tensor) -> Result<Ten
     Fp8Matmul::new(x.device())?.scaled_mm(x, w, sx, sw)
 }
 
-/// Quantize finite contiguous FP16 rows to E4M3 and FP32 row scales.
+/// Quantize finite contiguous FP16/BF16 rows to E4M3 and FP32 row scales.
 /// Matches the dynamic-row research recipe, including scale rounding. The same
 /// operation quantizes weight rows once at load time and activations per batch.
 pub fn quantize_rows(x: &Tensor) -> Result<(Tensor, Tensor)> {
     use cudarc::driver::{LaunchConfig, PushKernelArg};
     let (m, k) = x.dims2()?;
-    if x.dtype() != DType::F16
+    if !matches!(x.dtype(), DType::F16 | DType::BF16)
         || !x.is_contiguous()
         || x.storage_and_layout().1.start_offset() != 0
         || m == 0
         || k == 0
     {
-        candle::bail!("FP8 conversion requires nonempty zero-offset contiguous FP16 matrices")
+        candle::bail!("FP8 conversion requires nonempty zero-offset contiguous FP16/BF16 matrices")
     }
     let rows = i32::try_from(m).map_err(candle::Error::wrap)?;
     let width = i32::try_from(k).map_err(candle::Error::wrap)?;
@@ -335,7 +366,6 @@ pub fn quantize_rows(x: &Tensor) -> Result<(Tensor, Tensor)> {
     let Storage::Cuda(storage) = &*storage else {
         candle::bail!("FP8 conversion requires CUDA")
     };
-    let input = storage.as_cuda_slice::<f16>()?;
     let mut out = unsafe { dev.alloc::<float8::F8E4M3>(x.elem_count())? };
     let mut scales = unsafe { dev.alloc::<f32>(m)? };
     let (name, threads, special) = match k {
@@ -366,13 +396,33 @@ pub fn quantize_rows(x: &Tensor) -> Result<(Tensor, Tensor)> {
     } else {
         (name, threads, special)
     };
+    let name = if x.dtype() == DType::BF16 {
+        "quant_bf16_generic"
+    } else {
+        name
+    };
+    let special = special && x.dtype() == DType::F16;
+    let threads = if x.dtype() == DType::BF16 {
+        128
+    } else {
+        threads
+    };
     let function = dev.get_or_load_custom_func(
         name,
         "tei-fp8-quantize",
         include_str!(concat!(env!("OUT_DIR"), "/fp8_quant.ptx")),
     )?;
     let mut builder = function.builder();
-    builder.arg(input).arg(&mut out).arg(&mut scales);
+    match x.dtype() {
+        DType::F16 => {
+            builder.arg(storage.as_cuda_slice::<f16>()?);
+        }
+        DType::BF16 => {
+            builder.arg(storage.as_cuda_slice::<bf16>()?);
+        }
+        _ => unreachable!(),
+    }
+    builder.arg(&mut out).arg(&mut scales);
     if !special {
         builder.arg(&width);
     }
@@ -465,6 +515,7 @@ pub fn quantize_packed_swiglu(x: &Tensor) -> Result<Option<(Tensor, Tensor)>> {
 /// Experimental bias-free FP8 linear layer. Weight conversion happens once;
 /// the caller retains a worker-owned GEMM executor across layer invocations.
 pub struct Fp8Linear {
+    dtype: DType,
     weight: Tensor,
     scales: Tensor,
 }
@@ -474,14 +525,22 @@ impl Fp8Linear {
         if n == 0 || k == 0 || n % 16 != 0 || k % 16 != 0 {
             candle::bail!("FP8 linear dimensions must be nonzero multiples of 16")
         }
+        let dtype = weight.dtype();
         let (weight, scales) = quantize_rows(weight)?;
-        Ok(Self { weight, scales })
+        Ok(Self {
+            weight,
+            scales,
+            dtype,
+        })
     }
     pub fn forward_packed_swiglu(
         &self,
         x: &Tensor,
         executor: &mut Fp8Matmul,
     ) -> Result<Option<Tensor>> {
+        if x.dtype() != self.dtype {
+            candle::bail!("FP8 linear input dtype must match weights");
+        }
         if x.dim(1)? != self.weight.dim(1)? * 2 || !x.device().same_device(self.weight.device()) {
             candle::bail!("FP8 packed SwiGLU input dimension/device mismatch")
         }
@@ -496,13 +555,16 @@ impl Fp8Linear {
         )?))
     }
     pub fn forward(&self, x: &Tensor, executor: &mut Fp8Matmul) -> Result<Tensor> {
+        if x.dtype() != self.dtype {
+            candle::bail!("FP8 linear input dtype must match weights");
+        }
         let (_, k) = x.dims2()?;
         if k != self.weight.dim(1)? || !x.device().same_device(self.weight.device()) {
             candle::bail!("FP8 linear input dimension/device mismatch")
         }
         let (x, sx) = quantize_rows(x)?;
         executor
-            .scaled_mm(&x, &self.weight, &sx, &self.scales)
+            .scaled_mm_dtype(&x, &self.weight, &sx, &self.scales, self.dtype)
             .map_err(|error| {
                 error.context(format!(
                     "dynamic FP8 linear: input {:?}, weight {:?}",
@@ -516,6 +578,67 @@ impl Fp8Linear {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bf16_quantization_and_gemm_preserve_range() -> Result<()> {
+        let dev = candle::Device::new_cuda(0)?;
+        for k in [17, 1024, 3072] {
+            let values = (0..3 * k)
+                .map(|i| {
+                    bf16::from_f32(if i < k {
+                        0.
+                    } else {
+                        ((i * 37 % 513) as f32 - 256.) * 4096.
+                    })
+                })
+                .collect::<Vec<_>>();
+            let input = Tensor::from_vec(values.clone(), (3, k), &dev)?;
+            let (q, s) = quantize_rows(&input)?;
+            let q = q.flatten_all()?.to_vec1::<float8::F8E4M3>()?;
+            let s = s.to_vec1::<f32>()?;
+            for row in 0..3 {
+                let amax = values[row * k..(row + 1) * k]
+                    .iter()
+                    .map(|x| x.to_f32().abs())
+                    .fold(1e-12f32, f32::max);
+                let scale = amax * (1f32 / 448f32);
+                assert_eq!(s[row].to_bits(), scale.to_bits());
+                for col in 0..k {
+                    let expected = float8::F8E4M3::from_f32(
+                        (values[row * k + col].to_f32() / scale).clamp(-448., 448.),
+                    );
+                    assert_eq!(q[row * k + col].to_bits(), expected.to_bits());
+                }
+            }
+        }
+        let weight = Tensor::ones((16, 32), DType::BF16, &dev)?;
+        let layer = Fp8Linear::new(&weight)?;
+        let input = Tensor::full(bf16::from_f32(131072.), (17, 32), &dev)?;
+        let mut executor = Fp8Matmul::new(&dev)?;
+        let output = layer.forward(&input, &mut executor)?;
+        assert_eq!(output.dtype(), DType::BF16);
+        for y in output.flatten_all()?.to_vec1::<bf16>()? {
+            assert_eq!(y.to_f32(), 4194304.);
+        }
+        assert!(layer
+            .forward(&input.to_dtype(DType::F16)?, &mut executor)
+            .is_err());
+        // Reuse the same GEMM shape with both output dtypes: cache plans must differ.
+        let (q, sx) = quantize_rows(&Tensor::ones((17, 32), DType::BF16, &dev)?)?;
+        let (w, sw) = quantize_rows(&weight)?;
+        for dtype in [DType::F16, DType::BF16, DType::F16] {
+            let result = executor.scaled_mm_dtype(&q, &w, &sx, &sw, dtype)?;
+            assert_eq!(result.dtype(), dtype);
+            assert!(result
+                .to_dtype(DType::F32)?
+                .flatten_all()?
+                .to_vec1::<f32>()?
+                .iter()
+                .all(|x| *x == 32.));
+        }
+        assert_eq!(executor.plans.len(), 2);
+        Ok(())
+    }
+
     #[test]
     fn fused_swiglu_matches_candle_conversion() -> Result<()> {
         let dev = candle::Device::new_cuda(0)?;
@@ -754,7 +877,7 @@ mod tests {
                     .to_vec1::<f16>()?;
                 let (m, k) = x.dims2()?;
                 let n = weight.dim(0)?;
-                let suffix = if executor.plans[&(m, n, k)].fast_accum {
+                let suffix = if executor.plans[&(m, n, k, DType::F16)].fast_accum {
                     "expected"
                 } else {
                     "expected_full_accum"

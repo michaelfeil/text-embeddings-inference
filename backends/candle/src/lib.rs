@@ -277,7 +277,7 @@ impl CandleBackend {
         }
 
         if enable_fp8_dynamic {
-            if dtype != DType::F16
+            if !matches!(dtype, DType::F16 | DType::BF16)
                 || !device.is_cuda()
                 || !matches!(
                     &config,
@@ -288,7 +288,7 @@ impl CandleBackend {
                     .unwrap_or("true".into())
                     .eq_ignore_ascii_case("true")
             {
-                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16, flash attention and Qwen2/Qwen3/Llama/Mistral".into()));
+                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, flash attention and Qwen2/Qwen3/Llama/Mistral".into()));
             }
             #[cfg(feature = "cuda")]
             if get_runtime_compute_cap(device_id).unwrap_or(0) != 90 {

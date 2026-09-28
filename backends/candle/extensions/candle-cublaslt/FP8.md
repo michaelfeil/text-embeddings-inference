@@ -3,7 +3,7 @@
 Build the router with `--no-default-features --features http,experimental-fp8,dynamic-linking`
 using CUDA toolkit 12.9 or newer. `Dockerfile-cuda` includes this build feature
 for Hopper (compute capability 9.0). Enable with `--enable-fp8-dynamic` or
-`ENABLE_FP8_DYNAMIC=true`, and select `--dtype float16`.
+`ENABLE_FP8_DYNAMIC=true`, and select `--dtype float16` or `--dtype bfloat16`.
 
 ## Bundled, disabled by default
 
@@ -19,7 +19,7 @@ Other GPU image targets do not bundle this Hopper-only implementation.
 implementation of Qwen2, Qwen3, Llama and Mistral. Hopper (compute capability 9.0)
 is required; validation so far uses H100. cuBLAS outer-vector scaling is
 [Hopper-only in CUDA 12.9 and 13.1](https://docs.nvidia.com/cuda/archive/13.1.0/cublas/index.html#narrow-precision-data-types-usage),
-even though other FP8 scaling modes support additional GPU architectures. Other architectures, CPU/Metal, BF16,
+even though other FP8 scaling modes support additional GPU architectures. Other architectures, CPU/Metal,
 and builds without `experimental-fp8` reject the option. BERT and ModernBERT
 remain research work: their bias/activation and accuracy tradeoffs need separate
 validation. An explicitly requested FP8 configuration does not silently fall
@@ -30,12 +30,15 @@ artifact. Load the ordinary full-precision checkpoint. MLP gate/up/down weights
 are converted once to E4M3 with an FP32 scale per output channel. Activations are
 converted at inference with an FP32 scale per token. Each scale is the row's
 maximum absolute value (floored at 1e-12) divided by 448. Accumulation is FP32,
-with FP16 outputs. cuBLASLt fast accumulation is used when a tactic exists;
+with outputs in the model dtype (FP16 or BF16). cuBLASLt fast accumulation is used when a tactic exists;
 otherwise the same FP8 inputs use full accumulation (needed for some short,
 wide projections on CUDA 12.9). This may change last-bit rounding between shapes. Attention, normalization,
 residuals, activation arithmetic, embedding tables and output heads retain their
 existing precision. Gate/up share one activation conversion through the existing
-combined projection. Only finite FP16 inputs are supported by the quantizer.
+combined projection. Only finite FP16/BF16 inputs are supported by the quantizer. BF16 inputs are
+converted directly to E4M3; there is no intermediate FP16 conversion. BF16
+SwiGLU uses the existing BF16 activation followed by row quantization, while
+the existing FP16 fused SwiGLU path is unchanged.
 
 The API's `/info` reports `enable_fp8_dynamic`. Startup logs identify the recipe.
 Each backend execution thread lazily owns one 32 MiB GEMM workspace and at most
@@ -94,3 +97,14 @@ Qwen3 0.6B and 8B serving fixtures were bitwise equal to the unfused FP8 path,
 with approximately 1–3% throughput gains on the measured larger batches.
 These checks establish no additional drift in those fixtures, not equivalence
 between FP8 and FP16 or accuracy qualification for other models.
+
+### BF16 dynamic FP8
+
+The BF16 path preserves BF16 attention, residuals, activations, and GEMM output;
+only MLP matrix inputs/weights use E4M3. It needs no calibration dataset.
+On one H100, Voyage-4-nano produced finite embeddings for all 550 validation
+inputs through 32,768 tokens, including a 16,383-token input that fails in FP16.
+Minimum/mean cosine against an FP32 reference were 0.996199 / 0.999013.
+On a 300-pair STS-B sample, Spearman ×100 was 93.8694 versus 93.8999 for
+unquantized BF16 and 93.8847 for FP32. These are limited accuracy checks,
+not a retrieval-quality guarantee; FP8 remains opt-in.
