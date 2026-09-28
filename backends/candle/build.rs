@@ -1,12 +1,32 @@
 use anyhow::{bail, Context, Result};
 
 fn main() {
+    println!("cargo:rustc-check-cfg=cfg(gemma4_moe_cuda)");
     println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
     if let Ok(compute_cap) = set_compute_cap() {
         println!("cargo:rustc-env=CUDA_COMPUTE_CAP={compute_cap}");
     }
     #[cfg(feature = "cuda")]
     {
+        println!("cargo:rerun-if-changed=src/kernels/gemma4_moe.cu");
+        println!("cargo:rerun-if-changed=extensions/candle-gemma4-moe/kernels/grouped_gemm.cu");
+        let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        // Routed BF16 experts need Ampere Tensor Cores. Keep older CUDA
+        // targets buildable for the models they already support.
+        if set_compute_cap().expect("CUDA compute capability") >= 80 {
+            cudaforge::KernelBuilder::new()
+                .source_files(["extensions/candle-gemma4-moe/kernels/grouped_gemm.cu"])
+                .with_cutlass(Some("e406c186f510a15091cce01f782020ceb7ba8eb5"))
+                .arg("-std=c++17")
+                .arg("-O3")
+                .arg("--expt-relaxed-constexpr")
+                .build_lib(out.join("libgemma4_moe.a"))
+                .expect("compile Gemma4 grouped MoE kernels");
+            println!("cargo:rustc-link-search=native={}", out.display());
+            println!("cargo:rustc-link-lib=static=gemma4_moe");
+            println!("cargo:rustc-link-lib=stdc++");
+            println!("cargo:rustc-cfg=gemma4_moe_cuda");
+        }
         println!("cargo:rerun-if-changed=src/pooling_kernels/mean_pool.cu");
         cudaforge::KernelBuilder::new()
             .source_dir("src/pooling_kernels")

@@ -83,3 +83,61 @@ extern "C" __global__ void gemma4_moe_combine_8_bf16(
     }
     output[index] = __float2bfloat16_rn(sum);
 }
+
+extern "C" __global__ void gemma4_moe_count(const uint32_t *ids, int *counts, int slots) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < slots) atomicAdd(counts + ids[i], 1);
+}
+extern "C" __global__ void gemma4_moe_offsets(const int *counts, int *offsets) {
+    const int expert = threadIdx.x;
+    int offset = 0;
+    for (int i = 0; i < expert; ++i) offset += counts[i];
+    offsets[expert] = offset;
+    if (expert == 127) offsets[128] = offset + counts[127];
+}
+extern "C" __global__ void gemma4_moe_assign(
+    const uint32_t *ids, const int *offsets, int *cursors, uint32_t *mapping, int slots) {
+    const int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i < slots) {
+        const int expert = ids[i];
+        mapping[i] = offsets[expert] + atomicAdd(cursors + expert, 1);
+    }
+}
+extern "C" __global__ void gemma4_moe_pack(
+    const __nv_bfloat16 *input, const uint32_t *mapping,
+    __nv_bfloat16 *packed, uint64_t slots, uint32_t hidden) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < slots * hidden) {
+        const uint64_t slot = i / hidden;
+        const uint32_t column = i % hidden;
+        packed[uint64_t(mapping[slot]) * hidden + column] = input[(slot / 8) * hidden + column];
+    }
+}
+extern "C" __global__ void gemma4_moe_gelu_mul(
+    const __nv_bfloat16 *gate_up, __nv_bfloat16 *output, uint64_t slots, uint32_t width) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < slots * width) {
+        const uint64_t row = i / width;
+        const uint32_t column = i % width;
+        const float gate = __bfloat162float(gate_up[row * (2 * width) + column]);
+        const float up = __bfloat162float(gate_up[row * (2 * width) + width + column]);
+        const float gelu = 0.5f * gate * (1.f + tanhf(0.7978845608028654f *
+            (gate + 0.044715f * gate * gate * gate)));
+        output[i] = __float2bfloat16_rn(gelu * up);
+    }
+}
+extern "C" __global__ void gemma4_moe_unpermute_combine(
+    const __nv_bfloat16 *expert_outputs, const uint32_t *mapping, const float *weights,
+    __nv_bfloat16 *output, uint64_t tokens, uint32_t hidden) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < tokens * hidden) {
+        const uint64_t token = i / hidden;
+        const uint32_t column = i % hidden;
+        float sum = 0.f;
+        for (int k = 0; k < 8; ++k) {
+            const uint64_t slot = token * 8 + k;
+            sum += __bfloat162float(expert_outputs[uint64_t(mapping[slot]) * hidden + column]) * weights[slot];
+        }
+        output[i] = __float2bfloat16_rn(sum);
+    }
+}

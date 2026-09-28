@@ -96,23 +96,61 @@ impl ChatTemplate {
         candidate: Option<&str>,
     ) -> Result<String, TextEmbeddingsError> {
         validate_messages(messages)?;
-        let mut messages = messages.to_vec();
-        if let Some(content) = candidate {
-            messages.push(Message {
-                role: Role::Assistant,
-                content: content.into(),
-            });
-        }
-        let options = ChatTemplateOptions {
-            add_generation_prompt: candidate.is_none(),
-            continue_final_message: false,
-            special_tokens: self.special_tokens.clone(),
-            extra_context: Map::from_iter([("enable_thinking".into(), Value::Bool(false))]),
-            ..Default::default()
+        let render = |turns: &[Message], generation: bool| {
+            let options = ChatTemplateOptions {
+                add_generation_prompt: generation,
+                continue_final_message: false,
+                special_tokens: self.special_tokens.clone(),
+                extra_context: Map::from_iter([("enable_thinking".into(), Value::Bool(false))]),
+                ..Default::default()
+            };
+            self.renderer
+                .render(serde_json::to_value(turns).unwrap(), options)
+                .map_err(|e| invalid(format!("Model chat template rejected messages: {e}")))
         };
-        self.renderer
-            .render(serde_json::to_value(messages).unwrap(), options)
-            .map_err(|e| invalid(format!("Model chat template rejected messages: {e}")))
+        let prompt = render(messages, true)?;
+        let Some(candidate) = candidate else {
+            return Ok(prompt);
+        };
+        let mut turns = messages.to_vec();
+        turns.push(Message {
+            role: Role::Assistant,
+            content: candidate.into(),
+        });
+        let completed = render(&turns, false)?;
+        if completed.starts_with(&prompt) {
+            return Ok(completed);
+        }
+
+        // Some checkpoint templates add an empty reasoning channel only to the
+        // generation prompt. Derive the assistant body boundary from that same
+        // template and preserve its generation prefix plus completed-turn suffix.
+        // Never guess special tokens or accept a changed conversation prefix.
+        let mut marker = "TEI_ASSISTANT_BODY_BOUNDARY".to_string();
+        while messages.iter().any(|m| m.content.contains(&marker)) || candidate.contains(&marker) {
+            marker.push('_');
+        }
+        turns.last_mut().unwrap().content = marker.clone();
+        let probe = render(&turns, false)?;
+        let mut occurrences = probe.match_indices(&marker);
+        let Some((boundary, _)) = occurrences.next() else {
+            return Err(invalid("Chat template does not preserve assistant content"));
+        };
+        if occurrences.next().is_some() || boundary == 0 {
+            return Err(invalid(
+                "Chat template has an ambiguous assistant content boundary",
+            ));
+        }
+        let prefix = &probe[..boundary];
+        let suffix = &probe[boundary + marker.len()..];
+        if !prompt.starts_with(prefix)
+            || !completed.starts_with(prefix)
+            || !completed.ends_with(suffix)
+            || completed.len() < prefix.len() + suffix.len()
+        {
+            return Err(invalid("Chat template changes conversation or assistant boundaries between prompt and completion"));
+        }
+        Ok(format!("{prompt}{}", &completed[prefix.len()..]))
     }
 }
 fn select_template(value: &Value) -> Result<String, TextEmbeddingsError> {
@@ -139,6 +177,20 @@ pub fn continuation<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn preserves_template_owned_generation_only_prefix() {
+        let renderer = ChatTemplate::new("{% for m in messages %}<{{m.role}}>{{m.content}}</turn>{% endfor %}{% if add_generation_prompt %}<assistant><empty-thought>{% endif %}", Map::new()).unwrap();
+        let messages = vec![Message {
+            role: Role::User,
+            content: "Decide".into(),
+        }];
+        assert_eq!(
+            renderer.render(&messages, Some("{}")).unwrap(),
+            "<user>Decide</turn><assistant><empty-thought>{}</turn>"
+        );
+        let incompatible = ChatTemplate::new("{% if add_generation_prompt %}different{% else %}{% for m in messages %}<{{m.role}}>{{m.content}}</turn>{% endfor %}{% endif %}", Map::new()).unwrap();
+        assert!(incompatible.render(&messages, Some("{}")).is_err());
+    }
     #[test]
     fn real_roles_and_complete_assistant_turn_are_preserved() {
         let renderer = ChatTemplate::new("{{ bos_token }}{% for m in messages %}<{{m.role}}>{{m.content}}</turn>{% endfor %}{% if add_generation_prompt %}<assistant>{% endif %}", Map::from_iter([("bos_token".into(), Value::String("<bos>".into()))])).unwrap();

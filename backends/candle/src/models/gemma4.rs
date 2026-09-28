@@ -48,6 +48,12 @@ pub struct Gemma4TextConfig {
     pub attention_k_eq_v: bool,
     #[serde(default)]
     pub enable_moe_block: bool,
+    #[serde(default)]
+    pub num_experts: Option<usize>,
+    #[serde(default)]
+    pub top_k_experts: Option<usize>,
+    #[serde(default, alias = "expert_intermediate_size")]
+    pub moe_intermediate_size: Option<usize>,
     #[serde(default = "default_head_dim")]
     pub head_dim: usize,
     #[serde(default = "default_global_head_dim")]
@@ -566,9 +572,85 @@ struct Gemma4PleLayer {
     activation: HiddenAct,
 }
 
+struct Gemma4Moe {
+    router_norm: Gemma4RmsNorm,
+    router_scale: Tensor,
+    router_weight: Tensor,
+    expert_scale: Tensor,
+    gate_up: Tensor,
+    down: Tensor,
+    dense_norm: Gemma4RmsNorm,
+    expert_input_norm: Gemma4RmsNorm,
+    expert_output_norm: Gemma4RmsNorm,
+}
+
+impl Gemma4Moe {
+    fn load(vb: VarBuilder, config: &Gemma4TextConfig) -> Result<Option<Self>> {
+        if !config.enable_moe_block {
+            return Ok(None);
+        }
+        if !cfg!(gemma4_moe_cuda)
+            || !vb.device().is_cuda()
+            || config.hidden_size != 2816
+            || config.num_experts != Some(128)
+            || config.top_k_experts != Some(8)
+            || config.moe_intermediate_size != Some(704)
+        {
+            candle::bail!("Gemma4 MoE requires an SM80+ CUDA build and the 26B-A4B 128-expert/8-route configuration");
+        }
+        let h = config.hidden_size;
+        let norm = |name: &str| Gemma4RmsNorm::load(vb.pp(name), h, config.rms_norm_eps);
+        Ok(Some(Self {
+            router_norm: Gemma4RmsNorm::without_weight(config.rms_norm_eps),
+            router_scale: vb.get(h, "router.scale")?,
+            router_weight: vb
+                .get((128, h), "router.proj.weight")?
+                .to_dtype(DType::F32)?,
+            expert_scale: vb
+                .get(128, "router.per_expert_scale")?
+                .to_dtype(DType::F32)?,
+            gate_up: vb.get((128, 1408, h), "experts.gate_up_proj")?,
+            down: vb.get((128, h, 704), "experts.down_proj")?,
+            dense_norm: norm("post_feedforward_layernorm_1")?,
+            expert_input_norm: norm("pre_feedforward_layernorm_2")?,
+            expert_output_norm: norm("post_feedforward_layernorm_2")?,
+        }))
+    }
+    fn forward(&self, residual: &Tensor, dense: &Tensor) -> Result<Tensor> {
+        #[cfg(gemma4_moe_cuda)]
+        {
+            let shape = residual.shape();
+            let hidden = residual.dim(D::Minus1)?;
+            let residual = residual.reshape((residual.elem_count() / hidden, hidden))?;
+            // Match vLLM: RMSNorm -> BF16 root-size scaling -> learned scale.
+            let routing = (self.router_norm.forward(&residual)? * (hidden as f64).sqrt().recip())?
+                .broadcast_mul(&self.router_scale)?;
+            let logits = routing
+                .to_dtype(DType::F32)?
+                .matmul(&self.router_weight.t()?)?;
+            let input = self.expert_input_norm.forward(&residual)?;
+            let expert = crate::layers::gemma4_moe::experts(
+                &input,
+                &logits,
+                &self.expert_scale,
+                &self.gate_up,
+                &self.down,
+            )?;
+            self.dense_norm.forward(dense)?
+                + self.expert_output_norm.forward(&expert)?.reshape(shape)?
+        }
+        #[cfg(not(gemma4_moe_cuda))]
+        {
+            let _ = (residual, dense);
+            candle::bail!("Gemma4 MoE requires an SM80+ CUDA build")
+        }
+    }
+}
+
 struct Gemma4Layer {
     attention: Gemma4Attention,
     mlp: Gemma4Mlp,
+    moe: Option<Gemma4Moe>,
     input_layernorm: Gemma4RmsNorm,
     post_attention_layernorm: Gemma4RmsNorm,
     pre_feedforward_layernorm: Gemma4RmsNorm,
@@ -608,6 +690,10 @@ impl Gemma4Layer {
         let residual = &states;
         let normalized = self.pre_feedforward_layernorm.forward(&states)?;
         let mlp = self.mlp.forward(&normalized)?;
+        let mlp = match &self.moe {
+            Some(moe) => moe.forward(residual, &mlp)?,
+            None => mlp,
+        };
         let mut states = (residual + self.post_feedforward_layernorm.forward(&mlp)?)?;
         if let (Some(ple), Some(per_layer_input)) = (&self.ple, per_layer_input) {
             let contribution = ple.input_gate.forward(&states)?;
@@ -650,6 +736,7 @@ impl Gemma4Layer {
         Ok(Self {
             attention: Gemma4Attention::load(vb.pp("self_attn"), config, layer_idx)?,
             mlp: Gemma4Mlp::load(vb.pp("mlp"), config, layer_idx)?,
+            moe: Gemma4Moe::load(vb.clone(), config)?,
             input_layernorm: norm("input_layernorm")?,
             post_attention_layernorm: norm("post_attention_layernorm")?,
             pre_feedforward_layernorm: norm("pre_feedforward_layernorm")?,
@@ -681,6 +768,10 @@ impl Gemma4Layer {
         let residual = &states;
         let states = self.pre_feedforward_layernorm.forward(&states)?;
         let states = self.mlp.forward(&states)?;
+        let states = match &self.moe {
+            Some(moe) => moe.forward(residual, &states)?,
+            None => states,
+        };
         let states = self.post_feedforward_layernorm.forward(&states)?;
         let mut states = (residual + states)?;
 
@@ -848,9 +939,6 @@ impl Gemma4Model {
 
     pub fn load(vb: VarBuilder, config: &Gemma4Config, model_type: ModelType) -> Result<Self> {
         let text = &config.text_config;
-        if text.enable_moe_block {
-            candle::bail!("Gemma4 MoE checkpoints are not supported yet")
-        }
         if text.layer_types.len() != text.num_hidden_layers {
             candle::bail!(
                 "Gemma4 layer_types has {} entries, expected {}",
@@ -1288,6 +1376,43 @@ fn decision_softcap(logits: &Tensor, cap: f64) -> Result<Tensor> {
 #[cfg(test)]
 mod decision_softcap_tests {
     use super::*;
+    #[test]
+    fn dense_and_moe_config_fields() -> anyhow::Result<()> {
+        let mut value = serde_json::json!({
+            "hidden_activation": "gelu_pytorch_tanh", "hidden_size": 1536,
+            "intermediate_size": 6144, "layer_types": ["sliding_attention"],
+            "max_position_embeddings": 131072, "num_attention_heads": 8,
+            "num_hidden_layers": 1, "num_key_value_heads": 2, "pad_token_id": 0,
+            "sliding_window": 512,
+            "rope_parameters": {
+                "full_attention": {"rope_theta": 1000000.0},
+                "sliding_attention": {"rope_theta": 10000.0}
+            }
+        });
+        for missing in [true, false] {
+            if !missing {
+                for name in ["num_experts", "top_k_experts", "moe_intermediate_size"] {
+                    value[name] = serde_json::Value::Null;
+                }
+            }
+            let config: Gemma4TextConfig = serde_json::from_value(value.clone())?;
+            assert!(!config.enable_moe_block);
+            assert_eq!(config.num_experts, None);
+            assert_eq!(config.top_k_experts, None);
+            assert_eq!(config.moe_intermediate_size, None);
+        }
+        value["enable_moe_block"] = true.into();
+        value["num_experts"] = 128.into();
+        value["top_k_experts"] = 8.into();
+        value["moe_intermediate_size"] = 704.into();
+        let config: Gemma4TextConfig = serde_json::from_value(value)?;
+        assert!(config.enable_moe_block);
+        assert_eq!(config.num_experts, Some(128));
+        assert_eq!(config.top_k_experts, Some(8));
+        assert_eq!(config.moe_intermediate_size, Some(704));
+        Ok(())
+    }
+
     #[test]
     fn bf16_softcap_matches_reference_rounding() -> Result<()> {
         // PyTorch: (x / 30.0).tanh() * 30.0 with BF16 x, recorded as u16 bits.
