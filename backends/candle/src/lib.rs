@@ -333,6 +333,16 @@ impl CandleBackend {
             (Config::Qwen2(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen2Model::load(vb, &config, model_type, false).s()?)),
             (Config::Qwen3(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen3Model::load(vb, &config, model_type, false).s()?)),
             (Config::Llama(config), Device::Cpu) if cpu_ragged => {
+                if config.attention_bias.unwrap_or(false)
+                    || config.mlp_bias
+                    || config.num_attention_heads == 0
+                    || !config.hidden_size.is_multiple_of(config.num_attention_heads)
+                    || config.head_dim.is_some_and(|dim| dim != config.hidden_size / config.num_attention_heads)
+                {
+                    return Err(BackendError::Start(
+                        "CPU packed Llama requires bias-free projections and head_dim = hidden_size / num_attention_heads".into(),
+                    ));
+                }
                 let cfg_mistral = MistralConfig {
                     vocab_size: config.vocab_size,
                     hidden_size: config.hidden_size,
@@ -362,7 +372,7 @@ impl CandleBackend {
             }
             (Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config), Device::Cpu) if cpu_ragged =>
                 Ok(Box::new(FlashBertModel::load_roberta(vb, &config, model_type).s()?)),
-            (Config::DistilBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashDistilBertModel::load(vb, &config, model_type).s()?)),
+            (Config::DistilBert(config), Device::Cpu) if cpu_ragged && !matches!(&model_type, ModelType::Classifier) => Ok(Box::new(FlashDistilBertModel::load(vb, &config, model_type).s()?)),
             (Config::Gte(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?)),
             (Config::ModernBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashModernBertModel::load(vb, &config, model_type).s()?)),
             (Config::NomicBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashNomicBertModel::load(vb, &config, model_type).s()?)),

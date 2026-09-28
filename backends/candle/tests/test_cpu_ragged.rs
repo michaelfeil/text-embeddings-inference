@@ -117,3 +117,70 @@ fn cpu_ragged_checkpoint() -> Result<()> {
     )?;
     Ok(())
 }
+
+#[test]
+#[ignore = "requires CPU_RAGGED_REVIEW_FIXTURES with classifier and unsupported Llama checkpoints"]
+fn cpu_ragged_dispatch_regressions() -> Result<()> {
+    assert_ne!(std::env::var("USE_FLASH_ATTENTION").as_deref(), Ok("false"));
+    let root = PathBuf::from(std::env::var("CPU_RAGGED_REVIEW_FIXTURES")?);
+    let backend = CandleBackend::new(
+        &root.join("distil-classifier"),
+        "float32".into(),
+        ModelType::Classifier,
+        None,
+        0,
+    )?;
+    assert!(
+        backend.is_padded(),
+        "DistilBERT classifiers need their classification head"
+    );
+    let lengths = [7, 31, 3, 17];
+    let count: usize = lengths.iter().sum();
+    let batch = Batch {
+        input_ids: (0..count).map(|i| 10 + (i % 37) as u32).collect(),
+        token_type_ids: vec![0; count],
+        position_ids: lengths.iter().flat_map(|&n| 0..n as u32).collect(),
+        cumulative_seq_lengths: vec![0, 7, 38, 41, 58],
+        max_length: 31,
+        pooled_indices: vec![0, 1, 2, 3],
+        raw_indices: vec![],
+        compact_input_ids: None,
+        compact_position_ids: None,
+        scatter_unfold: None,
+        fold_gather: None,
+        tokens: vec![],
+        offsets: vec![],
+    };
+    let predictions = backend.predict(batch)?;
+    let reference: Vec<Vec<f32>> =
+        serde_json::from_slice(&std::fs::read(root.join("classifier-reference.json"))?)?;
+    for (index, expected) in reference.iter().enumerate() {
+        let actual = &predictions[&index];
+        assert_eq!(actual.len(), expected.len());
+        for (actual, expected) in actual.iter().zip(expected) {
+            assert!(
+                (actual - expected).abs() < 1e-5,
+                "classifier prediction changed"
+            );
+        }
+    }
+    for fixture in ["llama-attention-bias", "llama-mlp-bias", "llama-head-dim"] {
+        let error = match CandleBackend::new(
+            &root.join(fixture),
+            "float32".into(),
+            ModelType::Embedding(Pool::Mean),
+            None,
+            0,
+        ) {
+            Ok(_) => panic!("unsupported Llama settings were silently accepted: {fixture}"),
+            Err(error) => error,
+        };
+        assert!(
+            error
+                .to_string()
+                .contains("CPU packed Llama requires bias-free projections"),
+            "unexpected error for {fixture}: {error}"
+        );
+    }
+    Ok(())
+}

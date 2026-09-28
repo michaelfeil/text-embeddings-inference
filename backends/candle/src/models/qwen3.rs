@@ -139,7 +139,12 @@ impl Qwen3Attention {
             (hidden_size, num_attention_heads * attention_head_size),
             "weight",
         )?;
-        let o_proj = Linear::new(o_proj_weight, None, None);
+        let o_proj_bias = if config.attention_bias {
+            Some(vb.pp("o_proj").get(hidden_size, "bias")?)
+        } else {
+            None
+        };
+        let o_proj = Linear::new(o_proj_weight, o_proj_bias, None);
 
         let q_norm = RMSNorm::load(vb.pp("q_norm"), attention_head_size, config.rms_norm_eps)?;
         let k_norm = RMSNorm::load(vb.pp("k_norm"), attention_head_size, config.rms_norm_eps)?;
