@@ -649,7 +649,9 @@ FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
 
 When FA4 is enabled, models using the shared flash-attention dispatcher register
 their variable-length boundaries once per batch. The current native bundle supports SM90 d64 MHA global
-and two-sided local attention, and d128 causal GQA with a 4:1 query/KV head ratio.
+and two-sided local attention, d128 causal GQA with a 4:1 query/KV head ratio,
+and d128 global GQA with a 2:1 ratio (including Voyage-4-nano). Use BF16 for
+Voyage to avoid FP16 non-finite outputs at long context.
 Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
 backend. FA4 execution errors propagate. Other architectures retain their existing
 backend until their native bundles are runtime-qualified.

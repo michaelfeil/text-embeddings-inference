@@ -89,6 +89,7 @@ pub(crate) fn try_forward(
         (64, true, false, None, None) => Mask::Global,
         (64, true, false, Some(left), Some(right)) => Mask::Window { left, right },
         (128, _, true, None, None) if hk > 0 && h == 4 * hk => Mask::Causal,
+        (128, _, false, None, None) if h == 2 * hk => Mask::Global,
         _ => return Ok(None),
     };
     BATCH.with(|batch| {
