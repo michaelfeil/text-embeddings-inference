@@ -271,6 +271,13 @@ impl SystemOne {
                     option_len = options.iter().map(Vec::len).sum();
                 }
                 head.truncate(head_max_len.saturating_sub(option_len).max(8));
+                // Preserve Laya's minimum instruction/option spans, but reject
+                // budgets that cannot accommodate them instead of exceeding the override.
+                if head.len() + option_len > head_max_len {
+                    return Err(format!(
+                        "Question {id}: head_max_len cannot fit instructions and all options"
+                    ));
+                }
                 if options.iter().collect::<HashSet<_>>().len() != options.len() {
                     return Err(format!(
                         "Question {id}: token budget makes options indistinguishable"
@@ -629,6 +636,26 @@ mod tests {
                 fixture["response"]["answers"][id]
             );
         }
+    }
+
+    #[test]
+    fn rejects_head_budget_smaller_than_minimum_option_spans() {
+        let mut service = service();
+        service.tokenizer.with_pre_tokenizer(Some(
+            tokenizers::pre_tokenizers::whitespace::WhitespaceSplit,
+        ));
+        let request = json!({
+            "state": "text", "max_len": 1024, "head_max_len": 16,
+            "questions": {"x": {
+                "type": "choice", "instructions": "Choose the most appropriate category for this request",
+                "criteria": ["alpha option description", "beta option description", "gamma option description", "delta option description", "epsilon option description"]
+            }}
+        });
+        let error = service
+            .prepare(serde_json::from_value(request).unwrap())
+            .err()
+            .unwrap();
+        assert!(error.contains("head_max_len cannot fit"), "{error}");
     }
 
     #[test]
