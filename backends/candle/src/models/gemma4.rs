@@ -920,8 +920,8 @@ impl Gemma4Model {
             && self.local_head_dim == 256
             && self.full_head_dim == 512
             && crate::flash_attn::runtime_compute_cap(&self.device)? == 90;
-        #[cfg(feature = "fa4")]
-        let prefix_attention = prefix_attention && !crate::fa4_native::enabled()?;
+        // Gemma4's 256/512-wide heads are excluded by the shared FA4 policy,
+        // so selecting auto/FA4 must not disable this validated FA2 optimization.
         let query_plan = if prefix_attention {
             QueryPlan::new(batch, &self.device)?
         } else {
@@ -942,8 +942,11 @@ impl Gemma4Model {
             &self.device,
         )?;
         #[cfg(feature = "fa4")]
-        let _fa4_batch =
-            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
+        let _fa4_batch = crate::fa4_native::prepare_batch_for_head_dims(
+            &cu_seqlens,
+            &batch.cumulative_seq_lengths,
+            &[self.local_head_dim, self.full_head_dim],
+        )?;
         let positions = &compact.position_ids_compact;
         let rope = |cache: &(Tensor, Tensor)| -> Result<(Tensor, Tensor)> {
             Ok((

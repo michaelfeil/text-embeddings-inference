@@ -8,16 +8,16 @@ thread_local! {
     static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
 }
 
-// FA4 is experimental and must be selected explicitly.
+// This branch retains FA2 by default; explicit auto uses only qualified shapes.
 pub(crate) fn enabled() -> Result<bool> {
     parse_backend(std::env::var("ATTN_BACKEND"))
 }
 
 fn parse_backend(value: std::result::Result<String, std::env::VarError>) -> Result<bool> {
     match value.as_deref() {
-        Ok("fa4") => Ok(true),
+        Ok("auto" | "fa4") => Ok(true),
         Ok("fa2") | Err(std::env::VarError::NotPresent) => Ok(false),
-        _ => candle::bail!("ATTN_BACKEND must be fa2 or fa4"),
+        _ => candle::bail!("ATTN_BACKEND must be auto, fa2 or fa4"),
     }
 }
 
@@ -32,6 +32,27 @@ impl Drop for BatchGuard {
             BATCH.with(|batch| *batch.borrow_mut() = previous);
         }
     }
+}
+
+// The packaged kernels only support these head widths. Unsupported models
+// must stay on FA2 even when FA4 is requested, including their FA2 optimizations.
+fn head_dim_allowed(dim: usize) -> bool {
+    matches!(dim, 64 | 128)
+}
+
+pub(crate) fn prepare_batch_for_head_dims(
+    offsets: &Tensor,
+    host_offsets: &[u32],
+    head_dims: &[usize],
+) -> Result<BatchGuard> {
+    // Validate configuration even for models that cannot use FA4.
+    if !enabled()? || !head_dims.iter().copied().any(head_dim_allowed) {
+        return Ok(BatchGuard {
+            previous: None,
+            _thread: std::marker::PhantomData,
+        });
+    }
+    prepare_batch(offsets, host_offsets)
 }
 
 pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<BatchGuard> {
@@ -85,11 +106,8 @@ pub(crate) fn try_forward(
             return Ok(None);
         }
     }
-    let mask = match (d, h == hk, causal, left, right) {
-        (64, true, false, None, None) => Mask::Global,
-        (64, true, false, Some(left), Some(right)) => Mask::Window { left, right },
-        (128, _, true, None, None) if hk > 0 && h == 4 * hk => Mask::Causal,
-        _ => return Ok(None),
+    let Some(mask) = supported_mask(d, h, hk, causal, left, right) else {
+        return Ok(None);
     };
     BATCH.with(|batch| {
         let batch = batch.borrow();
@@ -130,17 +148,49 @@ pub(crate) fn try_forward(
     })
 }
 
+// Keep model-level optimization decisions consistent with actual FA4 dispatch.
+fn supported_mask(
+    d: usize,
+    h: usize,
+    hk: usize,
+    causal: bool,
+    left: Option<usize>,
+    right: Option<usize>,
+) -> Option<Mask> {
+    if !head_dim_allowed(d) || h == 0 || hk == 0 {
+        return None;
+    }
+    match (d, h == hk, causal, left, right) {
+        (64, true, false, None, None) => Some(Mask::Global),
+        (64, true, false, Some(left), Some(right)) => Some(Mask::Window { left, right }),
+        (128, _, true, None, None) if hk.checked_mul(4) == Some(h) => Some(Mask::Causal),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use candle::Device;
 
     #[test]
-    fn backend_selection_requires_explicit_opt_in() {
+    fn gemma4_shapes_fall_back_to_fa2() {
+        assert!(!head_dim_allowed(256));
+        assert!(!head_dim_allowed(512));
+        for (heads, kv_heads) in [(8, 1), (8, 2), (16, 8)] {
+            assert!(supported_mask(256, heads, kv_heads, true, Some(1023), Some(0)).is_none());
+            assert!(supported_mask(512, heads, kv_heads, true, None, None).is_none());
+        }
+        assert!(supported_mask(128, 16, 4, true, None, None).is_some());
+    }
+
+    #[test]
+    fn backend_selection_supports_validated_auto() {
         assert!(!parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
+        assert!(parse_backend(Ok("auto".into())).unwrap());
         assert!(!parse_backend(Ok("fa2".into())).unwrap());
         assert!(parse_backend(Ok("fa4".into())).unwrap());
-        for invalid in ["auto", "", "FA4", "fa3"] {
+        for invalid in ["", "FA4", "fa3"] {
             assert!(parse_backend(Ok(invalid.into())).is_err());
         }
         assert!(parse_backend(Err(std::env::VarError::NotUnicode("invalid".into()))).is_err());
