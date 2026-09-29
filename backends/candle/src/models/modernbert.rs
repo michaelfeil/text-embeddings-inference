@@ -16,7 +16,7 @@ pub struct ModernBertConfig {
     pub intermediate_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
-    pub hidden_activation: HiddenAct,
+    pub hidden_activation: candle_nn::Activation,
     pub max_position_embeddings: usize,
     pub initializer_range: f64,
     pub initializer_cutoff_factor: f64,
@@ -79,7 +79,7 @@ impl ModernBertEmbeddings {
 pub struct ModernBertMLP {
     wi: Linear,
     wo: Linear,
-    activation: Option<HiddenAct>,
+    activation: candle_nn::Activation,
     intermediate_size: usize,
     span: tracing::Span,
 }
@@ -99,7 +99,7 @@ impl ModernBertMLP {
 
         let wo = Linear::new(wo_weight, wo_bias, None);
 
-        let activation = Some(config.hidden_activation.clone());
+        let activation = config.hidden_activation;
 
         Ok(Self {
             wi,
@@ -119,11 +119,8 @@ impl ModernBertMLP {
         let gate =
             hidden_states.narrow(D::Minus1, self.intermediate_size, self.intermediate_size)?;
 
-        let input = if let Some(activation) = &self.activation {
-            activation.forward(&input)
-        } else {
-            Ok(input)
-        };
+        // Hugging Face `gelu` uses erf, whereas HiddenAct::Gelu uses tanh.
+        let input = self.activation.forward(&input)?;
 
         let hidden_states = self.wo.forward(&(input * gate)?)?;
 
@@ -226,12 +223,15 @@ impl ModernBertAttention {
                     let attention_scores = cublaslt.batch_matmul(
                         &key_layer,
                         &query_layer,
-                        Some(attention_mask.as_ref()),
+                        None,
                         Some(self.softmax_scale as f32),
                         None,
                         None,
                         None,
                     )?;
+                    // The optional cuBLASLt output is writable and beta defaults
+                    // to zero. Reusing the mask there ignores and overwrites it.
+                    let attention_scores = attention_scores.add(&attention_mask)?;
                     let attention_probs = candle_nn::ops::softmax_last_dim(&attention_scores)?;
 
                     let context_layer = cublaslt.batch_matmul(
@@ -822,5 +822,175 @@ impl Model for ModernBertModel {
                 classifier.forward(&pooled_embeddings)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_exact_gelu(device: &Device) -> Result<()> {
+        // Wi yields [x, 1], so the complete gated MLP evaluates GELU(x).
+        let mlp = ModernBertMLP {
+            wi: Linear::new(
+                Tensor::from_slice(&[1f32, 0., 0., 1., 0., 0., 0., 0.], (4, 2), device)?,
+                Some(Tensor::from_slice(&[0f32, 0., 1., 1.], 4, device)?),
+                None,
+            ),
+            wo: Linear::new(Tensor::eye(2, DType::F32, device)?, None, None),
+            activation: serde_json::from_str("\"gelu\"").unwrap(),
+            intermediate_size: 2,
+            span: tracing::span!(tracing::Level::TRACE, "test_mlp"),
+        };
+        let output = mlp
+            .forward(&Tensor::from_slice(&[-2f32, 2.], (1, 1, 2), device)?)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        // x * (1 + erf(x / sqrt(2))) / 2, evaluated independently.
+        // Tanh-GELU differs by about 9.8e-5 at these inputs.
+        for (actual, expected) in output.iter().zip([-0.045500264f32, 1.9544997]) {
+            assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
+        }
+        Ok(())
+    }
+
+    fn uniform_attention(device: &Device, dtype: DType) -> Result<ModernBertAttention> {
+        // Q = K = 0, V = input, Wo = identity: expected output is the
+        // arithmetic mean over precisely the keys allowed by the mask.
+        let mut weights = vec![0f32; 12 * 4];
+        for i in 0..4 {
+            weights[(8 + i) * 4 + i] = 1.;
+        }
+        Ok(ModernBertAttention {
+            wqkv: Linear::new(
+                Tensor::from_vec(weights, (12, 4), device)?.to_dtype(dtype)?,
+                None,
+                None,
+            ),
+            wo: Linear::new(Tensor::eye(4, dtype, device)?, None, None),
+            num_attention_heads: 1,
+            attention_head_size: 4,
+            softmax_scale: 0.5,
+            span: tracing::span!(tracing::Level::TRACE, "test_attention"),
+        })
+    }
+
+    fn masked_attention(
+        attention: &ModernBertAttention,
+        device: &Device,
+        dtype: DType,
+        lengths: &[usize],
+        local: bool,
+    ) -> Result<Vec<Vec<Vec<f32>>>> {
+        let width = *lengths.iter().max().unwrap();
+        let mut hidden = vec![];
+        let mut mask = vec![];
+        let mut expected = vec![];
+        for (batch, &length) in lengths.iter().enumerate() {
+            let values: Vec<f32> = (0..width)
+                .map(|i| {
+                    if i < length {
+                        ((i + batch) % 7) as f32 / 8.
+                    } else {
+                        100.
+                    }
+                })
+                .collect();
+            for &value in &values {
+                hidden.extend([value; 4]);
+            }
+            for query in 0..width {
+                let allowed: Vec<usize> = (0..length)
+                    .filter(|&key| !local || query.abs_diff(key) <= 64)
+                    .collect();
+                assert!(!allowed.is_empty());
+                expected.push(
+                    allowed.iter().map(|&key| values[key]).sum::<f32>() / allowed.len() as f32,
+                );
+                mask.extend((0..width).map(|key| {
+                    if allowed.contains(&key) {
+                        0f32
+                    } else {
+                        -65504.
+                    }
+                }));
+            }
+        }
+        let shape = (lengths.len(), 1, width, width);
+        let mask = Tensor::from_vec(mask.clone(), shape, device)?.to_dtype(dtype)?;
+        let original_mask = mask.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+        let hidden =
+            Tensor::from_vec(hidden, (lengths.len(), width, 4), device)?.to_dtype(dtype)?;
+        let rotary_shape = (lengths.len(), 1, width, 4);
+        let rotary = (
+            Tensor::ones(rotary_shape, dtype, device)?,
+            Tensor::zeros(rotary_shape, dtype, device)?,
+        );
+        let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+        let mut result = vec![];
+        // Reuse the same mask as multiple encoder layers do. Both calls must
+        // honor it, and neither may mutate the caller's mask storage.
+        for _ in 0..2 {
+            result = attention
+                .forward(&hidden, &mask, &rotary)?
+                .to_dtype(DType::F32)?
+                .to_vec3::<f32>()?;
+            assert_eq!(
+                mask.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?,
+                original_mask
+            );
+            for (index, token) in result.iter().flatten().enumerate() {
+                for &actual in token {
+                    assert!(
+                        (actual - expected[index]).abs() < tolerance,
+                        "local={local}, token={index}: {actual} != {}",
+                        expected[index]
+                    );
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn check_masks(device: &Device, dtype: DType) -> Result<()> {
+        let attention = uniform_attention(device, dtype)?;
+        for local in [false, true] {
+            // Cross the 128-token local window and introduce unequal-length
+            // batch padding. The first sequence must match its solo result.
+            let batched = masked_attention(&attention, device, dtype, &[133, 160], local)?;
+            let solo = masked_attention(&attention, device, dtype, &[133], local)?;
+            let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+            for (a, b) in batched[0]
+                .iter()
+                .take(133)
+                .flatten()
+                .zip(solo[0].iter().flatten())
+            {
+                assert!((a - b).abs() < tolerance, "batched {a} != solo {b}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn modernbert_exact_gelu_cpu() -> Result<()> {
+        check_exact_gelu(&Device::Cpu)
+    }
+
+    #[test]
+    fn modernbert_padding_locality_and_mask_reuse_cpu() -> Result<()> {
+        check_masks(&Device::Cpu, DType::F32)
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn modernbert_exact_gelu_and_attention_masks_cuda() -> Result<()> {
+        // Deliberately fail if CUDA/cuBLASLt is unavailable: this test must not
+        // silently pass through the CPU fallback it is intended to distinguish.
+        let device = Device::new_cuda(0)?;
+        assert!(get_cublas_lt_wrapper().is_some());
+        check_exact_gelu(&device)?;
+        check_masks(&device, DType::F32)?;
+        check_masks(&device, DType::BF16)
     }
 }
