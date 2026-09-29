@@ -921,7 +921,25 @@ impl Gemma4Model {
             && self.full_head_dim == 512
             && crate::flash_attn::runtime_compute_cap(&self.device)? == 90;
         #[cfg(feature = "fa4")]
-        let prefix_attention = prefix_attention && !crate::fa4_native::enabled()?;
+        let prefix_attention = prefix_attention
+            && !(crate::fa4_native::enabled()?
+                && self.layers.iter().any(|layer| {
+                    let a = &layer.attention;
+                    let (left, right) = if a.attention_type == AttentionType::Sliding {
+                        (Some(a.sliding_window.saturating_sub(1)), Some(0))
+                    } else {
+                        (None, None)
+                    };
+                    crate::fa4_native::supported_mask(
+                        a.head_dim,
+                        a.num_attention_heads,
+                        a.num_key_value_heads,
+                        causal,
+                        left,
+                        right,
+                    )
+                    .is_some()
+                }));
         let query_plan = if prefix_attention {
             QueryPlan::new(batch, &self.device)?
         } else {
