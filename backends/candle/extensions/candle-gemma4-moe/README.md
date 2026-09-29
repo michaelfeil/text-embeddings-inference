@@ -111,7 +111,9 @@ model implementation: Gated DeltaNet layers, periodic gated full attention with
 partial RoPE, 256 routed experts/top-8, and a sigmoid-gated shared expert. The
 initial target is the BF16 text decoder of `Qwen/Qwen3.5-35B-A3B` on CUDA with
 FlashAttention. Vision, MTP, quantized weights and scaled RoPE are not implemented.
-Linear key/value head dimensions must be 128; unsupported configurations fail
+The embedding path is causal and has no learned output projection; checkpoints
+requesting bidirectional attention or an output projection are rejected, including
+flags in wrapped text configurations. Linear key/value head dimensions must be 128; unsupported configurations fail
 at loading. Each visible GPU holds an independent full model.
 
 Linear attention uses a stateless variable-length prefill kernel with FP32
