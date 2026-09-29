@@ -137,7 +137,6 @@ struct MistralMLP {
     down_proj: MlpLinear,
 
     act: HiddenAct,
-    intermediate_size: usize,
 
     span: tracing::Span,
 }
@@ -165,7 +164,6 @@ impl MistralMLP {
         Ok(Self {
             gate_up_proj,
             down_proj,
-            intermediate_size,
             act: config.hidden_act.clone(),
             span: tracing::span!(tracing::Level::TRACE, "mlp"),
         })
@@ -175,11 +173,8 @@ impl MistralMLP {
         let _enter = self.span.enter();
 
         let gate_up_states = self.gate_up_proj.forward(hidden_states)?;
-        let gate_states = gate_up_states.narrow(1, 0, self.intermediate_size)?;
-        let up_states = gate_up_states.narrow(1, self.intermediate_size, self.intermediate_size)?;
-
-        let gate_states = self.act.forward(&gate_states)?;
-        self.down_proj.forward(&(gate_states * up_states)?)
+        let activated = crate::layers::gated_activation(&gate_up_states, Some(&self.act))?;
+        self.down_proj.forward(&activated)
     }
 }
 
