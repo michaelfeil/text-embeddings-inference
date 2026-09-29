@@ -8,15 +8,15 @@ thread_local! {
     static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
 }
 
-// Match the default automatic selection on mf/faster-tei; only qualified shapes dispatch.
+// This branch retains FA2 by default; explicit auto uses only qualified shapes.
 pub(crate) fn enabled() -> Result<bool> {
     parse_backend(std::env::var("ATTN_BACKEND"))
 }
 
 fn parse_backend(value: std::result::Result<String, std::env::VarError>) -> Result<bool> {
     match value.as_deref() {
-        Ok("auto" | "fa4") | Err(std::env::VarError::NotPresent) => Ok(true),
-        Ok("fa2") => Ok(false),
+        Ok("auto" | "fa4") => Ok(true),
+        Ok("fa2") | Err(std::env::VarError::NotPresent) => Ok(false),
         _ => candle::bail!("ATTN_BACKEND must be auto, fa2 or fa4"),
     }
 }
@@ -32,6 +32,27 @@ impl Drop for BatchGuard {
             BATCH.with(|batch| *batch.borrow_mut() = previous);
         }
     }
+}
+
+// The packaged kernels only support these head widths. Unsupported models
+// must stay on FA2 even when FA4 is requested, including their FA2 optimizations.
+fn head_dim_allowed(dim: usize) -> bool {
+    matches!(dim, 64 | 128)
+}
+
+pub(crate) fn prepare_batch_for_head_dims(
+    offsets: &Tensor,
+    host_offsets: &[u32],
+    head_dims: &[usize],
+) -> Result<BatchGuard> {
+    // Validate configuration even for models that cannot use FA4.
+    if !enabled()? || !head_dims.iter().copied().any(head_dim_allowed) {
+        return Ok(BatchGuard {
+            previous: None,
+            _thread: std::marker::PhantomData,
+        });
+    }
+    prepare_batch(offsets, host_offsets)
 }
 
 pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<BatchGuard> {
@@ -128,7 +149,7 @@ pub(crate) fn try_forward(
 }
 
 // Keep model-level optimization decisions consistent with actual FA4 dispatch.
-pub(crate) fn supported_mask(
+fn supported_mask(
     d: usize,
     h: usize,
     hk: usize,
@@ -136,7 +157,7 @@ pub(crate) fn supported_mask(
     left: Option<usize>,
     right: Option<usize>,
 ) -> Option<Mask> {
-    if h == 0 || hk == 0 {
+    if !head_dim_allowed(d) || h == 0 || hk == 0 {
         return None;
     }
     match (d, h == hk, causal, left, right) {
@@ -154,6 +175,8 @@ mod tests {
 
     #[test]
     fn gemma4_shapes_fall_back_to_fa2() {
+        assert!(!head_dim_allowed(256));
+        assert!(!head_dim_allowed(512));
         for (heads, kv_heads) in [(8, 1), (8, 2), (16, 8)] {
             assert!(supported_mask(256, heads, kv_heads, true, Some(1023), Some(0)).is_none());
             assert!(supported_mask(512, heads, kv_heads, true, None, None).is_none());
@@ -163,7 +186,7 @@ mod tests {
 
     #[test]
     fn backend_selection_supports_validated_auto() {
-        assert!(parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
+        assert!(!parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
         assert!(parse_backend(Ok("auto".into())).unwrap());
         assert!(!parse_backend(Ok("fa2".into())).unwrap());
         assert!(parse_backend(Ok("fa4".into())).unwrap());
