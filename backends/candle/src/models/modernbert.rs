@@ -1039,3 +1039,7 @@ mod tests {
         check_masks(&device, DType::BF16)
     }
 }
+
+#[cfg(all(test, feature = "cuda"))]
+#[path = "modernbert_benchmark.rs"]
+mod benchmark;
