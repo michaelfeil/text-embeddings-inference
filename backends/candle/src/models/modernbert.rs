@@ -953,7 +953,14 @@ mod tests {
             Tensor::ones(rotary_shape, dtype, device)?,
             Tensor::zeros(rotary_shape, dtype, device)?,
         );
-        let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+        // cuBLASLt may use TF32 for F32 matmuls; keep a tighter CPU oracle.
+        let tolerance = match (dtype, device) {
+            (DType::F32, Device::Cpu) => 2e-6,
+            (DType::F32, _) if std::env::var("NVIDIA_TF32_OVERRIDE").as_deref() == Ok("0") => 2e-6,
+            // TF32's ten-bit mantissa bounds these outputs (all below 0.5).
+            (DType::F32, _) => 5e-4,
+            _ => 0.004,
+        };
         let mut result = vec![];
         // Reuse the same mask as multiple encoder layers do. Both calls must
         // honor it, and neither may mutate the caller's mask storage.
@@ -986,7 +993,16 @@ mod tests {
             // batch padding. The first sequence must match its solo result.
             let batched = masked_attention(&attention, device, dtype, &[133, 160], local)?;
             let solo = masked_attention(&attention, device, dtype, &[133], local)?;
-            let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+            // cuBLASLt may use TF32 for F32 matmuls; keep a tighter CPU oracle.
+            let tolerance = match (dtype, device) {
+                (DType::F32, Device::Cpu) => 2e-6,
+                (DType::F32, _) if std::env::var("NVIDIA_TF32_OVERRIDE").as_deref() == Ok("0") => {
+                    2e-6
+                }
+                // TF32's ten-bit mantissa bounds these outputs (all below 0.5).
+                (DType::F32, _) => 5e-4,
+                _ => 0.004,
+            };
             for (a, b) in batched[0]
                 .iter()
                 .take(133)
