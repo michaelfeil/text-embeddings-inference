@@ -110,7 +110,27 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
             markers: serde_json::from_value(seq["markers"].clone())?,
         });
     }
-    let outputs = model.decide(batch, inputs)?;
+    let outputs = model.decide(batch.clone(), inputs.clone())?;
+    // Padding in a mixed-length queue batch must not change a question's scores.
+    // On CUDA this also catches accidentally using the attention mask as a
+    // cuBLASLt output buffer (beta=0), which ignores and overwrites the mask.
+    for (i, output) in outputs.iter().enumerate() {
+        let start = batch.cumulative_seq_lengths[i] as usize;
+        let end = batch.cumulative_seq_lengths[i + 1] as usize;
+        let mut single = batch.clone();
+        single.input_ids = batch.input_ids[start..end].to_vec();
+        single.position_ids = batch.position_ids[start..end].to_vec();
+        single.token_type_ids = batch.token_type_ids[start..end].to_vec();
+        single.cumulative_seq_lengths = vec![0, (end - start) as u32];
+        single.max_length = (end - start) as u32;
+        let alone = model.decide(single, vec![inputs[i].clone()])?;
+        for (batched, single) in output.logits.iter().zip(&alone[0].logits) {
+            assert!(
+                (batched - single).abs() < 0.001,
+                "batch: {batched}, single: {single}"
+            );
+        }
+    }
     assert_eq!(outputs.len(), sequences.len());
     for (output, seq) in outputs.iter().zip(sequences) {
         let expected: Vec<f32> = serde_json::from_value(seq["logits"].clone())?;

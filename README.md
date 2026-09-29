@@ -495,7 +495,7 @@ curl http://localhost:3000/v1/systemone \
 ```
 
 Answers contain the selected choice, an expected zero-based score, or a `noul`
-probability of true, plus calibrated `answer_confidence` and the action head's
+probability of true, plus temperature-scaled `answer_confidence` and the action head's
 `act_probability`. Choice/score answers also include option probabilities and
 entropy-based `confidence`. Usage reports input tokens and zero output tokens.
 Option order follows the request JSON. `state` is either a plain text string or
@@ -519,6 +519,13 @@ Use the existing `--max-batch-tokens`, `--max-batch-requests`,
 For a local checkpoint, retain `rl_agent_config.json`, `encoder/config.json`,
 `tokenizer/tokenizer.json`, and `model.safetensors` in their original layout.
 Laya requires the Candle backend and the HTTP API.
+
+Unknown request/question fields are rejected. Execution extensions such as
+`think`, `mode`, `depends_on`, `ask_if`, and `alone` are not implemented.
+Temperatures are clamped to [0.5, 5], matching upstream Laya. The published
+checkpoint's `choice:11+` temperature is outside this range; confidence for that
+bucket is not verified as calibrated. See [verification and benchmarks](docs/laya-verification.md)
+for measured parity, labelled accuracy, and latency limitations.
 
 ### Using SPLADE pooling
 

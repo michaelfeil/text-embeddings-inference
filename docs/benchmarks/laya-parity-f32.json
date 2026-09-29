@@ -1,0 +1,875 @@
+{
+  "reference_commit": "9d955671415fc19f069b9cc998928075c1f255ec",
+  "torch": "2.14.0+cpu",
+  "transformers": "5.17.0",
+  "reference_device": "cpu",
+  "reference_dtype": "torch.float32",
+  "checkpoint_config_sha256": "ebf0cd524d92342a6be5e48e9fca3d7c2babfb5a56ccd79d2171ef5d8c7f7be8",
+  "tolerance": 0.01,
+  "cases": [
+    {
+      "name": "mixed_types",
+      "max_numeric_delta": 0.0,
+      "decisions": {
+        "team": "billing",
+        "urgency": "2",
+        "refund": true
+      },
+      "usage": {
+        "input_tokens": 114,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "I was billed twice. Please refund the extra charge.",
+        "questions": {
+          "team": {
+            "type": "choice",
+            "instructions": "Which team?",
+            "criteria": {
+              "billing": "billing and payments",
+              "support": "technical support"
+            }
+          },
+          "urgency": {
+            "type": "score",
+            "instructions": "How urgent is this request?",
+            "criteria": [
+              "low",
+              "medium",
+              "high"
+            ]
+          },
+          "refund": {
+            "type": "noul",
+            "instructions": "The customer requests a refund."
+          }
+        }
+      },
+      "reference_answers": {
+        "team": {
+          "type": "choice",
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.8161,
+            "support": 0.1839
+          },
+          "confidence": 0.3114,
+          "answer_confidence": 0.8161,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "score": 1.6463,
+          "legend": {
+            "0": "low",
+            "1": "medium",
+            "2": "high"
+          },
+          "probabilities": {
+            "0": 0.0746,
+            "1": 0.2044,
+            "2": 0.7209
+          },
+          "confidence": 0.3136,
+          "answer_confidence": 0.7209,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "refund": {
+          "type": "noul",
+          "noul": 0.7239,
+          "confidence": 0.7239,
+          "answer_confidence": 0.7239,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "team": {
+          "type": "choice",
+          "confidence": 0.3114,
+          "answer_confidence": 0.8161,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.8161,
+            "support": 0.1839
+          }
+        },
+        "urgency": {
+          "type": "score",
+          "confidence": 0.3136,
+          "answer_confidence": 0.7209,
+          "action": {
+            "act_probability": 1.0
+          },
+          "score": 1.6463,
+          "legend": {
+            "0": "low",
+            "1": "medium",
+            "2": "high"
+          },
+          "probabilities": {
+            "0": 0.0746,
+            "1": 0.2044,
+            "2": 0.7209
+          }
+        },
+        "refund": {
+          "type": "noul",
+          "confidence": 0.7239,
+          "answer_confidence": 0.7239,
+          "action": {
+            "act_probability": 1.0
+          },
+          "noul": 0.7239
+        }
+      }
+    },
+    {
+      "name": "empty_questions",
+      "max_numeric_delta": 0.0,
+      "decisions": {},
+      "usage": {
+        "input_tokens": 0,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "",
+        "questions": {}
+      },
+      "reference_answers": {},
+      "candle_answers": {}
+    },
+    {
+      "name": "unicode_mask",
+      "max_numeric_delta": 0.00040000000000001146,
+      "decisions": {
+        "refund": true,
+        "team": "billing"
+      },
+      "usage": {
+        "input_tokens": 101,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "Café: payé deux fois [MASK]. 请退款。",
+        "questions": {
+          "refund": {
+            "type": "noul",
+            "instructions": "Is a refund [MASK] requested?"
+          },
+          "team": {
+            "type": "choice",
+            "instructions": "Select the team.",
+            "criteria": {
+              "billing": {
+                "purpose": "paiements",
+                "flags": [
+                  false,
+                  0
+                ]
+              },
+              "support": null,
+              "sales": ""
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "refund": {
+          "type": "noul",
+          "noul": 0.6496,
+          "confidence": 0.6496,
+          "answer_confidence": 0.6496,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "team": {
+          "type": "choice",
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.7107,
+            "support": 0.1762,
+            "sales": 0.113
+          },
+          "confidence": 0.2763,
+          "answer_confidence": 0.7107,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "refund": {
+          "type": "noul",
+          "confidence": 0.6495,
+          "answer_confidence": 0.6495,
+          "action": {
+            "act_probability": 1.0
+          },
+          "noul": 0.6495
+        },
+        "team": {
+          "type": "choice",
+          "confidence": 0.2767,
+          "answer_confidence": 0.711,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.711,
+            "support": 0.176,
+            "sales": 0.113
+          }
+        }
+      }
+    },
+    {
+      "name": "custom_noul",
+      "max_numeric_delta": 0.0,
+      "decisions": {
+        "healthy": true
+      },
+      "usage": {
+        "input_tokens": 36,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "The service is healthy.",
+        "questions": {
+          "healthy": {
+            "type": "noul",
+            "instructions": "Is the service healthy?",
+            "labels": {
+              "false": " N ",
+              "true": " Y "
+            },
+            "criteria": {
+              "false": {
+                "status": "down"
+              },
+              "true": {
+                "status": "up"
+              }
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "healthy": {
+          "type": "noul",
+          "noul": 0.7638,
+          "confidence": 0.7638,
+          "answer_confidence": 0.7638,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "healthy": {
+          "type": "noul",
+          "confidence": 0.7638,
+          "answer_confidence": 0.7638,
+          "action": {
+            "act_probability": 1.0
+          },
+          "noul": 0.7638
+        }
+      }
+    },
+    {
+      "name": "score_levels",
+      "max_numeric_delta": 0.00010000000000021103,
+      "decisions": {
+        "severity": "3"
+      },
+      "usage": {
+        "input_tokens": 46,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "The outage blocks all payments.",
+        "questions": {
+          "severity": {
+            "type": "score",
+            "instructions": "How severe is the outage?",
+            "criteria": [
+              "none",
+              "minor",
+              "moderate",
+              "major",
+              "critical"
+            ]
+          }
+        }
+      },
+      "reference_answers": {
+        "severity": {
+          "type": "score",
+          "score": 2.5945,
+          "legend": {
+            "0": "none",
+            "1": "minor",
+            "2": "moderate",
+            "3": "major",
+            "4": "critical"
+          },
+          "probabilities": {
+            "0": 0.0268,
+            "1": 0.1334,
+            "2": 0.2352,
+            "3": 0.4279,
+            "4": 0.1768
+          },
+          "confidence": 0.1452,
+          "answer_confidence": 0.4279,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "severity": {
+          "type": "score",
+          "confidence": 0.1452,
+          "answer_confidence": 0.4278,
+          "action": {
+            "act_probability": 1.0
+          },
+          "score": 2.5944,
+          "legend": {
+            "0": "none",
+            "1": "minor",
+            "2": "moderate",
+            "3": "major",
+            "4": "critical"
+          },
+          "probabilities": {
+            "0": 0.0268,
+            "1": 0.1334,
+            "2": 0.2352,
+            "3": 0.4278,
+            "4": 0.1768
+          }
+        }
+      }
+    },
+    {
+      "name": "choice_2",
+      "max_numeric_delta": 0.0,
+      "decisions": {
+        "route": "topic_0"
+      },
+      "usage": {
+        "input_tokens": 38,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "Route this request about topic 3.",
+        "questions": {
+          "route": {
+            "type": "choice",
+            "instructions": "Which topic matches?",
+            "criteria": {
+              "topic_0": "Requests about topic 0",
+              "topic_1": "Requests about topic 1"
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "route": {
+          "type": "choice",
+          "choice": "topic_0",
+          "probabilities": {
+            "topic_0": 0.5398,
+            "topic_1": 0.4602
+          },
+          "confidence": 0.0046,
+          "answer_confidence": 0.5398,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "route": {
+          "type": "choice",
+          "confidence": 0.0046,
+          "answer_confidence": 0.5398,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "topic_0",
+          "probabilities": {
+            "topic_0": 0.5398,
+            "topic_1": 0.4602
+          }
+        }
+      }
+    },
+    {
+      "name": "choice_5",
+      "max_numeric_delta": 0.0,
+      "decisions": {
+        "route": "topic_3"
+      },
+      "usage": {
+        "input_tokens": 68,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "Route this request about topic 3.",
+        "questions": {
+          "route": {
+            "type": "choice",
+            "instructions": "Which topic matches?",
+            "criteria": {
+              "topic_0": "Requests about topic 0",
+              "topic_1": "Requests about topic 1",
+              "topic_2": "Requests about topic 2",
+              "topic_3": "Requests about topic 3",
+              "topic_4": "Requests about topic 4"
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "route": {
+          "type": "choice",
+          "choice": "topic_3",
+          "probabilities": {
+            "topic_0": 0.1518,
+            "topic_1": 0.1615,
+            "topic_2": 0.1831,
+            "topic_3": 0.4579,
+            "topic_4": 0.0457
+          },
+          "confidence": 0.1363,
+          "answer_confidence": 0.4579,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "route": {
+          "type": "choice",
+          "confidence": 0.1363,
+          "answer_confidence": 0.4579,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "topic_3",
+          "probabilities": {
+            "topic_0": 0.1518,
+            "topic_1": 0.1615,
+            "topic_2": 0.1831,
+            "topic_3": 0.4579,
+            "topic_4": 0.0457
+          }
+        }
+      }
+    },
+    {
+      "name": "choice_8",
+      "max_numeric_delta": 0.0010000000000000009,
+      "decisions": {
+        "route": "topic_3"
+      },
+      "usage": {
+        "input_tokens": 98,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "Route this request about topic 3.",
+        "questions": {
+          "route": {
+            "type": "choice",
+            "instructions": "Which topic matches?",
+            "criteria": {
+              "topic_0": "Requests about topic 0",
+              "topic_1": "Requests about topic 1",
+              "topic_2": "Requests about topic 2",
+              "topic_3": "Requests about topic 3",
+              "topic_4": "Requests about topic 4",
+              "topic_5": "Requests about topic 5",
+              "topic_6": "Requests about topic 6",
+              "topic_7": "Requests about topic 7"
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "route": {
+          "type": "choice",
+          "choice": "topic_3",
+          "probabilities": {
+            "topic_0": 0.0279,
+            "topic_1": 0.0352,
+            "topic_2": 0.068,
+            "topic_3": 0.8282,
+            "topic_4": 0.0109,
+            "topic_5": 0.0085,
+            "topic_6": 0.0102,
+            "topic_7": 0.0112
+          },
+          "confidence": 0.6426,
+          "answer_confidence": 0.8282,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "route": {
+          "type": "choice",
+          "confidence": 0.6436,
+          "answer_confidence": 0.8289,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "topic_3",
+          "probabilities": {
+            "topic_0": 0.0277,
+            "topic_1": 0.035,
+            "topic_2": 0.0677,
+            "topic_3": 0.8289,
+            "topic_4": 0.0109,
+            "topic_5": 0.0085,
+            "topic_6": 0.0102,
+            "topic_7": 0.0112
+          }
+        }
+      }
+    },
+    {
+      "name": "choice_12",
+      "max_numeric_delta": 0.0,
+      "decisions": {
+        "route": "topic_3"
+      },
+      "usage": {
+        "input_tokens": 138,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "Route this request about topic 3.",
+        "questions": {
+          "route": {
+            "type": "choice",
+            "instructions": "Which topic matches?",
+            "criteria": {
+              "topic_0": "Requests about topic 0",
+              "topic_1": "Requests about topic 1",
+              "topic_2": "Requests about topic 2",
+              "topic_3": "Requests about topic 3",
+              "topic_4": "Requests about topic 4",
+              "topic_5": "Requests about topic 5",
+              "topic_6": "Requests about topic 6",
+              "topic_7": "Requests about topic 7",
+              "topic_8": "Requests about topic 8",
+              "topic_9": "Requests about topic 9",
+              "topic_10": "Requests about topic 10",
+              "topic_11": "Requests about topic 11"
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "route": {
+          "type": "choice",
+          "choice": "topic_3",
+          "probabilities": {
+            "topic_0": 0.0005,
+            "topic_1": 0.0007,
+            "topic_2": 0.0028,
+            "topic_3": 0.992,
+            "topic_4": 0.0002,
+            "topic_5": 0.0001,
+            "topic_6": 0.0006,
+            "topic_7": 0.0005,
+            "topic_8": 0.0014,
+            "topic_9": 0.0003,
+            "topic_10": 0.0003,
+            "topic_11": 0.0005
+          },
+          "confidence": 0.9748,
+          "answer_confidence": 0.992,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "route": {
+          "type": "choice",
+          "confidence": 0.9748,
+          "answer_confidence": 0.992,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "topic_3",
+          "probabilities": {
+            "topic_0": 0.0005,
+            "topic_1": 0.0007,
+            "topic_2": 0.0028,
+            "topic_3": 0.992,
+            "topic_4": 0.0002,
+            "topic_5": 0.0001,
+            "topic_6": 0.0006,
+            "topic_7": 0.0005,
+            "topic_8": 0.0014,
+            "topic_9": 0.0003,
+            "topic_10": 0.0003,
+            "topic_11": 0.0005
+          }
+        }
+      }
+    },
+    {
+      "name": "truncated_128",
+      "max_numeric_delta": 0.00039999999999995595,
+      "decisions": {
+        "refund": true
+      },
+      "usage": {
+        "input_tokens": 128,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. ",
+        "max_len": 128,
+        "head_max_len": 64,
+        "questions": {
+          "refund": {
+            "type": "noul",
+            "instructions": "Does the customer request a refund?"
+          }
+        }
+      },
+      "reference_answers": {
+        "refund": {
+          "type": "noul",
+          "noul": 0.7833,
+          "confidence": 0.7833,
+          "answer_confidence": 0.7833,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "refund": {
+          "type": "noul",
+          "confidence": 0.7829,
+          "answer_confidence": 0.7829,
+          "action": {
+            "act_probability": 1.0
+          },
+          "noul": 0.7829
+        }
+      }
+    },
+    {
+      "name": "truncated_512",
+      "max_numeric_delta": 0.0,
+      "decisions": {
+        "refund": true
+      },
+      "usage": {
+        "input_tokens": 512,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. ",
+        "max_len": 512,
+        "head_max_len": 64,
+        "questions": {
+          "refund": {
+            "type": "noul",
+            "instructions": "Does the customer request a refund?"
+          }
+        }
+      },
+      "reference_answers": {
+        "refund": {
+          "type": "noul",
+          "noul": 0.76,
+          "confidence": 0.76,
+          "answer_confidence": 0.76,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "refund": {
+          "type": "noul",
+          "confidence": 0.76,
+          "answer_confidence": 0.76,
+          "action": {
+            "act_probability": 1.0
+          },
+          "noul": 0.76
+        }
+      }
+    },
+    {
+      "name": "truncated_1024",
+      "max_numeric_delta": 9.999999999998899e-05,
+      "decisions": {
+        "refund": true
+      },
+      "usage": {
+        "input_tokens": 1024,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. The customer requests a refund. ",
+        "max_len": 1024,
+        "head_max_len": 64,
+        "questions": {
+          "refund": {
+            "type": "noul",
+            "instructions": "Does the customer request a refund?"
+          }
+        }
+      },
+      "reference_answers": {
+        "refund": {
+          "type": "noul",
+          "noul": 0.7374,
+          "confidence": 0.7374,
+          "answer_confidence": 0.7374,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "refund": {
+          "type": "noul",
+          "confidence": 0.7375,
+          "answer_confidence": 0.7375,
+          "action": {
+            "act_probability": 1.0
+          },
+          "noul": 0.7375
+        }
+      }
+    },
+    {
+      "name": "reordered_options",
+      "max_numeric_delta": 0.00040000000000001146,
+      "decisions": {
+        "a": "billing",
+        "b": "billing"
+      },
+      "usage": {
+        "input_tokens": 48,
+        "output_tokens": 0
+      },
+      "request": {
+        "state": "I need a refund.",
+        "questions": {
+          "a": {
+            "type": "choice",
+            "instructions": "Which team?",
+            "criteria": {
+              "billing": "refunds",
+              "tech": "bugs"
+            }
+          },
+          "b": {
+            "type": "choice",
+            "instructions": "Which team?",
+            "criteria": {
+              "tech": "bugs",
+              "billing": "refunds"
+            }
+          }
+        }
+      },
+      "reference_answers": {
+        "a": {
+          "type": "choice",
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.6984,
+            "tech": 0.3016
+          },
+          "confidence": 0.1168,
+          "answer_confidence": 0.6984,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "b": {
+          "type": "choice",
+          "choice": "billing",
+          "probabilities": {
+            "tech": 0.3421,
+            "billing": 0.6579
+          },
+          "confidence": 0.0732,
+          "answer_confidence": 0.6579,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "candle_answers": {
+        "a": {
+          "type": "choice",
+          "confidence": 0.117,
+          "answer_confidence": 0.6986,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "billing",
+          "probabilities": {
+            "billing": 0.6986,
+            "tech": 0.3014
+          }
+        },
+        "b": {
+          "type": "choice",
+          "confidence": 0.0736,
+          "answer_confidence": 0.6583,
+          "action": {
+            "act_probability": 1.0
+          },
+          "choice": "billing",
+          "probabilities": {
+            "tech": 0.3417,
+            "billing": 0.6583
+          }
+        }
+      }
+    }
+  ],
+  "server": {
+    "model": "convaiinnovations/laya-typed-decisions",
+    "model_revision": "1a793eb568e6718f15941d08f85432581df534e3",
+    "build_base": "f20c9a54739e5f25069b5a335bef17058a10aadf",
+    "build_changes": "ModernBERT CUDA attention mask and exact GELU; Laya ReLU head and exact GELU scorer/action; strict request validation",
+    "source_sha256": {
+      "backends/candle/src/models/laya.rs": "1c5f05348a284fab2c58b5ead8a22bc919d448c3c3958fe0d21f3f316d69808e",
+      "backends/candle/src/models/modernbert.rs": "1f1e42e179b227aa9e3b6a301d27dffb19124795d9f037f41030e4af36fdda12",
+      "router/src/http/systemone.rs": "831ba1b7ddc4473431c30d07e1461bf1c60697fbaf4679dbe717fb66b003490f"
+    },
+    "device": "NVIDIA H100 80GB HBM3 CUDA",
+    "dtype": "f32"
+  }
+}

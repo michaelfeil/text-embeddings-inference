@@ -152,7 +152,7 @@ impl HeadLayer {
         let ff = self
             .linear1
             .forward(&self.norm2.forward(&hidden, None)?)?
-            .gelu()?;
+            .relu()?;
         hidden + self.linear2.forward(&ff)?
     }
 }
@@ -292,7 +292,7 @@ impl LayaModel {
                 &self
                     .scorer_in
                     .forward(&self.scorer_norm.forward(&selected, None)?)?
-                    .gelu()?,
+                    .gelu_erf()?,
             )?
             .to_dtype(DType::F32)?
             .reshape(markers.len())?
@@ -320,7 +320,7 @@ impl LayaModel {
         let action = Tensor::cat(&[pooled, features], 1)?;
         let action = self
             .action_out
-            .forward(&self.action_in.forward(&action)?.gelu()?)?
+            .forward(&self.action_in.forward(&action)?.gelu_erf()?)?
             .to_dtype(DType::F32)?;
         let action = candle_nn::ops::softmax_last_dim(&action)?.to_vec2::<f32>()?[0][0];
         Ok(LayaOutput {

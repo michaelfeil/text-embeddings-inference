@@ -18,6 +18,7 @@ use text_embeddings_core::{infer::Infer, tokenization::ValidEncoding};
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SystemOneRequest {
     pub state: SystemOneInput,
     pub questions: Map<String, Value>,
@@ -67,6 +68,23 @@ impl SystemOne {
             config.max_len > 0 && config.head_max_len > 0,
             "Invalid Laya token budgets"
         );
+        for (name, temperature) in config
+            .temperature
+            .iter()
+            .enumerate()
+            .map(|(i, t)| (format!("temperature[{i}]"), t))
+            .chain(
+                config
+                    .temperature_by_options
+                    .iter()
+                    .map(|(key, t)| (key.clone(), t)),
+            )
+        {
+            if !temperature.is_finite() || !(0.5..=5.0).contains(temperature) {
+                tracing::warn!(bucket = %name, temperature = %temperature,
+                    "Laya temperature will be clamped to [0.5, 5] or replaced with 1; calibration for this bucket is not verified");
+            }
+        }
         tokenizer.with_padding(None);
         tokenizer
             .with_truncation(None)
@@ -140,6 +158,15 @@ impl SystemOne {
             .questions
             .into_iter()
             .map(|(id, q)| {
+                let fields = q.as_object().ok_or("Each question must be an object")?;
+                if let Some(field) = fields.keys().find(|key| {
+                    !matches!(
+                        key.as_str(),
+                        "type" | "instructions" | "criteria" | "labels"
+                    )
+                }) {
+                    return Err(format!("Question {id}: unsupported field {field}"));
+                }
                 let kind = q
                     .get("type")
                     .and_then(Value::as_str)
@@ -598,6 +625,32 @@ mod tests {
             render(&value),
             r#"{"z": "a,b:c", "a": ["é", {"x": false}]}"#
         );
+    }
+
+    #[test]
+    fn unsupported_execution_semantics_are_not_silently_ignored() {
+        for (field, value) in [
+            ("think", json!(64)),
+            ("messages", json!([])),
+            ("mode", json!("joint")),
+        ] {
+            let mut request = json!({"state":"hello", "questions":{}});
+            request[field] = value;
+            assert!(serde_json::from_value::<SystemOneRequest>(request).is_err());
+        }
+        for (field, value) in [
+            ("depends_on", json!(["first"])),
+            ("ask_if", json!({"first":[true]})),
+            ("alone", json!(true)),
+        ] {
+            let mut request = json!({"state":"hello", "questions":{"second":{"type":"noul","instructions":"Is it true?"}}});
+            request["questions"]["second"][field] = value;
+            let err = service()
+                .prepare(serde_json::from_value(request).unwrap())
+                .err()
+                .unwrap();
+            assert!(err.contains(field), "{err}");
+        }
     }
 
     #[test]
