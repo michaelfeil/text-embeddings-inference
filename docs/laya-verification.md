@@ -16,7 +16,10 @@ The ModernBERT fixes are also proposed independently against `main`.
 ModernBERT intentionally uses the tanh approximation for `hidden_activation:
 "gelu"`. Explicit `gelu_new` and `gelu_pytorch_tanh` aliases also remain
 approximate. This applies to the shared ModernBERT encoder MLP, including dense
-and Flash Attention paths. The CUDA attention-mask fix remains in place.
+and Flash Attention paths. Eligible rank-two Flash Attention projections reuse
+the existing approximate gated-activation kernel; dense rank-three projections
+retain its ordinary-operation fallback. No new kernel or rank-three fusion is
+introduced here. The CUDA attention-mask fix remains in place.
 Laya's custom head still uses ReLU, with exact GELU in its scorer/action layers.
 
 This encoder policy deliberately differs from upstream Laya's exact GELU.

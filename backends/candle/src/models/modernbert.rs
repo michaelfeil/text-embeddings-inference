@@ -143,9 +143,18 @@ impl ModernBertMLP {
 
         let hidden_states = self.wi.forward(hidden_states)?;
 
-        // Keep the configured activation followed by its packed multiplicative gate.
-        let chunks = hidden_states.chunk(2, D::Minus1)?;
-        let gated = self.activation.forward(&chunks[0])?.mul(&chunks[1])?;
+        let gated = match self.activation {
+            ModernBertActivation::Gelu | ModernBertActivation::GeluApprox => {
+                // Reuse the existing approximation kernel for eligible rank-two
+                // Flash Attention projections. Dense rank-three inputs retain
+                // the helper's activation-plus-multiply fallback.
+                crate::layers::gated_activation(&hidden_states, Some(&HiddenAct::Gelu))?
+            }
+            _ => {
+                let chunks = hidden_states.chunk(2, D::Minus1)?;
+                self.activation.forward(&chunks[0])?.mul(&chunks[1])?
+            }
+        };
         self.wo.forward(&gated)
     }
 }
