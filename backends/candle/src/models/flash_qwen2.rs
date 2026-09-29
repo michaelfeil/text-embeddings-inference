@@ -1,11 +1,12 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
+use crate::layers::MlpLinear;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
 };
 use crate::models::{Model, Qwen2Config};
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen2Attention {
@@ -104,7 +105,7 @@ impl Qwen2Attention {
             self.num_key_value_heads,
         )?;
 
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
 
         // Expand Q, K, V to ORIGINAL layout for attention
         let q = compact_tensors.scatter_unfold(&q)?;
@@ -135,8 +136,8 @@ impl Qwen2Attention {
 }
 
 struct Qwen2MLP {
-    gate_up_proj: Linear,
-    down_proj: Linear,
+    gate_up_proj: MlpLinear,
+    down_proj: MlpLinear,
 
     act: HiddenAct,
 
@@ -144,7 +145,7 @@ struct Qwen2MLP {
 }
 
 impl Qwen2MLP {
-    pub fn load(vb: VarBuilder, config: &Qwen2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Qwen2Config, enable_fp8_dynamic: bool) -> Result<Self> {
         let intermediate_size = config.intermediate_size;
 
         let gate_proj_weight = vb
@@ -156,12 +157,12 @@ impl Qwen2MLP {
             .get((intermediate_size, config.hidden_size), "weight")?;
 
         let gate_up_proj_weight = Tensor::cat(&[&gate_proj_weight, &up_proj_weight], 0)?;
-        let gate_up_proj = Linear::new(gate_up_proj_weight, None, None);
+        let gate_up_proj = MlpLinear::new(gate_up_proj_weight, enable_fp8_dynamic)?;
 
         let down_proj_weight = vb
             .pp("down_proj")
             .get((config.hidden_size, intermediate_size), "weight")?;
-        let down_proj = Linear::new(down_proj_weight, None, None);
+        let down_proj = MlpLinear::new(down_proj_weight, enable_fp8_dynamic)?;
 
         Ok(Self {
             gate_up_proj,
@@ -175,10 +176,7 @@ impl Qwen2MLP {
         let _enter = self.span.enter();
 
         let gate_up_states = self.gate_up_proj.forward(hidden_states)?;
-        self.down_proj.forward(&crate::layers::gated_activation(
-            &gate_up_states,
-            Some(&self.act),
-        )?)
+        self.down_proj.forward_gated(&gate_up_states, &self.act)
     }
 }
 
@@ -192,9 +190,9 @@ struct Qwen2Layer {
 }
 
 impl Qwen2Layer {
-    pub fn load(vb: VarBuilder, config: &Qwen2Config) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &Qwen2Config, enable_fp8_dynamic: bool) -> Result<Self> {
         let attention = Qwen2Attention::load(vb.pp("self_attn"), config)?;
-        let mlp = Qwen2MLP::load(vb.pp("mlp"), config)?;
+        let mlp = Qwen2MLP::load(vb.pp("mlp"), config, enable_fp8_dynamic)?;
 
         let input_layer_norm = RMSNorm::load(
             vb.pp("input_layernorm"),
@@ -216,6 +214,7 @@ impl Qwen2Layer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
@@ -260,17 +259,16 @@ pub struct FlashQwen2Model {
 }
 
 impl FlashQwen2Model {
-    pub fn load(vb: VarBuilder, config: &Qwen2Config, model_type: ModelType) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashQwen2 requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashQwen2 requires DType::F16 or DType::BF16")
-        }
+    pub fn load(
+        vb: VarBuilder,
+        config: &Qwen2Config,
+        model_type: ModelType,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 candle::bail!("`classifier` model type is not supported for Qwen2")
             }
@@ -294,7 +292,9 @@ impl FlashQwen2Model {
         );
 
         let layers = (0..config.num_hidden_layers)
-            .map(|index| Qwen2Layer::load(vb.pp(format!("layers.{index}")), config))
+            .map(|index| {
+                Qwen2Layer::load(vb.pp(format!("layers.{index}")), config, enable_fp8_dynamic)
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
@@ -429,7 +429,10 @@ impl FlashQwen2Model {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 let shape = batch.input_ids.len();
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);

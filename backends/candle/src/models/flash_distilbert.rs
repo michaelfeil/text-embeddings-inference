@@ -4,7 +4,7 @@ use crate::models::distilbert::{
     DistilBertConfig, DistilBertEmbeddings, DistilBertMLP, DistilBertSpladeHead,
 };
 use crate::models::Model;
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
@@ -186,16 +186,10 @@ pub struct FlashDistilBertModel {
 
 impl FlashDistilBertModel {
     pub fn load(vb: VarBuilder, config: &DistilBertConfig, model_type: ModelType) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashDistilBert requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashDistilBert requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 candle::bail!("`classifier` model type is not supported for DistilBert")
             }
@@ -349,7 +343,10 @@ impl FlashDistilBertModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

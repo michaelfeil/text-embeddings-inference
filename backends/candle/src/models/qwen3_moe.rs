@@ -3,7 +3,7 @@ use crate::models::Qwen3Config;
 use candle::{DType, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
 
-/// Qwen3 routed MLP. Attention, pooling and decision scoring use the Qwen3 model.
+/// Qwen3 routed MLP. Attention and pooling use the Qwen3 model.
 pub(crate) struct Qwen3Moe {
     gate: Linear,
     gate_up: Tensor,

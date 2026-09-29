@@ -15,7 +15,6 @@ static MAX_CHAR_MULTIPLIER: usize = 250;
 pub struct Tokenization {
     /// Channel to communicate with the background tokenization task
     sender: async_channel::Sender<TokenizerRequest>,
-    chat: Result<Arc<crate::chat::ChatTemplate>, String>,
 }
 
 #[derive(Debug)]
@@ -66,40 +65,7 @@ impl Tokenization {
             }
         });
 
-        Self {
-            sender,
-            chat: Err("No model chat template loaded".into()),
-        }
-    }
-
-    pub fn with_chat_template(mut self, root: &std::path::Path) -> Self {
-        self.chat = crate::chat::ChatTemplate::load(root)
-            .map(Arc::new)
-            .map_err(|e| e.to_string());
-        self
-    }
-    pub async fn tokenize_chat(
-        &self,
-        messages: Vec<crate::chat::Message>,
-        candidate: Option<String>,
-    ) -> Result<RawEncoding, TextEmbeddingsError> {
-        let renderer = self
-            .chat
-            .as_ref()
-            .map_err(|e| TextEmbeddingsError::Validation(e.clone()))?
-            .clone();
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(TokenizerRequest::Chat(
-                renderer, messages, candidate, sender,
-            ))
-            .await
-            .map_err(|_| {
-                TextEmbeddingsError::Validation("Tokenization worker unavailable".into())
-            })?;
-        receiver.await.map_err(|_| {
-            TextEmbeddingsError::Validation("Tokenization worker unavailable".into())
-        })?
+        Self { sender }
     }
 
     #[instrument(skip_all)]
@@ -162,15 +128,6 @@ impl Tokenization {
         // Await on response channel
         // Unwrap is safe here
         response_receiver.await.expect("Tokenization background task dropped the sender without sending a response. This is a bug.")
-    }
-
-    pub async fn tokenize_exact(&self, input: String) -> Result<RawEncoding, TextEmbeddingsError> {
-        let (sender, receiver) = oneshot::channel();
-        self.sender
-            .send(TokenizerRequest::TokenizeExact(input, sender))
-            .await
-            .expect("Tokenization worker unavailable");
-        receiver.await.expect("Tokenization worker unavailable")
     }
 
     #[instrument(skip_all)]
@@ -290,39 +247,6 @@ fn tokenizer_worker(
                         ));
                     }
                 })
-            }
-            TokenizerRequest::Chat(renderer, messages, candidate, sender) => {
-                if sender.is_closed() {
-                    continue;
-                }
-                let result = renderer
-                    .render(&messages, candidate.as_deref())
-                    .and_then(|text| {
-                        let truncation = tokenizer.get_truncation().cloned();
-                        let padding = tokenizer.get_padding().cloned();
-                        tokenizer.with_truncation(None)?;
-                        tokenizer.with_padding(None);
-                        let result = tokenizer.encode(text, false);
-                        tokenizer.with_truncation(truncation)?;
-                        tokenizer.with_padding(padding);
-                        result.map_err(TextEmbeddingsError::Tokenizer)
-                    });
-                let _ = sender.send(result);
-            }
-            TokenizerRequest::TokenizeExact(input, sender) => {
-                let result = tokenize_input(
-                    input.into(),
-                    false,
-                    max_input_length,
-                    None,
-                    None,
-                    None,
-                    None,
-                    &mut tokenizer,
-                    None,
-                )
-                .map(|(_, encoding)| encoding);
-                let _ = sender.send(result);
             }
             TokenizerRequest::Tokenize(
                 inputs,
@@ -618,16 +542,6 @@ impl From<(String, String)> for EncodingInput {
 }
 
 enum TokenizerRequest {
-    Chat(
-        Arc<crate::chat::ChatTemplate>,
-        Vec<crate::chat::Message>,
-        Option<String>,
-        oneshot::Sender<Result<RawEncoding, TextEmbeddingsError>>,
-    ),
-    TokenizeExact(
-        String,
-        oneshot::Sender<Result<RawEncoding, TextEmbeddingsError>>,
-    ),
     Encode(
         EncodingInput,
         bool,
@@ -801,70 +715,6 @@ mod tests {
                 }
             ]
         );
-    }
-}
-
-#[cfg(test)]
-mod decision_tokenization_tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn decision_tokenization_ignores_embedding_prefixes_and_special_tokens() {
-        use tokenizers::models::wordlevel::WordLevel;
-        use tokenizers::pre_tokenizers::whitespace::Whitespace;
-        use tokenizers::processors::template::TemplateProcessing;
-        let vocab = [("[UNK]", 0), ("prefix", 1), ("approve", 2), ("[BOS]", 3)]
-            .into_iter()
-            .map(|(s, id)| (s.to_string(), id))
-            .collect();
-        let model = WordLevel::builder()
-            .vocab(vocab)
-            .unk_token("[UNK]".into())
-            .build()
-            .unwrap();
-        let mut tokenizer = Tokenizer::new(model);
-        tokenizer.with_pre_tokenizer(Some(Whitespace));
-        tokenizer.with_post_processor(Some(
-            TemplateProcessing::builder()
-                .try_single("[BOS] $A")
-                .unwrap()
-                .special_tokens(vec![("[BOS]", 3)])
-                .build()
-                .unwrap(),
-        ));
-        let mut service = Tokenization::new(1, tokenizer, 100, 0, Some("prefix ".into()), None);
-        assert!(service
-            .tokenize_chat(
-                vec![crate::chat::Message {
-                    role: crate::chat::Role::User,
-                    content: "approve".into()
-                }],
-                None
-            )
-            .await
-            .is_err());
-        service.chat = Ok(Arc::new(
-            crate::chat::ChatTemplate::new("{{ messages[0].content }}", serde_json::Map::new())
-                .unwrap(),
-        ));
-        let chat = service
-            .tokenize_chat(
-                vec![crate::chat::Message {
-                    role: crate::chat::Role::User,
-                    content: "approve approve".into(),
-                }],
-                None,
-            )
-            .await
-            .unwrap();
-        assert_eq!(chat.get_ids(), &[2, 2]);
-        let exact = service.tokenize_exact("approve".into()).await.unwrap();
-        assert_eq!(exact.get_ids(), &[2]);
-        let (_, normal) = service
-            .tokenize(EncodingInput::Single("approve".into()), true, None)
-            .await
-            .unwrap();
-        assert_eq!(normal.get_ids(), &[3, 1, 2]);
     }
 }
 

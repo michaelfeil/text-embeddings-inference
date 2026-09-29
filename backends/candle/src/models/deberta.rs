@@ -340,6 +340,7 @@ impl DebertaModel {
             })
             .collect::<Result<_>>()?;
         let (pool, head, pooler) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Embedding(Pool::Splade) => {
                 candle::bail!("DeBERTa SPLADE is not implemented")
             }

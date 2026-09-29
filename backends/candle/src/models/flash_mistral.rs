@@ -1,11 +1,12 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
+use crate::layers::MlpLinear;
 use crate::layers::{
     get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, HiddenAct, Linear, RMSNorm,
 };
 use crate::models::{MistralConfig, Model};
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct MistralAttention {
@@ -26,7 +27,13 @@ struct MistralAttention {
 
 impl MistralAttention {
     pub fn load(vb: VarBuilder, config: &MistralConfig) -> Result<Self> {
-        let window_size_left = config.sliding_window;
+        // HF's causal window counts the current token; the attention kernel
+        // takes the inclusive distance to the leftmost visible token.
+        let window_size_left = if config.use_bidirectional_attention {
+            config.sliding_window
+        } else {
+            config.sliding_window.map(|window| window.saturating_sub(1))
+        };
         let use_bidirectional_attention = config.use_bidirectional_attention;
         let num_attention_heads = config.num_attention_heads;
         let attention_head_size = config.hidden_size / config.num_attention_heads;
@@ -97,7 +104,7 @@ impl MistralAttention {
             self.num_key_value_heads,
         )?;
 
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
 
         let q = compact_tensors.scatter_unfold(&q)?;
         let k = compact_tensors.scatter_unfold(&k)?;
@@ -126,17 +133,16 @@ impl MistralAttention {
 }
 
 struct MistralMLP {
-    gate_up_proj: Linear,
-    down_proj: Linear,
+    gate_up_proj: MlpLinear,
+    down_proj: MlpLinear,
 
     act: HiddenAct,
-    intermediate_size: usize,
 
     span: tracing::Span,
 }
 
 impl MistralMLP {
-    pub fn load(vb: VarBuilder, config: &MistralConfig) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &MistralConfig, enable_fp8_dynamic: bool) -> Result<Self> {
         let intermediate_size = config.intermediate_size;
 
         let gate_proj_weight = vb
@@ -148,17 +154,16 @@ impl MistralMLP {
             .get((intermediate_size, config.hidden_size), "weight")?;
 
         let gate_up_proj_weight = Tensor::cat(&[&gate_proj_weight, &up_proj_weight], 0)?;
-        let gate_up_proj = Linear::new(gate_up_proj_weight, None, None);
+        let gate_up_proj = MlpLinear::new(gate_up_proj_weight, enable_fp8_dynamic)?;
 
         let down_proj_weight = vb
             .pp("down_proj")
             .get((config.hidden_size, intermediate_size), "weight")?;
-        let down_proj = Linear::new(down_proj_weight, None, None);
+        let down_proj = MlpLinear::new(down_proj_weight, enable_fp8_dynamic)?;
 
         Ok(Self {
             gate_up_proj,
             down_proj,
-            intermediate_size,
             act: config.hidden_act.clone(),
             span: tracing::span!(tracing::Level::TRACE, "mlp"),
         })
@@ -168,12 +173,8 @@ impl MistralMLP {
         let _enter = self.span.enter();
 
         let gate_up_states = self.gate_up_proj.forward(hidden_states)?;
-        let gate_states = gate_up_states.narrow(1, 0, self.intermediate_size)?;
-        let up_states = gate_up_states.narrow(1, self.intermediate_size, self.intermediate_size)?;
-
-        let gate_states = self.act.forward(&gate_states)?;
-        let r = self.down_proj.forward(&(gate_states * up_states)?);
-        r
+        let activated = crate::layers::gated_activation(&gate_up_states, Some(&self.act))?;
+        self.down_proj.forward(&activated)
     }
 }
 
@@ -187,9 +188,9 @@ struct MistralLayer {
 }
 
 impl MistralLayer {
-    pub fn load(vb: VarBuilder, config: &MistralConfig) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &MistralConfig, enable_fp8_dynamic: bool) -> Result<Self> {
         let attention = MistralAttention::load(vb.pp("self_attn"), config)?;
-        let mlp = MistralMLP::load(vb.pp("mlp"), config)?;
+        let mlp = MistralMLP::load(vb.pp("mlp"), config, enable_fp8_dynamic)?;
 
         let input_layer_norm = RMSNorm::load(
             vb.pp("input_layernorm"),
@@ -211,6 +212,7 @@ impl MistralLayer {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
@@ -255,21 +257,28 @@ pub struct FlashMistralModel {
 }
 
 impl FlashMistralModel {
-    pub fn load(vb: VarBuilder, config: &MistralConfig, model_type: ModelType) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashMistral requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashMistral requires DType::F16 or DType::BF16")
-        }
+    pub fn load(
+        vb: VarBuilder,
+        config: &MistralConfig,
+        model_type: ModelType,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 candle::bail!("`classifier` model type is not supported for Mistral")
             }
             ModelType::Embedding(pool) => pool,
+        };
+
+        // Support both backbone checkpoints and ordinary ForCausalLM checkpoints,
+        // as the Qwen loaders do. Only the transformer backbone is used here.
+        let vb = if vb.contains_tensor("model.embed_tokens.weight") {
+            vb.pp("model")
+        } else {
+            vb
         };
 
         let embeddings = Embedding::new(
@@ -279,7 +288,9 @@ impl FlashMistralModel {
         );
 
         let layers = (0..config.num_hidden_layers)
-            .map(|index| MistralLayer::load(vb.pp(format!("layers.{index}")), config))
+            .map(|index| {
+                MistralLayer::load(vb.pp(format!("layers.{index}")), config, enable_fp8_dynamic)
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
@@ -413,7 +424,10 @@ impl FlashMistralModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

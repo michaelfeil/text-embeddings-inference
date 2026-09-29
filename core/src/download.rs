@@ -41,6 +41,13 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
     let start = std::time::Instant::now();
     tracing::info!("Starting download");
 
+    // Laya checkpoints keep their encoder config and tokenizer in subfolders.
+    if let Ok(path) = download_file(api, "rl_agent_config.json").await {
+        download_file(api, "encoder/config.json").await?;
+        download_file(api, "tokenizer/tokenizer.json").await?;
+        return Ok(path.parent().unwrap().to_path_buf());
+    }
+
     // Try to download `1_Pooling`, only if `--pooling` hasn't been provided, otherwise, the
     // `--pooling` argument will be used instead.
     if pool_config {
@@ -68,14 +75,6 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
 
     download_file(api, "config.json").await?;
     let path = download_file(api, "tokenizer.json").await?;
-    for name in [
-        "tokenizer_config.json",
-        "special_tokens_map.json",
-        "chat_template.jinja",
-    ] {
-        // Optional for embeddings; required by the decision endpoint at request time.
-        let _ = download_file(api, name).await;
-    }
 
     tracing::info!("Model artifacts downloaded in {:?}", start.elapsed());
 

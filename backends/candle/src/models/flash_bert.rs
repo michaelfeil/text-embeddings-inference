@@ -5,7 +5,7 @@ use crate::models::bert::{
     BertSpladeHead, ClassificationHead, PositionEmbeddingType,
 };
 use crate::models::Model;
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
@@ -228,14 +228,7 @@ pub struct FlashBertModel {
 
 impl FlashBertModel {
     pub fn load(vb: VarBuilder, config: &BertConfig, model_type: ModelType) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashBert requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashBert requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         // Check position embedding type
         if config.position_embedding_type != PositionEmbeddingType::Absolute {
@@ -243,6 +236,7 @@ impl FlashBertModel {
         }
 
         let (pool, classifier, splade) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             // Classifier models always use CLS pooling
             ModelType::Classifier => {
                 let pool = Pool::Cls;
@@ -294,14 +288,7 @@ impl FlashBertModel {
         config: &BertConfig,
         model_type: ModelType,
     ) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashBert requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashBert requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         // Check position embedding type
         if config.position_embedding_type != PositionEmbeddingType::Absolute {
@@ -309,6 +296,7 @@ impl FlashBertModel {
         }
 
         let (pool, classifier, splade) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             // Classifier models always use CLS pooling
             ModelType::Classifier => {
                 let pool = Pool::Cls;
@@ -477,7 +465,10 @@ impl FlashBertModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

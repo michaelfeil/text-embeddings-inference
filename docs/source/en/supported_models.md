@@ -115,3 +115,14 @@ GLiNER-specific heads and schemas are not provided by this feature. Original
 DeBERTa-v1 and masked-LM heads are not implemented. Configurations outside the
 supported geometry fail explicitly. This is experimental pending model/task
 accuracy qualification; it is not a bitwise replacement for eager attention.
+
+### EmbeddingGemma (Gemma3)
+
+`google/embeddinggemma-300m` uses packed, ragged CUDA inference in BF16.
+The automatic dtype is BF16, including when the checkpoint stores FP32 weights.
+FP32/FP16 model execution, CPU/Metal, and `USE_FLASH_ATTENTION=false` are rejected;
+there is no padded fallback. Internal normalization still accumulates in FP32.
+The model requires mean pooling and its two checkpoint-provided Dense projection
+modules. Use the checkpoint's named query/document prompts for retrieval.
+`ATTN_BACKEND=auto` is the default and retains FA2 for EmbeddingGemma because
+its head shape is not supported by the bundled FA4 kernels.

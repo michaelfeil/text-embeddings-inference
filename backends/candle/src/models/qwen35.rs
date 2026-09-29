@@ -266,7 +266,6 @@ impl Layer {
     }
 }
 pub struct Qwen35Model {
-    lm_head: Option<Tensor>,
     embeddings: Embedding,
     layers: Vec<Layer>,
     norm: Norm,
@@ -287,7 +286,7 @@ impl Qwen35Model {
         }
         let pool = match model_type {
             ModelType::Embedding(p) => p,
-            _ => candle::bail!("Qwen3.5-MoE requires embedding/decision mode"),
+            _ => candle::bail!("Qwen3.5-MoE requires embedding mode"),
         };
         let model = if vb.contains_tensor("model.language_model.embed_tokens.weight") {
             vb.pp("model.language_model")
@@ -302,16 +301,6 @@ impl Qwen35Model {
                 .get((c.vocab_size, c.hidden_size), "weight")?,
             c.hidden_size,
         );
-        let lm_head = if vb.contains_tensor("lm_head.weight") {
-            Some(
-                vb.pp("lm_head")
-                    .get((c.vocab_size, c.hidden_size), "weight")?,
-            )
-        } else if config.tied() {
-            Some(embeddings.embeddings().clone())
-        } else {
-            None
-        };
         let moe_config = c.moe_config()?;
         let layers = (0..c.num_hidden_layers)
             .map(|i| Layer::load(model.pp(format!("layers.{i}")), c, i, &moe_config))
@@ -326,7 +315,6 @@ impl Qwen35Model {
         let (cos_cache, sin_cache) =
             get_cos_sin(c.max_position_embeddings, &inv, vb.dtype(), true)?;
         Ok(Self {
-            lm_head,
             embeddings,
             layers,
             norm,
@@ -477,91 +465,6 @@ impl Qwen35Model {
 }
 
 impl Model for Qwen35Model {
-    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
-        self.supports_decision_scoring()
-            .then_some(text_embeddings_backend_core::DecisionPromptStyle::Qwen3)
-    }
-
-    fn supports_decision_scoring(&self) -> bool {
-        !self.use_bidirectional_attention
-            && self.linear_output_projection.is_none()
-            && self.lm_head.is_some()
-    }
-
-    fn score_options(&self, batch: Batch, prompt_lengths: &[usize]) -> Result<Vec<f32>> {
-        if self.use_bidirectional_attention || self.linear_output_projection.is_some() {
-            candle::bail!("Decision scoring requires an unmodified causal language model")
-        }
-        let weight = self
-            .lm_head
-            .as_ref()
-            .ok_or_else(|| candle::Error::Msg("Model has no language-model head".into()))?;
-        if prompt_lengths.is_empty()
-            || prompt_lengths.len() + 1 != batch.cumulative_seq_lengths.len()
-            || batch
-                .cumulative_seq_lengths
-                .windows(2)
-                .zip(prompt_lengths)
-                .any(|(w, &len)| len == 0 || (w[1] - w[0]) as usize <= len)
-        {
-            candle::bail!("Each branch must contain a nonempty prompt and continuation")
-        }
-        let (hidden, _) = self.forward_hidden(&batch)?;
-        // Evaluate each unique predictor row once, including full-vocabulary normalization.
-        // Small chunks bound temporary logits memory independently of prompt length.
-        let mut rows = Vec::new();
-        let mut row_map = std::collections::HashMap::new();
-        let mut edges = Vec::new();
-        for (bounds, &prompt_length) in batch.cumulative_seq_lengths.windows(2).zip(prompt_lengths)
-        {
-            let mut branch = Vec::new();
-            for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize - 1) {
-                let row = batch.scatter_unfold.as_ref().map_or(pos as u32, |s| s[pos]);
-                let next = rows.len();
-                let index = *row_map.entry(row).or_insert_with(|| {
-                    rows.push(row);
-                    next
-                });
-                let target = batch.input_ids[pos + 1];
-                branch.push((index, target as usize));
-            }
-            edges.push(branch);
-        }
-        let mut scores = vec![0f32; edges.len()];
-        let mut targets_by_row = vec![Vec::new(); rows.len()];
-        for (branch_index, branch) in edges.iter().enumerate() {
-            for &(row, target) in branch {
-                targets_by_row[row].push((branch_index, target));
-            }
-        }
-        let vocab_size = weight.dim(0)?;
-        for (chunk_index, chunk) in rows.chunks(32).enumerate() {
-            let indices = Tensor::from_vec(chunk.to_vec(), chunk.len(), &self.device)?;
-            let states = index_select(&hidden, &indices, 0)?;
-            let logits = states.matmul(&weight.t()?)?.to_dtype(DType::F32)?;
-            let log_probs = candle_nn::ops::log_softmax(&logits, 1)?.flatten_all()?;
-            let start = chunk_index * 32;
-            let mut selected = Vec::new();
-            let mut branches = Vec::new();
-            for (local_row, targets) in targets_by_row[start..start + chunk.len()]
-                .iter()
-                .enumerate()
-            {
-                for &(branch, target) in targets {
-                    selected.push((local_row * vocab_size + target) as u32);
-                    branches.push(branch);
-                }
-            }
-            let indices = Tensor::from_vec(selected.clone(), selected.len(), &self.device)?;
-            // Transfer only requested edges, never the full vocabulary matrix.
-            let values = log_probs.index_select(&indices, 0)?.to_vec1::<f32>()?;
-            for (branch, value) in branches.into_iter().zip(values) {
-                scores[branch] += value;
-            }
-        }
-        Ok(scores)
-    }
-
     fn is_padded(&self) -> bool {
         false
     }

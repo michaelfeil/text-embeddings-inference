@@ -9,7 +9,6 @@ homepage.workspace = true
 async-channel = "^2.3"
 hf-hub = { workspace = true }
 metrics = { workspace = true }
-serde = { workspace = true }
 serde_json = { workspace = true }
 text-embeddings-backend = { path = "../backends" }
 thiserror = { workspace = true }

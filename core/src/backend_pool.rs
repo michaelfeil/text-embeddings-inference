@@ -58,7 +58,6 @@ impl Inner {
 #[derive(Debug, Clone)]
 pub struct BackendPool {
     inner: Arc<Inner>,
-    pub decision_prompt_style: Option<text_embeddings_backend::DecisionPromptStyle>,
     pub padded_model: bool,
     pub radix_mlp_supported: bool,
     pub max_batch_size: Option<usize>,
@@ -71,8 +70,7 @@ impl BackendPool {
             BackendError::Start("At least one backend replica is required".into())
         })?;
         if backends.iter().any(|b| {
-            b.decision_prompt_style != first.decision_prompt_style
-                || b.model_type != first.model_type
+            b.model_type != first.model_type
                 || b.padded_model != first.padded_model
                 || b.radix_mlp_supported != first.radix_mlp_supported
         }) {
@@ -81,7 +79,6 @@ impl BackendPool {
             ));
         }
         let result = Self {
-            decision_prompt_style: first.decision_prompt_style,
             padded_model: first.padded_model,
             radix_mlp_supported: first.radix_mlp_supported,
             max_batch_size: backends.iter().filter_map(|b| b.max_batch_size).min(),
@@ -106,25 +103,6 @@ impl BackendPool {
         };
         result.inner.signal(&result.inner.state.lock().unwrap());
         Ok(result)
-    }
-
-    pub async fn score_options(
-        &self,
-        batch: Batch,
-        prompt_lengths: Vec<usize>,
-    ) -> Result<Vec<f32>, BackendError> {
-        let execution = self.acquire_matching(None).await?;
-        let tokens = compute_tokens(&batch, self.padded_model);
-        execution
-            .run(tokens, batch.len(), move |backend| async move {
-                let start = Instant::now();
-                backend
-                    .score_options(batch, prompt_lengths)
-                    .await
-                    .map(|scores| (scores, start.elapsed()))
-            })
-            .await
-            .map(|(scores, _)| scores)
     }
 
     pub fn len(&self) -> usize {
@@ -280,6 +258,18 @@ impl Execution {
         let tokens = compute_tokens(&batch, self.pool.padded_model);
         self.run(tokens, batch.len(), move |backend| async move {
             backend.embed(batch).await
+        })
+        .await
+    }
+
+    pub async fn decide(
+        self,
+        batch: Batch,
+        inputs: Vec<text_embeddings_backend::DecisionInput>,
+    ) -> Result<(Vec<text_embeddings_backend::DecisionOutput>, Duration), BackendError> {
+        let tokens = compute_tokens(&batch, self.pool.padded_model);
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend.decide(batch, inputs).await
         })
         .await
     }

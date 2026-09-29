@@ -79,6 +79,11 @@ impl OrtBackend {
         };
 
         let pool = match model_type {
+            ModelType::Decision => {
+                return Err(BackendError::Start(
+                    "Laya typed decisions require the Candle backend".into(),
+                ))
+            }
             ModelType::Classifier => Pool::Cls,
             ModelType::Embedding(pool) => match pool {
                 Pool::Splade => {

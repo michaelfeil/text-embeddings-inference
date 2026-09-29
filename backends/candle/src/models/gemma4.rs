@@ -1,12 +1,7 @@
-#[cfg(any(feature = "flash-attn", test))]
-#[path = "gemma4_query_plan.rs"]
-mod query_plan;
 use crate::layers::{apply_rotary, get_cos_sin, get_inv_freqs, HiddenAct, Linear};
 #[cfg(feature = "flash-attn")]
 use crate::layers::{index_select, CompactUnfoldTensors};
 use crate::models::Model;
-#[cfg(feature = "flash-attn")]
-use query_plan::QueryPlan;
 
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
@@ -114,7 +109,8 @@ struct Gemma4RmsNorm {
 impl Gemma4RmsNorm {
     fn load(vb: VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
         Ok(Self {
-            weight: Some(vb.get(hidden_size, "weight")?),
+            // Normalization applies the scale in FP32; convert it once at load time.
+            weight: Some(vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?),
             epsilon,
         })
     }
@@ -128,23 +124,11 @@ impl Gemma4RmsNorm {
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
-        #[cfg(feature = "cuda")]
-        if dtype == DType::BF16
-            && hidden_states.device().is_cuda()
-            && hidden_states.is_contiguous()
-            && [256, 512, 1536, 2560, 2816].contains(&hidden_states.dim(D::Minus1)?)
-        {
-            return crate::layers::gemma4_norm::fused(
-                hidden_states,
-                self.weight.as_ref(),
-                self.epsilon,
-            );
-        }
         let states = hidden_states.to_dtype(DType::F32)?;
         let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
         let states = states.broadcast_div(&(variance + self.epsilon)?.sqrt()?)?;
         let states = match &self.weight {
-            Some(weight) => states.broadcast_mul(&weight.to_dtype(DType::F32)?)?,
+            Some(weight) => states.broadcast_mul(weight)?,
             None => states,
         };
         states.to_dtype(dtype)
@@ -196,7 +180,6 @@ impl Gemma4Attention {
         max_length: usize,
         causal: bool,
         compact: &CompactUnfoldTensors,
-        query_plan: Option<&QueryPlan>,
         shared_kv: &mut SharedKv,
     ) -> Result<Tensor> {
         use crate::flash_attn::flash_attn_varlen;
@@ -216,19 +199,11 @@ impl Gemma4Attention {
             self.head_dim,
         ))?;
         let q = self.q_norm.forward(&q)?.transpose(1, 2)?;
-        let q = apply_rotary_varlen(&q, cos, sin, self.head_dim)?
+        let q = apply_rotary(&q, cos, sin, self.head_dim)?
             .transpose(1, 2)?
             .squeeze(0)?
             .contiguous()?;
-        let q = if let Some(plan) = query_plan {
-            index_select(&q.flatten_from(1)?.contiguous()?, &plan.queries, 0)?.reshape((
-                plan.queries.elem_count(),
-                self.num_attention_heads,
-                self.head_dim,
-            ))?
-        } else {
-            unfold_heads(q, self.num_attention_heads)?
-        };
+        let q = unfold_heads(q, self.num_attention_heads)?;
 
         let (k, v) = if self.is_kv_shared {
             shared_kv
@@ -257,7 +232,7 @@ impl Gemma4Attention {
                 .unwrap()
                 .forward(&k_unrotated)?
                 .transpose(1, 2)?;
-            let k = apply_rotary_varlen(&k, cos, sin, self.head_dim)?
+            let k = apply_rotary(&k, cos, sin, self.head_dim)?
                 .transpose(1, 2)?
                 .squeeze(0)?
                 .contiguous()?;
@@ -290,9 +265,9 @@ impl Gemma4Attention {
             &k,
             &v,
             None,
-            query_plan.map_or(cu_seqlens, |p| &p.cu_queries),
             cu_seqlens,
-            query_plan.map_or(max_length, |p| p.max_queries),
+            cu_seqlens,
+            max_length,
             max_length,
             1.0,
             causal,
@@ -300,12 +275,7 @@ impl Gemma4Attention {
             window_right,
         )?
         .flatten_from(D::Minus2)?;
-        let output = if let Some(plan) = query_plan {
-            index_select(&output, &plan.output, 0)?
-        } else {
-            compact.fold_gather(&output)?
-        };
-        self.o_proj.forward(&output)
+        self.o_proj.forward(&compact.fold_gather(&output)?)
     }
 
     fn load(vb: VarBuilder, config: &Gemma4TextConfig, layer_idx: usize) -> Result<Self> {
@@ -559,7 +529,6 @@ struct Gemma4Mlp {
     gate_up_proj: Linear,
     down_proj: Linear,
     activation: HiddenAct,
-    intermediate_size: usize,
 }
 
 impl Gemma4Mlp {
@@ -582,17 +551,13 @@ impl Gemma4Mlp {
             gate_up_proj: Linear::new(Tensor::cat(&[&gate, &up], 0)?, None, None),
             down_proj: Linear::new(down, None, None),
             activation: config.hidden_activation.clone(),
-            intermediate_size,
         })
     }
 
     fn forward(&self, states: &Tensor) -> Result<Tensor> {
         let gate_up = self.gate_up_proj.forward(states)?;
-        let gate =
-            self.activation
-                .forward(&gate_up.narrow(D::Minus1, 0, self.intermediate_size)?)?;
-        let up = gate_up.narrow(D::Minus1, self.intermediate_size, self.intermediate_size)?;
-        self.down_proj.forward(&(gate * up)?)
+        let gated = crate::layers::gated_activation(&gate_up, Some(&self.activation))?;
+        self.down_proj.forward(&gated)
     }
 }
 
@@ -625,12 +590,13 @@ impl Gemma4Moe {
         }
         if !cfg!(gemma4_moe_cuda)
             || !vb.device().is_cuda()
+            || vb.dtype() != DType::BF16
             || config.hidden_size != 2816
             || config.num_experts != Some(128)
             || config.top_k_experts != Some(8)
             || config.moe_intermediate_size != Some(704)
         {
-            candle::bail!("Gemma4 MoE requires an SM80+ CUDA build and the 26B-A4B 128-expert/8-route configuration");
+            candle::bail!("Gemma4 MoE requires BF16, an SM80+ CUDA build and the 26B-A4B 128-expert/8-route configuration");
         }
         let h = config.hidden_size;
         let norm = |name: &str| Gemma4RmsNorm::load(vb.pp(name), h, config.rms_norm_eps);
@@ -706,7 +672,6 @@ impl Gemma4Layer {
         max_length: usize,
         causal: bool,
         compact: &CompactUnfoldTensors,
-        query_plan: Option<&QueryPlan>,
         shared_kv: &mut SharedKv,
     ) -> Result<Tensor> {
         let residual = states;
@@ -719,7 +684,6 @@ impl Gemma4Layer {
             max_length,
             causal,
             compact,
-            query_plan,
             shared_kv,
         )?;
         let states = (residual + self.post_attention_layernorm.forward(&attention)?)?;
@@ -889,7 +853,6 @@ enum Gemma4Output {
 }
 
 pub struct Gemma4Model {
-    lm_head: Option<Tensor>,
     embeddings: Embedding,
     embedding_scale: f64,
     ple: Option<Gemma4Ple>,
@@ -917,21 +880,6 @@ impl Gemma4Model {
         if !causal && batch.compact_input_ids.is_some() {
             candle::bail!("Bidirectional Gemma4 inference cannot fold causal prefixes")
         }
-        // Validate additional backends before changing their attention tiling.
-        // The Hopper FA2 path preserves 128-aligned absolute query positions.
-        let prefix_attention = causal
-            && batch.scatter_unfold.is_some()
-            && self.dtype == DType::BF16
-            && self.local_head_dim == 256
-            && self.full_head_dim == 512
-            && crate::flash_attn::runtime_compute_cap(&self.device)? == 90;
-        #[cfg(feature = "fa4")]
-        let prefix_attention = prefix_attention && !crate::fa4_native::enabled()?;
-        let query_plan = if prefix_attention {
-            QueryPlan::new(batch, &self.device)?
-        } else {
-            None
-        };
         let (input_ids, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
         let embeddings = (self.embeddings.forward(&input_ids)? * self.embedding_scale)?;
         let per_layer_inputs = match &self.ple {
@@ -982,7 +930,6 @@ impl Gemma4Model {
                 batch.max_length as usize,
                 causal,
                 &compact,
-                query_plan.as_ref(),
                 &mut shared_kv,
             )?;
         }
@@ -1000,6 +947,7 @@ impl Gemma4Model {
         }
 
         let score = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Embedding(pool) => Gemma4Output::Embedding(pool),
             ModelType::Classifier => {
                 let num_labels = config.num_labels.unwrap_or(config.id2label.len());
@@ -1015,15 +963,6 @@ impl Gemma4Model {
             }
         };
 
-        let lm_head = [
-            "lm_head.weight",
-            "model.lm_head.weight",
-            "model.language_model.lm_head.weight",
-        ]
-        .into_iter()
-        .find(|name| vb.contains_tensor(name))
-        .map(|name| vb.get((text.vocab_size, text.hidden_size), name))
-        .transpose()?;
         let vb = if vb.contains_tensor("model.language_model.embed_tokens.weight") {
             vb.pp("model.language_model")
         } else if vb.contains_tensor("model.embed_tokens.weight") {
@@ -1036,10 +975,6 @@ impl Gemma4Model {
                 .get((text.vocab_size, text.hidden_size), "weight")?,
             text.hidden_size,
         );
-        let lm_head = lm_head.or_else(|| {
-            (config.tie_word_embeddings || text.tie_word_embeddings)
-                .then(|| embeddings.embeddings().clone())
-        });
         let ple = Gemma4Ple::load(vb.clone(), text)?;
         let layers = (0..text.num_hidden_layers)
             .map(|idx| Gemma4Layer::load(vb.pp(format!("layers.{idx}")), text, idx))
@@ -1076,7 +1011,6 @@ impl Gemma4Model {
         let full_rope = get_cos_sin(text.max_position_embeddings, &full_inv, vb.dtype(), true)?;
 
         Ok(Self {
-            lm_head,
             embeddings,
             embedding_scale: (text.hidden_size as f64).sqrt(),
             ple,
@@ -1294,97 +1228,6 @@ impl Model for Gemma4Model {
         self.device.is_cuda() && cfg!(feature = "flash-attn")
     }
 
-    fn supports_decision_scoring(&self) -> bool {
-        self.device.is_cuda() && cfg!(feature = "flash-attn") && self.lm_head.is_some()
-    }
-
-    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
-        self.supports_decision_scoring()
-            .then_some(text_embeddings_backend_core::DecisionPromptStyle::Gemma4)
-    }
-
-    fn score_options(&self, batch: Batch, prompt_lengths: &[usize]) -> Result<Vec<f32>> {
-        if !self.supports_decision_scoring() {
-            candle::bail!("Gemma4 decision scoring requires CUDA FlashAttention and LM weights")
-        }
-        if prompt_lengths.is_empty()
-            || prompt_lengths.len() + 1 != batch.cumulative_seq_lengths.len()
-            || batch
-                .cumulative_seq_lengths
-                .windows(2)
-                .zip(prompt_lengths)
-                .any(|(bounds, &len)| len == 0 || (bounds[1] - bounds[0]) as usize <= len)
-        {
-            candle::bail!("Each branch must contain a nonempty prompt and continuation")
-        }
-        #[cfg(feature = "flash-attn")]
-        {
-            let (hidden, _) = self.forward_hidden_varlen(&batch, true)?;
-            let weight = self.lm_head.as_ref().unwrap();
-            let mut rows = Vec::new();
-            let mut row_map = std::collections::HashMap::new();
-            let mut edges = Vec::new();
-            for (bounds, &prompt_length) in
-                batch.cumulative_seq_lengths.windows(2).zip(prompt_lengths)
-            {
-                let mut branch = Vec::new();
-                for pos in (bounds[0] as usize + prompt_length - 1)..(bounds[1] as usize - 1) {
-                    let row = batch
-                        .scatter_unfold
-                        .as_ref()
-                        .map_or(pos as u32, |map| map[pos]);
-                    let next = rows.len();
-                    let index = *row_map.entry(row).or_insert_with(|| {
-                        rows.push(row);
-                        next
-                    });
-                    let target = batch.input_ids[pos + 1];
-                    branch.push((index, target as usize));
-                }
-                edges.push(branch);
-            }
-            let mut scores = vec![0f32; edges.len()];
-            let mut targets_by_row = vec![Vec::new(); rows.len()];
-            for (branch_index, branch) in edges.iter().enumerate() {
-                for &(row, target) in branch {
-                    targets_by_row[row].push((branch_index, target));
-                }
-            }
-            let vocab_size = weight.dim(0)?;
-            for (chunk_index, chunk) in rows.chunks(16).enumerate() {
-                let indices = Tensor::from_vec(chunk.to_vec(), chunk.len(), &self.device)?;
-                let states = index_select(&hidden, &indices, 0)?;
-                let logits = states.matmul(&weight.t()?)?;
-                let logits = match self.final_logit_softcapping {
-                    Some(cap) => decision_softcap(&logits, cap)?,
-                    None => logits,
-                }
-                .to_dtype(DType::F32)?;
-                let log_probs = candle_nn::ops::log_softmax(&logits, 1)?.flatten_all()?;
-                let start = chunk_index * 16;
-                let mut selected = Vec::new();
-                let mut branches = Vec::new();
-                for (local_row, targets) in targets_by_row[start..start + chunk.len()]
-                    .iter()
-                    .enumerate()
-                {
-                    for &(branch, target) in targets {
-                        selected.push((local_row * vocab_size + target) as u32);
-                        branches.push(branch);
-                    }
-                }
-                let indices = Tensor::from_vec(selected, branches.len(), &self.device)?;
-                let values = log_probs.index_select(&indices, 0)?.to_vec1::<f32>()?;
-                for (branch, value) in branches.into_iter().zip(values) {
-                    scores[branch] += value;
-                }
-            }
-            Ok(scores)
-        }
-        #[cfg(not(feature = "flash-attn"))]
-        candle::bail!("Gemma4 decision scoring requires FlashAttention")
-    }
-
     fn is_padded(&self) -> bool {
         !(self.device.is_cuda() && cfg!(feature = "flash-attn"))
     }
@@ -1408,55 +1251,8 @@ impl Model for Gemma4Model {
     }
 }
 
-/// Match the checkpoint reference: each softcap operation rounds to the logits
-/// dtype. Python scalar division/multiplication use FP32 opmath for BF16/FP16;
-/// Candle's scalar affine would instead pre-round the reciprocal to that dtype.
-#[cfg(any(feature = "flash-attn", test))]
-fn decision_softcap(logits: &Tensor, cap: f64) -> Result<Tensor> {
-    let dtype = logits.dtype();
-    let cap = Tensor::new(cap as f32, logits.device())?;
-    logits
-        .to_dtype(DType::F32)?
-        .broadcast_div(&cap)?
-        .to_dtype(dtype)?
-        .tanh()?
-        .to_dtype(DType::F32)?
-        .broadcast_mul(&cap)?
-        .to_dtype(dtype)
-}
-
-// Gemma4 normalizes Q/K in token-major order. Retain that layout through
-// rotary so varlen attention does not need an additional transpose copy.
-#[cfg(feature = "flash-attn")]
-fn apply_rotary_varlen(x: &Tensor, cos: &Tensor, sin: &Tensor, dim: usize) -> Result<Tensor> {
-    #[cfg(feature = "cuda")]
-    if x.device().is_cuda() && x.dtype() == DType::BF16 && x.dims().len() == 4 {
-        let (batch, heads, tokens, width) = x.dims4()?;
-        if batch == 1
-            && width == dim
-            && heads > 0
-            && tokens > 0
-            && dim > 0
-            && dim % 2 == 0
-            && cos.dims() == [1, 1, tokens, dim]
-            && sin.dims() == cos.dims()
-            && cos.dtype() == DType::BF16
-            && sin.dtype() == DType::BF16
-            && cos.is_contiguous()
-            && sin.is_contiguous()
-        {
-            let token_major = x.transpose(1, 2)?;
-            if token_major.is_contiguous() {
-                return crate::layers::gemma4_rope::forward(&token_major, cos, sin)?
-                    .transpose(1, 2);
-            }
-        }
-    }
-    crate::layers::apply_rotary(x, cos, sin, dim)
-}
-
 #[cfg(test)]
-mod decision_softcap_tests {
+mod moe_tests {
     use super::*;
     #[test]
     fn dense_and_moe_config_fields() -> anyhow::Result<()> {
@@ -1482,6 +1278,9 @@ mod decision_softcap_tests {
             assert_eq!(config.num_experts, None);
             assert_eq!(config.top_k_experts, None);
             assert_eq!(config.moe_intermediate_size, None);
+            assert!(
+                Gemma4Moe::load(VarBuilder::zeros(DType::F32, &Device::Cpu), &config)?.is_none()
+            );
         }
         value["enable_moe_block"] = true.into();
         value["num_experts"] = 128.into();
@@ -1492,36 +1291,10 @@ mod decision_softcap_tests {
         assert_eq!(config.num_experts, Some(128));
         assert_eq!(config.top_k_experts, Some(8));
         assert_eq!(config.moe_intermediate_size, Some(704));
-        Ok(())
-    }
-
-    #[test]
-    fn bf16_softcap_matches_reference_rounding() -> Result<()> {
-        // PyTorch: (x / 30.0).tanh() * 30.0 with BF16 x, recorded as u16 bits.
-        let input = [
-            -60f32,
-            -10.6875,
-            -1.7890625,
-            -0.3125,
-            0.310546875,
-            1.78125,
-            10.625,
-            60.,
-        ];
-        let expected = [49640u16, 49444, 49125, 48800, 16031, 16356, 16675, 16872];
-        let x = Tensor::new(&input, &Device::Cpu)?.to_dtype(DType::BF16)?;
-        let output = decision_softcap(&x, 30.)?.to_vec1::<half::bf16>()?;
-        assert_eq!(
-            output.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
-            expected
-        );
-        let old = ((x.to_dtype(DType::F32)? / 30.)?.tanh()? * 30.)?
-            .to_dtype(DType::BF16)?
-            .to_vec1::<half::bf16>()?;
-        assert_ne!(
-            old.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
-            expected
-        );
+        let error = Gemma4Moe::load(VarBuilder::zeros(DType::BF16, &Device::Cpu), &config)
+            .err()
+            .expect("CPU must reject MoE before loading expert weights");
+        assert!(error.to_string().contains("SM80+ CUDA"));
         Ok(())
     }
 }

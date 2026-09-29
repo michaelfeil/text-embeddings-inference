@@ -98,24 +98,19 @@ fn main() {
             .expect("compile Qwen3.5 Gated DeltaNet")
             .write(out.join("qwen35_gdn_ptx.rs"))
             .expect("write Gated DeltaNet PTX");
-        println!("cargo:rerun-if-changed=src/kernels/gemma4_norm.cu");
+        println!("cargo:rerun-if-changed=src/kernels/gemma_rms_norm.cu");
         cudaforge::KernelBuilder::new()
-            .source_files(["src/kernels/gemma4_norm.cu"])
+            .source_files(["src/kernels/gemma_rms_norm.cu"])
             .arg("-std=c++17")
             .arg("-O3")
+            .arg("--fmad=false")
             .build_ptx()
-            .expect("compile Gemma4 normalization kernel")
-            .write(out.join("gemma4_norm_ptx.rs"))
-            .expect("write Gemma4 normalization PTX bindings");
-        println!("cargo:rerun-if-changed=src/kernels/gemma4_rope.cu");
-        cudaforge::KernelBuilder::new()
-            .source_files(["src/kernels/gemma4_rope.cu"])
-            .arg("-std=c++17")
-            .arg("-O3")
-            .build_ptx()
-            .expect("compile Gemma4 rotary kernel")
-            .write(out.join("gemma4_rope_ptx.rs"))
-            .expect("write Gemma4 rotary PTX bindings");
+            .expect("compile Gemma RMSNorm")
+            .write(
+                std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap())
+                    .join("gemma_norm_ptx.rs"),
+            )
+            .expect("write Gemma RMSNorm PTX bindings");
         println!("cargo:rerun-if-changed=src/kernels/residual_add.cu");
         cudaforge::KernelBuilder::new()
             .source_files(["src/kernels/residual_add.cu"])
