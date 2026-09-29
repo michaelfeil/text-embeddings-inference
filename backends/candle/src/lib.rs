@@ -7,6 +7,8 @@ mod flash_attn;
 mod layers;
 mod models;
 
+pub use models::{LayaConfig, LayaModel, LayaOutput};
+
 use anyhow::Context;
 use candle::{DType, Device};
 use candle_nn::VarBuilder;

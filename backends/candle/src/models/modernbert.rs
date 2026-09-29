@@ -607,7 +607,7 @@ impl ModernBertModel {
         Ok(local_attention_mask)
     }
 
-    fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
+    pub(crate) fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         let _enter = self.span.enter();
 
         let batch_size = batch.len();
