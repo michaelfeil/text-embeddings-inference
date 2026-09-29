@@ -103,7 +103,8 @@ struct Gemma4RmsNorm {
 impl Gemma4RmsNorm {
     fn load(vb: VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
         Ok(Self {
-            weight: Some(vb.get(hidden_size, "weight")?),
+            // Normalization applies the scale in FP32; convert it once at load time.
+            weight: Some(vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?),
             epsilon,
         })
     }
@@ -121,7 +122,7 @@ impl Gemma4RmsNorm {
         let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
         let states = states.broadcast_div(&(variance + self.epsilon)?.sqrt()?)?;
         let states = match &self.weight {
-            Some(weight) => states.broadcast_mul(&weight.to_dtype(DType::F32)?)?,
+            Some(weight) => states.broadcast_mul(weight)?,
             None => states,
         };
         states.to_dtype(dtype)
@@ -522,7 +523,6 @@ struct Gemma4Mlp {
     gate_up_proj: Linear,
     down_proj: Linear,
     activation: HiddenAct,
-    intermediate_size: usize,
 }
 
 impl Gemma4Mlp {
@@ -545,17 +545,13 @@ impl Gemma4Mlp {
             gate_up_proj: Linear::new(Tensor::cat(&[&gate, &up], 0)?, None, None),
             down_proj: Linear::new(down, None, None),
             activation: config.hidden_activation.clone(),
-            intermediate_size,
         })
     }
 
     fn forward(&self, states: &Tensor) -> Result<Tensor> {
         let gate_up = self.gate_up_proj.forward(states)?;
-        let gate =
-            self.activation
-                .forward(&gate_up.narrow(D::Minus1, 0, self.intermediate_size)?)?;
-        let up = gate_up.narrow(D::Minus1, self.intermediate_size, self.intermediate_size)?;
-        self.down_proj.forward(&(gate * up)?)
+        let gated = crate::layers::gated_activation(&gate_up, Some(&self.activation))?;
+        self.down_proj.forward(&gated)
     }
 }
 
