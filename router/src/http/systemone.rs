@@ -1,4 +1,5 @@
 //! Jev typed decisions, submitted to TEI's shared queue and replica pool.
+use super::systemone_input::SystemOneInput;
 use axum::{
     extract::Extension,
     http::{HeaderMap, StatusCode},
@@ -18,7 +19,7 @@ use tokenizers::Tokenizer;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct SystemOneRequest {
-    pub state: Value,
+    pub state: SystemOneInput,
     pub questions: Map<String, Value>,
     pub model: Option<String>,
     pub max_len: Option<usize>,
@@ -94,12 +95,14 @@ impl SystemOne {
     }
 
     fn prepare(&self, request: SystemOneRequest) -> Result<Vec<Question>, String> {
-        if !matches!(
-            request.state,
-            Value::String(_) | Value::Object(_) | Value::Array(_)
-        ) {
-            return Err("state must be a string, object, or conversation array".into());
-        }
+        let state = match request.state {
+            SystemOneInput::Text(text) => text,
+            SystemOneInput::Messages(_) => {
+                return Err(
+                    "Laya does not support native messages; provide a plain text state".into(),
+                );
+            }
+        };
         if request.questions.len() > 64 {
             return Err("At most 64 questions are allowed".into());
         }
@@ -127,13 +130,11 @@ impl SystemOne {
                 self.max_input_length
             ));
         }
-        let state = render(&request.state);
         if state.chars().count() > 50_000 {
             return Err("state exceeds 50000 characters".into());
         }
         let state_chars = state.replace("[MASK]", " ").chars().count();
         let state_ids = self.encode(&state)?;
-        let truncate_left = request.state.is_array();
         let mut total_options = 0;
         request
             .questions
@@ -307,11 +308,7 @@ impl SystemOne {
                     return Err(format!("Question {id}: max_len cannot fit all options"));
                 }
                 let room = (max_len - ids.len() - 1).min(state_ids.len());
-                if truncate_left {
-                    ids.extend_from_slice(&state_ids[state_ids.len() - room..]);
-                } else {
-                    ids.extend_from_slice(&state_ids[..room]);
-                }
+                ids.extend_from_slice(&state_ids[..room]);
                 ids.push(self.sep);
                 let length = ids.len();
                 Ok(Question {
@@ -604,6 +601,23 @@ mod tests {
     }
 
     #[test]
+    fn laya_rejects_native_messages_before_inference() {
+        let service = service();
+        for content in [
+            json!("hello"),
+            json!([{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]),
+        ] {
+            let request =
+                json!({"state":{"messages":[{"role":"user","content":content}]}, "questions":{}});
+            let error = service
+                .prepare(serde_json::from_value(request).unwrap())
+                .err()
+                .unwrap();
+            assert!(error.contains("does not support native messages"));
+        }
+    }
+
+    #[test]
     fn calibrated_answers_use_option_order_and_typed_semantics() {
         let mut service = service();
         let fixture: Value =
@@ -709,7 +723,6 @@ mod tests {
     fn rejects_invalid_state_types_labels_and_budgets() {
         let service = service();
         for request in [
-            json!({"state":null,"questions":{}}),
             json!({"state":"text","questions":{},"max_len":0}),
             json!({"state":"text","questions":{},"head_max_len":2048}),
             json!({"state":"text","questions":{"x":{"type":"choice","instructions":"choose","criteria":[]}}}),

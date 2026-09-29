@@ -1873,6 +1873,18 @@ pub async fn run(
     ),
     components(
     schemas(
+    super::systemone::SystemOneRequest,
+    super::systemone_input::SystemOneInput,
+    super::systemone_input::MessageInput,
+    super::systemone_input::DecisionMessage,
+    super::systemone_input::MessageRole,
+    super::systemone_input::MessageContent,
+    super::systemone_input::ContentPart,
+    super::systemone_input::ImageSource,
+    super::systemone_input::ImageDetail,
+    super::systemone_input::AudioSource,
+    super::systemone_input::AudioFormat,
+    super::systemone_input::VideoSource,
     PredictInput,
     Input,
     Info,

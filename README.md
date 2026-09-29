@@ -498,8 +498,14 @@ Answers contain the selected choice, an expected zero-based score, or a `noul`
 probability of true, plus calibrated `answer_confidence` and the action head's
 `act_probability`. Choice/score answers also include option probabilities and
 entropy-based `confidence`. Usage reports input tokens and zero output tokens.
-Option order follows the request JSON. Strings and objects truncate state from
-the right; conversation arrays retain the most recent tokens.
+Option order follows the request JSON. `state` is either a plain text string or
+an explicit `{"messages": [...]}` envelope. Messages preserve roles and ordered
+text/image/audio/video content blocks for a model's native processor. The current
+Laya adapter supports **plain text only** and rejects native messages with 422;
+the message schema does not imply multimodal backend support. Plain text truncates
+from the right. Arbitrary JSON objects and bare arrays are no longer accepted as
+state; serialize structured records explicitly when supplying text to Laya.
+See [the input design](docs/systemone-input-design.md) for the message contract.
 
 Optional `max_len` and `head_max_len` override the checkpoint's token budgets,
 up to the server's maximum input length. Requests that cannot retain all options,
