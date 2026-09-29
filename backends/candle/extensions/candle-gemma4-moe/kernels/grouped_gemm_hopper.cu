@@ -17,17 +17,26 @@ constexpr size_t kGemmWorkspaceBytes = 2 * 1024 * 1024;
 using namespace cute;
 using Element = cutlass::bfloat16_t;
 using Problem = cutlass::gemm::GroupProblemShape<Shape<int, int, int>>;
-template <typename Output> struct Hopper {
+template <typename Output, bool Weighted = false> struct Hopper {
     // Wider N tiles reuse input tiles across more output columns.
     using Tile = Shape<_128, _256, _64>;
     using Cluster = Shape<_1, _1, _1>;
+    // Multiply FP32 accumulators by routing weights before the BF16 store.
+    // This preserves the original combine kernel's per-expert rounding.
+    using WeightedFusion = cutlass::epilogue::fusion::Sm90EVT<
+        cutlass::epilogue::fusion::Sm90Compute<cutlass::multiplies, Output, float,
+                                               cutlass::FloatRoundStyle::round_to_nearest>,
+        cutlass::epilogue::fusion::Sm90AccFetch,
+        cutlass::epilogue::fusion::Sm90ColBroadcast<0, Tile, float *, float, Stride<_1, _0, _0>,
+                                                    1>>;
+    using Fusion = cute::conditional_t<Weighted, WeightedFusion,
+                                       cutlass::epilogue::fusion::LinearCombination<Output, float>>;
     using Epilogue = typename cutlass::epilogue::collective::CollectiveBuilder<
         cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp, Tile, Cluster,
         cutlass::epilogue::collective::EpilogueTileAuto, float, float, Output,
         cutlass::layout::RowMajor *, 128 / cutlass::sizeof_bits<Output>::value, Output,
         cutlass::layout::RowMajor *, 128 / cutlass::sizeof_bits<Output>::value,
-        cutlass::epilogue::PtrArrayTmaWarpSpecializedCooperative,
-        cutlass::epilogue::fusion::LinearCombination<Output, float>>::CollectiveOp;
+        cutlass::epilogue::PtrArrayTmaWarpSpecializedCooperative, Fusion>::CollectiveOp;
     using Mainloop = typename cutlass::gemm::collective::CollectiveBuilder<
         cutlass::arch::Sm90, cutlass::arch::OpClassTensorOp, Element, cutlass::layout::RowMajor *,
         8, Element, cutlass::layout::ColumnMajor *, 8, float, Tile, Cluster,
@@ -39,20 +48,23 @@ template <typename Output> struct Hopper {
 using StrideA = typename Hopper<Element>::Kernel::InternalStrideA;
 using StrideB = typename Hopper<Element>::Kernel::InternalStrideB;
 using StrideC = typename Hopper<Element>::Kernel::InternalStrideC;
-template <typename Output>
+template <typename Output, bool Weighted = false>
 int grouped_gemm(void *shapes, int groups, void *a, void *b, void *c, void *lda, void *ldb,
-                 void *ldc, void *workspace, cudaStream_t stream) {
-    using G = typename Hopper<Output>::Op;
+                 void *ldc, void *workspace, cudaStream_t stream, float **row_weights = nullptr) {
+    using G = typename Hopper<Output, Weighted>::Op;
     int dev = 0;
     if (cudaGetDevice(&dev) != cudaSuccess)
         return -9;
-    auto hw =
-        cutlass::KernelHardwareInfo::make_kernel_hardware_info<typename Hopper<Output>::Kernel>(
-            dev);
+    auto hw = cutlass::KernelHardwareInfo::make_kernel_hardware_info<
+        typename Hopper<Output, Weighted>::Kernel>(dev);
     typename G::Arguments args;
     decltype(args.epilogue.thread) fusion{};
-    fusion.alpha = 1.f;
-    fusion.beta = 0.f;
+    if constexpr (Weighted) {
+        fusion = {{}, {row_weights, 1.f, {}}, {}};
+    } else {
+        fusion.alpha = 1.f;
+        fusion.beta = 0.f;
+    }
     args = {cutlass::gemm::GemmUniversalMode::kGrouped,
             {groups, static_cast<Problem::UnderlyingProblemShape *>(shapes), nullptr},
             {static_cast<const Element **>(a), static_cast<StrideA *>(lda),
@@ -88,10 +100,11 @@ struct Buffers {
     uint32_t *ids, *mapping;
     float *weights;
     Element *packed, *gate_up, *activated;
-    float *expert_output;
+    Element *expert_output;
+    float *sorted_weights;
+    float **row_weights;
     Problem::UnderlyingProblemShape *problems;
     Element **a, **b, **c;
-    float **c_f32;
     StrideA *lda;
     StrideB *ldb;
     StrideC *ldc;
@@ -107,12 +120,13 @@ struct Buffers {
         packed = w.take<Element>(slots * hidden);
         gate_up = w.take<Element>(slots * 2 * intermediate);
         activated = w.take<Element>(slots * intermediate);
-        expert_output = w.take<float>(slots * hidden);
+        expert_output = w.take<Element>(slots * hidden);
+        sorted_weights = w.take<float>(slots);
+        row_weights = w.take<float *>(128);
         problems = w.take<Problem::UnderlyingProblemShape>(128);
         a = w.take<Element *>(128);
         b = w.take<Element *>(128);
         c = w.take<Element *>(128);
-        c_f32 = w.take<float *>(128);
         lda = w.take<StrideA>(128);
         ldb = w.take<StrideB>(128);
         ldc = w.take<StrideC>(128);
@@ -132,6 +146,28 @@ __global__ void setup_problems(const int *counts, const int *offsets, Element *i
     lda[e] = StrideA{int64_t(input_width), _1{}, _0{}};
     ldb[e] = StrideB{int64_t(input_width), _1{}, _0{}};
     ldc[e] = StrideC{int64_t(output_width), _1{}, _0{}};
+}
+__global__ void sort_weights(const uint32_t *mapping, const float *weights, float *sorted,
+                             int slots) {
+    const uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < uint64_t(slots))
+        sorted[mapping[i]] = weights[i];
+}
+__global__ void weight_pointers(const int *offsets, float *sorted, float **rows) {
+    int e = threadIdx.x;
+    rows[e] = sorted + offsets[e];
+}
+__global__ void combine_weighted(const __nv_bfloat16 *input, const uint32_t *mapping,
+                                 __nv_bfloat16 *output, int tokens, int hidden) {
+    uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+    if (i < uint64_t(tokens) * hidden) {
+        uint64_t t = i / hidden, c = i % hidden;
+        float sum = 0;
+#pragma unroll
+        for (int k = 0; k < 8; ++k)
+            sum += __bfloat162float(input[uint64_t(mapping[t * 8 + k]) * hidden + c]);
+        output[i] = __float2bfloat16_rn(sum);
+    }
 }
 } // namespace hopper_detail
 
@@ -181,25 +217,22 @@ extern "C" int hopper_gemma4_moe_forward_bf16(const float *logits, const float *
                                        b.workspace, stream);
     if (status)
         return status;
-    gemma4_moe_gelu_mul<<<slots, 128, 0, stream>>>(
-        reinterpret_cast<__nv_bfloat16 *>(b.gate_up),
-        reinterpret_cast<__nv_bfloat16 *>(b.activated), slots, intermediate);
+    gemma4_moe_gelu_mul<<<slots, 128, 0, stream>>>(reinterpret_cast<__nv_bfloat16 *>(b.gate_up),
+                                                   reinterpret_cast<__nv_bfloat16 *>(b.activated),
+                                                   slots, intermediate);
     setup_problems<<<1, 128, 0, stream>>>(
         b.counts, b.offsets, b.activated, static_cast<Element *>(down_weight), b.expert_output,
-        intermediate, hidden, b.problems, b.a, b.b, b.c_f32, b.lda, b.ldb, b.ldc);
-    status = grouped_gemm<float>(b.problems, 128, b.a, b.b, b.c_f32, b.lda, b.ldb, b.ldc,
-                                 b.workspace, stream);
+        intermediate, hidden, b.problems, b.a, b.b, b.c, b.lda, b.ldb, b.ldc);
+    sort_weights<<<(uint64_t(slots) + 255) / 256, 256, 0, stream>>>(b.mapping, b.weights,
+                                                                    b.sorted_weights, slots);
+    weight_pointers<<<1, 128, 0, stream>>>(b.offsets, b.sorted_weights, b.row_weights);
+    status = grouped_gemm<Element, true>(b.problems, 128, b.a, b.b, b.c, b.lda, b.ldb, b.ldc,
+                                         b.workspace, stream, b.row_weights);
     if (status)
         return status;
-    if ((reinterpret_cast<uintptr_t>(output) & 15) == 0) {
-        gemma4_moe_combine_vec8<<<(uint64_t(tokens) * (hidden / 8) + 255) / 256, 256, 0, stream>>>(
-            b.expert_output, b.mapping, b.weights, static_cast<__nv_bfloat16 *>(output), tokens,
-            hidden);
-    } else {
-        gemma4_moe_unpermute_combine<<<(uint64_t(tokens) * hidden + 255) / 256, 256, 0, stream>>>(
-            b.expert_output, b.mapping, b.weights, static_cast<__nv_bfloat16 *>(output), tokens,
-            hidden);
-    }
+    combine_weighted<<<(uint64_t(tokens) * hidden + 255) / 256, 256, 0, stream>>>(
+        reinterpret_cast<__nv_bfloat16 *>(b.expert_output), b.mapping,
+        static_cast<__nv_bfloat16 *>(output), tokens, hidden);
     return cudaGetLastError() == cudaSuccess ? 0 : -3;
 }
 

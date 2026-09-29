@@ -25,8 +25,11 @@ CUTLASS v4.5.0 is fetched at pinned commit
 in `LICENSE.cutlass`.
 
 GELU rounds to BF16 before multiplying the up branch. The down projection keeps
-FP32 output until routing weights are applied, then rounds each expert's weighted
-output to BF16 before summing in FP32. This follows vLLM's intermediate rounding.
+FP32 accumulation until routing weights are applied, then rounds each expert's
+weighted output to BF16 before summing in FP32. The Hopper path applies the
+routing weights in the GEMM epilogue and stores BF16 weighted outputs, avoiding
+the larger FP32 intermediate buffer. The portable path retains its separate
+FP32 output and weighting step. This follows vLLM's intermediate rounding.
 Different GEMM/attention accumulation orders can still produce different model
 scores; routing agreement alone does not qualify full-model accuracy.
 
@@ -72,3 +75,7 @@ Use `--unaligned-io` and `--concentrated` separately to exercise offset views
 and routing concentrated on eight experts (including 120 empty experts).
 `-DNDEBUG` avoids CUTLASS device assertions that serialize WGMMA instructions;
 host shape, workspace and launch-status checks remain enabled.
+
+To verify a kernel change against a prior build, add `--baseline-library /path/to/previous.so`
+to the diagnostic. It requires identical BF16 output bits using the selected
+portable/Hopper entry point, in addition to the existing vLLM comparison.
