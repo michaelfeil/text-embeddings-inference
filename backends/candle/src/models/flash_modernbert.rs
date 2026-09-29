@@ -254,6 +254,7 @@ impl FlashModernBertModel {
         crate::flash_attn::validate_packed_device(&vb)?;
 
         let (pool, classifier) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 let pool: Pool = config.classifier_pooling.clone().unwrap_or(Pool::Cls);
 

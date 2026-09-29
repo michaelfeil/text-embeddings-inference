@@ -528,7 +528,7 @@ async fn rerank(
 
     match &info.model_type {
         ModelType::Reranker(_) => Ok(()),
-        ModelType::Classifier(_) | ModelType::Embedding(_) => {
+        ModelType::Decision | ModelType::Classifier(_) | ModelType::Embedding(_) => {
             let counter = metrics::counter!("te_request_failure", "err" => "model_type");
             counter.increment(1);
             let message = "model is not a re-ranker model".to_string();
@@ -1792,6 +1792,12 @@ async fn vertex_compatibility(
         }
 
         match info.model_type {
+            ModelType::Decision => {
+                return Err(ErrorResponse::from(TextEmbeddingsError::Validation(
+                    "Use /v1/systemone for typed decisions".into(),
+                ))
+                .into())
+            }
             ModelType::Classifier(_) | ModelType::Reranker(_) => {
                 let instance = serde_json::from_value::<PredictRequest>(instance)
                     .map_err(ErrorResponse::from)?;
@@ -1845,12 +1851,14 @@ pub async fn run(
     payload_limit: usize,
     api_key: Option<String>,
     cors_allow_origin: Option<Vec<String>>,
+    systemone: Option<std::sync::Arc<super::systemone::SystemOne>>,
 ) -> Result<(), anyhow::Error> {
     // OpenAPI documentation
     #[derive(OpenApi)]
     #[openapi(
     paths(
     get_model_info,
+    super::systemone::systemone,
     health,
     predict,
     rerank,
@@ -1865,6 +1873,18 @@ pub async fn run(
     ),
     components(
     schemas(
+    super::systemone::SystemOneRequest,
+    super::systemone_input::SystemOneInput,
+    super::systemone_input::MessageInput,
+    super::systemone_input::DecisionMessage,
+    super::systemone_input::MessageRole,
+    super::systemone_input::MessageContent,
+    super::systemone_input::ContentPart,
+    super::systemone_input::ImageSource,
+    super::systemone_input::ImageDetail,
+    super::systemone_input::AudioSource,
+    super::systemone_input::AudioFormat,
+    super::systemone_input::VideoSource,
     PredictInput,
     Input,
     Info,
@@ -1986,6 +2006,7 @@ pub async fn run(
         // OpenAI compat route
         .route("/embeddings", post(openai_embed))
         .route("/v1/embeddings", post(openai_embed))
+        .route("/v1/systemone", post(super::systemone::systemone))
         // Vertex compat route
         .route("/vertex", post(vertex_compatibility));
 
@@ -2018,6 +2039,9 @@ pub async fn run(
     {
         // Set default routes
         routes = match &info.model_type {
+            ModelType::Decision => routes
+                .route("/", post(super::systemone::systemone))
+                .route("/invocations", post(super::systemone::systemone)),
             ModelType::Classifier(_) => {
                 routes
                     .route("/", post(predict))
@@ -2076,6 +2100,7 @@ pub async fn run(
         .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", doc))
         .merge(routes)
         .merge(public_routes)
+        .layer(Extension(systemone))
         .layer(Extension(infer))
         .layer(Extension(info))
         .layer(Extension(prom_handle.clone()))

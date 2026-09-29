@@ -49,6 +49,7 @@ pub struct Entry {
 /// Entry metadata
 #[derive(Debug)]
 pub struct Metadata {
+    pub decision: Option<text_embeddings_backend::DecisionInput>,
     /// Shared HTTP-request identity and count of inputs still tokenizing.
     pub(crate) client_batch: Option<Arc<AtomicUsize>>,
     /// InferResponse sender to communicate between the Infer struct and the batching_task
@@ -525,6 +526,7 @@ mod tests {
                 prompt_tokens: 1,
                 pooling: false,
                 token_classification: true,
+                decision: None,
             })
             .collect();
         let batch = Batch {
@@ -551,5 +553,51 @@ mod tests {
         assert_eq!(batch.offsets, vec![(2, 6)]);
         assert_eq!(target_for_backlog(100_000, Some(5_000), 8), Some(5_000));
         assert_eq!(target_for_backlog(160_000, Some(5_000), 8), None);
+    }
+    #[test]
+    fn cancellation_preserves_decision_metadata() {
+        let (canceled, canceled_rx) = oneshot::channel();
+        let (live, _live_rx) = oneshot::channel();
+        drop(canceled_rx);
+        let metadata = [canceled, live]
+            .into_iter()
+            .enumerate()
+            .map(|(i, response_tx)| Metadata {
+                client_batch: None,
+                response_tx,
+                tokenization: Duration::ZERO,
+                queue_time: Instant::now(),
+                prompt_tokens: i + 2,
+                pooling: false,
+                token_classification: false,
+                decision: Some(text_embeddings_backend::DecisionInput {
+                    question_type: i * 2,
+                    markers: if i == 0 { vec![0] } else { vec![1, 2] },
+                }),
+            })
+            .collect();
+        let batch = Batch {
+            input_ids: vec![10, 11, 20, 21, 22],
+            token_type_ids: vec![0; 5],
+            position_ids: vec![0, 1, 0, 1, 2],
+            cumulative_seq_lengths: vec![0, 2, 5],
+            max_length: 3,
+            pooled_indices: vec![],
+            raw_indices: vec![0, 1],
+            compact_input_ids: None,
+            compact_position_ids: None,
+            scatter_unfold: None,
+            fold_gather: None,
+            tokens: vec![],
+            offsets: vec![],
+        };
+        let (metadata, batch) = prune_canceled_batch((metadata, batch)).unwrap();
+        assert_eq!(metadata.len(), 1);
+        assert_eq!(metadata[0].decision.as_ref().unwrap().question_type, 2);
+        assert_eq!(metadata[0].decision.as_ref().unwrap().markers, vec![1, 2]);
+        assert_eq!(batch.input_ids, vec![20, 21, 22]);
+        assert_eq!(batch.raw_indices, vec![0]);
+        assert_eq!(batch.cumulative_seq_lengths, vec![0, 3]);
+        assert_eq!(batch.position_ids, vec![0, 1, 2]);
     }
 }

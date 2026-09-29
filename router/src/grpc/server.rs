@@ -573,6 +573,11 @@ impl TextEmbeddingsService {
 impl grpc::info_server::Info for TextEmbeddingsService {
     async fn info(&self, _request: Request<InfoRequest>) -> Result<Response<InfoResponse>, Status> {
         let model_type = match self.info.model_type {
+            ModelType::Decision => {
+                return Err(Status::unimplemented(
+                    "Typed decisions require the HTTP API",
+                ))
+            }
             ModelType::Classifier(_) => grpc::ModelType::Classifier,
             ModelType::Embedding(_) => grpc::ModelType::Embedding,
             ModelType::Reranker(_) => grpc::ModelType::Reranker,
@@ -923,7 +928,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                 Err(Status::new(Code::FailedPrecondition, message))
             }
             ModelType::Reranker(_) => Ok(()),
-            ModelType::Embedding(_) => {
+            ModelType::Decision | ModelType::Embedding(_) => {
                 let counter = metrics::counter!("te_request_failure", "err" => "model_type");
                 counter.increment(1);
                 let message = "model is not a classifier model".to_string();
@@ -1111,7 +1116,7 @@ impl grpc::rerank_server::Rerank for TextEmbeddingsService {
                 Err(Status::new(Code::FailedPrecondition, message))
             }
             ModelType::Reranker(_) => Ok(()),
-            ModelType::Embedding(_) => {
+            ModelType::Decision | ModelType::Embedding(_) => {
                 let counter = metrics::counter!("te_request_failure", "err" => "model_type");
                 counter.increment(1);
                 let message = "model is not a classifier model".to_string();
@@ -1453,6 +1458,7 @@ pub async fn run(
             // always return an `UNIMPLEMENTED` Status and both the `Rerank` and `Predict` services
             // will have a `NOT_SERVING` ServingStatus.
             match health_watcher_model_type {
+                ModelType::Decision => {}
                 ModelType::Classifier(_) => {
                     health_reporter
                         .set_service_status(

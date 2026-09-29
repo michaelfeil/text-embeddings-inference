@@ -855,6 +855,7 @@ impl Gemma4Model {
         }
 
         let score = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Embedding(pool) => Gemma4Output::Embedding(pool),
             ModelType::Classifier => {
                 let num_labels = config.num_labels.unwrap_or(config.id2label.len());

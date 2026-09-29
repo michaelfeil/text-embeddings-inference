@@ -262,6 +262,18 @@ impl Execution {
         .await
     }
 
+    pub async fn decide(
+        self,
+        batch: Batch,
+        inputs: Vec<text_embeddings_backend::DecisionInput>,
+    ) -> Result<(Vec<text_embeddings_backend::DecisionOutput>, Duration), BackendError> {
+        let tokens = compute_tokens(&batch, self.pool.padded_model);
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend.decide(batch, inputs).await
+        })
+        .await
+    }
+
     pub async fn predict(
         self,
         batch: Batch,

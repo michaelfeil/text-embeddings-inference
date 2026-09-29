@@ -10,6 +10,33 @@ use candle_nn::{Embedding, VarBuilder};
 use serde::Deserialize;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
+// Keep the existing configuration vocabulary while distinguishing the exact
+// Hugging Face GELU from its explicitly requested tanh approximations.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModernBertActivation {
+    Gelu,
+    #[serde(rename = "gelu_new", alias = "gelu_pytorch_tanh")]
+    GeluApprox,
+    Relu,
+    Silu,
+    Swiglu,
+    Tanh,
+}
+
+impl Module for ModernBertActivation {
+    fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Gelu => input.gelu_erf(),
+            Self::GeluApprox => input.gelu(),
+            Self::Relu => input.relu(),
+            Self::Silu => input.silu(),
+            Self::Swiglu => candle_nn::ops::swiglu(input),
+            Self::Tanh => input.tanh(),
+        }
+    }
+}
+
 // https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/configuration_modernbert.py
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ModernBertConfig {
@@ -18,7 +45,7 @@ pub struct ModernBertConfig {
     pub intermediate_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
-    pub hidden_activation: HiddenAct,
+    pub hidden_activation: ModernBertActivation,
     pub max_position_embeddings: usize,
     pub initializer_range: f64,
     pub initializer_cutoff_factor: f64,
@@ -82,7 +109,7 @@ impl ModernBertEmbeddings {
 pub struct ModernBertMLP {
     wi: Linear,
     wo: Linear,
-    activation: Option<HiddenAct>,
+    activation: ModernBertActivation,
     span: tracing::Span,
 }
 
@@ -101,7 +128,7 @@ impl ModernBertMLP {
 
         let wo = Linear::new(wo_weight, wo_bias, None);
 
-        let activation = Some(config.hidden_activation.clone());
+        let activation = config.hidden_activation;
 
         Ok(Self {
             wi,
@@ -116,10 +143,10 @@ impl ModernBertMLP {
 
         let hidden_states = self.wi.forward(hidden_states)?;
 
-        self.wo.forward(&crate::layers::gated_activation(
-            &hidden_states,
-            self.activation.as_ref(),
-        )?)
+        // HF `gelu` is erf-GELU; the shared fused gate uses tanh-GELU.
+        let chunks = hidden_states.chunk(2, D::Minus1)?;
+        let gated = self.activation.forward(&chunks[0])?.mul(&chunks[1])?;
+        self.wo.forward(&gated)
     }
 }
 
@@ -218,12 +245,16 @@ impl ModernBertAttention {
                     let attention_scores = cublaslt.batch_matmul(
                         &key_layer,
                         &query_layer,
-                        Some(attention_mask.as_ref()),
+                        None,
                         Some(self.softmax_scale as f32),
                         None,
                         None,
                         None,
                     )?;
+                    // cuBLASLt's optional output is a writable buffer, and beta
+                    // defaults to zero. Add the mask explicitly so padding/local
+                    // windows are honored and the reusable mask is not overwritten.
+                    let attention_scores = attention_scores.add(&attention_mask)?;
                     let attention_probs = candle_nn::ops::softmax_last_dim(&attention_scores)?;
 
                     let context_layer = cublaslt.batch_matmul(
@@ -484,6 +515,7 @@ pub struct ModernBertModel {
 impl ModernBertModel {
     pub fn load(vb: VarBuilder, config: &ModernBertConfig, model_type: ModelType) -> Result<Self> {
         let (pool, classifier) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 let pool: Pool = config.classifier_pooling.clone().unwrap_or(Pool::Cls);
 
@@ -579,21 +611,22 @@ impl ModernBertModel {
         Ok(extended_attention_mask)
     }
 
-    fn get_local_attention_mask(&self, attention_mask: &Tensor) -> Result<Tensor> {
-        let dev = attention_mask.device();
-        let attention_mask = attention_mask
-            .to_device(&Device::Cpu)?
-            .to_dtype(DType::U8)?;
+    fn get_local_attention_mask(attention_mask: &Tensor, local_attention: usize) -> Result<Tensor> {
+        // Keep the dense mask on the encoder device. Moving a broadcast
+        // [batch, heads, sequence, sequence] mask through CPU scales quadratically
+        // with sequence length and synchronizes every CUDA inference batch.
+        let attention_mask = attention_mask.to_dtype(DType::U8)?;
 
         let mask_shape = attention_mask.shape();
         let (_, _, seq_len, _) = mask_shape.dims4()?;
 
-        let rows = Tensor::arange(0, seq_len as i64, attention_mask.device())?.unsqueeze(0)?;
+        // CUDA has no I64 abs kernel; F32 represents supported token positions exactly.
+        let rows = Tensor::arange(0f32, seq_len as f32, attention_mask.device())?.unsqueeze(0)?;
         let rows = rows.broadcast_as((seq_len, seq_len))?;
 
         let distance = (&rows - &rows.t()?)?.abs()?;
 
-        let window_size = (self.local_attention / 2) as i64;
+        let window_size = (local_attention / 2) as f64;
         let window_mask = distance
             .le(window_size)?
             .unsqueeze(0)?
@@ -601,10 +634,7 @@ impl ModernBertModel {
             .broadcast_as(mask_shape)?;
 
         let zero_tensor = Tensor::zeros_like(&attention_mask)?;
-        let local_attention_mask = attention_mask.where_cond(&window_mask, &zero_tensor)?;
-        let local_attention_mask = local_attention_mask.to_device(dev)?;
-
-        Ok(local_attention_mask)
+        attention_mask.where_cond(&window_mask, &zero_tensor)
     }
 
     pub(crate) fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
@@ -680,9 +710,9 @@ impl ModernBertModel {
         let global_attention_mask = self
             .get_global_attention_mask(attention_mask.as_ref(), &shape)?
             .to_dtype(self.dtype)?;
-        let local_attention_mask = self
-            .get_local_attention_mask(&global_attention_mask)?
-            .to_dtype(self.dtype)?;
+        let local_attention_mask =
+            Self::get_local_attention_mask(&global_attention_mask, self.local_attention)?
+                .to_dtype(self.dtype)?;
 
         let min_value = match self.dtype {
             DType::F32 => f32::MIN as f64,
@@ -827,5 +857,230 @@ impl Model for ModernBertModel {
                 classifier.forward(&pooled_embeddings)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    #[test]
+    fn local_mask_preserves_window_and_padding_on_encoder_device() -> Result<()> {
+        let mut devices = vec![Device::Cpu];
+        #[cfg(feature = "cuda")]
+        if std::env::var_os("LAYA_TEST_CUDA").is_some() {
+            devices.push(Device::new_cuda(0)?);
+        }
+        for device in devices.drain(..) {
+            let mask = Tensor::from_vec(
+                vec![1f32, 1., 1., 1., 1., 1., 1., 1., 0., 0.],
+                (2, 1, 1, 5),
+                &device,
+            )?
+            .to_dtype(DType::BF16)?
+            .broadcast_as((2, 2, 5, 5))?;
+            let actual = ModernBertModel::get_local_attention_mask(&mask, 2)?;
+            assert_eq!(actual.device().is_cuda(), device.is_cuda());
+            let actual = actual.flatten_all()?.to_vec1::<u8>()?;
+            let mut expected = Vec::new();
+            for length in [5usize, 3] {
+                for _head in 0..2 {
+                    for query in 0usize..5 {
+                        for key in 0usize..5 {
+                            expected.push(u8::from(key < length && query.abs_diff(key) <= 1));
+                        }
+                    }
+                }
+            }
+            assert_eq!(actual, expected);
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check_exact_gelu(device: &Device) -> Result<()> {
+        // Wi yields [x, 1], so the complete gated MLP evaluates GELU(x).
+        let mlp = ModernBertMLP {
+            wi: Linear::new(
+                Tensor::from_slice(&[1f32, 0., 0., 1., 0., 0., 0., 0.], (4, 2), device)?,
+                Some(Tensor::from_slice(&[0f32, 0., 1., 1.], 4, device)?),
+                None,
+            ),
+            wo: Linear::new(Tensor::eye(2, DType::F32, device)?, None, None),
+            activation: serde_json::from_str("\"gelu\"").unwrap(),
+            span: tracing::span!(tracing::Level::TRACE, "test_mlp"),
+        };
+        let output = mlp
+            .forward(&Tensor::from_slice(&[-2f32, 2.], (1, 1, 2), device)?)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        // x * (1 + erf(x / sqrt(2))) / 2, evaluated independently.
+        // Tanh-GELU differs by about 9.8e-5 at these inputs.
+        for (actual, expected) in output.iter().zip([-0.045500264f32, 1.9544997]) {
+            assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
+        }
+        Ok(())
+    }
+
+    fn uniform_attention(device: &Device, dtype: DType) -> Result<ModernBertAttention> {
+        // Q = K = 0, V = input, Wo = identity: expected output is the
+        // arithmetic mean over precisely the keys allowed by the mask.
+        let mut weights = vec![0f32; 12 * 4];
+        for i in 0..4 {
+            weights[(8 + i) * 4 + i] = 1.;
+        }
+        Ok(ModernBertAttention {
+            wqkv: Linear::new(
+                Tensor::from_vec(weights, (12, 4), device)?.to_dtype(dtype)?,
+                None,
+                None,
+            ),
+            wo: Linear::new(Tensor::eye(4, dtype, device)?, None, None),
+            num_attention_heads: 1,
+            attention_head_size: 4,
+            softmax_scale: 0.5,
+            span: tracing::span!(tracing::Level::TRACE, "test_attention"),
+        })
+    }
+
+    fn masked_attention(
+        attention: &ModernBertAttention,
+        device: &Device,
+        dtype: DType,
+        lengths: &[usize],
+        local: bool,
+    ) -> Result<Vec<Vec<Vec<f32>>>> {
+        let width = *lengths.iter().max().unwrap();
+        let mut hidden = vec![];
+        let mut mask = vec![];
+        let mut expected = vec![];
+        for (batch, &length) in lengths.iter().enumerate() {
+            let values: Vec<f32> = (0..width)
+                .map(|i| {
+                    if i < length {
+                        ((i + batch) % 7) as f32 / 8.
+                    } else {
+                        100.
+                    }
+                })
+                .collect();
+            for &value in &values {
+                hidden.extend([value; 4]);
+            }
+            for query in 0..width {
+                let allowed: Vec<usize> = (0..length)
+                    .filter(|&key| !local || query.abs_diff(key) <= 64)
+                    .collect();
+                assert!(!allowed.is_empty());
+                expected.push(
+                    allowed.iter().map(|&key| values[key]).sum::<f32>() / allowed.len() as f32,
+                );
+                mask.extend((0..width).map(|key| {
+                    if allowed.contains(&key) {
+                        0f32
+                    } else {
+                        -65504.
+                    }
+                }));
+            }
+        }
+        let shape = (lengths.len(), 1, width, width);
+        let mask = Tensor::from_vec(mask.clone(), shape, device)?.to_dtype(dtype)?;
+        let original_mask = mask.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?;
+        let hidden =
+            Tensor::from_vec(hidden, (lengths.len(), width, 4), device)?.to_dtype(dtype)?;
+        let rotary_shape = (lengths.len(), 1, width, 4);
+        let rotary = (
+            Tensor::ones(rotary_shape, dtype, device)?,
+            Tensor::zeros(rotary_shape, dtype, device)?,
+        );
+        let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+        let mut result = vec![];
+        // Reuse the same mask as multiple encoder layers do. Both calls must
+        // honor it, and neither may mutate the caller's mask storage.
+        for _ in 0..2 {
+            result = attention
+                .forward(&hidden, &mask, &rotary)?
+                .to_dtype(DType::F32)?
+                .to_vec3::<f32>()?;
+            assert_eq!(
+                mask.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>()?,
+                original_mask
+            );
+            for (index, token) in result.iter().flatten().enumerate() {
+                for &actual in token {
+                    assert!(
+                        (actual - expected[index]).abs() < tolerance,
+                        "local={local}, token={index}: {actual} != {}",
+                        expected[index]
+                    );
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn check_masks(device: &Device, dtype: DType) -> Result<()> {
+        let attention = uniform_attention(device, dtype)?;
+        for local in [false, true] {
+            // Cross the 128-token local window and introduce unequal-length
+            // batch padding. The first sequence must match its solo result.
+            let batched = masked_attention(&attention, device, dtype, &[133, 160], local)?;
+            let solo = masked_attention(&attention, device, dtype, &[133], local)?;
+            let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+            for (a, b) in batched[0]
+                .iter()
+                .take(133)
+                .flatten()
+                .zip(solo[0].iter().flatten())
+            {
+                assert!((a - b).abs() < tolerance, "batched {a} != solo {b}");
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn modernbert_activation_config_preserves_existing_names() -> Result<()> {
+        for (name, expected) in [
+            ("gelu", ModernBertActivation::Gelu),
+            ("gelu_new", ModernBertActivation::GeluApprox),
+            ("gelu_pytorch_tanh", ModernBertActivation::GeluApprox),
+            ("relu", ModernBertActivation::Relu),
+            ("silu", ModernBertActivation::Silu),
+            ("swiglu", ModernBertActivation::Swiglu),
+            ("tanh", ModernBertActivation::Tanh),
+        ] {
+            let parsed: ModernBertActivation = serde_json::from_str(&format!("\"{name}\""))
+                .expect("previously supported activation name");
+            assert_eq!(parsed, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn modernbert_exact_gelu_cpu() -> Result<()> {
+        check_exact_gelu(&Device::Cpu)
+    }
+
+    #[test]
+    fn modernbert_padding_locality_and_mask_reuse_cpu() -> Result<()> {
+        check_masks(&Device::Cpu, DType::F32)
+    }
+
+    #[test]
+    #[cfg(feature = "cuda")]
+    fn modernbert_exact_gelu_and_attention_masks_cuda() -> Result<()> {
+        // Deliberately fail if CUDA/cuBLASLt is unavailable: this test must not
+        // silently pass through the CPU fallback it is intended to distinguish.
+        let device = Device::new_cuda(0)?;
+        assert!(get_cublas_lt_wrapper(&device)?.is_some());
+        check_exact_gelu(&device)?;
+        check_masks(&device, DType::F32)?;
+        check_masks(&device, DType::BF16)
     }
 }

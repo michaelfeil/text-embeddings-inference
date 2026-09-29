@@ -464,6 +464,69 @@ curl 127.0.0.1:8080/predict \
     -H 'Content-Type: application/json'
 ```
 
+### Laya typed decisions (Jev API)
+
+Serve `convaiinnovations/laya-typed-decisions` with the Candle HTTP build:
+
+```shell
+text-embeddings-router --model-id convaiinnovations/laya-typed-decisions
+```
+
+For CPU inference, add `--dtype float32`.
+
+The existing API server exposes `POST /v1/systemone`. Questions use TEI's shared
+batch queue, backend replicas, concurrency limits, authentication, and metrics.
+ModernBERT encodes the batch once; Laya's custom head scores each question's
+options. This is bidirectional inference; RadixMLP is disabled for this model.
+
+```shell
+curl http://localhost:3000/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "state": "I was billed twice. Please refund the extra charge.",
+    "questions": {
+      "team": {"type": "choice", "instructions": "Which team?",
+               "criteria": {"billing": "billing and payments", "support": "technical support"}},
+      "urgency": {"type": "score", "instructions": "How urgent is this request?",
+                  "criteria": ["low", "medium", "high"]},
+      "refund": {"type": "noul", "instructions": "The customer requests a refund."}
+    }
+  }'
+```
+
+Answers contain the selected choice, an expected zero-based score, or a `noul`
+probability of true, plus temperature-scaled `answer_confidence` and the action head's
+`act_probability`. Choice/score answers also include option probabilities and
+entropy-based `confidence`. Usage reports input tokens and zero output tokens.
+Option order follows the request JSON. `state` is either a plain text string or
+an explicit `{"messages": [...]}` envelope. Messages preserve roles and ordered
+text/image/audio/video content blocks for a model's native processor. The current
+Laya adapter supports **plain text only** and rejects native messages with 422;
+the message schema does not imply multimodal backend support. Plain text truncates
+from the right. Arbitrary JSON objects and bare arrays are no longer accepted as
+state; serialize structured records explicitly when supplying text to Laya.
+See [the input design](docs/systemone-input-design.md) for the message contract.
+
+Optional `max_len` and `head_max_len` override the checkpoint's token budgets,
+up to the server's maximum input length. Requests that cannot retain all options,
+or make options identical after token truncation, return 422. The server accepts
+Jev's `model` field as an alias and always uses its configured checkpoint.
+
+Limits: at most 64 questions (also bounded by `--max-client-batch-size`), 100
+choice options, 32 score levels, 512 total options, and 50,000 state characters.
+Use the existing `--max-batch-tokens`, `--max-batch-requests`,
+`--max-concurrent-requests`, and replica options to control serving capacity.
+For a local checkpoint, retain `rl_agent_config.json`, `encoder/config.json`,
+`tokenizer/tokenizer.json`, and `model.safetensors` in their original layout.
+Laya requires the Candle backend and the HTTP API.
+
+Unknown request/question fields are rejected. Execution extensions such as
+`think`, `mode`, `depends_on`, `ask_if`, and `alone` are not implemented.
+Temperatures are clamped to [0.5, 5], matching upstream Laya. The published
+checkpoint's `choice:11+` temperature is outside this range; confidence for that
+bucket is not verified as calibrated. See [verification and benchmarks](docs/laya-verification.md)
+for measured parity, labelled accuracy, and latency limitations.
+
 ### Using SPLADE pooling
 
 You can choose to activate SPLADE pooling for Bert and Distilbert MaskedLM architectures:
