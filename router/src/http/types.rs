@@ -329,6 +329,33 @@ pub(crate) enum Input {
     Batch(Vec<InputType>),
 }
 
+/// Text or a batch of complete token-ID sequences. Token IDs bypass tokenization,
+/// default prompts, and special-token insertion. Use [[101, 102]], not [101, 102].
+#[derive(Deserialize, ToSchema)]
+#[serde(
+    untagged,
+    expecting = "a string, a list of strings, or a nested list of token IDs (for one sequence use [[101, 102]], not [101, 102])"
+)]
+pub(crate) enum EmbeddingInput {
+    String(String),
+    Strings(Vec<String>),
+    TokenIds(Vec<Vec<u32>>),
+}
+
+impl From<EmbeddingInput> for Input {
+    fn from(value: EmbeddingInput) -> Self {
+        match value {
+            EmbeddingInput::String(s) => Self::Single(InputType::String(s)),
+            EmbeddingInput::Strings(strings) => {
+                Self::Batch(strings.into_iter().map(InputType::String).collect())
+            }
+            EmbeddingInput::TokenIds(ids) => {
+                Self::Batch(ids.into_iter().map(InputType::Ids).collect())
+            }
+        }
+    }
+}
+
 #[derive(Deserialize, ToSchema, Default)]
 #[serde(rename_all = "snake_case")]
 pub(crate) enum EncodingFormat {
@@ -339,7 +366,7 @@ pub(crate) enum EncodingFormat {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct OpenAICompatRequest {
-    pub input: Input,
+    pub input: EmbeddingInput,
     #[allow(dead_code)]
     #[schema(nullable = true, example = "null")]
     pub model: Option<String>,
@@ -433,7 +460,7 @@ pub(crate) struct SimilarityResponse(pub Vec<f32>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedRequest {
-    pub inputs: Input,
+    pub inputs: EmbeddingInput,
 
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
@@ -646,4 +673,41 @@ pub(crate) struct TokenPrediction {
 #[serde(untagged)]
 pub(crate) enum TokenPredictResponse {
     Batch(Vec<Vec<TokenPrediction>>),
+}
+
+#[cfg(test)]
+mod pretokenized_embedding_tests {
+    use super::*;
+
+    #[test]
+    fn embedding_input_shapes() {
+        for value in [
+            json!("hello"),
+            json!(["hello", "world"]),
+            json!([[101, 102]]),
+            json!([[101], [102, 3]]),
+        ] {
+            assert!(serde_json::from_value::<EmbeddingInput>(value).is_ok());
+        }
+        for value in [
+            json!([101, 102]),
+            json!(["hello", [101]]),
+            json!([[-1]]),
+            json!([[1.5]]),
+            json!([[4294967296u64]]),
+        ] {
+            assert!(serde_json::from_value::<EmbeddingInput>(value).is_err());
+        }
+        for field in ["inputs", "input"] {
+            let valid = json!({field: [[101, 102]]});
+            let invalid = json!({field: [101, 102]});
+            if field == "inputs" {
+                assert!(serde_json::from_value::<EmbedRequest>(valid).is_ok());
+                assert!(serde_json::from_value::<EmbedRequest>(invalid).is_err());
+            } else {
+                assert!(serde_json::from_value::<OpenAICompatRequest>(valid).is_ok());
+                assert!(serde_json::from_value::<OpenAICompatRequest>(invalid).is_err());
+            }
+        }
+    }
 }

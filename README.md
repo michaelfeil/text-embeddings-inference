@@ -150,6 +150,30 @@ curl 127.0.0.1:8080/embed \
     -H 'Content-Type: application/json'
 ```
 
+### Pre-tokenized embeddings
+
+`/embed` also accepts a batch of token-ID sequences:
+
+```json
+{"inputs": [[101, 2023, 2003, 102], [101, 7592, 102]]}
+```
+
+For `/v1/embeddings`, use the same nested array in the `input` field. A single
+sequence must still be nested (`[[101, 102]]`); flat ID arrays and batches mixing
+strings with IDs are rejected. Text strings and batches of strings remain supported.
+
+IDs must come from the served model's tokenizer and include any required special
+tokens and prompt tokens. They go directly to inference: no decoding, re-encoding,
+additional special tokens, or configured default prompt. `prompt_name` is rejected
+for ID inputs. Each sequence uses zero token-type IDs and positions beginning at the
+model's normal position offset; attention padding is handled by the backend.
+
+Empty sequences and IDs outside the tokenizer vocabulary are rejected. Normal
+batch and token limits apply. Explicit or server-configured truncation slices the
+IDs from the requested side without adding back special tokens. Token usage counts
+the IDs actually submitted to inference. Normalization and output dimensions work
+as with text inputs.
+
 **Note:** To use GPUs, you need to install
 the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html).
 NVIDIA drivers on your machine need to be compatible with CUDA version 12.2 or higher.
