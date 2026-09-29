@@ -124,5 +124,5 @@ FP32/FP16 model execution, CPU/Metal, and `USE_FLASH_ATTENTION=false` are reject
 there is no padded fallback. Internal normalization still accumulates in FP32.
 The model requires mean pooling and its two checkpoint-provided Dense projection
 modules. Use the checkpoint's named query/document prompts for retrieval.
-FA2 is the default; `ATTN_BACKEND=fa4` follows the build's existing capability
-checks and fallback rules.
+`ATTN_BACKEND=auto` is the default and retains FA2 for EmbeddingGemma because
+its head shape is not supported by the bundled FA4 kernels.
