@@ -88,9 +88,18 @@ impl BertEmbeddings {
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
 
-        let input_embeddings = self.word_embeddings.forward(input_ids)?;
-        let token_type_embeddings = self.token_type_embeddings.forward(token_type_ids)?;
-        let position_embeddings = self.position_embeddings.forward(position_ids)?;
+        // Packed CUDA inputs can use the existing vectorized row gather.
+        // Preserve Embedding's shape handling for padded and non-CUDA inputs.
+        let gather = |embedding: &Embedding, ids: &Tensor| {
+            if ids.rank() == 1 && matches!(ids.device(), Device::Cuda(_)) {
+                crate::layers::index_select(embedding.embeddings(), ids, 0)
+            } else {
+                embedding.forward(ids)
+            }
+        };
+        let input_embeddings = gather(&self.word_embeddings, input_ids)?;
+        let token_type_embeddings = gather(&self.token_type_embeddings, token_type_ids)?;
+        let position_embeddings = gather(&self.position_embeddings, position_ids)?;
 
         let embeddings = input_embeddings.add(&token_type_embeddings)?;
         let embeddings = self
