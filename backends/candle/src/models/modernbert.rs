@@ -580,21 +580,22 @@ impl ModernBertModel {
         Ok(extended_attention_mask)
     }
 
-    fn get_local_attention_mask(&self, attention_mask: &Tensor) -> Result<Tensor> {
-        let dev = attention_mask.device();
-        let attention_mask = attention_mask
-            .to_device(&Device::Cpu)?
-            .to_dtype(DType::U8)?;
+    fn get_local_attention_mask(attention_mask: &Tensor, local_attention: usize) -> Result<Tensor> {
+        // Keep the dense mask on the encoder device. Moving a broadcast
+        // [batch, heads, sequence, sequence] mask through CPU scales quadratically
+        // with sequence length and synchronizes every CUDA inference batch.
+        let attention_mask = attention_mask.to_dtype(DType::U8)?;
 
         let mask_shape = attention_mask.shape();
         let (_, _, seq_len, _) = mask_shape.dims4()?;
 
-        let rows = Tensor::arange(0, seq_len as i64, attention_mask.device())?.unsqueeze(0)?;
+        // CUDA has no I64 abs kernel; F32 represents supported token positions exactly.
+        let rows = Tensor::arange(0f32, seq_len as f32, attention_mask.device())?.unsqueeze(0)?;
         let rows = rows.broadcast_as((seq_len, seq_len))?;
 
         let distance = (&rows - &rows.t()?)?.abs()?;
 
-        let window_size = (self.local_attention / 2) as i64;
+        let window_size = (local_attention / 2) as f64;
         let window_mask = distance
             .le(window_size)?
             .unsqueeze(0)?
@@ -602,10 +603,7 @@ impl ModernBertModel {
             .broadcast_as(mask_shape)?;
 
         let zero_tensor = Tensor::zeros_like(&attention_mask)?;
-        let local_attention_mask = attention_mask.where_cond(&window_mask, &zero_tensor)?;
-        let local_attention_mask = local_attention_mask.to_device(dev)?;
-
-        Ok(local_attention_mask)
+        attention_mask.where_cond(&window_mask, &zero_tensor)
     }
 
     pub(crate) fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
@@ -681,9 +679,9 @@ impl ModernBertModel {
         let global_attention_mask = self
             .get_global_attention_mask(attention_mask.as_ref(), &shape)?
             .to_dtype(self.dtype)?;
-        let local_attention_mask = self
-            .get_local_attention_mask(&global_attention_mask)?
-            .to_dtype(self.dtype)?;
+        let local_attention_mask =
+            Self::get_local_attention_mask(&global_attention_mask, self.local_attention)?
+                .to_dtype(self.dtype)?;
 
         let min_value = match self.dtype {
             DType::F32 => f32::MIN as f64,
@@ -828,5 +826,43 @@ impl Model for ModernBertModel {
                 classifier.forward(&pooled_embeddings)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+
+    #[test]
+    fn local_mask_preserves_window_and_padding_on_encoder_device() -> Result<()> {
+        let mut devices = vec![Device::Cpu];
+        #[cfg(feature = "cuda")]
+        if std::env::var_os("LAYA_TEST_CUDA").is_some() {
+            devices.push(Device::new_cuda(0)?);
+        }
+        for device in devices.drain(..) {
+            let mask = Tensor::from_vec(
+                vec![1f32, 1., 1., 1., 1., 1., 1., 1., 0., 0.],
+                (2, 1, 1, 5),
+                &device,
+            )?
+            .to_dtype(DType::BF16)?
+            .broadcast_as((2, 2, 5, 5))?;
+            let actual = ModernBertModel::get_local_attention_mask(&mask, 2)?;
+            assert_eq!(actual.device().is_cuda(), device.is_cuda());
+            let actual = actual.flatten_all()?.to_vec1::<u8>()?;
+            let mut expected = Vec::new();
+            for length in [5usize, 3] {
+                for _head in 0..2 {
+                    for query in 0usize..5 {
+                        for key in 0usize..5 {
+                            expected.push(u8::from(key < length && query.abs_diff(key) <= 1));
+                        }
+                    }
+                }
+            }
+            assert_eq!(actual, expected);
+        }
+        Ok(())
     }
 }
