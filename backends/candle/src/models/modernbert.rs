@@ -10,8 +10,8 @@ use candle_nn::{Embedding, VarBuilder};
 use serde::Deserialize;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
-// Keep the existing configuration vocabulary while distinguishing the exact
-// Hugging Face GELU from its explicitly requested tanh approximations.
+// Preserve the configuration vocabulary. ModernBERT intentionally uses the
+// tanh approximation for `gelu`, as well as its explicit approximation aliases.
 #[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum ModernBertActivation {
@@ -27,7 +27,7 @@ pub enum ModernBertActivation {
 impl Module for ModernBertActivation {
     fn forward(&self, input: &Tensor) -> Result<Tensor> {
         match self {
-            Self::Gelu => input.gelu_erf(),
+            Self::Gelu => input.gelu(),
             Self::GeluApprox => input.gelu(),
             Self::Relu => input.relu(),
             Self::Silu => input.silu(),
@@ -143,7 +143,7 @@ impl ModernBertMLP {
 
         let hidden_states = self.wi.forward(hidden_states)?;
 
-        // HF `gelu` is erf-GELU; the shared fused gate uses tanh-GELU.
+        // Keep the configured activation followed by its packed multiplicative gate.
         let chunks = hidden_states.chunk(2, D::Minus1)?;
         let gated = self.activation.forward(&chunks[0])?.mul(&chunks[1])?;
         self.wo.forward(&gated)
@@ -253,7 +253,7 @@ impl ModernBertAttention {
                     )?;
                     // cuBLASLt's optional output is a writable buffer, and beta
                     // defaults to zero. Add the mask explicitly so padding/local
-                    // windows are honored and the reusable mask is not overwritten.
+                    // windows are honored instead of copying and ignoring it.
                     let attention_scores = attention_scores.add(&attention_mask)?;
                     let attention_probs = candle_nn::ops::softmax_last_dim(&attention_scores)?;
 
@@ -902,7 +902,7 @@ mod mask_tests {
 mod tests {
     use super::*;
 
-    fn check_exact_gelu(device: &Device) -> Result<()> {
+    fn check_approximate_gelu(device: &Device) -> Result<()> {
         // Wi yields [x, 1], so the complete gated MLP evaluates GELU(x).
         let mlp = ModernBertMLP {
             wi: Linear::new(
@@ -918,9 +918,9 @@ mod tests {
             .forward(&Tensor::from_slice(&[-2f32, 2.], (1, 1, 2), device)?)?
             .flatten_all()?
             .to_vec1::<f32>()?;
-        // x * (1 + erf(x / sqrt(2))) / 2, evaluated independently.
-        // Tanh-GELU differs by about 9.8e-5 at these inputs.
-        for (actual, expected) in output.iter().zip([-0.045500264f32, 1.9544997]) {
+        // 0.5*x*(1+tanh(sqrt(2/pi)*(x+0.044715*x^3))), independently evaluated.
+        // Exact erf-GELU differs by about 9.8e-5 at these inputs.
+        for (actual, expected) in output.iter().zip([-0.045402307f32, 1.9545977]) {
             assert!((actual - expected).abs() < 2e-6, "{actual} != {expected}");
         }
         Ok(())
@@ -998,7 +998,14 @@ mod tests {
             Tensor::ones(rotary_shape, dtype, device)?,
             Tensor::zeros(rotary_shape, dtype, device)?,
         );
-        let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+        // cuBLASLt may use TF32 for F32 matmuls; keep a tighter CPU oracle.
+        let tolerance = match (dtype, device) {
+            (DType::F32, Device::Cpu) => 2e-6,
+            (DType::F32, _) if std::env::var("NVIDIA_TF32_OVERRIDE").as_deref() == Ok("0") => 2e-6,
+            // TF32's ten-bit mantissa bounds these outputs (all below 0.5).
+            (DType::F32, _) => 5e-4,
+            _ => 0.004,
+        };
         let mut result = vec![];
         // Reuse the same mask as multiple encoder layers do. Both calls must
         // honor it, and neither may mutate the caller's mask storage.
@@ -1031,7 +1038,16 @@ mod tests {
             // batch padding. The first sequence must match its solo result.
             let batched = masked_attention(&attention, device, dtype, &[133, 160], local)?;
             let solo = masked_attention(&attention, device, dtype, &[133], local)?;
-            let tolerance = if dtype == DType::F32 { 2e-6 } else { 0.004 };
+            // cuBLASLt may use TF32 for F32 matmuls; keep a tighter CPU oracle.
+            let tolerance = match (dtype, device) {
+                (DType::F32, Device::Cpu) => 2e-6,
+                (DType::F32, _) if std::env::var("NVIDIA_TF32_OVERRIDE").as_deref() == Ok("0") => {
+                    2e-6
+                }
+                // TF32's ten-bit mantissa bounds these outputs (all below 0.5).
+                (DType::F32, _) => 5e-4,
+                _ => 0.004,
+            };
             for (a, b) in batched[0]
                 .iter()
                 .take(133)
@@ -1063,8 +1079,8 @@ mod tests {
     }
 
     #[test]
-    fn modernbert_exact_gelu_cpu() -> Result<()> {
-        check_exact_gelu(&Device::Cpu)
+    fn modernbert_approximate_gelu_cpu() -> Result<()> {
+        check_approximate_gelu(&Device::Cpu)
     }
 
     #[test]
@@ -1074,12 +1090,12 @@ mod tests {
 
     #[test]
     #[cfg(feature = "cuda")]
-    fn modernbert_exact_gelu_and_attention_masks_cuda() -> Result<()> {
+    fn modernbert_approximate_gelu_and_attention_masks_cuda() -> Result<()> {
         // Deliberately fail if CUDA/cuBLASLt is unavailable: this test must not
         // silently pass through the CPU fallback it is intended to distinguish.
         let device = Device::new_cuda(0)?;
         assert!(get_cublas_lt_wrapper(&device)?.is_some());
-        check_exact_gelu(&device)?;
+        check_approximate_gelu(&device)?;
         check_masks(&device, DType::F32)?;
         check_masks(&device, DType::BF16)
     }

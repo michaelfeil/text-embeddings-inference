@@ -113,7 +113,7 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
     let outputs = model.decide(batch.clone(), inputs.clone())?;
     // Padding in a mixed-length queue batch must not change a question's scores.
     // On CUDA this also catches accidentally using the attention mask as a
-    // cuBLASLt output buffer (beta=0), which ignores and overwrites the mask.
+    // cuBLASLt output buffer (beta=0), which ignores the mask values.
     for (i, output) in outputs.iter().enumerate() {
         let start = batch.cumulative_seq_lengths[i] as usize;
         let end = batch.cumulative_seq_lengths[i + 1] as usize;
