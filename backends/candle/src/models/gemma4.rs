@@ -559,7 +559,6 @@ struct Gemma4Mlp {
     gate_up_proj: Linear,
     down_proj: Linear,
     activation: HiddenAct,
-    intermediate_size: usize,
 }
 
 impl Gemma4Mlp {
@@ -582,17 +581,13 @@ impl Gemma4Mlp {
             gate_up_proj: Linear::new(Tensor::cat(&[&gate, &up], 0)?, None, None),
             down_proj: Linear::new(down, None, None),
             activation: config.hidden_activation.clone(),
-            intermediate_size,
         })
     }
 
     fn forward(&self, states: &Tensor) -> Result<Tensor> {
         let gate_up = self.gate_up_proj.forward(states)?;
-        let gate =
-            self.activation
-                .forward(&gate_up.narrow(D::Minus1, 0, self.intermediate_size)?)?;
-        let up = gate_up.narrow(D::Minus1, self.intermediate_size, self.intermediate_size)?;
-        self.down_proj.forward(&(gate * up)?)
+        let gated = crate::layers::gated_activation(&gate_up, Some(&self.activation))?;
+        self.down_proj.forward(&gated)
     }
 }
 
@@ -925,8 +920,8 @@ impl Gemma4Model {
             && self.local_head_dim == 256
             && self.full_head_dim == 512
             && crate::flash_attn::runtime_compute_cap(&self.device)? == 90;
-        #[cfg(feature = "fa4")]
-        let prefix_attention = prefix_attention && !crate::fa4_native::enabled()?;
+        // Gemma4's 256/512-wide heads are excluded by the shared FA4 policy,
+        // so selecting auto/FA4 must not disable this validated FA2 optimization.
         let query_plan = if prefix_attention {
             QueryPlan::new(batch, &self.device)?
         } else {
@@ -947,8 +942,11 @@ impl Gemma4Model {
             &self.device,
         )?;
         #[cfg(feature = "fa4")]
-        let _fa4_batch =
-            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
+        let _fa4_batch = crate::fa4_native::prepare_batch_for_head_dims(
+            &cu_seqlens,
+            &batch.cumulative_seq_lengths,
+            &[self.local_head_dim, self.full_head_dim],
+        )?;
         let positions = &compact.position_ids_compact;
         let rope = |cache: &(Tensor, Tensor)| -> Result<(Tensor, Tensor)> {
             Ok((
