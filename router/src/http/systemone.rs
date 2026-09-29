@@ -49,6 +49,7 @@ struct Question {
     kind: String,
     labels: Vec<String>,
     criteria: Value,
+    compute_chars: usize,
     encoding: ValidEncoding,
     input: DecisionInput,
 }
@@ -130,6 +131,7 @@ impl SystemOne {
         if state.chars().count() > 50_000 {
             return Err("state exceeds 50000 characters".into());
         }
+        let state_chars = state.replace("[MASK]", " ").chars().count();
         let state_ids = self.encode(&state)?;
         let truncate_left = request.state.is_array();
         let mut total_options = 0;
@@ -252,7 +254,16 @@ impl SystemOne {
                 if total_options > 512 {
                     return Err("At most 512 total options are allowed".into());
                 }
-                let mut head = self.encode(&format!("{kind} question: {instructions}"))?;
+                let head_text = format!("{kind} question: {instructions}");
+                // Like TEI's other endpoints, count input text before truncation,
+                // excluding inserted special tokens. Each question repeats the state.
+                let compute_chars = state_chars
+                    + head_text.replace("[MASK]", " ").chars().count()
+                    + options
+                        .iter()
+                        .map(|o| 1 + o.replace("[MASK]", " ").chars().count())
+                        .sum::<usize>();
+                let mut head = self.encode(&head_text)?;
                 let mut options = options
                     .iter()
                     .map(|o| {
@@ -308,6 +319,7 @@ impl SystemOne {
                     kind: kind.into(),
                     labels,
                     criteria,
+                    compute_chars,
                     encoding: ValidEncoding {
                         input_ids: ids,
                         token_type_ids: vec![0; length],
@@ -489,13 +501,13 @@ pub async fn systemone(
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
     metrics::counter!("te_systemone_count").increment(1);
     let start = Instant::now();
-    let compute_chars = render(&request.state).chars().count();
     let worker = service.clone();
     let questions = tokio::task::spawn_blocking(move || worker.prepare(request))
         .await
         .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
         .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     let tokenization = start.elapsed();
+    let compute_chars = questions.iter().map(|q| q.compute_chars).sum();
     let input_tokens: usize = questions.iter().map(|q| q.encoding.input_ids.len()).sum();
     let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(questions.len()));
     let answers = futures::future::try_join_all(questions.into_iter().map(|mut question| {
@@ -611,6 +623,7 @@ mod tests {
                 kind: kind.into(),
                 labels,
                 criteria: q["criteria"].clone(),
+                compute_chars: 0,
                 input: DecisionInput {
                     question_type: match kind {
                         "choice" => 0,
@@ -636,6 +649,40 @@ mod tests {
                 fixture["response"]["answers"][id]
             );
         }
+    }
+
+    #[test]
+    fn compute_characters_include_each_question_and_repeated_state() {
+        let service = service();
+        let request = json!({"state":"é[MASK]", "questions": {
+            "team": {"type":"choice", "instructions":"Pick A", "criteria":{"billing":"payments"}},
+            "level": {"type":"score", "instructions":"Rate", "criteria":["low"]}
+        }});
+        let questions = service
+            .prepare(serde_json::from_value(request).unwrap())
+            .ok()
+            .unwrap();
+        assert_eq!(
+            questions[0].compute_chars,
+            "é choice question: Pick A billing: payments"
+                .chars()
+                .count()
+        );
+        assert_eq!(
+            questions[1].compute_chars,
+            "é score question: Rate level 0: low".chars().count()
+        );
+        let request = json!({"state":"", "questions":{
+            "team":{"type":"choice", "instructions":"Pick", "criteria":["billing"]}
+        }});
+        let questions = service
+            .prepare(serde_json::from_value(request).unwrap())
+            .ok()
+            .unwrap();
+        assert_eq!(
+            questions[0].compute_chars,
+            "choice question: Pick billing".chars().count()
+        );
     }
 
     #[test]
