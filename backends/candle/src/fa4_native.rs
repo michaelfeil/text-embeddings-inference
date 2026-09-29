@@ -2,22 +2,30 @@
 use candle::{DType, Result, Tensor};
 use candle_flash_attn_v4::{AttentionConfig, Mask, Seqlens};
 use std::cell::{Cell, RefCell};
+use std::sync::OnceLock;
 
 thread_local! {
     static LOGGED: Cell<u8> = const { Cell::new(0) };
     static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
 }
 
-// FA4 is experimental and must be selected explicitly.
+// Process configuration is immutable after the first attention batch. Cache the
+// environment lookup; tensor layouts and batch boundaries are still checked below.
 pub(crate) fn enabled() -> Result<bool> {
-    parse_backend(std::env::var("ATTN_BACKEND"))
+    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
+    match ENABLED
+        .get_or_init(|| parse_backend(std::env::var("ATTN_BACKEND")).map_err(|e| e.to_string()))
+    {
+        Ok(enabled) => Ok(*enabled),
+        Err(message) => candle::bail!("{message}"),
+    }
 }
 
 fn parse_backend(value: std::result::Result<String, std::env::VarError>) -> Result<bool> {
     match value.as_deref() {
-        Ok("fa4") => Ok(true),
-        Ok("fa2") | Err(std::env::VarError::NotPresent) => Ok(false),
-        _ => candle::bail!("ATTN_BACKEND must be fa2 or fa4"),
+        Ok("auto" | "fa4") | Err(std::env::VarError::NotPresent) => Ok(true),
+        Ok("fa2") => Ok(false),
+        _ => candle::bail!("ATTN_BACKEND must be auto, fa2 or fa4"),
     }
 }
 
@@ -64,6 +72,9 @@ pub(crate) fn try_forward(
     left: Option<usize>,
     right: Option<usize>,
 ) -> Result<Option<Tensor>> {
+    if !enabled()? {
+        return Ok(None);
+    }
     let (_, h, d) = q.dims3()?;
     let (_, hk, kd) = k.dims3()?;
     if offsets_q.id() != offsets_k.id() || d != kd || !matches!(q.dtype(), DType::F16 | DType::BF16)
@@ -85,12 +96,22 @@ pub(crate) fn try_forward(
             return Ok(None);
         }
     }
-    let mask = match (d, h == hk, causal, left, right) {
-        (64, true, false, None, None) => Mask::Global,
-        (64, true, false, Some(left), Some(right)) => Mask::Window { left, right },
-        (128, _, true, None, None) if hk > 0 && h == 4 * hk => Mask::Causal,
-        (128, _, false, None, None) if h == 2 * hk => Mask::Global,
-        _ => return Ok(None),
+    let Some(mask) = supported_mask(d, h, hk, causal, left, right) else {
+        LOGGED.with(|logged| {
+            if logged.get() & 8 == 0 {
+                tracing::info!(
+                    heads = h,
+                    kv_heads = hk,
+                    dim = d,
+                    causal,
+                    ?left,
+                    ?right,
+                    "FA4 shape unsupported; using FA2"
+                );
+                logged.set(logged.get() | 8);
+            }
+        });
+        return Ok(None);
     };
     BATCH.with(|batch| {
         let batch = batch.borrow();
@@ -131,20 +152,77 @@ pub(crate) fn try_forward(
     })
 }
 
+// Four cheap shape/mask comparisons. Do not cache tensor layouts or sequence
+// boundaries: those can change between batches even within the same layer.
+fn supported_mask(
+    d: usize,
+    h: usize,
+    hk: usize,
+    causal: bool,
+    left: Option<usize>,
+    right: Option<usize>,
+) -> Option<Mask> {
+    if h == 0 || hk == 0 {
+        return None;
+    }
+    match (d, h == hk, causal, left, right) {
+        (64, true, false, None, None) => Some(Mask::Global),
+        (64, true, false, Some(left), Some(right)) => Some(Mask::Window { left, right }),
+        (128, _, true, None, None) if hk.checked_mul(4) == Some(h) => Some(Mask::Causal),
+        (128, _, false, None, None) if hk.checked_mul(2) == Some(h) => Some(Mask::Global),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use candle::Device;
 
     #[test]
-    fn backend_selection_requires_explicit_opt_in() {
-        assert!(!parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
+    fn backend_selection_defaults_to_validated_auto() {
+        assert!(parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
         assert!(!parse_backend(Ok("fa2".into())).unwrap());
         assert!(parse_backend(Ok("fa4".into())).unwrap());
-        for invalid in ["auto", "", "FA4", "fa3"] {
+        assert!(parse_backend(Ok("auto".into())).unwrap());
+        for invalid in ["", "FA4", "fa3"] {
             assert!(parse_backend(Ok(invalid.into())).is_err());
         }
         assert!(parse_backend(Err(std::env::VarError::NotUnicode("invalid".into()))).is_err());
+    }
+
+    #[test]
+    fn supported_shapes_preserve_mask_semantics() {
+        assert!(matches!(
+            supported_mask(64, 12, 12, false, None, None),
+            Some(Mask::Global)
+        ));
+        assert!(matches!(
+            supported_mask(64, 12, 12, false, Some(64), Some(64)),
+            Some(Mask::Window {
+                left: 64,
+                right: 64
+            })
+        ));
+        assert!(matches!(
+            supported_mask(128, 16, 4, true, None, None),
+            Some(Mask::Causal)
+        ));
+        assert!(matches!(
+            supported_mask(128, 16, 8, false, None, None),
+            Some(Mask::Global)
+        ));
+        for shape in [
+            (256, 3, 1, false, None, None),
+            (128, 16, 8, true, None, None),
+            (128, 16, 4, false, None, None),
+            (64, 12, 12, true, None, None),
+            (64, 12, 12, false, Some(64), None),
+            (128, 16, 4, true, Some(64), Some(0)),
+            (64, 0, 0, false, None, None),
+        ] {
+            assert!(supported_mask(shape.0, shape.1, shape.2, shape.3, shape.4, shape.5).is_none());
+        }
     }
 
     #[test]

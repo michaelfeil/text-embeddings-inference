@@ -640,11 +640,18 @@ docker build . -f Dockerfile --platform=linux/arm64
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
 
-### Opt-in FA4 on Hopper
+### Automatic attention selection on Hopper
 
 Hopper CUDA images build and include the pinned FA4 native bundle.
-FA2 is the default. Set `ATTN_BACKEND=fa4` to opt into supported FP16/BF16 packed
-FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
+`ATTN_BACKEND=auto` is the default. On Hopper (SM90), builds containing FA4
+select it for validated FP16/BF16 packed attention shapes: head dimension 64
+with equal query/KV heads and global or bidirectional window masks; dimension
+128 with causal 4:1 GQA or global bidirectional 2:1 GQA. Unsupported shapes,
+ALiBi, other GPUs, and builds without FA4 retain the existing attention backend.
+EmbeddingGemma's dimension 256 remains on FA2. Set `ATTN_BACKEND=fa2` to disable
+FA4, or `ATTN_BACKEND=fa4` to explicitly request the same supported FA4 paths
+(with fallback for unsupported shapes). The environment selection is cached
+on first use; restart the process to change it. FP8 is independently opt-in. The earlier
 `TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
 
 When FA4 is enabled, models using the shared flash-attention dispatcher register
