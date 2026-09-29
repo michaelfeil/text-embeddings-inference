@@ -236,6 +236,7 @@ impl FlashBertModel {
         }
 
         let (pool, classifier, splade) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             // Classifier models always use CLS pooling
             ModelType::Classifier => {
                 let pool = Pool::Cls;
@@ -295,6 +296,7 @@ impl FlashBertModel {
         }
 
         let (pool, classifier, splade) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             // Classifier models always use CLS pooling
             ModelType::Classifier => {
                 let pool = Pool::Cls;

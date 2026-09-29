@@ -61,3 +61,67 @@ fn laya_checkpoint_scores_all_markers() -> Result<()> {
     assert!(config.temperature_for(0, 2).is_finite());
     Ok(())
 }
+
+#[test]
+fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
+    use text_embeddings_backend_candle::CandleBackend;
+    use text_embeddings_backend_core::{Backend, Batch, DecisionInput, ModelType};
+    let Ok(path) = std::env::var("LAYA_CHECKPOINT_DIR") else {
+        return Ok(());
+    };
+    let fixture: serde_json::Value = serde_json::from_str(include_str!(
+        "../../../router/tests/fixtures/laya-systemone.json"
+    ))?;
+    let model = CandleBackend::new(
+        std::path::Path::new(&path),
+        "float32".into(),
+        ModelType::Decision,
+        None,
+        0,
+    )?;
+    let sequences = fixture["sequences"].as_array().unwrap();
+    let mut batch = Batch {
+        input_ids: vec![],
+        token_type_ids: vec![],
+        position_ids: vec![],
+        cumulative_seq_lengths: vec![0],
+        max_length: 0,
+        pooled_indices: vec![],
+        raw_indices: vec![],
+        compact_input_ids: None,
+        compact_position_ids: None,
+        scatter_unfold: None,
+        fold_gather: None,
+        tokens: vec![],
+        offsets: vec![],
+    };
+    let mut inputs = vec![];
+    for (question_type, seq) in sequences.iter().enumerate() {
+        let ids: Vec<u32> = serde_json::from_value(seq["ids"].clone())?;
+        batch.max_length = batch.max_length.max(ids.len() as u32);
+        batch.token_type_ids.extend(vec![0; ids.len()]);
+        batch.position_ids.extend(0..ids.len() as u32);
+        batch.input_ids.extend(ids);
+        batch
+            .cumulative_seq_lengths
+            .push(batch.input_ids.len() as u32);
+        inputs.push(DecisionInput {
+            question_type,
+            markers: serde_json::from_value(seq["markers"].clone())?,
+        });
+    }
+    let outputs = model.decide(batch, inputs)?;
+    assert_eq!(outputs.len(), sequences.len());
+    for (output, seq) in outputs.iter().zip(sequences) {
+        let expected: Vec<f32> = serde_json::from_value(seq["logits"].clone())?;
+        assert_eq!(output.logits.len(), expected.len());
+        for (actual, expected) in output.logits.iter().zip(expected) {
+            assert!((actual - expected).abs() < 0.025, "{actual} != {expected}");
+        }
+        assert!(
+            (output.action_probability - seq["action_probability"].as_f64().unwrap() as f32).abs()
+                < 0.01
+        );
+    }
+    Ok(())
+}

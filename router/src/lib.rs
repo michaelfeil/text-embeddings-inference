@@ -106,7 +106,14 @@ pub async fn run(
     };
 
     // Load config
-    let config_path = model_root.join("config.json");
+    let laya = model_root.join("rl_agent_config.json").exists();
+    #[cfg(feature = "grpc")]
+    anyhow::ensure!(!laya, "Laya typed decisions require an HTTP build");
+    let config_path = model_root.join(if laya {
+        "encoder/config.json"
+    } else {
+        "config.json"
+    });
     let config = fs::read_to_string(config_path).context("`config.json` not found")?;
     let mut config: ModelConfig =
         serde_json::from_str(&config).context("Failed to parse `config.json`")?;
@@ -125,10 +132,16 @@ pub async fn run(
     );
 
     // Set model type from config
-    let backend_model_type = get_backend_model_type(&config, &model_root, pooling)?;
+    let backend_model_type = if laya {
+        anyhow::ensure!(pooling.is_none(), "Laya does not use embedding pooling");
+        text_embeddings_backend::ModelType::Decision
+    } else {
+        get_backend_model_type(&config, &model_root, pooling)?
+    };
 
     // Info model type
     let model_type = match &backend_model_type {
+        text_embeddings_backend::ModelType::Decision => ModelType::Decision,
         text_embeddings_backend::ModelType::Classifier => {
             let id2label = config
                 .id2label
@@ -154,7 +167,11 @@ pub async fn run(
     };
 
     // Load tokenizer
-    let tokenizer_path = model_root.join("tokenizer.json");
+    let tokenizer_path = model_root.join(if laya {
+        "tokenizer/tokenizer.json"
+    } else {
+        "tokenizer.json"
+    });
     let mut tokenizer = Tokenizer::from_file(tokenizer_path).expect(
         "tokenizer.json not found. text-embeddings-inference only supports fast tokenizers",
     );
@@ -210,11 +227,24 @@ pub async fn run(
         }
     }
 
-    let base_input_length = match st_config {
-        Some(config) => config.max_seq_length,
-        None => {
-            tracing::warn!("Could not find a Sentence Transformers config");
-            config.max_position_embeddings - position_offset
+    let base_input_length = if laya {
+        let cfg: serde_json::Value =
+            serde_json::from_slice(&fs::read(model_root.join("rl_agent_config.json"))?)?;
+        let length = cfg["max_len"]
+            .as_u64()
+            .context("Laya max_len must be positive")? as usize;
+        anyhow::ensure!(
+            length > 0 && length <= config.max_position_embeddings,
+            "Invalid Laya max_len"
+        );
+        length
+    } else {
+        match st_config {
+            Some(config) => config.max_seq_length,
+            None => {
+                tracing::warn!("Could not find a Sentence Transformers config");
+                config.max_position_embeddings - position_offset
+            }
         }
     };
 
@@ -266,6 +296,17 @@ pub async fn run(
         }
     } else {
         default_prompt
+    };
+
+    #[cfg(feature = "http")]
+    let systemone = if laya {
+        Some(std::sync::Arc::new(http::systemone::SystemOne::load(
+            &model_root,
+            tokenizer.clone(),
+            max_input_length,
+        )?))
+    } else {
+        None
     };
 
     // Tokenization logic
@@ -453,6 +494,7 @@ pub async fn run(
             payload_limit,
             api_key,
             cors_allow_origin,
+            systemone,
         )
         .await
     }
@@ -628,6 +670,7 @@ pub struct ClassifierModel {
 #[cfg_attr(feature = "http", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
+    Decision,
     Classifier(ClassifierModel),
     Embedding(EmbeddingModel),
     Reranker(ClassifierModel),

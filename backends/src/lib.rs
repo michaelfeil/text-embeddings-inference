@@ -18,7 +18,8 @@ use serde::Deserialize;
 
 pub use crate::dtype::DType;
 pub use text_embeddings_backend_core::{
-    BackendError, Batch, Embedding, Embeddings, ModelType, Pool, Predictions, TokenPredictions,
+    BackendError, Batch, DecisionInput, DecisionOutput, Embedding, Embeddings, ModelType, Pool,
+    Predictions, TokenPredictions,
 };
 
 #[cfg(feature = "candle")]
@@ -233,6 +234,19 @@ impl Backend {
         for shape in shapes.iter() {
             let batch = self.create_warmup_batch(*shape, max_token as u32, seq_bucket_size as u32);
             match &self.model_type {
+                ModelType::Decision => self
+                    .decide(
+                        batch.clone(),
+                        vec![
+                            DecisionInput {
+                                question_type: 0,
+                                markers: vec![0]
+                            };
+                            batch.len()
+                        ],
+                    )
+                    .await
+                    .map(|_| ()),
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),
                 ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
             }?;
@@ -364,6 +378,19 @@ impl Backend {
         };
 
         match &self.model_type {
+            ModelType::Decision => self
+                .decide(
+                    batch.clone(),
+                    vec![
+                        DecisionInput {
+                            question_type: 0,
+                            markers: vec![0]
+                        };
+                        batch.len()
+                    ],
+                )
+                .await
+                .map(|_| ()),
             ModelType::Classifier => self.predict(batch).await.map(|_| ()),
             ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
         }
@@ -403,6 +430,19 @@ impl Backend {
                 offsets: vec![],
             };
             match &self.model_type {
+                ModelType::Decision => self
+                    .decide(
+                        batch.clone(),
+                        vec![
+                            DecisionInput {
+                                question_type: 0,
+                                markers: vec![0]
+                            };
+                            batch.len()
+                        ],
+                    )
+                    .await
+                    .map(|_| ()),
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),
                 ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
             }
@@ -424,6 +464,24 @@ impl Backend {
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
+    }
+
+    pub async fn decide(
+        &self,
+        batch: Batch,
+        inputs: Vec<DecisionInput>,
+    ) -> Result<(Vec<DecisionOutput>, Duration), BackendError> {
+        let (sender, receiver) = oneshot::channel();
+        self.backend_sender
+            .send(BackendCommand::Decide(
+                batch,
+                inputs,
+                Span::current(),
+                sender,
+            ))
+            .await
+            .map_err(|_| BackendError::Unhealthy)?;
+        receiver.await.map_err(|_| BackendError::Unhealthy)?
     }
 
     #[instrument(skip_all)]
@@ -661,6 +719,13 @@ impl BackendThread {
                 let start = Instant::now();
                 let mut healthy = false;
                 match cmd {
+                    BackendCommand::Decide(batch, inputs, span, sender) => {
+                        let _span = span.entered();
+                        let _ = sender.send(backend.decide(batch, inputs).map(|output| {
+                            healthy = true;
+                            (output, start.elapsed())
+                        }));
+                    }
                     BackendCommand::Health(span, sender) => {
                         let _span = span.entered();
                         let _ = sender.send(backend.health().map(|_| healthy = true));
@@ -701,6 +766,12 @@ impl Drop for BackendThread {
 }
 
 enum BackendCommand {
+    Decide(
+        Batch,
+        Vec<DecisionInput>,
+        Span,
+        oneshot::Sender<Result<(Vec<DecisionOutput>, Duration), BackendError>>,
+    ),
     Health(Span, oneshot::Sender<Result<(), BackendError>>),
     Embed(
         Batch,

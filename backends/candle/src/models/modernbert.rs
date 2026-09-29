@@ -484,6 +484,7 @@ pub struct ModernBertModel {
 impl ModernBertModel {
     pub fn load(vb: VarBuilder, config: &ModernBertConfig, model_type: ModelType) -> Result<Self> {
         let (pool, classifier) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 let pool: Pool = config.classifier_pooling.clone().unwrap_or(Pool::Cls);
 

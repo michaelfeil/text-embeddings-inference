@@ -205,26 +205,6 @@ impl CandleBackend {
                 .collect()
         };
 
-        // Load config
-        let config: String = std::fs::read_to_string(model_path.join("config.json"))
-            .context("Unable to read config file")
-            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
-        if enable_fp8_dynamic {
-            let metadata: serde_json::Value = serde_json::from_str(&config)
-                .map_err(|err| BackendError::Start(err.to_string()))?;
-            if metadata
-                .get("quantization_config")
-                .is_some_and(|value| !value.is_null())
-            {
-                return Err(BackendError::Start(
-                    "Dynamic FP8 requires an unquantized checkpoint; checkpoint-provided quantization scales are not supported".into(),
-                ));
-            }
-        }
-        let config: Config = serde_json::from_str(&config)
-            .context("Model is not supported")
-            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
-
         // Get candle device
         let device = if candle::utils::cuda_is_available() {
             #[cfg(feature = "cuda")]
@@ -277,6 +257,41 @@ impl CandleBackend {
                 "bfloat16 CUDA inference requires compute capability 8.0 or newer".into(),
             ));
         }
+
+        if model_type == ModelType::Decision {
+            if enable_fp8_dynamic {
+                return Err(BackendError::Start(
+                    "Laya does not support dynamic FP8".into(),
+                ));
+            }
+            let (model, _) = LayaModel::from_model_dir(model_path, dtype, &device)
+                .map_err(|e| BackendError::Start(format!("{e:#}")))?;
+            return Ok(Self {
+                device,
+                model: Box::new(model),
+                dense_layers: vec![],
+            });
+        }
+
+        // Load config
+        let config: String = std::fs::read_to_string(model_path.join("config.json"))
+            .context("Unable to read config file")
+            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
+        if enable_fp8_dynamic {
+            let metadata: serde_json::Value = serde_json::from_str(&config)
+                .map_err(|err| BackendError::Start(err.to_string()))?;
+            if metadata
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(BackendError::Start(
+                    "Dynamic FP8 requires an unquantized checkpoint; checkpoint-provided quantization scales are not supported".into(),
+                ));
+            }
+        }
+        let config: Config = serde_json::from_str(&config)
+            .context("Model is not supported")
+            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
 
         if enable_fp8_dynamic {
             if !matches!(dtype, DType::F16 | DType::BF16)
@@ -759,6 +774,14 @@ impl CandleBackend {
 }
 
 impl Backend for CandleBackend {
+    fn decide(
+        &self,
+        batch: Batch,
+        inputs: Vec<text_embeddings_backend_core::DecisionInput>,
+    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>, BackendError> {
+        self.model.decide(batch, inputs).e()
+    }
+
     fn max_batch_size(&self) -> Option<usize> {
         // Limit max batch size to 4 on CPU
         if matches!(self.device, Device::Cpu) {

@@ -84,6 +84,13 @@ pub use flash_qwen2::FlashQwen2Model;
 pub use flash_qwen3::FlashQwen3Model;
 
 pub(crate) trait Model {
+    fn decide(
+        &self,
+        _batch: Batch,
+        _inputs: Vec<text_embeddings_backend_core::DecisionInput>,
+    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>> {
+        candle::bail!("Model does not support typed decisions")
+    }
     fn is_padded(&self) -> bool;
 
     fn supports_radix_mlp(&self) -> bool {

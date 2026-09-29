@@ -262,6 +262,15 @@ impl LayaModel {
         let hidden = raw
             .ok_or_else(|| candle::Error::Msg("Laya encoder returned no hidden states".into()))?
             .reshape((1, length, self.hidden))?;
+        self.forward_head(hidden, markers, question_type)
+    }
+
+    fn forward_head(
+        &self,
+        hidden: Tensor,
+        markers: &[usize],
+        question_type: usize,
+    ) -> Result<LayaOutput> {
         let type_id = Tensor::from_vec(vec![question_type as u32], (1,), &self.device)?;
         let type_vector = self
             .type_emb
@@ -318,5 +327,55 @@ impl LayaModel {
             logits,
             action_probability: action,
         })
+    }
+}
+
+impl super::Model for LayaModel {
+    fn is_padded(&self) -> bool {
+        true
+    }
+
+    fn decide(
+        &self,
+        mut batch: Batch,
+        inputs: Vec<text_embeddings_backend_core::DecisionInput>,
+    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>> {
+        if inputs.len() != batch.len() {
+            candle::bail!("Laya metadata count does not match batch")
+        }
+        let lengths = batch.cumulative_seq_lengths.clone();
+        for (i, input) in inputs.iter().enumerate() {
+            let length = (lengths[i + 1] - lengths[i]) as usize;
+            if input.question_type > 2
+                || input.markers.is_empty()
+                || input.markers.iter().any(|&p| p >= length)
+            {
+                candle::bail!("invalid Laya decision input")
+            }
+        }
+        batch.pooled_indices.clear();
+        batch.raw_indices = (0..inputs.len() as u32).collect();
+        // Run ModernBERT once for the entire queue batch. Heads use unpadded
+        // per-question states so options never attend to another question.
+        let (_, raw) = self.encoder.forward(batch)?;
+        let raw =
+            raw.ok_or_else(|| candle::Error::Msg("Laya encoder returned no hidden states".into()))?;
+        inputs
+            .iter()
+            .enumerate()
+            .map(|(i, input)| {
+                let length = (lengths[i + 1] - lengths[i]) as usize;
+                let hidden = raw.narrow(0, lengths[i] as usize, length)?.reshape((
+                    1,
+                    length,
+                    self.hidden,
+                ))?;
+                let output = self.forward_head(hidden, &input.markers, input.question_type)?;
+                Ok(text_embeddings_backend_core::DecisionOutput {
+                    logits: output.logits,
+                    action_probability: output.action_probability,
+                })
+            })
+            .collect()
     }
 }
