@@ -29,7 +29,8 @@ parser.add_argument(
     help="Exercise contiguous input/output views with a one-element storage offset",
 )
 parser.add_argument(
-    "--baseline-library", type=Path,
+    "--baseline-library",
+    type=Path,
     help="Additionally require bit-identical output against an earlier library using the same entry point",
 )
 args = parser.parse_args()
@@ -156,7 +157,9 @@ for t in args.tokens:
     assert status == 0, status
     if args.baseline_library:
         previous = ctypes.CDLL(str(args.baseline_library.resolve()))
-        previous_workspace = getattr(previous, symbol_prefix + "gemma4_moe_workspace_bytes")
+        previous_workspace = getattr(
+            previous, symbol_prefix + "gemma4_moe_workspace_bytes"
+        )
         previous_workspace.argtypes = [I, I, I]
         previous_workspace.restype = S
         previous_forward = getattr(previous, symbol_prefix + "gemma4_moe_forward_bf16")
@@ -166,13 +169,23 @@ for t in args.tokens:
             previous_workspace(t, 2816, 704), device="cuda", dtype=torch.uint8
         )
         status = previous_forward(
-            logits.data_ptr(), scales.data_ptr(), x.data_ptr(), w1.data_ptr(), w2.data_ptr(),
-            reference.data_ptr(), t, 2816, 704, reference_scratch.data_ptr(),
-            reference_scratch.numel(), torch.cuda.current_stream().cuda_stream,
+            logits.data_ptr(),
+            scales.data_ptr(),
+            x.data_ptr(),
+            w1.data_ptr(),
+            w2.data_ptr(),
+            reference.data_ptr(),
+            t,
+            2816,
+            704,
+            reference_scratch.data_ptr(),
+            reference_scratch.numel(),
+            torch.cuda.current_stream().cuda_stream,
         )
         assert status == 0, status
         assert torch.equal(out.view(torch.int16), reference.view(torch.int16)), (
-            "Output bits differ from the previous library", t
+            "Output bits differ from the previous library",
+            t,
         )
     tw, ti = gemma4_fused_routing_kernel_triton(logits, 8, scales)
     ref = fused_experts(x, w1, w2, tw, ti, activation=MoEActivation.GELU_TANH)
