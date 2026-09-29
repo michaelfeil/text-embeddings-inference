@@ -9,24 +9,42 @@ thread_local! {
     static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Backend {
+    Auto,
+    Fa2,
+    Fa4,
+}
+
 // Process configuration is immutable after the first attention batch. Cache the
 // environment lookup; tensor layouts and batch boundaries are still checked below.
-pub(crate) fn enabled() -> Result<bool> {
-    static ENABLED: OnceLock<std::result::Result<bool, String>> = OnceLock::new();
-    match ENABLED
+fn backend() -> Result<Backend> {
+    static BACKEND: OnceLock<std::result::Result<Backend, String>> = OnceLock::new();
+    match BACKEND
         .get_or_init(|| parse_backend(std::env::var("ATTN_BACKEND")).map_err(|e| e.to_string()))
     {
-        Ok(enabled) => Ok(*enabled),
+        Ok(backend) => Ok(*backend),
         Err(message) => candle::bail!("{message}"),
     }
 }
+pub(crate) fn enabled() -> Result<bool> {
+    Ok(backend()? != Backend::Fa2)
+}
 
-fn parse_backend(value: std::result::Result<String, std::env::VarError>) -> Result<bool> {
+fn parse_backend(value: std::result::Result<String, std::env::VarError>) -> Result<Backend> {
     match value.as_deref() {
-        Ok("auto" | "fa4") | Err(std::env::VarError::NotPresent) => Ok(true),
-        Ok("fa2") => Ok(false),
+        Ok("auto") | Err(std::env::VarError::NotPresent) => Ok(Backend::Auto),
+        Ok("fa4") => Ok(Backend::Fa4),
+        Ok("fa2") => Ok(Backend::Fa2),
         _ => candle::bail!("ATTN_BACKEND must be auto, fa2 or fa4"),
     }
+}
+
+// The global d128 GQA2 family is model-qualified only in BF16 (Voyage).
+// Explicit FA4 retains the existing FP16 opt-in; neither backend cures model
+// FP16 overflow, so Voyage deployments should use BF16.
+fn dtype_qualified(backend: Backend, dtype: DType, dim: usize, causal: bool) -> bool {
+    !(backend == Backend::Auto && dtype == DType::F16 && dim == 128 && !causal)
 }
 
 pub(crate) struct BatchGuard {
@@ -72,7 +90,8 @@ pub(crate) fn try_forward(
     left: Option<usize>,
     right: Option<usize>,
 ) -> Result<Option<Tensor>> {
-    if !enabled()? {
+    let backend = backend()?;
+    if backend == Backend::Fa2 {
         return Ok(None);
     }
     let (_, h, d) = q.dims3()?;
@@ -96,7 +115,10 @@ pub(crate) fn try_forward(
             return Ok(None);
         }
     }
-    let Some(mask) = supported_mask(d, h, hk, causal, left, right) else {
+    let mask = dtype_qualified(backend, q.dtype(), d, causal)
+        .then(|| supported_mask(d, h, hk, causal, left, right))
+        .flatten();
+    let Some(mask) = mask else {
         LOGGED.with(|logged| {
             if logged.get() & 8 == 0 {
                 tracing::info!(
@@ -106,7 +128,7 @@ pub(crate) fn try_forward(
                     causal,
                     ?left,
                     ?right,
-                    "FA4 shape unsupported; using FA2"
+                    dtype = ?q.dtype(), "FA4 shape/dtype not qualified; using FA2"
                 );
                 logged.set(logged.get() | 8);
             }
@@ -181,14 +203,26 @@ mod tests {
 
     #[test]
     fn backend_selection_defaults_to_validated_auto() {
-        assert!(parse_backend(Err(std::env::VarError::NotPresent)).unwrap());
-        assert!(!parse_backend(Ok("fa2".into())).unwrap());
-        assert!(parse_backend(Ok("fa4".into())).unwrap());
-        assert!(parse_backend(Ok("auto".into())).unwrap());
+        assert_eq!(
+            parse_backend(Err(std::env::VarError::NotPresent)).unwrap(),
+            Backend::Auto
+        );
+        assert_eq!(parse_backend(Ok("fa2".into())).unwrap(), Backend::Fa2);
+        assert_eq!(parse_backend(Ok("fa4".into())).unwrap(), Backend::Fa4);
+        assert_eq!(parse_backend(Ok("auto".into())).unwrap(), Backend::Auto);
         for invalid in ["", "FA4", "fa3"] {
             assert!(parse_backend(Ok(invalid.into())).is_err());
         }
         assert!(parse_backend(Err(std::env::VarError::NotUnicode("invalid".into()))).is_err());
+    }
+
+    #[test]
+    fn auto_keeps_unqualified_fp16_global_gqa_off_fa4() {
+        assert!(!dtype_qualified(Backend::Auto, DType::F16, 128, false));
+        assert!(dtype_qualified(Backend::Auto, DType::BF16, 128, false));
+        assert!(dtype_qualified(Backend::Fa4, DType::F16, 128, false));
+        assert!(dtype_qualified(Backend::Auto, DType::F16, 128, true));
+        assert!(dtype_qualified(Backend::Auto, DType::F16, 64, false));
     }
 
     #[test]

@@ -646,7 +646,7 @@ Hopper CUDA images build and include the pinned FA4 native bundle.
 `ATTN_BACKEND=auto` is the default. On Hopper (SM90), builds containing FA4
 select it for validated FP16/BF16 packed attention shapes: head dimension 64
 with equal query/KV heads and global or bidirectional window masks; dimension
-128 with causal 4:1 GQA or global bidirectional 2:1 GQA. Unsupported shapes,
+128 with causal 4:1 GQA, or global bidirectional 2:1 GQA in BF16 only. Unsupported shapes,
 ALiBi, other GPUs, and builds without FA4 retain the existing attention backend.
 EmbeddingGemma's dimension 256 remains on FA2. Set `ATTN_BACKEND=fa2` to disable
 FA4, or `ATTN_BACKEND=fa4` to explicitly request the same supported FA4 paths
@@ -673,5 +673,5 @@ reduction order and causal d128 key-tile boundaries with FA2. This fixes the obs
 pooled outputs match FA2 bitwise on the tested FP16/BF16 cases, and the measured
 STS-B, SciFact and NFCorpus score differences disappear. The causal tile change
 also removes the tested Qwen3-8B long-input differences in both precisions.
-FA4 remains opt-in;
+Auto selects only qualified shapes and dtypes;
 these checks do not establish equivalence for every model, shape or architecture.
