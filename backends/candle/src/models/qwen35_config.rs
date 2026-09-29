@@ -7,7 +7,9 @@ pub enum Qwen35Config {
     Multimodal {
         text_config: Qwen35TextConfig,
         #[serde(default)]
-        tie_word_embeddings: bool,
+        use_bidirectional_attention: bool,
+        #[serde(default)]
+        use_linear_output_projection: bool,
         #[serde(default)]
         quantization_config: Option<serde_json::Value>,
     },
@@ -20,16 +22,21 @@ impl Qwen35Config {
             Self::Text(c) => c,
         }
     }
-    pub fn tied(&self) -> bool {
-        match self {
-            Self::Multimodal {
-                tie_word_embeddings,
-                ..
-            } => *tie_word_embeddings,
-            Self::Text(c) => c.tie_word_embeddings,
-        }
-    }
     pub fn validate(&self) -> Result<()> {
+        if matches!(
+            self,
+            Self::Multimodal {
+                use_bidirectional_attention: true,
+                ..
+            } | Self::Multimodal {
+                use_linear_output_projection: true,
+                ..
+            }
+        ) {
+            candle::bail!(
+                "Qwen3.5-MoE supports causal text embeddings without an output projection only"
+            )
+        }
         if matches!(
             self,
             Self::Multimodal {
@@ -74,7 +81,9 @@ pub struct Qwen35TextConfig {
     #[serde(default)]
     pub attention_bias: bool,
     #[serde(default)]
-    pub tie_word_embeddings: bool,
+    pub use_bidirectional_attention: bool,
+    #[serde(default)]
+    pub use_linear_output_projection: bool,
     #[serde(default)]
     pub quantization_config: Option<serde_json::Value>,
     pub hidden_act: String,
@@ -114,6 +123,11 @@ impl Qwen35TextConfig {
         (self.head_dim as f64 * self.rope_parameters.partial_rotary_factor) as usize
     }
     pub fn validate(&self) -> Result<()> {
+        if self.use_bidirectional_attention || self.use_linear_output_projection {
+            candle::bail!(
+                "Qwen3.5-MoE supports causal text embeddings without an output projection only"
+            )
+        }
         if !self.mlp_only_layers.is_empty()
             || self.quantization_config.is_some()
             || self.attention_bias
@@ -190,6 +204,24 @@ mod tests {
             assert_eq!(c.text().rotary_dim(), 64);
         }
         Ok(())
+    }
+    #[test]
+    fn reject_unsupported_embedding_modes() {
+        for name in [
+            "use_bidirectional_attention",
+            "use_linear_output_projection",
+        ] {
+            let mut text = value();
+            text[name] = true.into();
+            for config in [text.clone(), serde_json::json!({"text_config": text})] {
+                let config: Qwen35Config = serde_json::from_value(config).unwrap();
+                assert!(config.validate().is_err(), "{name}");
+            }
+            let mut wrapper = serde_json::json!({"text_config": value()});
+            wrapper[name] = true.into();
+            let config: Qwen35Config = serde_json::from_value(wrapper).unwrap();
+            assert!(config.validate().is_err(), "outer {name}");
+        }
     }
     #[test]
     fn preserve_topk_normalization_setting() -> Result<()> {

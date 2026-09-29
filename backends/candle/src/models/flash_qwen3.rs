@@ -596,3 +596,80 @@ impl Model for FlashQwen3Model {
         self.forward(batch)
     }
 }
+
+#[cfg(test)]
+mod moe_radix_tests {
+    use super::*;
+
+    #[test]
+    fn moe_radix_mlp_preserves_shared_prefix_outputs() -> Result<()> {
+        let config: Qwen3Config = serde_json::from_value(serde_json::json!({
+            "attention_bias": false, "vocab_size": 32, "hidden_size": 16,
+            "intermediate_size": 24, "num_hidden_layers": 2, "num_attention_heads": 2,
+            "num_key_value_heads": 1, "hidden_act": "silu", "max_position_embeddings": 16,
+            "rms_norm_eps": 0.000001, "rope_theta": 10000., "use_sliding_window": false,
+            "eos_token_id": 2, "num_experts": 4, "num_experts_per_tok": 2,
+            "moe_intermediate_size": 24, "decoder_sparse_step": 2
+        }))
+        .map_err(candle::Error::wrap)?;
+        let vars = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&vars, candle::DType::F32, &Device::Cpu);
+        FlashQwen3Model::load(
+            vb.clone(),
+            &config,
+            ModelType::Embedding(Pool::LastToken),
+            false,
+        )?;
+        for (name, var) in vars.data().lock().unwrap().iter() {
+            let offset: usize = name.bytes().map(usize::from).sum();
+            let values: Vec<f32> = (0..var.elem_count())
+                .map(|i| ((i + offset) as f32 * 0.13).sin() * 0.2)
+                .collect();
+            var.set(&Tensor::from_vec(values, var.shape(), &Device::Cpu)?)?;
+        }
+        let batch = Batch {
+            input_ids: vec![3, 4, 5, 3, 4, 6, 7, 3, 4, 5],
+            token_type_ids: vec![0; 10],
+            position_ids: vec![0, 1, 2, 0, 1, 2, 3, 0, 1, 2],
+            cumulative_seq_lengths: vec![0, 3, 7, 10],
+            max_length: 4,
+            pooled_indices: vec![0, 1, 2],
+            raw_indices: vec![0, 1, 2],
+            compact_input_ids: None,
+            compact_position_ids: None,
+            scatter_unfold: None,
+            fold_gather: None,
+            tokens: vec![],
+            offsets: vec![],
+        };
+        let mut folded = batch.clone();
+        folded.compact_input_ids = Some(vec![3, 4, 5, 6, 7]);
+        folded.compact_position_ids = Some(vec![0, 1, 2, 2, 3]);
+        folded.scatter_unfold = Some(vec![0, 1, 2, 0, 1, 3, 4, 0, 1, 2]);
+        folded.fold_gather = Some(vec![0, 1, 2, 5, 6]);
+        for pool in [Pool::LastToken, Pool::Mean] {
+            let model =
+                FlashQwen3Model::load(vb.clone(), &config, ModelType::Embedding(pool), false)?;
+            assert!(model.supports_radix_mlp());
+            let plain = model.forward(batch.clone())?;
+            let compact = model.forward(folded.clone())?;
+            for (expected, actual) in [(plain.0, compact.0), (plain.1, compact.1)] {
+                let expected = expected.unwrap();
+                let actual = actual.unwrap();
+                assert_eq!(expected.dims(), actual.dims());
+                let error = (expected - actual)?.abs()?.max_all()?.to_scalar::<f32>()?;
+                assert!(error < 1e-5, "RadixMLP changed output by {error}");
+            }
+        }
+        let mut bidirectional = config.clone();
+        bidirectional.use_bidirectional_attention = true;
+        let model = FlashQwen3Model::load(
+            vb,
+            &bidirectional,
+            ModelType::Embedding(Pool::LastToken),
+            false,
+        )?;
+        assert!(!model.supports_radix_mlp());
+        Ok(())
+    }
+}
