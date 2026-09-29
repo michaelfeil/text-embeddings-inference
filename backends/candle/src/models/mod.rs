@@ -136,3 +136,10 @@ pub(crate) trait Model {
 mod deberta;
 #[cfg(feature = "experimental-deberta")]
 pub use deberta::{DebertaConfig, DebertaModel};
+
+mod qwen35_config;
+pub use qwen35_config::Qwen35Config;
+#[cfg(all(feature = "cuda", feature = "flash-attn"))]
+mod qwen35;
+#[cfg(all(feature = "cuda", feature = "flash-attn"))]
+pub use qwen35::Qwen35Model;

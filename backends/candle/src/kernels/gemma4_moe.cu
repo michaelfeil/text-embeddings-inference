@@ -7,20 +7,20 @@
 #include <stdint.h>
 #include <math.h>
 
-template <bool Qwen>
+template <bool Qwen, int Experts = 128>
 __device__ __forceinline__ void route_128_8_f32(
     const float *logits, const float *expert_scale, uint32_t *ids, float *weights, bool renormalize) {
     const int lane = threadIdx.x;
     const int token = blockIdx.x;
-    __shared__ float remaining[128];
-    __shared__ float reduction[128];
-    __shared__ uint32_t indices[128];
+    __shared__ float remaining[Experts];
+    __shared__ float reduction[Experts];
+    __shared__ uint32_t indices[Experts];
     __shared__ float chosen[8];
-    float score = logits[uint64_t(token) * 128 + lane];
+    float score = logits[uint64_t(token) * Experts + lane];
     remaining[lane] = score;
     reduction[lane] = score;
     __syncthreads();
-    for (int stride = 64; stride; stride >>= 1) {
+    for (int stride = Experts / 2; stride; stride >>= 1) {
         if (lane < stride) reduction[lane] = fmaxf(reduction[lane], reduction[lane + stride]);
         __syncthreads();
     }
@@ -28,7 +28,7 @@ __device__ __forceinline__ void route_128_8_f32(
     __syncthreads();
     reduction[lane] = probability;
     __syncthreads();
-    for (int stride = 64; stride; stride >>= 1) {
+    for (int stride = Experts / 2; stride; stride >>= 1) {
         if (lane < stride) reduction[lane] += reduction[lane + stride];
         __syncthreads();
     }
@@ -40,7 +40,7 @@ __device__ __forceinline__ void route_128_8_f32(
         reduction[lane] = remaining[lane];
         indices[lane] = lane;
         __syncthreads();
-        for (int stride = 64; stride; stride >>= 1) {
+        for (int stride = Experts / 2; stride; stride >>= 1) {
             if (lane < stride) {
                 const float other = reduction[lane + stride];
                 const uint32_t other_id = indices[lane + stride];
@@ -87,6 +87,11 @@ extern "C" __global__ void qwen3_moe_route_128_8_f32(
     route_128_8_f32<true>(logits, nullptr, ids, weights, renormalize);
 }
 
+extern "C" __global__ void qwen35_moe_route_256_8_f32(
+    const float *logits, uint32_t *ids, float *weights, bool renormalize) {
+    route_128_8_f32<true, 256>(logits, nullptr, ids, weights, renormalize);
+}
+
 // Input layout is [tokens, 8, hidden]. Combine in FP32 and round once.
 extern "C" __global__ void gemma4_moe_combine_8_bf16(
     const __nv_bfloat16 *expert_outputs, const float *weights,
@@ -112,7 +117,7 @@ extern "C" __global__ void gemma4_moe_offsets(const int *counts, int *offsets) {
     int offset = 0;
     for (int i = 0; i < expert; ++i) offset += counts[i];
     offsets[expert] = offset;
-    if (expert == 127) offsets[128] = offset + counts[127];
+    if (expert == blockDim.x - 1) offsets[blockDim.x] = offset + counts[expert];
 }
 extern "C" __global__ void gemma4_moe_assign(
     const uint32_t *ids, const int *offsets, int *cursors, uint32_t *mapping, int slots) {

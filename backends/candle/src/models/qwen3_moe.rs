@@ -78,7 +78,7 @@ impl Qwen3Moe {
         if matches!(hidden.device(), candle::Device::Cuda(_))
             && hidden.dtype() == DType::BF16
             && self.top_k == 8
-            && self.gate_up.dim(0)? == 128
+            && matches!(self.gate_up.dim(0)?, 128 | 256)
             && width.is_multiple_of(8)
             && self.down.dim(2)?.is_multiple_of(8)
         {

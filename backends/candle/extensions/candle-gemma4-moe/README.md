@@ -101,3 +101,33 @@ probe build above, then run `tests/compare_qwen3_vllm.py` with `--model`,
 SiLU rounding, and portable/Hopper expert outputs against vLLM. Full-model
 score and decision comparisons are still required; primitive agreement alone
 is not a model-quality result.
+
+## Qwen3.5-MoE text inference
+
+The `qwen3_5_moe` wrapper and `qwen3_5_moe_text` model types use a separate hybrid
+model implementation: Gated DeltaNet layers, periodic gated full attention with
+partial RoPE, 256 routed experts/top-8, and a sigmoid-gated shared expert. The
+initial target is the BF16 text decoder of `Qwen/Qwen3.5-35B-A3B` on CUDA with
+FlashAttention. Vision, MTP, quantized weights and scaled RoPE are not implemented.
+Linear key/value head dimensions must be 128; unsupported configurations fail
+at loading. Each visible GPU holds an independent full model.
+
+Linear attention uses a stateless variable-length prefill kernel with FP32
+recurrent state. Each sequence starts from zero. Decision branches are unfolded
+for convolution/recurrent attention and folded back for projections and experts;
+state never crosses branch, sequence or request boundaries. This first kernel
+walks tokens recurrently, so it does not yet provide a chunk-parallel prefill
+implementation. Full attention uses the configured FlashAttention backend.
+
+```sh
+text-embeddings-router --model-id Qwen/Qwen3.5-35B-A3B \
+  --dtype bfloat16 --pooling last-token --max-batch-tokens 4096
+```
+
+Native diagnostics live under `tests/qwen35/`: compile `gdn_probe.cu` as a CUDA
+shared library and run `compare_gdn.py --library ... --output ...` to compare
+convolution, gated recurrence and output normalization with Transformers.
+Compile `moe_probe.cu` together with `kernels/grouped_gemm_hopper.cu`, using the
+CUTLASS include paths and flags above, then run `compare_moe.py --model ...
+--library ... --output ...` for actual checkpoint expert comparisons with vLLM.
+These primitive checks supplement full-model validation.

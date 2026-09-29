@@ -120,6 +120,8 @@ enum Config {
     #[allow(dead_code)]
     #[serde(alias = "qwen3_moe")]
     Qwen3(Qwen3Config),
+    #[serde(rename = "qwen3_5_moe", alias = "qwen3_5_moe_text")]
+    Qwen35(models::Qwen35Config),
     Roberta(BertConfig),
     XlmRoberta(BertConfig),
     #[allow(dead_code)]
@@ -596,6 +598,19 @@ impl CandleBackend {
                     tracing::info!("Starting FlashQwen3 model on {:?}", device);
                     Ok(Box::new(
                         FlashQwen3Model::load(vb, &config, model_type).s()?,
+                    ))
+                }
+            }
+            (Config::Qwen35(config), _) => {
+                #[cfg(all(feature = "cuda", feature = "flash-attn"))]
+                {
+                    Ok(Box::new(models::Qwen35Model::load(vb, &config, model_type).s()?))
+                }
+                #[cfg(not(all(feature = "cuda", feature = "flash-attn")))]
+                {
+                    let _ = config;
+                    Err(BackendError::Start(
+                        "Qwen3.5-MoE requires a CUDA FlashAttention build".into(),
                     ))
                 }
             }

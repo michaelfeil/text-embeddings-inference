@@ -44,3 +44,6 @@ pub(crate) mod gemma4_rope;
 
 #[cfg(gemma4_moe_cuda)]
 pub(crate) mod qwen3_moe;
+
+#[cfg(feature = "cuda")]
+pub(crate) mod qwen35_gdn;
