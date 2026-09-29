@@ -52,6 +52,7 @@ pub async fn run(
     max_batch_tokens: usize,
     max_batch_requests: Option<usize>,
     radix_mlp_threshold: f32,
+    enable_fp8_dynamic: bool,
     max_client_batch_size: usize,
     auto_truncate: bool,
     default_prompt: Option<String>,
@@ -105,7 +106,14 @@ pub async fn run(
     };
 
     // Load config
-    let config_path = model_root.join("config.json");
+    let laya = model_root.join("rl_agent_config.json").exists();
+    #[cfg(feature = "grpc")]
+    anyhow::ensure!(!laya, "Laya typed decisions require an HTTP build");
+    let config_path = model_root.join(if laya {
+        "encoder/config.json"
+    } else {
+        "config.json"
+    });
     let config = fs::read_to_string(config_path).context("`config.json` not found")?;
     let mut config: ModelConfig =
         serde_json::from_str(&config).context("Failed to parse `config.json`")?;
@@ -124,10 +132,16 @@ pub async fn run(
     );
 
     // Set model type from config
-    let backend_model_type = get_backend_model_type(&config, &model_root, pooling)?;
+    let backend_model_type = if laya {
+        anyhow::ensure!(pooling.is_none(), "Laya does not use embedding pooling");
+        text_embeddings_backend::ModelType::Decision
+    } else {
+        get_backend_model_type(&config, &model_root, pooling)?
+    };
 
     // Info model type
     let model_type = match &backend_model_type {
+        text_embeddings_backend::ModelType::Decision => ModelType::Decision,
         text_embeddings_backend::ModelType::Classifier => {
             let id2label = config
                 .id2label
@@ -153,7 +167,11 @@ pub async fn run(
     };
 
     // Load tokenizer
-    let tokenizer_path = model_root.join("tokenizer.json");
+    let tokenizer_path = model_root.join(if laya {
+        "tokenizer/tokenizer.json"
+    } else {
+        "tokenizer.json"
+    });
     let mut tokenizer = Tokenizer::from_file(tokenizer_path).expect(
         "tokenizer.json not found. text-embeddings-inference only supports fast tokenizers",
     );
@@ -209,11 +227,24 @@ pub async fn run(
         }
     }
 
-    let base_input_length = match st_config {
-        Some(config) => config.max_seq_length,
-        None => {
-            tracing::warn!("Could not find a Sentence Transformers config");
-            config.max_position_embeddings - position_offset
+    let base_input_length = if laya {
+        let cfg: serde_json::Value =
+            serde_json::from_slice(&fs::read(model_root.join("rl_agent_config.json"))?)?;
+        let length = cfg["max_len"]
+            .as_u64()
+            .context("Laya max_len must be positive")? as usize;
+        anyhow::ensure!(
+            length > 0 && length <= config.max_position_embeddings,
+            "Invalid Laya max_len"
+        );
+        length
+    } else {
+        match st_config {
+            Some(config) => config.max_seq_length,
+            None => {
+                tracing::warn!("Could not find a Sentence Transformers config");
+                config.max_position_embeddings - position_offset
+            }
         }
     };
 
@@ -267,6 +298,17 @@ pub async fn run(
         default_prompt
     };
 
+    #[cfg(feature = "http")]
+    let systemone = if laya {
+        Some(std::sync::Arc::new(http::systemone::SystemOne::load(
+            &model_root,
+            tokenizer.clone(),
+            max_input_length,
+        )?))
+    } else {
+        None
+    };
+
     // Tokenization logic
     let tokenization = Tokenization::new(
         tokenization_workers,
@@ -275,8 +317,7 @@ pub async fn run(
         position_offset,
         default_prompt,
         prompts,
-    )
-    .with_chat_template(&model_root);
+    );
 
     let dtype = resolve_dtype(
         dtype,
@@ -304,7 +345,7 @@ pub async fn run(
                 replica,
                 "Initializing backend replica"
             );
-            let backend = text_embeddings_backend::Backend::new_shared(
+            let backend = text_embeddings_backend::Backend::new_shared_with_fp8(
                 model_root,
                 api_repo,
                 dtype,
@@ -315,6 +356,7 @@ pub async fn run(
                 otlp_endpoint,
                 otlp_service_name,
                 device,
+                enable_fp8_dynamic,
             )
             .await
             .with_context(|| format!("Could not create backend on device {device}"))?;
@@ -404,6 +446,7 @@ pub async fn run(
         max_client_batch_size,
         auto_truncate,
         radix_mlp_threshold,
+        enable_fp8_dynamic,
         version: env!("CARGO_PKG_VERSION"),
         sha: option_env!("VERGEN_GIT_SHA"),
         docker_label: option_env!("DOCKER_LABEL"),
@@ -451,6 +494,7 @@ pub async fn run(
             payload_limit,
             api_key,
             cors_allow_origin,
+            systemone,
         )
         .await
     }
@@ -530,9 +574,9 @@ fn get_backend_model_type(
 fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type: &str) -> DType {
     match requested {
         None | Some(DType::Auto) => {
-            // Keep the existing defaults for backends/models requiring FP32.
+            // EmbeddingGemma activations require BF16; FP16 is not supported.
             if model_type == "gemma3_text" {
-                return DType::Float32;
+                return DType::Bfloat16;
             }
             #[cfg(all(
                 any(feature = "candle", feature = "python"),
@@ -626,6 +670,7 @@ pub struct ClassifierModel {
 #[cfg_attr(feature = "http", derive(utoipa::ToSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum ModelType {
+    Decision,
     Classifier(ClassifierModel),
     Embedding(EmbeddingModel),
     Reranker(ClassifierModel),
@@ -664,6 +709,8 @@ pub struct Info {
     pub tokenization_workers: usize,
     #[cfg_attr(feature = "http", schema(example = "0.5"))]
     pub radix_mlp_threshold: f32,
+    /// Experimental per-token activation and per-row weight FP8 MLP quantization.
+    pub enable_fp8_dynamic: bool,
     /// Router Info
     #[cfg_attr(feature = "http", schema(example = "0.5.0"))]
     pub version: &'static str,
@@ -848,6 +895,23 @@ mod auto_dtype_tests {
             assert_eq!(from_config(&json, Some(DType::Auto)), DType::Bfloat16);
             assert_eq!(from_config(&json, Some(DType::Float16)), DType::Float16);
         }
+    }
+
+    #[test]
+    fn embeddinggemma_defaults_to_bf16_even_for_fp32_checkpoint() {
+        assert_eq!(
+            resolve_dtype(None, Some("float32"), "gemma3_text"),
+            DType::Bfloat16
+        );
+        assert_eq!(
+            resolve_dtype(Some(DType::Auto), Some("float32"), "gemma3_text"),
+            DType::Bfloat16
+        );
+        // An explicit unsupported precision is rejected by the model loader.
+        assert_eq!(
+            resolve_dtype(Some(DType::Float32), None, "gemma3_text"),
+            DType::Float32
+        );
     }
 
     #[test]

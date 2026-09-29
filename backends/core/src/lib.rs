@@ -41,13 +41,30 @@ pub type Embeddings = IntMap<usize, Embedding>;
 pub type Predictions = IntMap<usize, Vec<f32>>;
 pub type TokenPredictions = IntMap<usize, Vec<Vec<f32>>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DecisionPromptStyle {
-    Qwen3,
-    Gemma4,
+#[derive(Debug, Clone)]
+pub struct DecisionInput {
+    /// Laya type ID: choice = 0, score = 1, noul = 2.
+    pub question_type: usize,
+    /// Option marker offsets within this sequence, independent of batch packing.
+    pub markers: Vec<usize>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DecisionOutput {
+    pub logits: Vec<f32>,
+    pub action_probability: f32,
 }
 
 pub trait Backend {
+    fn decide(
+        &self,
+        _batch: Batch,
+        _inputs: Vec<DecisionInput>,
+    ) -> Result<Vec<DecisionOutput>, BackendError> {
+        Err(BackendError::Inference(
+            "Model does not support typed decisions".into(),
+        ))
+    }
     fn health(&self) -> Result<(), BackendError>;
     fn max_batch_size(&self) -> Option<usize> {
         None
@@ -59,26 +76,6 @@ pub trait Backend {
         false
     }
 
-    fn supports_decision_scoring(&self) -> bool {
-        false
-    }
-
-    fn decision_prompt_style(&self) -> Option<DecisionPromptStyle> {
-        None
-    }
-
-    /// Score complete candidate sequences in one forward pass.
-    /// Each branch has its own prompt length; all supplied continuation tokens (including template suffix) are scored.
-    fn score_options(
-        &self,
-        _batch: Batch,
-        _prompt_lengths: &[usize],
-    ) -> Result<Vec<f32>, BackendError> {
-        Err(BackendError::Inference(
-            "Decision scoring is not supported by this model".into(),
-        ))
-    }
-
     fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError>;
 
     fn predict(&self, batch: Batch) -> Result<Predictions, BackendError>;
@@ -88,6 +85,7 @@ pub trait Backend {
 
 #[derive(Debug, PartialEq, Clone)]
 pub enum ModelType {
+    Decision,
     Classifier,
     Embedding(Pool),
 }

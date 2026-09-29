@@ -1,10 +1,10 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::rotary::apply_packed_rotary;
 use crate::layers::{get_cos_sin, get_inv_freqs, index_select, LayerNorm, Linear};
 use crate::models::nomic::{NomicBertEmbeddings, NomicMLP};
 use crate::models::{Model, NomicConfig};
-use candle::{DType, Device, IndexOp, Result, Tensor, D};
+use candle::{Device, IndexOp, Result, Tensor, D};
 use candle_nn::VarBuilder;
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct NomicAttention {
@@ -76,9 +76,10 @@ impl NomicAttention {
         new_qkv_shape.push(self.attention_head_size);
 
         let qkv = qkv.reshape(new_qkv_shape.as_slice())?;
-        let qkv = qkv.chunk(3, 1)?;
-
-        apply_rotary_inplace(&qkv[0], &qkv[1], &cos, &sin, true)?;
+        let mut qkv = qkv.chunk(3, 1)?;
+        let (q, k) = apply_packed_rotary(&qkv[0], &qkv[1], cos, sin)?;
+        qkv[0] = q;
+        qkv[1] = k;
 
         let attention = flash_attn_varlen(
             &qkv[0],
@@ -141,11 +142,11 @@ impl NomicBertBlock {
 
         let attn_output = self
             .attention
-            .forward(&hidden_states, cu_seqlens, cos, sin, max_s)?;
+            .forward(hidden_states, cu_seqlens, cos, sin, max_s)?;
 
         let hidden_states = self
             .post_attention_layer_norm
-            .forward(&hidden_states, Some(&attn_output))?;
+            .forward(hidden_states, Some(&attn_output))?;
 
         let mlp_out = self.mlp.forward(&hidden_states)?;
 
@@ -209,16 +210,10 @@ impl FlashNomicBertModel {
             candle::bail!("config is not supported")
         }
 
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashNomicBertModel requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashNomicBertModel requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         let pool = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 candle::bail!("`classifier` model type is not supported for Nomic")
             }
@@ -285,25 +280,12 @@ impl FlashNomicBertModel {
         let _fa4_batch =
             crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
 
-        let (cos, sin) = if self.scaled_rotary_cache.is_some()
-            && batch.max_length > self.max_trained_positions
-        {
-            let cos = index_select(
-                &self.scaled_rotary_cache.as_ref().unwrap().0,
-                &position_ids,
-                0,
-            )?;
-            let sin = index_select(
-                &self.scaled_rotary_cache.as_ref().unwrap().1,
-                &position_ids,
-                0,
-            )?;
-            (cos, sin)
-        } else {
-            let cos = index_select(&self.rotary_cache.0, &position_ids, 0)?;
-            let sin = index_select(&self.rotary_cache.1, &position_ids, 0)?;
-            (cos, sin)
+        let rotary_cache = match &self.scaled_rotary_cache {
+            Some(cache) if batch.max_length > self.max_trained_positions => cache,
+            _ => &self.rotary_cache,
         };
+        let cos = index_select(&rotary_cache.0, &position_ids, 0)?;
+        let sin = index_select(&rotary_cache.1, &position_ids, 0)?;
 
         let embedding_output = self.embeddings.forward(&input_ids, &type_ids)?;
 
@@ -377,7 +359,10 @@ impl FlashNomicBertModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

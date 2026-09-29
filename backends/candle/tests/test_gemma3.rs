@@ -1,3 +1,5 @@
+#![cfg(feature = "flash-attn")]
+
 mod common;
 
 use crate::common::{sort_embeddings, SnapshotEmbeddings};
@@ -7,18 +9,27 @@ use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, ModelType, Pool};
 
 #[test]
+#[ignore = "requires CUDA and downloads the EmbeddingGemma checkpoint"]
 #[serial_test::serial]
 fn test_gemma3() -> Result<()> {
-    let (model_root, dense_paths) = download_artifacts("google/embeddinggemma-300m", None, None)?;
+    // Pinned ungated mirror: weights, tokenizer, and configs match the official
+    // google/embeddinggemma-300m revision 57c266a740f537b4dc058e1b0cda161fd15afa75.
+    let (model_root, dense_paths) = download_artifacts(
+        "michaelfeil/embeddinggemma-300m",
+        Some("759942eb3b857cf49e7b472b21b74e0a7a49418d"),
+        None,
+    )?;
     let tokenizer = load_tokenizer(&model_root)?;
 
     let backend = CandleBackend::new(
         &model_root,
-        "float32".to_string(),
+        "bfloat16".to_string(),
         ModelType::Embedding(Pool::Mean),
         dense_paths,
         0,
     )?;
+
+    assert!(!backend.is_padded());
 
     let input_batch = batch(
         vec![

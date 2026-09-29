@@ -26,6 +26,43 @@ pub struct Infer {
 }
 
 impl Infer {
+    pub async fn decide(
+        &self,
+        encoding: crate::tokenization::ValidEncoding,
+        input: text_embeddings_backend::DecisionInput,
+        tokenization: Duration,
+        batch_counter: Arc<AtomicUsize>,
+    ) -> Result<DecisionInferResponse, TextEmbeddingsError> {
+        if self.backend.model_type != ModelType::Decision {
+            return Err(TextEmbeddingsError::Validation(
+                "Loaded model does not support typed decisions".into(),
+            ));
+        }
+        let (response_tx, response_rx) = oneshot::channel();
+        self.queue
+            .append(Entry {
+                metadata: Metadata {
+                    client_batch: Some(batch_counter.clone()),
+                    response_tx,
+                    tokenization,
+                    queue_time: Instant::now(),
+                    prompt_tokens: encoding.input_ids.len(),
+                    pooling: false,
+                    token_classification: false,
+                    decision: Some(input),
+                },
+                encoding,
+            })
+            .await;
+        if batch_counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+            self.notify_batching_task.notify_one();
+        }
+        match response_rx.await.map_err(|_| BackendError::Unhealthy)?? {
+            InferResult::Decision(output) => Ok(output),
+            _ => Err(BackendError::Inference("Unexpected decision response".into()).into()),
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         tokenization: Tokenization,
@@ -76,98 +113,6 @@ impl Infer {
             backend,
             _lifetime: lifetime,
         }
-    }
-
-    /// All question groups are delivered in one backend call, never scheduled separately.
-    pub async fn decide(
-        &self,
-        groups: Vec<crate::decision::Group>,
-        max_options: usize,
-        max_batch_tokens: usize,
-        max_length: usize,
-    ) -> Result<(Vec<crate::decision::ScoredGroup>, usize, usize), TextEmbeddingsError> {
-        let _permit = self.try_acquire_permit()?;
-        if self.backend.decision_prompt_style.is_none() {
-            return Err(TextEmbeddingsError::Validation(
-                "Decision scoring requires a supported causal language model with LM weights"
-                    .into(),
-            ));
-        };
-        let mut encoded = Vec::new();
-        let mut results = Vec::new();
-        let mut total = 0usize;
-        let mut branches = 0usize;
-        for group in groups {
-            let messages = group.messages();
-            let prompt = self
-                .tokenization
-                .tokenize_chat(messages.clone(), None)
-                .await?;
-            if prompt.is_empty() || prompt.len() >= max_length || prompt.len() >= max_batch_tokens {
-                return Err(TextEmbeddingsError::Validation(
-                    "Group prompt must leave room for an option within the server token limits"
-                        .into(),
-                ));
-            }
-            let mut options = Vec::new();
-            let mut candidates = Vec::new();
-            for candidate in group.options {
-                branches += 1;
-                if branches > max_options {
-                    return Err(TextEmbeddingsError::Validation("Expanded question groups exceed the server batch request limit; no branches were evaluated".into()));
-                }
-                let completed = self
-                    .tokenization
-                    .tokenize_chat(messages.clone(), Some(candidate.clone()))
-                    .await?;
-                let option = crate::chat::continuation(prompt.get_ids(), completed.get_ids())?;
-                if option.len() > max_length - prompt.len() {
-                    return Err(TextEmbeddingsError::Validation(
-                        "A prompt + option exceeds the model context limit".into(),
-                    ));
-                }
-                total = total
-                    .checked_add(prompt.len())
-                    .and_then(|n| n.checked_add(option.len()))
-                    .ok_or_else(|| {
-                        TextEmbeddingsError::Validation("Token count overflow".into())
-                    })?;
-                if total > max_batch_tokens {
-                    return Err(TextEmbeddingsError::Validation(
-                        "Expanded question groups exceed the server max_batch_tokens; no branches were evaluated".into(),
-                    ));
-                }
-                options.push(option.to_vec());
-                candidates.push(candidate);
-            }
-            encoded.push(crate::decision::EncodedGroup {
-                prompt: prompt.get_ids().to_vec(),
-                options,
-            });
-            results.push(crate::decision::ScoredGroup {
-                name: group.name,
-                options: candidates,
-                log_scores: Vec::new(),
-            });
-        }
-        let (batch, prompt_lengths) =
-            crate::decision::option_batch(&encoded, max_batch_tokens, max_length)?;
-        let compact_tokens = batch.compact_input_ids.as_ref().unwrap().len();
-        let scores = self.backend.score_options(batch, prompt_lengths).await?;
-        let expected: usize = results.iter().map(|g| g.options.len()).sum();
-        if scores.len() != expected || scores.iter().any(|s| !s.is_finite()) {
-            return Err(text_embeddings_backend::BackendError::Inference(
-                "Model returned invalid decision scores".into(),
-            )
-            .into());
-        }
-        let mut offset = 0;
-        for group in &mut results {
-            let end = offset + group.options.len();
-            group.log_scores = scores[offset..end].to_vec();
-            offset = end;
-        }
-        Ok((results, total, compact_tokens))
     }
 
     #[instrument(skip(self, inputs))]
@@ -454,7 +399,7 @@ impl Infer {
         _permit: OwnedSemaphorePermit,
         batch_counter: Option<Arc<AtomicUsize>>,
     ) -> Result<InferResult, TextEmbeddingsError> {
-        if self.is_classifier() {
+        if !matches!(self.backend.model_type, ModelType::Embedding(_)) {
             let counter = metrics::counter!("te_request_failure", "err" => "model_type");
             counter.increment(1);
             let message = "Model is not an embedding model".to_string();
@@ -493,6 +438,7 @@ impl Infer {
                     prompt_tokens: encoding.input_ids.len(),
                     pooling,
                     token_classification: false,
+                    decision: None,
                 },
                 encoding,
             })
@@ -571,6 +517,7 @@ impl Infer {
                     prompt_tokens: encoding.input_ids.len(),
                     pooling: true,
                     token_classification: false,
+                    decision: None,
                 },
                 encoding,
             })
@@ -691,6 +638,7 @@ impl Infer {
                     prompt_tokens: encoding.input_ids.len(),
                     pooling: false,
                     token_classification: true,
+                    decision: None,
                 },
                 encoding,
             })
@@ -869,6 +817,44 @@ async fn backend_task(
             continue;
         };
         match &backend.model_type {
+            ModelType::Decision => {
+                let inputs = batch
+                    .0
+                    .iter()
+                    .map(|m| m.decision.clone().expect("decision metadata missing"))
+                    .collect();
+                match execution.decide(batch.1, inputs).await {
+                    Ok((outputs, inference_duration)) if outputs.len() == batch.0.len() => {
+                        for (m, output) in batch.0.into_iter().zip(outputs) {
+                            let _ = m.response_tx.send(Ok(InferResult::Decision(
+                                DecisionInferResponse {
+                                    results: output,
+                                    metadata: InferMetadata {
+                                        prompt_tokens: m.prompt_tokens,
+                                        tokenization: m.tokenization,
+                                        queue: m
+                                            .queue_time
+                                            .elapsed()
+                                            .saturating_sub(inference_duration),
+                                        inference: inference_duration,
+                                    },
+                                },
+                            )));
+                        }
+                    }
+                    result => {
+                        let err = result.err().unwrap_or_else(|| {
+                            BackendError::Inference(
+                                "Decision output count does not match batch".into(),
+                            )
+                        });
+                        for m in batch.0 {
+                            let _ = m.response_tx.send(Err(err.clone()));
+                        }
+                    }
+                }
+            }
+
             ModelType::Classifier => {
                 let token_classification = batch.0.iter().any(|m| m.token_classification);
 
@@ -1016,10 +1002,17 @@ pub struct InferMetadata {
 
 #[derive(Debug)]
 pub(crate) enum InferResult {
+    Decision(DecisionInferResponse),
     Classification(ClassificationInferResponse),
     TokenClassification(TokenClassificationInferResponse),
     PooledEmbedding(PooledEmbeddingsInferResponse),
     AllEmbedding(AllEmbeddingsInferResponse),
+}
+
+#[derive(Debug)]
+pub struct DecisionInferResponse {
+    pub results: text_embeddings_backend::DecisionOutput,
+    pub metadata: InferMetadata,
 }
 
 #[derive(Debug)]

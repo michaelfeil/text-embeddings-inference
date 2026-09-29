@@ -9,8 +9,6 @@ use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Qwen3Config {
-    #[serde(default)]
-    pub tie_word_embeddings: bool,
     pub attention_bias: bool,
     pub vocab_size: usize,
     pub head_dim: Option<usize>,
@@ -141,7 +139,12 @@ impl Qwen3Attention {
             (hidden_size, num_attention_heads * attention_head_size),
             "weight",
         )?;
-        let o_proj = Linear::new(o_proj_weight, None, None);
+        let o_proj_bias = if config.attention_bias {
+            Some(vb.pp("o_proj").get(hidden_size, "bias")?)
+        } else {
+            None
+        };
+        let o_proj = Linear::new(o_proj_weight, o_proj_bias, None);
 
         let q_norm = RMSNorm::load(vb.pp("q_norm"), attention_head_size, config.rms_norm_eps)?;
         let k_norm = RMSNorm::load(vb.pp("k_norm"), attention_head_size, config.rms_norm_eps)?;
@@ -435,6 +438,7 @@ pub struct Qwen3Model {
 impl Qwen3Model {
     pub fn load(vb: VarBuilder, config: &Qwen3Config, model_type: ModelType) -> Result<Self> {
         let pool = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 candle::bail!("`classifier` model type is not supported for Qwen3")
             }
@@ -563,7 +567,9 @@ impl Qwen3Model {
             let input_ids = Tensor::from_vec(input_ids, shape, &self.device)?;
             let position_ids = Tensor::from_vec(position_ids, shape, &self.device)?;
 
-            let attention_bias = if masking {
+            // Causal attention still needs a mask when every sequence has the
+            // same length; absence of padding must not enable future tokens.
+            let attention_bias = if masking || !self.use_bidirectional_attention {
                 let attention_bias =
                     Tensor::from_vec(attention_bias, (batch_size, 1, 1, max_length), &self.device)?
                         .to_dtype(self.dtype)?;
@@ -716,28 +722,16 @@ impl Qwen3Model {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
-                let mut final_embeddings = Vec::new();
-                for &i in &batch.raw_indices {
+            let selected: Result<Vec<_>> = batch
+                .raw_indices
+                .iter()
+                .map(|&i| {
                     let i = i as usize;
-                    let length = input_lengths[i];
-                    final_embeddings.push(outputs.i((i, ..length))?);
-                }
-                Some(Tensor::cat(&final_embeddings, 0)?)
-            } else {
-                // Single batch or all raw requests
-                if batch_size == 1 {
-                    let length = input_lengths[0];
-                    Some(outputs.i((0, ..length))?)
-                } else {
-                    // Multiple sequences, all raw
-                    let mut all_embeddings = Vec::new();
-                    for (i, &length) in input_lengths.iter().enumerate().take(batch_size) {
-                        all_embeddings.push(outputs.i((i, ..length))?);
-                    }
-                    Some(Tensor::cat(&all_embeddings, 0)?)
-                }
-            }
+                    // Qwen uses left padding, so real tokens occupy the suffix.
+                    outputs.i((i, max_length - input_lengths[i]..))
+                })
+                .collect();
+            Some(Tensor::cat(&selected?, 0)?)
         } else {
             None
         };
@@ -753,5 +747,94 @@ impl Model for Qwen3Model {
 
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         self.forward(batch)
+    }
+}
+
+#[cfg(test)]
+mod cpu_tests {
+    use super::*;
+
+    fn batch(sequences: &[&[u32]], pooled: bool) -> Batch {
+        let mut cumulative = vec![0];
+        for sequence in sequences {
+            cumulative.push(cumulative.last().unwrap() + sequence.len() as u32);
+        }
+        Batch {
+            input_ids: sequences.iter().flat_map(|s| s.iter().copied()).collect(),
+            token_type_ids: vec![0; *cumulative.last().unwrap() as usize],
+            position_ids: sequences.iter().flat_map(|s| 0..s.len() as u32).collect(),
+            cumulative_seq_lengths: cumulative,
+            max_length: sequences.iter().map(|s| s.len()).max().unwrap() as u32,
+            pooled_indices: if pooled {
+                (0..sequences.len() as u32).collect()
+            } else {
+                vec![]
+            },
+            raw_indices: if pooled {
+                vec![]
+            } else {
+                (0..sequences.len() as u32).collect()
+            },
+            compact_input_ids: None,
+            compact_position_ids: None,
+            scatter_unfold: None,
+            fold_gather: None,
+            tokens: vec![],
+            offsets: vec![],
+        }
+    }
+
+    #[test]
+    fn padded_cpu_qwen_matches_single_sequences() -> Result<()> {
+        let config: Qwen3Config = serde_json::from_value(serde_json::json!({
+            "attention_bias": false, "vocab_size": 32, "hidden_size": 16,
+            "intermediate_size": 24, "num_hidden_layers": 1, "num_attention_heads": 2,
+            "num_key_value_heads": 1, "hidden_act": "silu", "max_position_embeddings": 16,
+            "rms_norm_eps": 0.000001, "rope_theta": 10000., "use_sliding_window": false,
+            "eos_token_id": 2
+        }))
+        .map_err(candle::Error::wrap)?;
+        let vars = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&vars, DType::F32, &Device::Cpu);
+        // Discover shapes, initialize nonzero weights, then load merged projections.
+        Qwen3Model::load(vb.clone(), &config, ModelType::Embedding(Pool::Mean))?;
+        for var in vars.all_vars() {
+            var.set(&Tensor::randn(0f32, 0.2f32, var.shape(), &Device::Cpu)?)?;
+        }
+        let model = Qwen3Model::load(vb, &config, ModelType::Embedding(Pool::Mean))?;
+        for sequences in [
+            vec![&[3u32, 4, 5][..], &[6, 7, 8][..]],
+            vec![&[3u32, 4][..], &[6, 7, 8, 9][..]],
+        ] {
+            for pooled in [true, false] {
+                let output = model.forward(batch(&sequences, pooled))?;
+                let actual = if pooled {
+                    output.0.unwrap()
+                } else {
+                    output.1.unwrap()
+                };
+                let expected: Result<Vec<_>> = sequences
+                    .iter()
+                    .map(|s| {
+                        let output = model.forward(batch(&[*s], pooled))?;
+                        Ok(if pooled {
+                            output.0.unwrap()
+                        } else {
+                            output.1.unwrap()
+                        })
+                    })
+                    .collect();
+                let expected = Tensor::cat(&expected?, 0)?;
+                let error = (&actual - &expected)?
+                    .abs()?
+                    .max_all()?
+                    .to_scalar::<f32>()?;
+                assert!(
+                    error < 1e-5,
+                    "pooled={pooled}: batch changed embeddings by {error}"
+                );
+            }
+        }
+        Ok(())
     }
 }

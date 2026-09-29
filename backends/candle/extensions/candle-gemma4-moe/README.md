@@ -12,7 +12,9 @@ share routing, packing, GELU and combination kernels, including scalar fallbacks
 for unaligned input/output views. Hopper reserves 2 MiB of additional GEMM
 workspace and checks the CUTLASS requirement before launch. The Hopper tile is
 128 x 256 x 64; this improved the tested long-request medians by another
-2–6% over the initial 128 x 128 x 64 tile, with unchanged regression scores.
+2–6% over the initial 128 x 128 x 64 tile in the former decision-scoring prototype.
+Those full-model timings are historical and are not measurements of this
+embedding-only integration.
 
 Routing, token grouping, both expert GEMMs, GELU gating and weighted reduction
 run on the caller's CUDA stream. Routing counts stay on the device. The Rust
@@ -47,7 +49,7 @@ CUDA_VISIBLE_DEVICES=0 python tests/compare_vllm.py \
 This compares actual layer-zero weights at 1, 17, 257 and 1024 tokens, with
 relative RMS error below 0.1% and cosine above 0.999999 as primitive-test gates.
 It also records CUDA-event timings. These tolerances are not model-quality
-acceptance criteria. Keep a separate full-model decision/scoring comparison.
+acceptance criteria. Validate embedding behavior separately from these primitive checks.
 
 The harness also checks exact GELU-plus-multiply agreement with vLLM across six
 input scales, to catch changes to intermediate BF16 rounding. It additionally

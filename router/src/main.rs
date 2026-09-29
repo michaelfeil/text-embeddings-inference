@@ -82,6 +82,11 @@ struct Args {
     #[clap(long, env)]
     max_batch_requests: Option<usize>,
 
+    /// Experimental calibration-free FP8 MLPs (Hopper FP16/BF16 Qwen2/Qwen3/Llama/Mistral).
+    /// Bundled in official Hopper images; disabled by default. May change embedding accuracy.
+    #[clap(long, env)]
+    enable_fp8_dynamic: bool,
+
     /// RadixMLP threshold.
     ///
     /// Set the threshold for RadixMLP.
@@ -262,6 +267,7 @@ async fn main() -> Result<()> {
         args.max_batch_tokens,
         args.max_batch_requests,
         args.radix_mlp_threshold,
+        args.enable_fp8_dynamic,
         args.max_client_batch_size,
         args.auto_truncate,
         args.default_prompt,

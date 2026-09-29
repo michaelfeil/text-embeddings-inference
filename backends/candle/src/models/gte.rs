@@ -399,6 +399,7 @@ impl GTEModel {
         }
 
         let (pool, classifier) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 let pool = Pool::Cls;
 

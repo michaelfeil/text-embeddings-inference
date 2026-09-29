@@ -25,8 +25,6 @@ length of 512 tokens:
 
 </div>
 
-This branch also supports [exhaustive structured decisions with RadixMLP](DECISIONS.md): shared context, exhaustive question groups in one atomic batch, and a server token-budget guard through `POST /decide`.
-
 ## Table of contents
 
 - [Get Started](#get-started)
@@ -466,6 +464,74 @@ curl 127.0.0.1:8080/predict \
     -H 'Content-Type: application/json'
 ```
 
+### Laya typed decisions (Jev API)
+
+Serve `convaiinnovations/laya-typed-decisions` with the Candle HTTP build:
+
+```shell
+text-embeddings-router --model-id convaiinnovations/laya-typed-decisions
+```
+
+For CPU inference, add `--dtype float32`.
+
+The existing API server exposes `POST /v1/systemone`. Questions use TEI's shared
+batch queue, backend replicas, concurrency limits, authentication, and metrics.
+ModernBERT encodes the batch once; Laya's custom head scores each question's
+options. This is bidirectional inference; RadixMLP is disabled for this model.
+
+```shell
+curl http://localhost:3000/v1/systemone \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "state": "I was billed twice. Please refund the extra charge.",
+    "questions": {
+      "team": {"type": "choice", "instructions": "Which team?",
+               "criteria": {"billing": "billing and payments", "support": "technical support"}},
+      "urgency": {"type": "score", "instructions": "How urgent is this request?",
+                  "criteria": ["low", "medium", "high"]},
+      "refund": {"type": "noul", "instructions": "The customer requests a refund."}
+    }
+  }'
+```
+
+Answers contain the selected choice, an expected zero-based score, or a `noul`
+probability of true, plus temperature-scaled `answer_confidence` and the action head's
+`act_probability`. Choice/score answers also include option probabilities and
+entropy-based `confidence`. Usage reports input tokens and zero output tokens.
+Option order follows the request JSON. `state` is either a plain text string or
+an explicit `{"messages": [...]}` envelope. Messages preserve roles and ordered
+text/image/audio/video content blocks for a model's native processor. The current
+Laya adapter supports **plain text only** and rejects native messages with 422;
+the message schema does not imply multimodal backend support. Plain text truncates
+from the right. Arbitrary JSON objects and bare arrays are no longer accepted as
+state; serialize structured records explicitly when supplying text to Laya.
+See [the input design](docs/systemone-input-design.md) for the message contract.
+
+Optional `max_len` and `head_max_len` override the checkpoint's token budgets,
+up to the server's maximum input length. Requests that cannot retain all options,
+or make options identical after token truncation, return 422. The server accepts
+Jev's `model` field as an alias and always uses its configured checkpoint.
+
+Limits: at most 64 questions (also bounded by `--max-client-batch-size`), 100
+choice options, 32 score levels, 512 total options, and 50,000 state characters.
+Use the existing `--max-batch-tokens`, `--max-batch-requests`,
+`--max-concurrent-requests`, and replica options to control serving capacity.
+For a local checkpoint, retain `rl_agent_config.json`, `encoder/config.json`,
+`tokenizer/tokenizer.json`, and `model.safetensors` in their original layout.
+Laya requires the Candle backend and the HTTP API.
+
+Unknown request/question fields are rejected. Execution extensions such as
+`think`, `mode`, `depends_on`, `ask_if`, and `alone` are not implemented.
+Temperatures are clamped to [0.5, 5], matching upstream Laya. The published
+checkpoint's `choice:11+` temperature is outside this range; confidence for that
+bucket is not verified as calibrated. See [verification and benchmarks](docs/laya-verification.md)
+for measured parity, labelled accuracy, and latency limitations. ModernBERT's
+encoder uses approximate (tanh) GELU, intentionally differing from upstream
+Laya's exact GELU; the custom head retains ReLU and exact scorer/action GELU.
+The controlled FP32 test-set ablation measured 76.70% accuracy with the approximate
+encoder versus 76.60% with the historical exact encoder (2 of 2,000 decisions
+changed). Historical parity/BF16/latency artifacts are labelled accordingly.
+
 ### Using SPLADE pooling
 
 You can choose to activate SPLADE pooling for Bert and Distilbert MaskedLM architectures:
@@ -513,6 +579,17 @@ grpcurl -d '{"inputs": "What is Deep Learning"}' -plaintext 0.0.0.0:8080 tei.v1.
 ## Local install
 
 ### CPU
+
+Candle CPU inference uses packed (ragged) attention by default for float32 and
+float16 BERT/RoBERTa, DistilBERT, Jina, GTE, Nomic, ModernBERT, Qwen2/Qwen3,
+and Llama/Mistral models. Tokens remain unpadded throughout these model paths;
+attention respects each sequence's boundaries. Set `USE_FLASH_ATTENTION=false`
+to use the previous padded implementation where available. CPU BF16, MPNet,
+and Metal continue using their existing paths. Gemma3 still requires CUDA BF16.
+DistilBERT classifiers retain their padded implementation. Packed Llama requires
+bias-free projections and the standard head dimension. The CPU batch-size cap
+remains four sequences.
+
 
 You can also opt to install `text-embeddings-inference` locally.
 
@@ -631,16 +708,25 @@ docker build . -f Dockerfile --platform=linux/arm64
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
 
-### Opt-in FA4 on Hopper
+### Automatic attention selection on Hopper
 
 Hopper CUDA images build and include the pinned FA4 native bundle.
-FA2 is the default. Set `ATTN_BACKEND=fa4` to opt into supported FP16/BF16 packed
-FA4 attention, or `ATTN_BACKEND=fa2` to select FA2 explicitly. The earlier
+`ATTN_BACKEND=auto` is the default. On Hopper (SM90), builds containing FA4
+select it for validated FP16/BF16 packed attention shapes: head dimension 64
+with equal query/KV heads and global or bidirectional window masks; dimension
+128 with causal 4:1 GQA, or global bidirectional 2:1 GQA in BF16 only. Unsupported shapes,
+ALiBi, other GPUs, and builds without FA4 retain the existing attention backend.
+EmbeddingGemma's dimension 256 remains on FA2. Set `ATTN_BACKEND=fa2` to disable
+FA4, or `ATTN_BACKEND=fa4` to explicitly request the same supported FA4 paths
+(with fallback for unsupported shapes). The environment selection is cached
+on first use; restart the process to change it. FP8 is independently opt-in. The earlier
 `TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
 
 When FA4 is enabled, models using the shared flash-attention dispatcher register
 their variable-length boundaries once per batch. The current native bundle supports SM90 d64 MHA global
-and two-sided local attention, and d128 causal GQA with a 4:1 query/KV head ratio.
+and two-sided local attention, d128 causal GQA with a 4:1 query/KV head ratio,
+and d128 global GQA with a 2:1 ratio (including Voyage-4-nano). Use BF16 for
+Voyage to avoid FP16 non-finite outputs at long context.
 Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
 backend. FA4 execution errors propagate. Other architectures retain their existing
 backend until their native bundles are runtime-qualified.
@@ -655,5 +741,5 @@ reduction order and causal d128 key-tile boundaries with FA2. This fixes the obs
 pooled outputs match FA2 bitwise on the tested FP16/BF16 cases, and the measured
 STS-B, SciFact and NFCorpus score differences disappear. The causal tile change
 also removes the tested Qwen3-8B long-input differences in both precisions.
-FA4 remains opt-in;
+Auto selects only qualified shapes and dtypes;
 these checks do not establish equivalence for every model, shape or architecture.

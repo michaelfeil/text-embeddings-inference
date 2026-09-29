@@ -45,127 +45,6 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-struct DecideRequest {
-    /// Conversation history. The model chat template is applied automatically.
-    messages: Vec<DecisionMessage>,
-    /// Named finite JSON Schemas. Optional `group` selects an independent group;
-    /// omitted markers share the "default" group. All combinations within a group are scored.
-    questions: std::collections::BTreeMap<String, serde_json::Value>,
-}
-
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(deny_unknown_fields)]
-struct DecisionMessage {
-    role: DecisionRole,
-    content: String,
-}
-#[derive(serde::Deserialize, utoipa::ToSchema)]
-#[serde(rename_all = "lowercase")]
-enum DecisionRole {
-    System,
-    User,
-    Assistant,
-}
-
-#[derive(serde::Serialize, utoipa::ToSchema)]
-struct DecisionGroupResponse {
-    index: usize,
-    /// Joint answers for this group, keyed by question name.
-    decision: serde_json::Value,
-    options: Vec<String>,
-    /// Sum of continuation token log probabilities including the complete template suffix, in option order.
-    log_scores: Vec<f32>,
-    /// Relative likelihoods normalized within this group, not calibrated confidence.
-    probabilities: Vec<f32>,
-}
-
-#[derive(serde::Serialize, utoipa::ToSchema)]
-struct DecideResponse {
-    groups: std::collections::BTreeMap<String, DecisionGroupResponse>,
-    expanded_tokens: usize,
-    compact_tokens: usize,
-}
-
-fn decision_index(scores: &[f32]) -> usize {
-    scores
-        .iter()
-        .enumerate()
-        .max_by(|a, b| {
-            a.1.partial_cmp(b.1)
-                .expect("Decision scores are finite")
-                .then_with(|| b.0.cmp(&a.0))
-        })
-        .expect("Decision groups contain at least one finite score")
-        .0
-}
-
-#[utoipa::path(post, path = "/decide", request_body = DecideRequest,
-    responses((status = 200, body = DecideResponse), (status = 413, body = ErrorResponse)))]
-async fn decide(
-    infer: Extension<Infer>,
-    info: Extension<Info>,
-    Json(request): Json<DecideRequest>,
-) -> Result<Json<DecideResponse>, (StatusCode, Json<ErrorResponse>)> {
-    let groups = text_embeddings_core::decision::groups(
-        request
-            .messages
-            .into_iter()
-            .map(|m| text_embeddings_core::chat::Message {
-                role: match m.role {
-                    DecisionRole::System => text_embeddings_core::chat::Role::System,
-                    DecisionRole::User => text_embeddings_core::chat::Role::User,
-                    DecisionRole::Assistant => text_embeddings_core::chat::Role::Assistant,
-                },
-                content: m.content,
-            })
-            .collect(),
-        request.questions,
-        info.max_batch_tokens,
-    )
-    .map_err(ErrorResponse::from)?;
-    let (scores, expanded_tokens, compact_tokens) = infer
-        .decide(
-            groups,
-            info.max_batch_requests
-                .unwrap_or(info.max_batch_tokens)
-                .min(info.max_batch_tokens),
-            info.max_batch_tokens,
-            info.max_input_length,
-        )
-        .await
-        .map_err(ErrorResponse::from)?;
-    let mut groups = std::collections::BTreeMap::new();
-    for group in scores {
-        let index = decision_index(&group.log_scores);
-        let maximum = group.log_scores[index];
-        let mut probabilities: Vec<f32> = group
-            .log_scores
-            .iter()
-            .map(|s| (s - maximum).exp())
-            .collect();
-        let sum: f32 = probabilities.iter().sum();
-        probabilities.iter_mut().for_each(|p| *p /= sum);
-        groups.insert(
-            group.name,
-            DecisionGroupResponse {
-                index,
-                decision: serde_json::from_str(&group.options[index])
-                    .map_err(ErrorResponse::from)?,
-                options: group.options,
-                log_scores: group.log_scores,
-                probabilities,
-            },
-        );
-    }
-    Ok(Json(DecideResponse {
-        groups,
-        expanded_tokens,
-        compact_tokens,
-    }))
-}
-
 ///Text Embeddings Inference endpoint info
 #[utoipa::path(
 get,
@@ -649,7 +528,7 @@ async fn rerank(
 
     match &info.model_type {
         ModelType::Reranker(_) => Ok(()),
-        ModelType::Classifier(_) | ModelType::Embedding(_) => {
+        ModelType::Decision | ModelType::Classifier(_) | ModelType::Embedding(_) => {
             let counter = metrics::counter!("te_request_failure", "err" => "model_type");
             counter.increment(1);
             let message = "model is not a re-ranker model".to_string();
@@ -1913,6 +1792,12 @@ async fn vertex_compatibility(
         }
 
         match info.model_type {
+            ModelType::Decision => {
+                return Err(ErrorResponse::from(TextEmbeddingsError::Validation(
+                    "Use /v1/systemone for typed decisions".into(),
+                ))
+                .into())
+            }
             ModelType::Classifier(_) | ModelType::Reranker(_) => {
                 let instance = serde_json::from_value::<PredictRequest>(instance)
                     .map_err(ErrorResponse::from)?;
@@ -1966,13 +1851,14 @@ pub async fn run(
     payload_limit: usize,
     api_key: Option<String>,
     cors_allow_origin: Option<Vec<String>>,
+    systemone: Option<std::sync::Arc<super::systemone::SystemOne>>,
 ) -> Result<(), anyhow::Error> {
     // OpenAPI documentation
     #[derive(OpenApi)]
     #[openapi(
     paths(
-        decide,
     get_model_info,
+    super::systemone::systemone,
     health,
     predict,
     rerank,
@@ -1987,11 +1873,18 @@ pub async fn run(
     ),
     components(
     schemas(
-    DecideRequest,
-    DecisionMessage,
-    DecisionRole,
-    DecideResponse,
-    DecisionGroupResponse,
+    super::systemone::SystemOneRequest,
+    super::systemone_input::SystemOneInput,
+    super::systemone_input::MessageInput,
+    super::systemone_input::DecisionMessage,
+    super::systemone_input::MessageRole,
+    super::systemone_input::MessageContent,
+    super::systemone_input::ContentPart,
+    super::systemone_input::ImageSource,
+    super::systemone_input::ImageDetail,
+    super::systemone_input::AudioSource,
+    super::systemone_input::AudioFormat,
+    super::systemone_input::VideoSource,
     PredictInput,
     Input,
     Info,
@@ -2104,7 +1997,6 @@ pub async fn run(
         .route("/embed", post(embed))
         .route("/embed_all", post(embed_all))
         .route("/embed_sparse", post(embed_sparse))
-        .route("/decide", post(decide))
         .route("/predict", post(predict))
         .route("/predict_tokens", post(predict_tokens))
         .route("/rerank", post(rerank))
@@ -2114,6 +2006,7 @@ pub async fn run(
         // OpenAI compat route
         .route("/embeddings", post(openai_embed))
         .route("/v1/embeddings", post(openai_embed))
+        .route("/v1/systemone", post(super::systemone::systemone))
         // Vertex compat route
         .route("/vertex", post(vertex_compatibility));
 
@@ -2146,6 +2039,9 @@ pub async fn run(
     {
         // Set default routes
         routes = match &info.model_type {
+            ModelType::Decision => routes
+                .route("/", post(super::systemone::systemone))
+                .route("/invocations", post(super::systemone::systemone)),
             ModelType::Classifier(_) => {
                 routes
                     .route("/", post(predict))
@@ -2204,6 +2100,7 @@ pub async fn run(
         .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", doc))
         .merge(routes)
         .merge(public_routes)
+        .layer(Extension(systemone))
         .layer(Extension(infer))
         .layer(Extension(info))
         .layer(Extension(prom_handle.clone()))
@@ -2272,35 +2169,5 @@ impl From<serde_json::Error> for ErrorResponse {
             error: err.to_string(),
             error_type: ErrorType::Validation,
         }
-    }
-}
-
-#[cfg(test)]
-mod decision_request_tests {
-    use super::*;
-    #[test]
-    fn exact_score_ties_select_the_first_candidate() {
-        assert_eq!(decision_index(&[-2., -1., -1.]), 1);
-        assert_eq!(decision_index(&[-1., -1., -1.]), 0);
-        assert_eq!(decision_index(&[-1., -2., 0.]), 2);
-        assert_eq!(decision_index(&[-0., 0.]), 0);
-    }
-    #[test]
-    fn accepts_messages_and_rejects_unsupported_shapes() {
-        let request = serde_json::json!({"messages":[{"role":"system","content":"Policy"},{"role":"user","content":"Facts"}],"questions":{"answer":{"type":"boolean"}}});
-        assert!(serde_json::from_value::<DecideRequest>(request.clone()).is_ok());
-        for message in [
-            serde_json::json!({"role":"tool","content":"x"}),
-            serde_json::json!({"role":"user","content":[{"type":"text","text":"x"}]}),
-            serde_json::json!({"role":"user","content":"x","tool_calls":[]}),
-        ] {
-            let mut invalid = request.clone();
-            invalid["messages"] = serde_json::json!([message]);
-            assert!(serde_json::from_value::<DecideRequest>(invalid).is_err());
-        }
-        let mut legacy = request;
-        legacy.as_object_mut().unwrap().remove("messages");
-        legacy["context"] = "Facts".into();
-        assert!(serde_json::from_value::<DecideRequest>(legacy).is_err());
     }
 }

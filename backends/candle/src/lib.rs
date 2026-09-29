@@ -3,10 +3,11 @@ mod alibi;
 mod compute_cap;
 #[cfg(feature = "fa4")]
 mod fa4_native;
-#[cfg(feature = "cuda")]
 mod flash_attn;
 mod layers;
 mod models;
+
+pub use models::{LayaConfig, LayaModel, LayaOutput};
 
 use anyhow::Context;
 use candle::{DType, Device};
@@ -25,17 +26,15 @@ use crate::compute_cap::{
 };
 use crate::models::{
     BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, Gemma3Config, Gemma3Model, Gemma4Config, Gemma4Model, JinaBertModel,
-    JinaCodeBertModel, LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model,
-    ModernBertConfig, ModernBertModel, NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config,
-    Qwen3Model,
+    GTEConfig, GTEModel, Gemma3Config, Gemma4Config, Gemma4Model, JinaBertModel, JinaCodeBertModel,
+    LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
+    NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
 };
-#[cfg(feature = "cuda")]
 use crate::models::{
     FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
-    FlashJinaCodeBertModel, FlashMistralModel, FlashModernBertModel, FlashNomicBertModel,
-    FlashQwen2Model, FlashQwen3Model,
+    FlashJinaCodeBertModel, FlashModernBertModel, FlashNomicBertModel,
 };
+use crate::models::{FlashMistralModel, FlashQwen2Model, FlashQwen3Model};
 
 /// This enum is needed to be able to differentiate between jina models that also use
 /// the `bert` model type and valid Bert models.
@@ -102,6 +101,8 @@ enum Config {
     #[serde(rename(deserialize = "distilbert"))]
     DistilBert(DistilBertConfig),
     #[serde(rename(deserialize = "gemma3_text"))]
+    // Parsed on CPU builds so unsupported Gemma3 execution gets an explicit error.
+    #[cfg_attr(not(feature = "flash-attn"), allow(dead_code))]
     Gemma3(Gemma3Config),
     #[serde(rename = "gemma4", alias = "gemma4_unified")]
     Gemma4(Gemma4Config),
@@ -140,6 +141,22 @@ impl CandleBackend {
         dense_paths: Option<Vec<String>>,
         device_id: usize,
     ) -> Result<Self, BackendError> {
+        Self::new_with_fp8(model_path, dtype, model_type, dense_paths, device_id, false)
+    }
+
+    pub fn new_with_fp8(
+        model_path: &Path,
+        dtype: String,
+        model_type: ModelType,
+        dense_paths: Option<Vec<String>>,
+        device_id: usize,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self, BackendError> {
+        if enable_fp8_dynamic && !cfg!(feature = "experimental-fp8") {
+            return Err(BackendError::Start(
+                "Dynamic FP8 requires an experimental-fp8 build".into(),
+            ));
+        }
         // Default files
         let default_safetensors = model_path.join("model.safetensors");
         let default_pytorch = model_path.join("pytorch_model.bin");
@@ -187,14 +204,6 @@ impl CandleBackend {
                 .map(|n| model_path.join(n))
                 .collect()
         };
-
-        // Load config
-        let config: String = std::fs::read_to_string(model_path.join("config.json"))
-            .context("Unable to read config file")
-            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
-        let config: Config = serde_json::from_str(&config)
-            .context("Model is not supported")
-            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
 
         // Get candle device
         let device = if candle::utils::cuda_is_available() {
@@ -249,6 +258,64 @@ impl CandleBackend {
             ));
         }
 
+        if model_type == ModelType::Decision {
+            if enable_fp8_dynamic {
+                return Err(BackendError::Start(
+                    "Laya does not support dynamic FP8".into(),
+                ));
+            }
+            let (model, _) = LayaModel::from_model_dir(model_path, dtype, &device)
+                .map_err(|e| BackendError::Start(format!("{e:#}")))?;
+            return Ok(Self {
+                device,
+                model: Box::new(model),
+                dense_layers: vec![],
+            });
+        }
+
+        // Load config
+        let config: String = std::fs::read_to_string(model_path.join("config.json"))
+            .context("Unable to read config file")
+            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
+        if enable_fp8_dynamic {
+            let metadata: serde_json::Value = serde_json::from_str(&config)
+                .map_err(|err| BackendError::Start(err.to_string()))?;
+            if metadata
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(BackendError::Start(
+                    "Dynamic FP8 requires an unquantized checkpoint; checkpoint-provided quantization scales are not supported".into(),
+                ));
+            }
+        }
+        let config: Config = serde_json::from_str(&config)
+            .context("Model is not supported")
+            .map_err(|err| BackendError::Start(format!("{err:?}")))?;
+
+        if enable_fp8_dynamic {
+            if !matches!(dtype, DType::F16 | DType::BF16)
+                || !device.is_cuda()
+                || !matches!(
+                    &config,
+                    Config::Qwen2(_) | Config::Qwen3(_) | Config::Llama(_) | Config::Mistral(_)
+                )
+                || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
+                || !std::env::var("USE_FLASH_ATTENTION")
+                    .unwrap_or("true".into())
+                    .eq_ignore_ascii_case("true")
+            {
+                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, flash attention and Qwen2/Qwen3/Llama/Mistral".into()));
+            }
+            #[cfg(feature = "cuda")]
+            if get_runtime_compute_cap(device_id).unwrap_or(0) != 90 {
+                return Err(BackendError::Start(
+                    "Dynamic FP8 row scaling requires Hopper (compute capability 9.0)".into(),
+                ));
+            }
+            tracing::warn!("Experimental dynamic FP8 MLP enabled: per-row weights quantized at load, per-token activations at inference; accuracy may change");
+        }
+
         let vb = if model_files.len() == 1 && model_files[0].extension().unwrap() == "bin" {
             VarBuilder::from_pth(&model_files[0], dtype, &device)
         } else if model_files.len() == 1 && model_files[0].extension().unwrap() == "safetensors" {
@@ -265,6 +332,10 @@ impl CandleBackend {
         }
         .s()?;
 
+        let cpu_ragged = matches!(dtype, DType::F32 | DType::F16)
+            && std::env::var("USE_FLASH_ATTENTION")
+                .unwrap_or_else(|_| "true".into())
+                .eq_ignore_ascii_case("true");
         let model: Result<Box<dyn Model + Send>, BackendError> = match (config, &device) {
             #[cfg(feature = "experimental-deberta")]
             (Config::Deberta(config), _) => {
@@ -275,6 +346,53 @@ impl CandleBackend {
             (_, Device::Cuda(_)) => Err(BackendError::Start(
                 "`cuda` feature is not enabled".to_string(),
             )),
+            (Config::Mistral(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashMistralModel::load(vb, &config, model_type, false).s()?)),
+            (Config::Qwen2(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen2Model::load(vb, &config, model_type, false).s()?)),
+            (Config::Qwen3(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen3Model::load(vb, &config, model_type, false).s()?)),
+            (Config::Llama(config), Device::Cpu) if cpu_ragged => {
+                if config.attention_bias.unwrap_or(false)
+                    || config.mlp_bias
+                    || config.num_attention_heads == 0
+                    || !config.hidden_size.is_multiple_of(config.num_attention_heads)
+                    || config.head_dim.is_some_and(|dim| dim != config.hidden_size / config.num_attention_heads)
+                {
+                    return Err(BackendError::Start(
+                        "CPU packed Llama requires bias-free projections and head_dim = hidden_size / num_attention_heads".into(),
+                    ));
+                }
+                let cfg_mistral = MistralConfig {
+                    vocab_size: config.vocab_size,
+                    hidden_size: config.hidden_size,
+                    intermediate_size: config.intermediate_size,
+                    num_hidden_layers: config.num_hidden_layers,
+                    num_attention_heads: config.num_attention_heads,
+                    num_key_value_heads: config.num_key_value_heads,
+                    hidden_act: config.hidden_act,
+                    max_position_embeddings: config.max_position_embeddings,
+                    initializer_range: config.initializer_range,
+                    rms_norm_eps: config.rms_norm_eps,
+                    model_type: config.model_type.clone(),
+                    rope_theta: config.rope_theta,
+                    sliding_window: config.sliding_window,
+                    rope_scaling: config.rope_scaling,
+                    use_bidirectional_attention: config.use_bidirectional_attention,
+                };
+                Ok(Box::new(FlashMistralModel::load(vb, &cfg_mistral, model_type, false).s()?))
+            }
+            (Config::Bert(config), Device::Cpu) if cpu_ragged => {
+                tracing::info!("Starting packed CPU BERT-family model");
+                match config {
+                    BertConfigWrapper::Bert(config) => Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?)),
+                    BertConfigWrapper::JinaBert(config) => Ok(Box::new(FlashJinaBertModel::load(vb, &config, model_type).s()?)),
+                    BertConfigWrapper::JinaCodeBert(config) => Ok(Box::new(FlashJinaCodeBertModel::load(vb, &config, model_type).s()?)),
+                }
+            }
+            (Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config), Device::Cpu) if cpu_ragged =>
+                Ok(Box::new(FlashBertModel::load_roberta(vb, &config, model_type).s()?)),
+            (Config::DistilBert(config), Device::Cpu) if cpu_ragged && !matches!(&model_type, ModelType::Classifier) => Ok(Box::new(FlashDistilBertModel::load(vb, &config, model_type).s()?)),
+            (Config::Gte(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?)),
+            (Config::ModernBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashModernBertModel::load(vb, &config, model_type).s()?)),
+            (Config::NomicBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashNomicBertModel::load(vb, &config, model_type).s()?)),
             (Config::Bert(config), Device::Cpu | Device::Metal(_)) => match config {
                 BertConfigWrapper::JinaBert(config) => {
                     tracing::info!("Starting JinaBert model on {:?}", device);
@@ -306,16 +424,9 @@ impl CandleBackend {
                     DistilBertModel::load(vb, &config, model_type).s()?,
                 ))
             }
-            (Config::Gemma3(config), Device::Cpu | Device::Metal(_)) => {
-                if dtype != DType::F32 {
-                    Err(BackendError::Start(
-                        "Gemma3 is only supported in fp32 precision".to_string(),
-                    ))
-                } else {
-                    tracing::info!("Starting Gemma3 model on {:?}", device);
-                    Ok(Box::new(Gemma3Model::load(vb, &config, model_type).s()?))
-                }
-            }
+            (Config::Gemma3(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
+                "Gemma3 requires CUDA bfloat16 with packed FlashAttention".into(),
+            )),
             (Config::Gemma4(config), Device::Cpu | Device::Metal(_)) => {
                 if !matches!(dtype, DType::F32 | DType::BF16) {
                     Err(BackendError::Start(
@@ -335,11 +446,11 @@ impl CandleBackend {
                 Ok(Box::new(MPNetModel::load(vb, &config, model_type).s()?))
             }
             (Config::Mistral(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Mistral is only supported on Cuda devices in fp16 or bf16 with flash attention enabled"
+                "Mistral requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
                     .to_string(),
             )),
             (Config::Llama(_config), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Llama is only supported on Cuda devices in fp16 or bf16 with flash attention enabled"
+                "Llama requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
                     .to_string(),
             )),
             (Config::ModernBert(config), Device::Cpu | Device::Metal(_)) => {
@@ -353,7 +464,7 @@ impl CandleBackend {
                 Ok(Box::new(NomicBertModel::load(vb, &config, model_type).s()?))
             }
             (Config::Qwen2(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Qwen2 is only supported on Cuda devices in fp16 or bf16 with flash attention enabled"
+                "Qwen2 requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
                     .to_string(),
             )),
             (Config::Qwen3(config), Device::Cpu | Device::Metal(_)) => {
@@ -449,13 +560,15 @@ impl CandleBackend {
             }
             #[cfg(feature = "cuda")]
             (Config::Gemma3(config), Device::Cuda(_)) => {
-                if dtype != DType::F32 {
-                    Err(BackendError::Start(
-                        "Gemma3 is only supported in fp32 precision".to_string(),
-                    ))
-                } else {
-                    tracing::info!("Starting Gemma3 model on {:?}", device);
-                    Ok(Box::new(Gemma3Model::load(vb, &config, model_type).s()?))
+                #[cfg(feature = "flash-attn")]
+                {
+                    tracing::info!("Starting packed Gemma3 model on {:?}", device);
+                    Ok(Box::new(crate::models::Gemma3Model::load(vb, &config, model_type).s()?))
+                }
+                #[cfg(not(feature = "flash-attn"))]
+                {
+                    let _ = config;
+                    Err(BackendError::Start("Gemma3 requires CUDA bfloat16 with packed FlashAttention".into()))
                 }
             }
             #[cfg(feature = "cuda")]
@@ -499,7 +612,7 @@ impl CandleBackend {
                 }
                 tracing::info!("Starting FlashMistral model on {:?}", device);
                 Ok(Box::new(
-                    FlashMistralModel::load(vb, &config, model_type).s()?,
+                    FlashMistralModel::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -522,7 +635,7 @@ impl CandleBackend {
                     use_bidirectional_attention: config.use_bidirectional_attention,
                 };
                 Ok(Box::new(
-                    FlashMistralModel::load(vb, &cfg_mistral, model_type).s()?,
+                    FlashMistralModel::load(vb, &cfg_mistral, model_type, enable_fp8_dynamic).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -577,7 +690,7 @@ impl CandleBackend {
                 }
                 tracing::info!("Starting FlashQwen2 model on {:?}", device);
                 Ok(Box::new(
-                    FlashQwen2Model::load(vb, &config, model_type).s()?,
+                    FlashQwen2Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
                 ))
             }
             #[cfg(feature = "cuda")]
@@ -594,7 +707,7 @@ impl CandleBackend {
                 } else {
                     tracing::info!("Starting FlashQwen3 model on {:?}", device);
                     Ok(Box::new(
-                        FlashQwen3Model::load(vb, &config, model_type).s()?,
+                        FlashQwen3Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
                     ))
                 }
             }
@@ -661,6 +774,14 @@ impl CandleBackend {
 }
 
 impl Backend for CandleBackend {
+    fn decide(
+        &self,
+        batch: Batch,
+        inputs: Vec<text_embeddings_backend_core::DecisionInput>,
+    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>, BackendError> {
+        self.model.decide(batch, inputs).e()
+    }
+
     fn max_batch_size(&self) -> Option<usize> {
         // Limit max batch size to 4 on CPU
         if matches!(self.device, Device::Cpu) {
@@ -701,22 +822,6 @@ impl Backend for CandleBackend {
 
     fn is_padded(&self) -> bool {
         self.model.is_padded()
-    }
-
-    fn score_options(
-        &self,
-        batch: Batch,
-        prompt_lengths: &[usize],
-    ) -> Result<Vec<f32>, BackendError> {
-        self.model.score_options(batch, prompt_lengths).e()
-    }
-
-    fn supports_decision_scoring(&self) -> bool {
-        self.model.supports_decision_scoring()
-    }
-
-    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
-        self.model.decision_prompt_style()
     }
 
     fn supports_radix_mlp(&self) -> bool {

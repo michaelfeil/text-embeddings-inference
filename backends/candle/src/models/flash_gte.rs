@@ -3,9 +3,9 @@ use crate::layers::{get_cos_sin, get_inv_freqs, index_select, LayerNorm, Linear}
 use crate::models::gte::{GTEClassificationHead, GTEConfig, GTEMLP};
 use crate::models::{Model, PositionEmbeddingType};
 
-use candle::{DType, Device, IndexOp, Result, Tensor};
+use crate::layers::rotary::apply_packed_rotary;
+use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use candle_rotary::apply_rotary_inplace;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct GTEAttention {
@@ -75,7 +75,7 @@ impl GTEAttention {
         let k = qkv.narrow(1, self.num_attention_heads, self.num_attention_heads)?;
         let v = qkv.narrow(1, self.num_attention_heads * 2, self.num_attention_heads)?;
 
-        apply_rotary_inplace(&q, &k, &cos, &sin, true)?;
+        let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
 
         let attention = flash_attn_varlen(
             &q,
@@ -136,7 +136,7 @@ impl GTELayer {
         let _enter = self.span.enter();
         let attn_output = self
             .attention
-            .forward(&hidden_states, cu_seqlens, cos, sin, max_s)?;
+            .forward(hidden_states, cu_seqlens, cos, sin, max_s)?;
         let normed_attn_res_output = self
             .attention_layer_norm
             .forward(&attn_output, Some(hidden_states))?;
@@ -165,14 +165,7 @@ pub struct FlashGTEModel {
 
 impl FlashGTEModel {
     pub fn load(vb: VarBuilder, config: &GTEConfig, model_type: ModelType) -> Result<Self> {
-        match vb.device() {
-            Device::Cuda(_) => {}
-            _ => candle::bail!("FlashGTE requires Cuda"),
-        }
-
-        if !matches!(vb.dtype(), DType::F16 | DType::BF16) {
-            candle::bail!("FlashGTE requires DType::F16 or DType::BF16")
-        }
+        crate::flash_attn::validate_packed_device(&vb)?;
 
         if config.logn_attention_clip1 {
             candle::bail!("`logn_attention_clip1` is not supported");
@@ -186,6 +179,7 @@ impl FlashGTEModel {
         }
 
         let (pool, classifier) = match model_type {
+            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             ModelType::Classifier => {
                 let pool = Pool::Cls;
 
@@ -372,7 +366,10 @@ impl FlashGTEModel {
         };
 
         let raw_embeddings = if has_raw_requests {
-            if batch_size > 1 && has_pooling_requests {
+            if batch_size > 1
+                && (has_pooling_requests
+                    || batch.raw_indices.iter().copied().ne(0..batch_size as u32))
+            {
                 // Create indexing vector for the embeddings
                 let mut final_indices: Vec<u32> = Vec::with_capacity(shape);
                 for i in batch.raw_indices.into_iter() {

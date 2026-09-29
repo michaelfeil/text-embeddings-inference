@@ -15,6 +15,7 @@ mod gemma4;
 mod gte;
 mod jina;
 mod jina_code;
+mod laya;
 mod llama;
 mod mistral;
 mod modernbert;
@@ -23,44 +24,37 @@ mod nomic;
 mod qwen2;
 mod qwen3;
 
-#[cfg(feature = "cuda")]
 mod flash_bert;
 
-#[cfg(feature = "cuda")]
 mod flash_distilbert;
 
-#[cfg(feature = "cuda")]
 mod flash_gte;
 
-#[cfg(feature = "cuda")]
 mod flash_jina;
 
-#[cfg(feature = "cuda")]
 mod flash_jina_code;
 
-#[cfg(feature = "cuda")]
 mod flash_mistral;
 
-#[cfg(feature = "cuda")]
 mod flash_modernbert;
 
-#[cfg(feature = "cuda")]
 mod flash_nomic;
 
-#[cfg(feature = "cuda")]
 mod flash_qwen2;
 
-#[cfg(feature = "cuda")]
 mod flash_qwen3;
 
 pub use bert::{BertConfig, BertModel, PositionEmbeddingType};
 pub use dense::{Dense, DenseConfig, DenseLayer};
 pub use distilbert::{DistilBertConfig, DistilBertModel};
-pub use gemma3::{Gemma3Config, Gemma3Model};
+pub use gemma3::Gemma3Config;
+#[cfg(feature = "flash-attn")]
+pub use gemma3::Gemma3Model;
 pub use gemma4::{Gemma4Config, Gemma4Model};
 pub use gte::{GTEConfig, GTEModel};
 pub use jina::JinaBertModel;
 pub use jina_code::JinaCodeBertModel;
+pub use laya::{LayaConfig, LayaModel, LayaOutput};
 pub use llama::LLamaConfig;
 pub use mistral::MistralConfig;
 pub use modernbert::{ModernBertConfig, ModernBertModel};
@@ -69,49 +63,34 @@ pub use nomic::{NomicBertModel, NomicConfig};
 pub use qwen2::Qwen2Config;
 pub use qwen3::{Qwen3Config, Qwen3Model};
 
-#[cfg(feature = "cuda")]
 pub use flash_bert::FlashBertModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_distilbert::FlashDistilBertModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_gte::FlashGTEModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_jina::FlashJinaBertModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_jina_code::FlashJinaCodeBertModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_mistral::FlashMistralModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_modernbert::FlashModernBertModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_nomic::FlashNomicBertModel;
 
-#[cfg(feature = "cuda")]
 pub use flash_qwen2::FlashQwen2Model;
 
-#[cfg(feature = "cuda")]
 pub use flash_qwen3::FlashQwen3Model;
 
 pub(crate) trait Model {
-    fn decision_prompt_style(&self) -> Option<text_embeddings_backend_core::DecisionPromptStyle> {
-        None
+    fn decide(
+        &self,
+        _batch: Batch,
+        _inputs: Vec<text_embeddings_backend_core::DecisionInput>,
+    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>> {
+        candle::bail!("Model does not support typed decisions")
     }
-
-    fn supports_decision_scoring(&self) -> bool {
-        false
-    }
-
-    fn score_options(&self, _batch: Batch, _prompt_lengths: &[usize]) -> Result<Vec<f32>> {
-        candle::bail!("Decision scoring requires a causal FlashQwen3 model with LM weights")
-    }
-
     fn is_padded(&self) -> bool;
 
     fn supports_radix_mlp(&self) -> bool {

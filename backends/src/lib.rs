@@ -18,8 +18,8 @@ use serde::Deserialize;
 
 pub use crate::dtype::DType;
 pub use text_embeddings_backend_core::{
-    BackendError, Batch, DecisionPromptStyle, Embedding, Embeddings, ModelType, Pool, Predictions,
-    TokenPredictions,
+    BackendError, Batch, DecisionInput, DecisionOutput, Embedding, Embeddings, ModelType, Pool,
+    Predictions, TokenPredictions,
 };
 
 #[cfg(feature = "candle")]
@@ -77,7 +77,6 @@ pub struct Backend {
     _backend_thread: Arc<BackendThread>,
     pub padded_model: bool,
     pub radix_mlp_supported: bool,
-    pub decision_prompt_style: Option<text_embeddings_backend_core::DecisionPromptStyle>,
     pub max_batch_size: Option<usize>,
     pub model_type: ModelType,
 }
@@ -121,6 +120,34 @@ impl Backend {
         otlp_service_name: String,
         device_id: usize,
     ) -> Result<Self, BackendError> {
+        Self::new_shared_with_fp8(
+            model_path,
+            api_repo,
+            dtype,
+            model_type,
+            dense_path,
+            uds_path,
+            otlp_endpoint,
+            otlp_service_name,
+            device_id,
+            false,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_shared_with_fp8(
+        model_path: PathBuf,
+        api_repo: Option<Arc<ApiRepo>>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        uds_path: String,
+        otlp_endpoint: Option<String>,
+        otlp_service_name: String,
+        device_id: usize,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self, BackendError> {
         let (backend_sender, backend_receiver) = mpsc::channel(8);
 
         let backend = init_backend(
@@ -133,11 +160,11 @@ impl Backend {
             otlp_endpoint,
             otlp_service_name,
             device_id,
+            enable_fp8_dynamic,
         )
         .await?;
         let padded_model = backend.is_padded();
         let radix_mlp_supported = backend.supports_radix_mlp();
-        let decision_prompt_style = backend.decision_prompt_style();
         let max_batch_size = backend.max_batch_size();
 
         let (health_sender, health_receiver) = watch::channel(false);
@@ -150,7 +177,6 @@ impl Backend {
             _backend_thread,
             padded_model,
             radix_mlp_supported,
-            decision_prompt_style,
             max_batch_size,
             model_type,
         })
@@ -208,6 +234,19 @@ impl Backend {
         for shape in shapes.iter() {
             let batch = self.create_warmup_batch(*shape, max_token as u32, seq_bucket_size as u32);
             match &self.model_type {
+                ModelType::Decision => self
+                    .decide(
+                        batch.clone(),
+                        vec![
+                            DecisionInput {
+                                question_type: 0,
+                                markers: vec![0]
+                            };
+                            batch.len()
+                        ],
+                    )
+                    .await
+                    .map(|_| ()),
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),
                 ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
             }?;
@@ -339,6 +378,19 @@ impl Backend {
         };
 
         match &self.model_type {
+            ModelType::Decision => self
+                .decide(
+                    batch.clone(),
+                    vec![
+                        DecisionInput {
+                            question_type: 0,
+                            markers: vec![0]
+                        };
+                        batch.len()
+                    ],
+                )
+                .await
+                .map(|_| ()),
             ModelType::Classifier => self.predict(batch).await.map(|_| ()),
             ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
         }
@@ -354,7 +406,7 @@ impl Backend {
             self.backend_sender
                 .send(BackendCommand::Health(Span::current(), sender))
                 .await
-                .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
+                .expect("No backend receiver. This is a bug.");
             receiver.await.expect(
                 "Backend blocking task dropped the sender without sending a response. This is a bug.",
             )
@@ -378,6 +430,19 @@ impl Backend {
                 offsets: vec![],
             };
             match &self.model_type {
+                ModelType::Decision => self
+                    .decide(
+                        batch.clone(),
+                        vec![
+                            DecisionInput {
+                                question_type: 0,
+                                markers: vec![0]
+                            };
+                            batch.len()
+                        ],
+                    )
+                    .await
+                    .map(|_| ()),
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),
                 ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
             }
@@ -389,32 +454,34 @@ impl Backend {
         self.health_receiver.clone()
     }
 
-    pub async fn score_options(
-        &self,
-        batch: Batch,
-        prompt_lengths: Vec<usize>,
-    ) -> Result<Vec<f32>, BackendError> {
-        let (sender, receiver) = oneshot::channel();
-        self.backend_sender
-            .send(BackendCommand::ScoreOptions(batch, prompt_lengths, sender))
-            .await
-            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
-        receiver
-            .await
-            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?
-    }
-
     #[instrument(skip_all)]
     pub async fn embed(&self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .send(BackendCommand::Embed(batch, Span::current(), sender))
-            .await
-            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
+            .try_send(BackendCommand::Embed(batch, Span::current(), sender))
+            .expect("No backend receiver. This is a bug.");
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
+    }
+
+    pub async fn decide(
+        &self,
+        batch: Batch,
+        inputs: Vec<DecisionInput>,
+    ) -> Result<(Vec<DecisionOutput>, Duration), BackendError> {
+        let (sender, receiver) = oneshot::channel();
+        self.backend_sender
+            .send(BackendCommand::Decide(
+                batch,
+                inputs,
+                Span::current(),
+                sender,
+            ))
+            .await
+            .map_err(|_| BackendError::Unhealthy)?;
+        receiver.await.map_err(|_| BackendError::Unhealthy)?
     }
 
     #[instrument(skip_all)]
@@ -422,9 +489,8 @@ impl Backend {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .send(BackendCommand::Predict(batch, Span::current(), sender))
-            .await
-            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
+            .try_send(BackendCommand::Predict(batch, Span::current(), sender))
+            .expect("No backend receiver. This is a bug.");
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -438,13 +504,12 @@ impl Backend {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .send(BackendCommand::PredictTokens(
+            .try_send(BackendCommand::PredictTokens(
                 batch,
                 Span::current(),
                 sender,
             ))
-            .await
-            .map_err(|_| BackendError::Inference("Backend unavailable".into()))?;
+            .expect("No backend receiver. This is a bug.");
         receiver.await.expect(
             "Backend blocking task dropped the sender without send a response. This is a bug.",
         )
@@ -462,10 +527,16 @@ async fn init_backend(
     otlp_endpoint: Option<String>,
     otlp_service_name: String,
     device_id: usize,
+    enable_fp8_dynamic: bool,
 ) -> Result<Box<dyn CoreBackend + Send>, BackendError> {
+    if enable_fp8_dynamic && !cfg!(feature = "experimental-fp8") {
+        return Err(BackendError::Start(
+            "Dynamic FP8 requires an experimental-fp8 build".into(),
+        ));
+    }
     let mut backend_start_failed = false;
 
-    if cfg!(feature = "ort") {
+    if cfg!(feature = "ort") && !enable_fp8_dynamic {
         #[cfg(feature = "ort")]
         {
             if let Some(api_repo) = api_repo.as_ref() {
@@ -573,12 +644,13 @@ async fn init_backend(
             let candle_dtype = dtype.to_string();
             let candle_model_type = model_type.clone();
             let backend = tokio::task::spawn_blocking(move || {
-                CandleBackend::new(
+                CandleBackend::new_with_fp8(
                     &path,
                     candle_dtype,
                     candle_model_type,
                     dense_paths,
                     device_id,
+                    enable_fp8_dynamic,
                 )
             })
             .await
@@ -588,6 +660,9 @@ async fn init_backend(
             match backend {
                 Ok(b) => return Ok(Box::new(b)),
                 Err(err) => {
+                    if enable_fp8_dynamic {
+                        return Err(err);
+                    }
                     tracing::error!("Could not start Candle backend: {err}");
                     backend_start_failed = true;
                 }
@@ -644,10 +719,12 @@ impl BackendThread {
                 let start = Instant::now();
                 let mut healthy = false;
                 match cmd {
-                    BackendCommand::ScoreOptions(batch, prompt_lengths, sender) => {
-                        let result = backend.score_options(batch, &prompt_lengths);
-                        healthy = result.is_ok();
-                        let _ = sender.send(result);
+                    BackendCommand::Decide(batch, inputs, span, sender) => {
+                        let _span = span.entered();
+                        let _ = sender.send(backend.decide(batch, inputs).map(|output| {
+                            healthy = true;
+                            (output, start.elapsed())
+                        }));
                     }
                     BackendCommand::Health(span, sender) => {
                         let _span = span.entered();
@@ -689,10 +766,11 @@ impl Drop for BackendThread {
 }
 
 enum BackendCommand {
-    ScoreOptions(
+    Decide(
         Batch,
-        Vec<usize>,
-        oneshot::Sender<Result<Vec<f32>, BackendError>>,
+        Vec<DecisionInput>,
+        Span,
+        oneshot::Sender<Result<(Vec<DecisionOutput>, Duration), BackendError>>,
     ),
     Health(Span, oneshot::Sender<Result<(), BackendError>>),
     Embed(
@@ -948,84 +1026,6 @@ async fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBu
     }
 
     Ok(config_path.parent().unwrap().to_path_buf())
-}
-
-#[cfg(test)]
-mod decision_tests {
-    use super::*;
-    use std::sync::Mutex;
-
-    struct RecordingBackend(Arc<Mutex<Vec<usize>>>);
-    impl CoreBackend for RecordingBackend {
-        fn health(&self) -> Result<(), BackendError> {
-            Ok(())
-        }
-        fn is_padded(&self) -> bool {
-            false
-        }
-        fn embed(&self, _: Batch) -> Result<Embeddings, BackendError> {
-            Ok(Embeddings::default())
-        }
-        fn predict(&self, _: Batch) -> Result<Predictions, BackendError> {
-            Ok(Predictions::default())
-        }
-        fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
-            Ok(TokenPredictions::default())
-        }
-        fn score_options(
-            &self,
-            batch: Batch,
-            prompt_lengths: &[usize],
-        ) -> Result<Vec<f32>, BackendError> {
-            assert_eq!(prompt_lengths, [1, 2, 1]);
-            self.0.lock().unwrap().push(batch.len());
-            std::thread::sleep(Duration::from_millis(2));
-            Ok(vec![0.0; batch.len()])
-        }
-    }
-
-    #[tokio::test]
-    async fn decision_commands_preserve_all_branches_under_backpressure() {
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let (backend_sender, receiver) = mpsc::channel(1);
-        let (health_sender, health_receiver) = watch::channel(true);
-        let worker = BackendThread::new(
-            Box::new(RecordingBackend(calls.clone())),
-            receiver,
-            health_sender,
-        );
-        let backend = Backend {
-            backend_sender,
-            health_receiver,
-            _backend_thread: Arc::new(worker),
-            padded_model: false,
-            radix_mlp_supported: true,
-            decision_prompt_style: Some(text_embeddings_backend_core::DecisionPromptStyle::Qwen3),
-            max_batch_size: None,
-            model_type: ModelType::Embedding(Pool::LastToken),
-        };
-        let batch = backend.create_warmup_batch((3, 4), 10, 1);
-        let mut tasks = Vec::new();
-        for _ in 0..16 {
-            let backend = backend.clone();
-            let batch = batch.clone();
-            tasks.push(tokio::spawn(async move {
-                assert_eq!(
-                    backend
-                        .score_options(batch.clone(), vec![1, 2, 1])
-                        .await
-                        .unwrap()
-                        .len(),
-                    3
-                );
-                backend.embed(batch).await.unwrap();
-            }));
-        }
-        for task in tasks {
-            task.await.unwrap();
-        }
-        assert_eq!(*calls.lock().unwrap(), vec![3; 16]);
-    }
 }
 
 pub fn supports_device_replication() -> bool {
