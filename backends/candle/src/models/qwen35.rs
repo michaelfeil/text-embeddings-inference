@@ -477,3 +477,125 @@ impl Model for Qwen35Model {
         self.forward(batch)
     }
 }
+
+#[cfg(test)]
+mod radix_tests {
+    use super::*;
+
+    fn batch(sequences: &[&[u32]], folded: bool) -> Batch {
+        let mut batch = Batch {
+            input_ids: vec![],
+            token_type_ids: vec![],
+            position_ids: vec![],
+            cumulative_seq_lengths: vec![0],
+            max_length: 0,
+            pooled_indices: (0..sequences.len() as u32).collect(),
+            raw_indices: (0..sequences.len() as u32).collect(),
+            compact_input_ids: None,
+            compact_position_ids: None,
+            scatter_unfold: None,
+            fold_gather: None,
+            tokens: vec![],
+            offsets: vec![],
+        };
+        let mut prefixes = std::collections::HashMap::new();
+        let (mut ids, mut positions, mut scatter, mut gather) = (vec![], vec![], vec![], vec![]);
+        for sequence in sequences {
+            for (position, &token) in sequence.iter().enumerate() {
+                let next = ids.len() as u32;
+                let row = *prefixes
+                    .entry(sequence[..=position].to_vec())
+                    .or_insert_with(|| {
+                        ids.push(token);
+                        positions.push(position as u32);
+                        gather.push(batch.input_ids.len() as u32);
+                        next
+                    });
+                scatter.push(row);
+                batch.input_ids.push(token);
+                batch.position_ids.push(position as u32);
+                batch.token_type_ids.push(0);
+            }
+            batch
+                .cumulative_seq_lengths
+                .push(batch.input_ids.len() as u32);
+            batch.max_length = batch.max_length.max(sequence.len() as u32);
+        }
+        if folded {
+            batch.compact_input_ids = Some(ids);
+            batch.compact_position_ids = Some(positions);
+            batch.scatter_unfold = Some(scatter);
+            batch.fold_gather = Some(gather);
+        }
+        batch
+    }
+
+    fn close(expected: &Tensor, actual: &Tensor) -> Result<()> {
+        assert_eq!(expected.dims(), actual.dims());
+        let error = (expected.to_dtype(DType::F32)? - actual.to_dtype(DType::F32)?)?
+            .abs()?
+            .max_all()?
+            .to_scalar::<f32>()?;
+        assert!(error <= 0.02, "hybrid model changed by {error}");
+        Ok(())
+    }
+
+    #[test]
+    #[ignore = "requires CUDA BF16 and FlashAttention"]
+    fn hybrid_moe_preserves_prefix_folding_and_request_isolation() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let config: Qwen35Config = serde_json::from_value(serde_json::json!({
+            "hidden_size":32,"vocab_size":32,"num_hidden_layers":3,
+            "num_attention_heads":2,"num_key_value_heads":1,"head_dim":128,
+            "max_position_embeddings":32,"rms_norm_eps":1e-6,
+            "layer_types":["linear_attention","full_attention","linear_attention"],
+            "rope_parameters":{"rope_type":"default","rope_theta":10000.,"partial_rotary_factor":0.5},
+            "num_experts":256,"num_experts_per_tok":8,"moe_intermediate_size":32,
+            "shared_expert_intermediate_size":32,"linear_num_key_heads":1,
+            "linear_num_value_heads":2,"linear_key_head_dim":128,"linear_value_head_dim":128,
+            "linear_conv_kernel_dim":4,"hidden_act":"silu"
+        })).map_err(candle::Error::wrap)?;
+        let vars = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&vars, DType::BF16, &device);
+        Qwen35Model::load(vb.clone(), &config, ModelType::Embedding(Pool::LastToken))?;
+        for (name, var) in vars.data().lock().unwrap().iter() {
+            let offset: usize = name.bytes().map(usize::from).sum();
+            let values: Vec<f32> = (0..var.elem_count())
+                .map(|i| ((i + offset) as f32 * 0.13).sin() * 0.1)
+                .collect();
+            var.set(&Tensor::from_vec(values, var.shape(), &device)?.to_dtype(var.dtype())?)?;
+        }
+        let a: &[u32] = &[3, 4, 5, 6, 7, 8];
+        let b: &[u32] = &[3, 4, 5, 6, 9, 10, 11];
+        for pool in [Pool::LastToken, Pool::Mean] {
+            let model = Qwen35Model::load(vb.clone(), &config, ModelType::Embedding(pool))?;
+            assert!(model.supports_radix_mlp());
+            for sequences in [[a, b, a], [b, a, b]] {
+                let expected = model.forward(batch(&sequences, false))?;
+                for _ in 0..2 {
+                    let actual = model.forward(batch(&sequences, true))?;
+                    close(expected.0.as_ref().unwrap(), actual.0.as_ref().unwrap())?;
+                    close(expected.1.as_ref().unwrap(), actual.1.as_ref().unwrap())?;
+                }
+                let mut offset = 0;
+                for (index, sequence) in sequences.iter().enumerate() {
+                    let single = model.forward(batch(&[*sequence], false))?;
+                    close(
+                        &expected.0.as_ref().unwrap().narrow(0, index, 1)?,
+                        single.0.as_ref().unwrap(),
+                    )?;
+                    close(
+                        &expected
+                            .1
+                            .as_ref()
+                            .unwrap()
+                            .narrow(0, offset, sequence.len())?,
+                        single.1.as_ref().unwrap(),
+                    )?;
+                    offset += sequence.len();
+                }
+            }
+        }
+        Ok(())
+    }
+}
