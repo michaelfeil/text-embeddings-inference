@@ -525,7 +525,12 @@ Unknown request/question fields are rejected. Execution extensions such as
 Temperatures are clamped to [0.5, 5], matching upstream Laya. The published
 checkpoint's `choice:11+` temperature is outside this range; confidence for that
 bucket is not verified as calibrated. See [verification and benchmarks](docs/laya-verification.md)
-for measured parity, labelled accuracy, and latency limitations.
+for measured parity, labelled accuracy, and latency limitations. ModernBERT's
+encoder uses approximate (tanh) GELU, intentionally differing from upstream
+Laya's exact GELU; the custom head retains ReLU and exact scorer/action GELU.
+The controlled FP32 test-set ablation measured 76.70% accuracy with the approximate
+encoder versus 76.60% with the historical exact encoder (2 of 2,000 decisions
+changed). Historical parity/BF16/latency artifacts are labelled accordingly.
 
 ### Using SPLADE pooling
 

@@ -1,0 +1,61 @@
+{
+  "model": "convaiinnovations/laya-typed-decisions",
+  "model_revision": "1a793eb568e6718f15941d08f85432581df534e3",
+  "verified_weights_sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+  "dataset": "LocalLLaMA/typed-decisions",
+  "dataset_revision": "f2491dda413a9d94afcb30464123b429c857e079",
+  "dataset_config": "all",
+  "split": "test",
+  "cases": 400,
+  "decisions": 2000,
+  "hardware": "NVIDIA H100 80GB HBM3",
+  "dtype": "float32",
+  "max_batch_tokens": 4096,
+  "max_client_batch_size": 32,
+  "max_concurrent_requests": 16,
+  "method": "scripts/evaluate-laya.py; upstream-formatted serialized JSON states; all stages already have corrected Laya ReLU and exact-GELU scorer/action heads",
+  "variants": {
+    "before": {
+      "server": "4c430c9 before ModernBERT fixes; corrected Laya ReLU/erf-GELU heads; checkpoint1a793eb568e6718f15941d08f85432581df534e3 H100 GPU2 CUDA FP32 maxbatchtokens4096",
+      "metrics": {
+        "decisions": 2000,
+        "accuracy": 0.6285,
+        "ece_10_bins": 0.19585524999999998,
+        "score_mae": 0.451186305,
+        "mean_max_probability": 0.43264475
+      },
+      "errors": 0,
+      "source_commit": "4c430c9",
+      "modernbert_sha256": "3376177aed02e735dee8889f5f0f90cbb85257ce7ef0488fc0a0e64a481cedfb"
+    },
+    "mask_only": {
+      "server": "4c430c9 plus only CUDA attention mask fix (None output + explicit add), encoder tanh-GELU retained; corrected Laya heads; checkpoint1a793eb568e6718f15941d08f85432581df534e3 H100 GPU2 CUDA FP32 maxbatchtokens4096",
+      "metrics": {
+        "decisions": 2000,
+        "accuracy": 0.767,
+        "ece_10_bins": 0.21433555,
+        "score_mae": 0.2424241375,
+        "mean_max_probability": 0.55266445
+      },
+      "errors": 0,
+      "modernbert_sha256": "43db59587517476fe522c8d880379873cfe2aeb28213ffdffa7a256b96c007c9"
+    },
+    "mask_and_exact_gelu": {
+      "server": "Laya 1a793eb568e6718f15941d08f85432581df534e3, f20c9a5 plus ModernBERT mask/erf-GELU and Laya ReLU/erf-GELU fixes, H100 CUDA float32",
+      "metrics": {
+        "decisions": 2000,
+        "accuracy": 0.766,
+        "ece_10_bins": 0.2132389,
+        "score_mae": 0.2424045125,
+        "mean_max_probability": 0.5527611
+      },
+      "errors": 0,
+      "source_provenance": "docs/benchmarks/laya-accuracy-f32.json"
+    }
+  },
+  "discrete_decision_changes": {
+    "before_to_mask_only": 617,
+    "mask_only_to_exact_gelu": 2
+  },
+  "mask_only_patch": "Replace attention_scores cuBLASLt output Some(attention_mask) with None; add attention_mask to attention_scores before softmax. No other source changes from4c430c9."
+}

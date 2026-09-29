@@ -5,13 +5,45 @@ Checkpoint: [`convaiinnovations/laya-typed-decisions`](https://huggingface.co/co
 verified against this revision's Hub LFS metadata:
 `4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e`.
 
-The measured build is `f20c9a5` plus the source changes recorded (with hashes) in
+The historical exact-GELU measured build is `f20c9a5` plus the source changes recorded (with hashes) in
 [the latency artifact](benchmarks/laya-latency.json). It includes the ModernBERT
 CUDA mask/exact-GELU fixes and Laya ReLU/exact-GELU fixes. Earlier PR latency
 numbers did not apply attention masks correctly on CUDA and are superseded.
 The ModernBERT fixes are also proposed independently against `main`.
 
-## Implementation parity
+## Current activation policy and controlled ablation
+
+ModernBERT intentionally uses the tanh approximation for `hidden_activation:
+"gelu"`. Explicit `gelu_new` and `gelu_pytorch_tanh` aliases also remain
+approximate. This applies to the shared ModernBERT encoder MLP, including dense
+and Flash Attention paths. Eligible rank-two Flash Attention projections reuse
+the existing approximate gated-activation kernel; dense rank-three projections
+retain its ordinary-operation fallback. No new kernel or rank-three fusion is
+introduced here. The CUDA attention-mask fix remains in place.
+Laya's custom head still uses ReLU, with exact GELU in its scorer/action layers.
+
+This encoder policy deliberately differs from upstream Laya's exact GELU.
+The parity, BF16 accuracy, and HTTP latency artifacts below describe the earlier
+**exact-GELU baseline**, not fresh verification of the approximate policy.
+Historical artifacts are retained without rewriting their results.
+
+The [controlled FP32 ablation](benchmarks/laya-correctness-ablation.json) uses
+all 400 cases / 2,000 decisions from the same pinned checkpoint and test split:
+
+| ModernBERT variant | Accuracy | ECE (10 bins) | Score MAE |
+|---|---:|---:|---:|
+| Before mask/GELU fixes | 0.6285 | 0.19586 | 0.45119 |
+| Mask fix, approximate GELU (current policy) | 0.7670 | 0.21434 | 0.24242 |
+| Mask fix, exact GELU (historical baseline) | 0.7660 | 0.21324 | 0.24240 |
+
+The mask fix changed 617 decisions. The activation choice changed two decisions.
+The 0.10 percentage-point accuracy difference does not establish general quality
+superiority; approximate GELU can change probabilities, confidence, and decisions
+near thresholds. Its current-policy row was measured with the equivalent
+mask-only source variant identified in the artifact, not this follow-up commit.
+No new BF16 accuracy or performance claim follows from this FP32 ablation.
+
+## Historical exact-GELU implementation parity
 
 Reference: [upstream Laya](https://github.com/NandhaKishorM/laya/tree/9d955671415fc19f069b9cc998928075c1f255ec),
 PyTorch CPU FP32, torch 2.14.0+cpu, transformers 5.17.0. The 13 cases cover all
@@ -30,14 +62,15 @@ Matching these cases does not guarantee identical decisions near every threshold
 The action head frequently saturates on this checkpoint; its output is not a
 validated safety or escalation guarantee.
 
-The review identified three concrete implementation errors: the Laya head used
-GELU instead of upstream's ReLU; GELU elsewhere used the tanh approximation instead
-of erf; and CUDA ModernBERT passed its attention mask as a writable cuBLASLt
-output with beta=0, ignoring and overwriting it. The fixes preserve local and
-padding attention masks across layers. Mixed-length batch versus single-input
-regression coverage exercises the latter failure.
+The review identified an incorrect Laya head activation (GELU instead of ReLU)
+and a CUDA ModernBERT attention mask passed as a writable cuBLASLt output with
+beta=0, so masking was ignored. The extension clones the output buffer before
+writing it; the caller's original mask was not overwritten. Both fixes remain. Exact GELU was used for
+reference verification; the encoder now intentionally uses approximate GELU,
+while the scorer/action layers retain exact GELU. Mixed-length batch versus
+single-input regression coverage protects local and padding masks across layers.
 
-## Labelled decision quality
+## Historical exact-GELU labelled decision quality
 
 All **400 test cases / 2,000 decisions** from `LocalLLaMA/typed-decisions`, config
 `all`, revision `f2491dda413a9d94afcb30464123b429c857e079`, were evaluated through
@@ -70,7 +103,8 @@ Two comparisons must be distinguished:
 
 | Model/setup | Typed accuracy | ECE | Evidence |
 |---|---:|---:|---|
-| Laya typed-decisions, Candle FP32 | 0.7660 | 0.2132 | This run |
+| Laya typed-decisions, Candle FP32, approximate encoder | 0.7670 | 0.2143 | Controlled ablation above |
+| Laya typed-decisions, Candle FP32, exact encoder | 0.7660 | 0.2132 | Historical baseline |
 | Base Laya, proxy | 0.3620 | 0.0261 | Published, additionally recalibrated |
 | GPT-OSS-20B, zero-shot proxy | 0.5970 | 0.0547 | Published, additionally recalibrated |
 | GPT-OSS-20B, think64 proxy | 0.6260 | 0.0775 | Published, additionally recalibrated |
@@ -87,7 +121,7 @@ Laya clamps temperatures to [0.5, 5], as does upstream. The checkpoint's
 `choice:11+` value is 0.10058 and becomes 0.5. Treat confidence for that bucket as
 unverified; older published calibration results may predate the clamp.
 
-## HTTP latency
+## Historical exact-GELU HTTP latency
 
 One NVIDIA H100 80GB HBM3, Candle CUDA BF16 release build (LTO disabled,
 16 codegen units), no Flash Attention, no RadixMLP. One client, one replica,
@@ -114,7 +148,9 @@ attention costs grow with length; the custom head currently runs per question.
 
 ## Reproduce
 
-Build the corrected branch with Candle CUDA and start the normal router:
+Build the branch with Candle CUDA and start the normal router. Record the build
+SHA and activation policy when comparing new results with the historical exact
+baseline; these commands now exercise the approximate encoder:
 
 ```sh
 CUDA_COMPUTE_CAP=90 CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
@@ -141,6 +177,9 @@ python scripts/evaluate-laya.py --url http://127.0.0.1:18084 --output accuracy.j
 ```
 
 The parity script validates the upstream Git commit and source cleanliness.
+It compares against upstream exact GELU; approximate-encoder differences are
+intentional and a failed numerical/discrete check must not be presented as
+exact parity or hidden by increasing the tolerance.
 The evaluation script pins the test dataset and fails on any HTTP error or
 missing answer rather than silently excluding failed cases. Full evaluation
 outputs include per-case answers; committed artifacts keep aggregate metrics.
