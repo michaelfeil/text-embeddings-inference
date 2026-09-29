@@ -256,8 +256,9 @@ impl ModernBertAttention {
                         None,
                         None,
                     )?;
-                    // The optional cuBLASLt output is writable and beta defaults
-                    // to zero. Reusing the mask there ignores and overwrites it.
+                    // The optional cuBLASLt output defaults to beta=0; passing
+                    // the mask there does not add it to the attention scores.
+                    // Keep the mask separate from the writable output buffer.
                     let attention_scores = attention_scores.add(&attention_mask)?;
                     let attention_probs = candle_nn::ops::softmax_last_dim(&attention_scores)?;
 
