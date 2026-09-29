@@ -23,5 +23,6 @@
     "backends/candle/src/models/modernbert.rs": "1f1e42e179b227aa9e3b6a301d27dffb19124795d9f037f41030e4af36fdda12",
     "router/src/http/systemone.rs": "831ba1b7ddc4473431c30d07e1461bf1c60697fbaf4679dbe717fb66b003490f"
   },
-  "discrete_decisions_different_from_fp32": 11
+  "discrete_decisions_different_from_fp32": 11,
+  "verified_weights_sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e"
 }

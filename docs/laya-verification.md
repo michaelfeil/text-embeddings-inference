@@ -1,7 +1,9 @@
 # Laya verification and benchmark (2026-09-29)
 
 Checkpoint: [`convaiinnovations/laya-typed-decisions`](https://huggingface.co/convaiinnovations/laya-typed-decisions/tree/1a793eb568e6718f15941d08f85432581df534e3), revision
-`1a793eb568e6718f15941d08f85432581df534e3`.
+`1a793eb568e6718f15941d08f85432581df534e3`. Local weights were SHA-256
+verified against this revision's Hub LFS metadata:
+`4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e`.
 
 The measured build is `f20c9a5` plus the source changes recorded (with hashes) in
 [the latency artifact](benchmarks/laya-latency.json). It includes the ModernBERT

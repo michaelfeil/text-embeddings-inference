@@ -871,5 +871,6 @@
     },
     "device": "NVIDIA H100 80GB HBM3 CUDA",
     "dtype": "f32"
-  }
+  },
+  "verified_weights_sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e"
 }
