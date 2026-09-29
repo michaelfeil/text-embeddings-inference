@@ -23,6 +23,7 @@ mod mpnet;
 mod nomic;
 mod qwen2;
 mod qwen3;
+mod qwen3_moe;
 
 mod flash_bert;
 
@@ -114,3 +115,10 @@ pub(crate) trait Model {
 mod deberta;
 #[cfg(feature = "experimental-deberta")]
 pub use deberta::{DebertaConfig, DebertaModel};
+
+mod qwen35_config;
+pub use qwen35_config::Qwen35Config;
+#[cfg(all(feature = "cuda", feature = "flash-attn"))]
+mod qwen35;
+#[cfg(all(feature = "cuda", feature = "flash-attn"))]
+pub use qwen35::Qwen35Model;

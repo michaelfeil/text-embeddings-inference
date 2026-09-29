@@ -1,25 +1,26 @@
 // SPDX-License-Identifier: MIT
-// Gemma4-26B routing: softmax over all 128 experts, select eight,
-// renormalize selected probabilities, then apply learned expert scales.
+// Shared 128-expert/top-8 routing. Gemma4 renormalizes and applies learned
+// expert scales; Qwen3 optionally renormalizes and has no expert scales.
 #include "gemma4_moe_kernels.cuh"
 #include <cuda_bf16.h>
 #include <cuda_runtime.h>
 #include <stdint.h>
 #include <math.h>
 
-extern "C" __global__ void gemma4_moe_route_128_8_f32(
-    const float *logits, const float *expert_scale, uint32_t *ids, float *weights) {
+template <bool Qwen, int Experts = 128>
+__device__ __forceinline__ void route_128_8_f32(
+    const float *logits, const float *expert_scale, uint32_t *ids, float *weights, bool renormalize) {
     const int lane = threadIdx.x;
     const int token = blockIdx.x;
-    __shared__ float remaining[128];
-    __shared__ float reduction[128];
-    __shared__ uint32_t indices[128];
+    __shared__ float remaining[Experts];
+    __shared__ float reduction[Experts];
+    __shared__ uint32_t indices[Experts];
     __shared__ float chosen[8];
-    float score = logits[token * 128 + lane];
+    float score = logits[uint64_t(token) * Experts + lane];
     remaining[lane] = score;
     reduction[lane] = score;
     __syncthreads();
-    for (int stride = 64; stride; stride >>= 1) {
+    for (int stride = Experts / 2; stride; stride >>= 1) {
         if (lane < stride) reduction[lane] = fmaxf(reduction[lane], reduction[lane + stride]);
         __syncthreads();
     }
@@ -27,27 +28,31 @@ extern "C" __global__ void gemma4_moe_route_128_8_f32(
     __syncthreads();
     reduction[lane] = probability;
     __syncthreads();
-    for (int stride = 64; stride; stride >>= 1) {
+    for (int stride = Experts / 2; stride; stride >>= 1) {
         if (lane < stride) reduction[lane] += reduction[lane + stride];
         __syncthreads();
     }
     probability /= reduction[0];
     __syncthreads();
+    if constexpr (Qwen) remaining[lane] = probability;
+    __syncthreads();
     for (int rank = 0; rank < 8; ++rank) {
         reduction[lane] = remaining[lane];
         indices[lane] = lane;
         __syncthreads();
-        for (int stride = 64; stride; stride >>= 1) {
+        for (int stride = Experts / 2; stride; stride >>= 1) {
             if (lane < stride) {
                 const float other = reduction[lane + stride];
                 const uint32_t other_id = indices[lane + stride];
                 const bool equal = other == reduction[lane];
-                // vLLM's sortable float key orders +0 before -0, then expert ID.
+                // Gemma4 orders signed zeros by its sortable-float key. Qwen3
+                // selects softmax probabilities and breaks ties by expert ID.
                 const uint32_t other_bits = __float_as_uint(other);
                 const uint32_t current_bits = __float_as_uint(reduction[lane]);
                 if (other > reduction[lane] || (equal &&
-                    (other_bits < current_bits ||
-                     (other_bits == current_bits && other_id < indices[lane])))) {
+                    ((Qwen && other_id < indices[lane]) ||
+                     (!Qwen && (other_bits < current_bits ||
+                     (other_bits == current_bits && other_id < indices[lane])))))) {
                     reduction[lane] = other;
                     indices[lane] = other_id;
                 }
@@ -65,8 +70,26 @@ extern "C" __global__ void gemma4_moe_route_128_8_f32(
     if (lane < 8) {
         float sum = 0.f;
         for (int i = 0; i < 8; ++i) sum += chosen[i];
-        weights[token * 8 + lane] = (chosen[lane] / sum) * expert_scale[ids[token * 8 + lane]];
+        if constexpr (Qwen) {
+            weights[token * 8 + lane] = renormalize ? chosen[lane] / sum : chosen[lane];
+        } else {
+            weights[token * 8 + lane] = (chosen[lane] / sum) * expert_scale[ids[token * 8 + lane]];
+        }
     }
+}
+
+extern "C" __global__ void gemma4_moe_route_128_8_f32(
+    const float *logits, const float *expert_scale, uint32_t *ids, float *weights) {
+    route_128_8_f32<false>(logits, expert_scale, ids, weights, true);
+}
+extern "C" __global__ void qwen3_moe_route_128_8_f32(
+    const float *logits, uint32_t *ids, float *weights, bool renormalize) {
+    route_128_8_f32<true>(logits, nullptr, ids, weights, renormalize);
+}
+
+extern "C" __global__ void qwen35_moe_route_256_8_f32(
+    const float *logits, uint32_t *ids, float *weights, bool renormalize) {
+    route_128_8_f32<true, 256>(logits, nullptr, ids, weights, renormalize);
 }
 
 // Input layout is [tokens, 8, hidden]. Combine in FP32 and round once.
@@ -94,7 +117,7 @@ extern "C" __global__ void gemma4_moe_offsets(const int *counts, int *offsets) {
     int offset = 0;
     for (int i = 0; i < expert; ++i) offset += counts[i];
     offsets[expert] = offset;
-    if (expert == 127) offsets[128] = offset + counts[127];
+    if (expert == blockDim.x - 1) offsets[blockDim.x] = offset + counts[expert];
 }
 extern "C" __global__ void gemma4_moe_assign(
     const uint32_t *ids, const int *offsets, int *cursors, uint32_t *mapping, int slots) {
@@ -152,6 +175,44 @@ extern "C" __global__ void gemma4_moe_gelu_mul(
         // vLLM's gelu_tanh_and_mul preserves this intermediate rounding too.
         const float rounded_gelu = __bfloat162float(__float2bfloat16_rn(gelu));
         output[i] = __float2bfloat16_rn(rounded_gelu * up);
+    }
+}
+extern "C" __global__ void qwen3_moe_silu_mul(
+    const __nv_bfloat16 *gate_up, __nv_bfloat16 *output, uint64_t slots, uint32_t width) {
+    // One block per expert row avoids per-element division. Aligned rows
+    // load eight BF16 values at a time without changing activation rounding.
+    const uint64_t row = blockIdx.x;
+    if (row >= slots) return;
+    if (width % 8 == 0 && (reinterpret_cast<uintptr_t>(gate_up) & 15) == 0 &&
+        (reinterpret_cast<uintptr_t>(output) & 15) == 0) {
+        for (uint32_t column = threadIdx.x * 8; column < width; column += blockDim.x * 8) {
+            __align__(16) __nv_bfloat16 gates[8], ups[8], result[8];
+            *reinterpret_cast<uint4 *>(gates) = *reinterpret_cast<const uint4 *>(
+                gate_up + row * (2 * width) + column);
+            *reinterpret_cast<uint4 *>(ups) = *reinterpret_cast<const uint4 *>(
+                gate_up + row * (2 * width) + width + column);
+            #pragma unroll
+            for (int j = 0; j < 8; ++j) {
+                const float gate = __bfloat162float(gates[j]);
+                const float up = __bfloat162float(ups[j]);
+                const float silu = gate / (1.f + expf(-gate));
+                const float rounded_silu = __bfloat162float(__float2bfloat16_rn(silu));
+                result[j] = __float2bfloat16_rn(rounded_silu * up);
+            }
+            *reinterpret_cast<uint4 *>(output + row * width + column) =
+                *reinterpret_cast<const uint4 *>(result);
+        }
+        return;
+    }
+    for (uint32_t column = threadIdx.x; column < width; column += blockDim.x) {
+        const uint64_t i = row * width + column;
+        const float gate = __bfloat162float(gate_up[row * (2 * width) + column]);
+        const float up = __bfloat162float(gate_up[row * (2 * width) + width + column]);
+        const float silu = gate / (1.f + expf(-gate));
+        // Match the checkpoint's BF16 SiLU followed by BF16 multiplication.
+        // vLLM's silu_and_mul preserves this intermediate rounding too.
+        const float rounded_silu = __bfloat162float(__float2bfloat16_rn(silu));
+        output[i] = __float2bfloat16_rn(rounded_silu * up);
     }
 }
 extern "C" __global__ void gemma4_moe_unpermute_combine(
