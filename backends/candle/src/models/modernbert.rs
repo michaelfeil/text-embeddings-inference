@@ -8,6 +8,33 @@ use candle_nn::{Embedding, VarBuilder};
 use serde::Deserialize;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
+// Keep the existing configuration vocabulary while distinguishing the exact
+// Hugging Face GELU from its explicitly requested tanh approximations.
+#[derive(Debug, Clone, Copy, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ModernBertActivation {
+    Gelu,
+    #[serde(rename = "gelu_new", alias = "gelu_pytorch_tanh")]
+    GeluApprox,
+    Relu,
+    Silu,
+    Swiglu,
+    Tanh,
+}
+
+impl Module for ModernBertActivation {
+    fn forward(&self, input: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Gelu => input.gelu_erf(),
+            Self::GeluApprox => input.gelu(),
+            Self::Relu => input.relu(),
+            Self::Silu => input.silu(),
+            Self::Swiglu => candle_nn::ops::swiglu(input),
+            Self::Tanh => input.tanh(),
+        }
+    }
+}
+
 // https://github.com/huggingface/transformers/blob/main/src/transformers/models/modernbert/configuration_modernbert.py
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct ModernBertConfig {
@@ -16,7 +43,7 @@ pub struct ModernBertConfig {
     pub intermediate_size: usize,
     pub num_hidden_layers: usize,
     pub num_attention_heads: usize,
-    pub hidden_activation: candle_nn::Activation,
+    pub hidden_activation: ModernBertActivation,
     pub max_position_embeddings: usize,
     pub initializer_range: f64,
     pub initializer_cutoff_factor: f64,
@@ -79,7 +106,7 @@ impl ModernBertEmbeddings {
 pub struct ModernBertMLP {
     wi: Linear,
     wo: Linear,
-    activation: candle_nn::Activation,
+    activation: ModernBertActivation,
     intermediate_size: usize,
     span: tracing::Span,
 }
@@ -968,6 +995,24 @@ mod tests {
             {
                 assert!((a - b).abs() < tolerance, "batched {a} != solo {b}");
             }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn modernbert_activation_config_preserves_existing_names() -> Result<()> {
+        for (name, expected) in [
+            ("gelu", ModernBertActivation::Gelu),
+            ("gelu_new", ModernBertActivation::GeluApprox),
+            ("gelu_pytorch_tanh", ModernBertActivation::GeluApprox),
+            ("relu", ModernBertActivation::Relu),
+            ("silu", ModernBertActivation::Silu),
+            ("swiglu", ModernBertActivation::Swiglu),
+            ("tanh", ModernBertActivation::Tanh),
+        ] {
+            let parsed: ModernBertActivation = serde_json::from_str(&format!("\"{name}\""))
+                .expect("previously supported activation name");
+            assert_eq!(parsed, expected);
         }
         Ok(())
     }
