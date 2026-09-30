@@ -323,12 +323,12 @@ impl CandleBackend {
                         | Config::Camembert(_)
                         | Config::ModernBert(_)
                 )
-                || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
+                || !cfg!(feature = "flash-attn")
                 || !std::env::var("USE_FLASH_ATTENTION")
                     .unwrap_or("true".into())
                     .eq_ignore_ascii_case("true")
             {
-                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, flash attention and a supported dense MLP model (Qwen2/Qwen3/Llama/Mistral/BERT/RoBERTa/ModernBERT)".into()));
+                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, the flash-attn feature and a supported dense MLP model (Qwen2/Qwen3/Llama/Mistral/BERT/RoBERTa/ModernBERT)".into()));
             }
             #[cfg(feature = "cuda")]
             if get_runtime_compute_cap(device_id).unwrap_or(0) != 90 {
