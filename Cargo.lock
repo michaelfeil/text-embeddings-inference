@@ -4928,12 +4928,14 @@ dependencies = [
  "metrics",
  "radix_mlp",
  "rayon",
+ "serde",
  "serde_json",
  "text-embeddings-backend",
  "thiserror 1.0.69",
  "tokenizers 0.21.1",
  "tokio",
  "tracing",
+ "utoipa",
 ]
 
 [[package]]

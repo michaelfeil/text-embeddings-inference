@@ -1,5 +1,4 @@
 //! Jev typed decisions, submitted to TEI's shared queue and replica pool.
-use super::systemone_input::SystemOneInput;
 use axum::{
     extract::Extension,
     http::{HeaderMap, StatusCode},
@@ -14,13 +13,14 @@ use std::{
     time::{Duration, Instant},
 };
 use text_embeddings_backend::{DecisionInput, DecisionOutput};
+use text_embeddings_core::input::ModelInput;
 use text_embeddings_core::{infer::Infer, tokenization::ValidEncoding};
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SystemOneRequest {
-    pub state: SystemOneInput,
+    pub state: ModelInput,
     pub questions: Map<String, Value>,
     pub model: Option<String>,
     pub max_len: Option<usize>,
@@ -149,8 +149,8 @@ impl Laya {
 
     fn prepare(&self, request: SystemOneRequest) -> Result<Vec<Question>, String> {
         let state = match request.state {
-            SystemOneInput::Text(text) => text,
-            SystemOneInput::Messages(_) => {
+            ModelInput::Text(text) => text,
+            ModelInput::Messages(_) => {
                 return Err(
                     "Laya does not support native messages; provide a plain text state".into(),
                 );

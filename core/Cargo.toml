@@ -6,6 +6,8 @@ authors.workspace = true
 homepage.workspace = true
 
 [dependencies]
+serde = { workspace = true }
+utoipa = { version = "4.2", optional = true }
 async-channel = "^2.3"
 hf-hub = { workspace = true }
 metrics = { workspace = true }
@@ -21,3 +23,6 @@ radix_mlp = {workspace = true}
 
 [dev-dependencies]
 hf-hub = { workspace = true, features = ["ureq"] }
+
+[features]
+openapi = ["dep:utoipa"]

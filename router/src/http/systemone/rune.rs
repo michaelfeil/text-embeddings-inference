@@ -62,7 +62,7 @@ impl Rune {
     }
 
     pub(super) fn prepare(&self, request: SystemOneRequest) -> Result<Vec<Question>, String> {
-        let SystemOneInput::Text(state) = request.state else {
+        let ModelInput::Text(state) = request.state else {
             return Err("Rune currently supports plain text state only; native messages and media are unsupported".into());
         };
         if request.head_max_len.is_some() {
