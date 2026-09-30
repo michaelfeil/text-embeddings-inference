@@ -17,7 +17,8 @@ use serde::{de::Deserializer, Deserialize};
 use std::collections::HashMap;
 use std::path::Path;
 use text_embeddings_backend_core::{
-    Backend, BackendError, Batch, Embedding, Embeddings, ModelType, Predictions, TokenPredictions,
+    Backend, BackendError, Batch, Embedding, Embeddings, ModelType, Pool, Predictions,
+    TokenPredictions,
 };
 
 #[cfg(feature = "cuda")]
@@ -292,7 +293,8 @@ impl CandleBackend {
                 ));
             }
         }
-        let config: Config = serde_json::from_str(&config)
+        let config_json = config;
+        let config: Config = serde_json::from_str(&config_json)
             .context("Model is not supported")
             .map_err(|err| BackendError::Start(format!("{err:?}")))?;
 
@@ -334,6 +336,24 @@ impl CandleBackend {
             unsafe { VarBuilder::from_mmaped_safetensors(&model_files, dtype, &device) }
         }
         .s()?;
+
+        // Decoder classifiers reuse the existing backbone and batching kernels.
+        let sequence_classifier = model_type == ModelType::Classifier
+            && matches!(
+                &config,
+                Config::Qwen2(_) | Config::Qwen3(_) | Config::Llama(_)
+            );
+        let classifier_vb = sequence_classifier.then(|| vb.clone());
+        let model_type = if sequence_classifier {
+            if let Config::Qwen3(config) = &config {
+                if config.use_linear_output_projection {
+                    return Err(BackendError::Start("Sequence classifiers require score.weight, not an embedding output projection".into()));
+                }
+            }
+            ModelType::Embedding(Pool::LastToken)
+        } else {
+            model_type
+        };
 
         let cpu_ragged = matches!(dtype, DType::F32 | DType::F16)
             && std::env::var("USE_FLASH_ATTENTION")
@@ -729,6 +749,12 @@ impl CandleBackend {
             }
         };
 
+        let model = model?;
+        let model: Box<dyn Model + Send> = match classifier_vb {
+            Some(vb) => Box::new(models::SequenceClassifier::load(model, vb, &config_json).s()?),
+            None => model,
+        };
+
         let mut dense_layers = Vec::new();
         if let Some(dense_paths) = dense_paths {
             if !dense_paths.is_empty() {
@@ -783,7 +809,7 @@ impl CandleBackend {
 
         Ok(Self {
             device,
-            model: model?,
+            model,
             dense_layers,
         })
     }

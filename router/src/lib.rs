@@ -129,6 +129,7 @@ pub async fn run(
     let mut config: ModelConfig =
         serde_json::from_str(&config).context("Failed to parse `config.json`")?;
     config.resolve_text_config()?;
+    config.resolve_decoder_classifier_labels()?;
     anyhow::ensure!(
         config.max_position_embeddings > 0,
         "`max_position_embeddings` must be positive"
@@ -619,6 +620,7 @@ pub struct ModelConfig {
     pub text_config: Option<TextPositionConfig>,
     #[serde(default)]
     pub pad_token_id: usize,
+    pub num_labels: Option<usize>,
     pub id2label: Option<HashMap<String, String>>,
     pub label2id: Option<HashMap<String, usize>>,
     pub auto_map: Option<HashMap<String, String>>,
@@ -626,6 +628,38 @@ pub struct ModelConfig {
 }
 
 impl ModelConfig {
+    fn resolve_decoder_classifier_labels(&mut self) -> anyhow::Result<()> {
+        if !self.architectures.iter().any(|arch| {
+            matches!(
+                arch.as_str(),
+                "LlamaForSequenceClassification"
+                    | "Qwen2ForSequenceClassification"
+                    | "Qwen3ForSequenceClassification"
+            )
+        }) {
+            return Ok(());
+        }
+        // HF omits the default two-label mapping from saved configs.
+        let labels = self.id2label.get_or_insert_with(|| {
+            (0..self.num_labels.unwrap_or(2))
+                .map(|i| (i.to_string(), format!("LABEL_{i}")))
+                .collect()
+        });
+        anyhow::ensure!(
+            !labels.is_empty() && (0..labels.len()).all(|i| labels.contains_key(&i.to_string())),
+            "Decoder classifier id2label must contain consecutive IDs starting at zero"
+        );
+        if self.label2id.is_none() {
+            self.label2id = Some(
+                labels
+                    .iter()
+                    .map(|(id, label)| Ok((label.clone(), id.parse::<usize>()?)))
+                    .collect::<Result<_, std::num::ParseIntError>>()?,
+            );
+        }
+        Ok(())
+    }
+
     fn resolve_text_config(&mut self) -> anyhow::Result<()> {
         if matches!(
             self.model_type.as_str(),
@@ -920,6 +954,27 @@ impl From<ResponseMetadata> for HeaderMap {
 ))]
 mod auto_dtype_tests {
     use super::*;
+
+    #[test]
+    fn decoder_classifiers_resolve_hf_default_and_explicit_labels() {
+        for arch in [
+            "LlamaForSequenceClassification",
+            "Qwen2ForSequenceClassification",
+            "Qwen3ForSequenceClassification",
+        ] {
+            let mut config: ModelConfig = serde_json::from_value(serde_json::json!({
+                "architectures":[arch], "model_type":"qwen3", "max_position_embeddings":128
+            }))
+            .unwrap();
+            config.resolve_decoder_classifier_labels().unwrap();
+            assert_eq!(config.id2label.as_ref().unwrap()["1"], "LABEL_1");
+            assert_eq!(config.label2id.as_ref().unwrap()["LABEL_1"], 1);
+            config.id2label = Some(HashMap::from([("0".into(), "relevance".into())]));
+            config.label2id = None;
+            config.resolve_decoder_classifier_labels().unwrap();
+            assert_eq!(config.label2id.unwrap()["relevance"], 0);
+        }
+    }
 
     fn from_config(json: &str, requested: Option<DType>) -> DType {
         let config: ModelConfig = serde_json::from_str(json).unwrap();

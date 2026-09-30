@@ -1,3 +1,5 @@
+mod sequence_classifier;
+pub(crate) use sequence_classifier::SequenceClassifier;
 #[cfg(feature = "accelerate")]
 extern crate accelerate_src;
 

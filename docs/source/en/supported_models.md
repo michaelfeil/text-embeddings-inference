@@ -52,7 +52,34 @@ To explore the list of best performing text embeddings models, visit the
 
 ## Supported re-rankers and sequence classification models
 
-Text Embeddings Inference currently supports CamemBERT, and XLM-RoBERTa Sequence Classification models with absolute positions.
+Text Embeddings Inference supports encoder classification models and native
+`LlamaForSequenceClassification`, `Qwen2ForSequenceClassification`, and
+`Qwen3ForSequenceClassification` checkpoints with a `score.weight` head.
+Decoder classification selects the final non-padding token and reuses the
+existing batching and Radix execution paths.
+
+```bash
+text-embeddings-router --model-id /path/to/qwen3-sequence-classifier --dtype float16
+```
+
+```bash
+curl http://localhost:8080/predict \
+  -H 'Content-Type: application/json' \
+  -d '{"inputs":"A fully formatted classifier input","raw_scores":true}'
+```
+
+`raw_scores=true` returns logits; the existing API applies sigmoid for one output
+or softmax for multiple outputs when raw scores are disabled. Single-label heads
+also use the existing `/rerank` endpoint. Multi-label classification uses
+`/predict`. Decoder classifiers require their checkpoint's prompt formatting;
+`/predict` does not insert a chat or reranker template.
+
+For Qwen3-Reranker, use a sequence-classification conversion with `score.weight`
+(e.g. the original LM head's `no` and `yes` rows) and the checkpoint's prescribed
+query/document prompt. Unconverted `Qwen3ForCausalLM` weights do not automatically
+become a classifier. Explicit `id2label` mappings are preserved; omitted mappings use Hugging Face
+`LABEL_0`, `LABEL_1`, … defaults from `num_labels` (two when omitted).
+
 
 Below are some examples of the currently supported models:
 
