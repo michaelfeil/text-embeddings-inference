@@ -42,11 +42,16 @@ pub type Predictions = IntMap<usize, Vec<f32>>;
 pub type TokenPredictions = IntMap<usize, Vec<Vec<f32>>>;
 
 #[derive(Debug, Clone)]
-pub struct DecisionInput {
-    /// Laya type ID: choice = 0, score = 1, noul = 2.
-    pub question_type: usize,
-    /// Option marker offsets within this sequence, independent of batch packing.
-    pub markers: Vec<usize>,
+pub enum DecisionInput {
+    Laya {
+        question_type: usize,
+        markers: Vec<usize>,
+    },
+    OptionTokens {
+        token_ids: Vec<u32>,
+    },
+    /// Model-owned metadata for startup warmup and health probes.
+    Warmup,
 }
 
 #[derive(Debug, Clone)]

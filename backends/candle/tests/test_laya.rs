@@ -105,7 +105,7 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
         batch
             .cumulative_seq_lengths
             .push(batch.input_ids.len() as u32);
-        inputs.push(DecisionInput {
+        inputs.push(DecisionInput::Laya {
             question_type,
             markers: serde_json::from_value(seq["markers"].clone())?,
         });

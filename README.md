@@ -524,13 +524,22 @@ Unknown request/question fields are rejected. Execution extensions such as
 `think`, `mode`, `depends_on`, `ask_if`, and `alone` are not implemented.
 Temperatures are clamped to [0.5, 5], matching upstream Laya. The published
 checkpoint's `choice:11+` temperature is outside this range; confidence for that
-bucket is not verified as calibrated. See [verification and benchmarks](docs/laya-verification.md)
-for measured parity, labelled accuracy, and latency limitations. ModernBERT's
-encoder uses approximate (tanh) GELU, intentionally differing from upstream
-Laya's exact GELU; the custom head retains ReLU and exact scorer/action GELU.
-The controlled FP32 test-set ablation measured 76.70% accuracy with the approximate
-encoder versus 76.60% with the historical exact encoder (2 of 2,000 decisions
-changed). Historical parity/BF16/latency artifacts are labelled accordingly.
+bucket is not verified as calibrated. ModernBERT uses approximate (tanh) GELU;
+the custom head retains ReLU and exact scorer/action GELU.
+
+### Rune text decisions
+
+Use the existing `/v1/systemone` endpoint with a Candle CUDA/FlashAttention build:
+
+```shell
+text-embeddings-router --model-id michaelfeil/rune-26b-a4b \
+  --decision-protocol rune --dtype bfloat16 --radix-mlp-threshold 0.92
+```
+
+Supports text states and `choice`, `noul`, and `score` questions with string
+instructions/descriptions. Native messages, media, and `head_max_len` are rejected;
+over-budget prompts are rejected without truncation. Rune uses first-option-token
+probabilities and its own confidence formulas. Radix shares prefix work within a batch.
 
 ### Using SPLADE pooling
 

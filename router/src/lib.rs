@@ -40,6 +40,11 @@ use tracing::Span;
 
 pub use logging::init_logging;
 
+#[derive(Debug, Clone, clap::ValueEnum)]
+pub enum DecisionProtocol {
+    Rune,
+}
+
 /// Create entrypoint
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -48,6 +53,7 @@ pub async fn run(
     tokenization_workers: Option<usize>,
     dtype: Option<DType>,
     pooling: Option<text_embeddings_backend::Pool>,
+    decision_protocol: Option<DecisionProtocol>,
     max_concurrent_requests: usize,
     max_batch_tokens: usize,
     max_batch_requests: Option<usize>,
@@ -107,8 +113,13 @@ pub async fn run(
 
     // Load config
     let laya = model_root.join("rl_agent_config.json").exists();
+    let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
+    anyhow::ensure!(
+        !(laya && rune),
+        "Rune protocol cannot serve a Laya checkpoint"
+    );
     #[cfg(feature = "grpc")]
-    anyhow::ensure!(!laya, "Laya typed decisions require an HTTP build");
+    anyhow::ensure!(!laya && !rune, "Typed decisions require an HTTP build");
     let config_path = model_root.join(if laya {
         "encoder/config.json"
     } else {
@@ -123,9 +134,17 @@ pub async fn run(
         "`max_position_embeddings` must be positive"
     );
 
+    anyhow::ensure!(
+        !rune || config.model_type == "gemma4",
+        "Rune protocol requires a Gemma4 model"
+    );
+
     // Set model type from config
-    let backend_model_type = if laya {
-        anyhow::ensure!(pooling.is_none(), "Laya does not use embedding pooling");
+    let backend_model_type = if laya || rune {
+        anyhow::ensure!(
+            pooling.is_none(),
+            "Typed decisions do not use embedding pooling"
+        );
         text_embeddings_backend::ModelType::Decision
     } else {
         get_backend_model_type(&config, &model_root, pooling)?
@@ -230,6 +249,10 @@ pub async fn run(
             "Invalid Laya max_len"
         );
         length
+    } else if rune {
+        // Decision prompts cannot be truncated: reject over-budget requests in
+        // the formatter, with the queue capacity as the configured input limit.
+        config.max_position_embeddings.min(max_batch_tokens)
     } else {
         match st_config {
             Some(config) => config.max_seq_length,
@@ -291,7 +314,7 @@ pub async fn run(
     };
 
     #[cfg(feature = "http")]
-    let systemone = if laya {
+    let systemone = if laya || rune {
         Some(std::sync::Arc::new(http::systemone::SystemOne::load(
             &model_root,
             tokenizer.clone(),

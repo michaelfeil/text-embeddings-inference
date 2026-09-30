@@ -37,7 +37,42 @@ struct Config {
     temperature_by_options: HashMap<String, f32>,
 }
 
-pub struct SystemOne {
+mod rune;
+
+pub enum SystemOne {
+    Laya(Laya),
+    Rune(rune::Rune),
+}
+
+impl SystemOne {
+    pub fn load(
+        path: &Path,
+        tokenizer: Tokenizer,
+        max_input_length: usize,
+    ) -> anyhow::Result<Self> {
+        if path.join("rl_agent_config.json").exists() {
+            Ok(Self::Laya(Laya::load(path, tokenizer, max_input_length)?))
+        } else {
+            Ok(Self::Rune(rune::Rune::load(tokenizer, max_input_length)?))
+        }
+    }
+
+    fn prepare(&self, request: SystemOneRequest) -> Result<Vec<Question>, String> {
+        match self {
+            Self::Laya(model) => model.prepare(request),
+            Self::Rune(model) => model.prepare(request),
+        }
+    }
+
+    fn answer(&self, question: &Question, output: DecisionOutput) -> Result<Value, String> {
+        match self {
+            Self::Laya(model) => model.answer(question, output),
+            Self::Rune(_) => rune::answer(question, output),
+        }
+    }
+}
+
+pub struct Laya {
     tokenizer: Tokenizer,
     config: Config,
     max_input_length: usize,
@@ -56,7 +91,7 @@ struct Question {
     input: DecisionInput,
 }
 
-impl SystemOne {
+impl Laya {
     pub fn load(
         path: &Path,
         mut tokenizer: Tokenizer,
@@ -351,7 +386,7 @@ impl SystemOne {
                         tokens: vec![],
                         offsets: vec![],
                     },
-                    input: DecisionInput {
+                    input: DecisionInput::Laya {
                         question_type,
                         markers,
                     },
@@ -361,6 +396,9 @@ impl SystemOne {
     }
 
     fn answer(&self, question: &Question, output: DecisionOutput) -> Result<Value, String> {
+        let DecisionInput::Laya { question_type, .. } = &question.input else {
+            return Err("Invalid Laya metadata".into());
+        };
         let k = question.labels.len();
         if output.logits.len() != k
             || !output.logits.iter().all(|v| v.is_finite())
@@ -378,7 +416,7 @@ impl SystemOne {
             .config
             .temperature_by_options
             .get(&format!("{}:{bucket}", question.kind))
-            .or_else(|| self.config.temperature.get(question.input.question_type))
+            .or_else(|| self.config.temperature.get(*question_type))
             .copied()
             .unwrap_or(1.0);
         let t = if t.is_finite() {
@@ -534,6 +572,16 @@ pub async fn systemone(
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();
     let input_tokens: usize = questions.iter().map(|q| q.encoding.input_ids.len()).sum();
     let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(questions.len()));
+    let output_tokens = if matches!(service.as_ref(), SystemOne::Rune(_)) {
+        questions.len()
+    } else {
+        0
+    };
+    let response_model = if matches!(service.as_ref(), SystemOne::Rune(_)) {
+        info.model_id.as_str()
+    } else {
+        "laya-rl-agent"
+    };
     let answers = futures::future::try_join_all(questions.into_iter().map(|mut question| {
         let infer = infer.clone();
         let service = service.clone();
@@ -585,7 +633,7 @@ pub async fn systemone(
     Ok((
         metadata.into(),
         Json(
-            json!({"model":"laya-rl-agent", "answers": answers.into_iter().map(|(id, answer, _)| (id, answer)).collect::<Map<_,_>>(), "usage":{"input_tokens":input_tokens,"output_tokens":0}}),
+            json!({"model":response_model, "answers": answers.into_iter().map(|(id, answer, _)| (id, answer)).collect::<Map<_,_>>(), "usage":{"input_tokens":input_tokens,"output_tokens":output_tokens}}),
         ),
     ))
 }
@@ -594,7 +642,7 @@ pub async fn systemone(
 mod tests {
     use super::*;
 
-    fn service() -> SystemOne {
+    fn service() -> Laya {
         use tokenizers::models::wordlevel::WordLevel;
         let tokenizer = Tokenizer::new(
             WordLevel::builder()
@@ -603,7 +651,7 @@ mod tests {
                 .build()
                 .unwrap(),
         );
-        SystemOne {
+        Laya {
             tokenizer,
             config: Config {
                 max_len: 1024,
@@ -691,7 +739,7 @@ mod tests {
                 labels,
                 criteria: q["criteria"].clone(),
                 compute_chars: 0,
-                input: DecisionInput {
+                input: DecisionInput::Laya {
                     question_type: match kind {
                         "choice" => 0,
                         "score" => 1,
@@ -796,7 +844,7 @@ mod tests {
         let path = Path::new(&path);
         let tokenizer = Tokenizer::from_file(path.join("tokenizer/tokenizer.json"))
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let service = SystemOne::load(path, tokenizer, 1024)?;
+        let service = Laya::load(path, tokenizer, 1024)?;
         let fixture: Value =
             serde_json::from_str(include_str!("../../tests/fixtures/laya-systemone.json"))?;
         let questions = service
@@ -807,7 +855,10 @@ mod tests {
             .zip(fixture["sequences"].as_array().unwrap())
         {
             assert_eq!(json!(question.encoding.input_ids), expected["ids"]);
-            assert_eq!(json!(question.input.markers), expected["markers"]);
+            let DecisionInput::Laya { markers, .. } = &question.input else {
+                panic!("expected Laya metadata")
+            };
+            assert_eq!(json!(markers), expected["markers"]);
         }
         let mut request = fixture["request"].clone();
         request["max_len"] = json!(8);

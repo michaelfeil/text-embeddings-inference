@@ -58,6 +58,10 @@ struct Args {
     #[clap(long, env, value_enum)]
     pooling: Option<text_embeddings_backend::Pool>,
 
+    /// Serve a causal model with its trained decision prompt on /v1/systemone.
+    #[clap(long, env, conflicts_with = "pooling")]
+    decision_protocol: Option<text_embeddings_router::DecisionProtocol>,
+
     /// The maximum amount of concurrent requests for this particular deployment.
     /// Having a low limit will refuse clients requests instead of having them
     /// wait for too long and is usually good to handle backpressure correctly.
@@ -263,6 +267,7 @@ async fn main() -> Result<()> {
         args.tokenization_workers,
         args.dtype,
         args.pooling,
+        args.decision_protocol,
         args.max_concurrent_requests,
         args.max_batch_tokens,
         args.max_batch_requests,
