@@ -480,6 +480,7 @@ mod radix_tests {
 
     fn batch(sequences: &[&[u32]], folded: bool) -> Batch {
         let mut batch = Batch {
+            multimodal: vec![],
             input_ids: vec![],
             token_type_ids: vec![],
             position_ids: vec![],

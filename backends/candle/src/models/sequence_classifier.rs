@@ -149,6 +149,7 @@ mod tests {
         )?;
         assert!(model.supports_radix_mlp());
         let batch = Batch {
+            multimodal: vec![],
             input_ids: vec![1, 2, 0, 0, 3, 0, 4, 0, 0],
             token_type_ids: vec![0; 9],
             position_ids: vec![0, 1, 2, 3, 0, 1, 2, 0, 1],

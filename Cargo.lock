@@ -535,11 +535,11 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "accelerate-src",
  "byteorder",
- "candle-kernels",
+ "candle-kernels 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-metal-kernels",
  "cudarc",
  "float8",
@@ -566,12 +566,40 @@ dependencies = [
 ]
 
 [[package]]
+name = "candle-core"
+version = "0.11.0"
+source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+dependencies = [
+ "byteorder",
+ "candle-kernels 0.11.0 (git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9)",
+ "cudarc",
+ "float8",
+ "gemm",
+ "half",
+ "libc",
+ "libm",
+ "memmap2",
+ "num-traits",
+ "num_cpus",
+ "parking_lot",
+ "rand 0.9.0",
+ "rand_distr",
+ "rayon",
+ "safetensors",
+ "thiserror 2.0.21",
+ "tokenizers 0.23.2",
+ "yoke 0.8.3",
+ "zerocopy 0.8.24",
+ "zip 8.6.0",
+]
+
+[[package]]
 name = "candle-cublaslt"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-nn",
  "cudarc",
  "float8",
@@ -583,10 +611,10 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "anyhow",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "cudaforge",
  "half",
 ]
@@ -597,7 +625,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-nn",
  "cudaforge",
  "half",
@@ -610,7 +638,7 @@ name = "candle-flash-attn-v4"
 version = "0.1.0-alpha.1"
 source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=37de7a120dc47be720af20401fd5e8b233ef7de5#37de7a120dc47be720af20401fd5e8b233ef7de5"
 dependencies = [
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9)",
  "half",
 ]
 
@@ -620,11 +648,19 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-nn",
  "half",
  "num_cpus",
  "rayon",
+]
+
+[[package]]
+name = "candle-kernels"
+version = "0.11.0"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
+dependencies = [
+ "cudaforge",
 ]
 
 [[package]]
@@ -641,7 +677,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-nn",
  "half",
  "num_cpus",
@@ -651,7 +687,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "block2",
  "half",
@@ -666,10 +702,10 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "accelerate-src",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-metal-kernels",
  "half",
  "libc",
@@ -687,7 +723,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-nn",
  "half",
  "num_cpus",
@@ -697,10 +733,10 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "byteorder",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-nn",
  "fancy-regex 0.19.2",
  "num-traits",
@@ -4854,7 +4890,7 @@ version = "1.8.13-rc.1"
 dependencies = [
  "accelerate-src",
  "anyhow",
- "candle-core",
+ "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e)",
  "candle-cublaslt",
  "candle-flash-attn",
  "candle-flash-attn-v1",

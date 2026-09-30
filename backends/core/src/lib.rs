@@ -9,6 +9,8 @@ use thiserror::Error;
 
 #[derive(Debug, Clone)]
 pub struct Batch {
+    /// Empty for text-only batches, otherwise one entry per sequence.
+    pub multimodal: Vec<Option<std::sync::Arc<MultimodalEncoding>>>,
     pub input_ids: Vec<u32>,
     pub token_type_ids: Vec<u32>,
     pub position_ids: Vec<u32>,

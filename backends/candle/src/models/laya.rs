@@ -244,6 +244,7 @@ impl LayaModel {
         }
         let length = ids.len();
         let batch = Batch {
+            multimodal: vec![],
             input_ids: ids.to_vec(),
             token_type_ids: vec![0; length],
             position_ids: (0..length as u32).collect(),

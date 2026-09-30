@@ -59,6 +59,12 @@ pub struct Qwen3VlProcessor {
     workers: Arc<Semaphore>,
 }
 
+impl std::fmt::Debug for Qwen3VlProcessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Qwen3VlProcessor").finish_non_exhaustive()
+    }
+}
+
 struct ProcessorState {
     chat: ChatProcessor,
     tokenizer: Tokenizer,

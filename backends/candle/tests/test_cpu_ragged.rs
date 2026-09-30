@@ -29,6 +29,7 @@ fn cpu_ragged_checkpoint() -> Result<()> {
         .unwrap_or("0".into())
         .parse::<u32>()?;
     let batch = Batch {
+        multimodal: vec![],
         input_ids: (0..count).map(|i| 10 + (i % 37) as u32).collect(),
         token_type_ids: vec![0; count],
         position_ids: lengths

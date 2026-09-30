@@ -73,7 +73,15 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
             err
         });
 
-    download_file(api, "config.json").await?;
+    let config_path = download_file(api, "config.json").await?;
+    // Required for supported vision checkpoints; do not silently serve images without it.
+    if let Ok(bytes) = std::fs::read(&config_path) {
+        if serde_json::from_slice::<serde_json::Value>(&bytes)
+            .is_ok_and(|config| config["model_type"] == "qwen3_vl")
+        {
+            download_file(api, "preprocessor_config.json").await?;
+        }
+    }
     let path = download_file(api, "tokenizer.json").await?;
     // Optional native conversation artifacts, using the same pinned repository revision.
     for name in ["tokenizer_config.json", "chat_template.jinja"] {

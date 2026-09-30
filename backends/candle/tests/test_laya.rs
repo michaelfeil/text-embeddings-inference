@@ -81,6 +81,7 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
     )?;
     let sequences = fixture["sequences"].as_array().unwrap();
     let mut batch = Batch {
+        multimodal: vec![],
         input_ids: vec![],
         token_type_ids: vec![],
         position_ids: vec![],

@@ -92,6 +92,7 @@ fn download_safetensors(api: &ApiRepo) -> Result<Vec<PathBuf>, ApiError> {
 
 #[derive(Debug, Clone)]
 struct Batch {
+    multimodal: vec![],
     input_ids: Vec<u32>,
     token_type_ids: Vec<u32>,
     position_ids: Vec<u32>,
@@ -108,6 +109,7 @@ struct Batch {
 impl From<Batch> for text_embeddings_backend_core::Batch {
     fn from(b: Batch) -> Self {
         text_embeddings_backend_core::Batch {
+            multimodal: vec![],
             input_ids: b.input_ids,
             token_type_ids: b.token_type_ids,
             position_ids: b.position_ids,
@@ -185,6 +187,7 @@ fn setup(
 
     // Batch with RadixMLP enabled
     let enabled_batch = Batch {
+        multimodal: vec![],
         input_ids: all_input_ids.clone(),
         token_type_ids: token_type_ids.clone(),
         position_ids: all_position_ids.clone(),
@@ -199,6 +202,7 @@ fn setup(
     };
 
     let enabled_batch_vanilla = Batch {
+        multimodal: vec![],
         input_ids: all_input_ids.clone(),
         token_type_ids: token_type_ids.clone(),
         position_ids: all_position_ids.clone(),
@@ -214,6 +218,7 @@ fn setup(
 
     // Batch with RadixMLP disabled (None for all compact fields)
     let disabled_batch = Batch {
+        multimodal: vec![],
         input_ids: all_input_ids,
         token_type_ids,
         position_ids: all_position_ids,

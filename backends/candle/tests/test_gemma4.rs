@@ -15,6 +15,7 @@ fn gemma4_classifier_matches_reference_with_variable_length_attention() -> Resul
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let backend = CandleBackend::new(&root, "bfloat16".into(), ModelType::Classifier, None, 0)?;
     let mut batch = Batch {
+        multimodal: vec![],
         input_ids: vec![],
         token_type_ids: vec![],
         position_ids: vec![],

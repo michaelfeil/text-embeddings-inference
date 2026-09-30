@@ -100,7 +100,6 @@ impl DistilBertMLP {
     }
 }
 
-
 pub struct DistilBertSpladeHead {
     vocab_transform: Linear,
     vocab_projector: Linear,

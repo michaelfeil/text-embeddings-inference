@@ -380,6 +380,7 @@ impl Laya {
                     criteria,
                     compute_chars,
                     encoding: ValidEncoding {
+                        multimodal: None,
                         input_ids: ids,
                         token_type_ids: vec![0; length],
                         position_ids: (0..length as u32).collect(),
@@ -590,6 +591,7 @@ pub async fn systemone(
             let encoding = std::mem::replace(
                 &mut question.encoding,
                 ValidEncoding {
+                    multimodal: None,
                     input_ids: vec![],
                     token_type_ids: vec![],
                     position_ids: vec![],
@@ -748,6 +750,7 @@ mod tests {
                     markers: vec![],
                 },
                 encoding: ValidEncoding {
+                    multimodal: None,
                     input_ids: vec![],
                     token_type_ids: vec![],
                     position_ids: vec![],
