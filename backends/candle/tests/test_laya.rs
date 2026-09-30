@@ -79,6 +79,7 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
         None,
         0,
     )?;
+    assert!(!model.is_padded(), "Laya must use packed encoder batches");
     let sequences = fixture["sequences"].as_array().unwrap();
     let mut batch = Batch {
         input_ids: vec![],
@@ -111,9 +112,7 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
         });
     }
     let outputs = model.decide(batch.clone(), inputs.clone())?;
-    // Padding in a mixed-length queue batch must not change a question's scores.
-    // On CUDA this also catches accidentally using the attention mask as a
-    // cuBLASLt output buffer (beta=0), which ignores the mask values.
+    // Packed sequence boundaries must isolate each question in mixed-length batches.
     for (i, output) in outputs.iter().enumerate() {
         let start = batch.cumulative_seq_lengths[i] as usize;
         let end = batch.cumulative_seq_lengths[i + 1] as usize;

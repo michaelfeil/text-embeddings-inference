@@ -12,7 +12,7 @@ use serde::Deserialize;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 use crate::layers::{LayerNorm, Linear};
-use crate::models::modernbert::{ModernBertConfig, ModernBertModel};
+use crate::models::{FlashModernBertModel, ModernBertConfig};
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct LayaConfig {
@@ -164,7 +164,7 @@ pub struct LayaOutput {
 }
 
 pub struct LayaModel {
-    encoder: ModernBertModel,
+    encoder: FlashModernBertModel,
     type_emb: Embedding,
     head: Vec<HeadLayer>,
     scorer_norm: LayerNorm,
@@ -209,7 +209,7 @@ impl LayaModel {
             .map(|i| HeadLayer::load(vb.pp(format!("head.layers.{i}")), hidden))
             .collect::<Result<Vec<_>>>()?;
         Ok(Self {
-            encoder: ModernBertModel::load(
+            encoder: FlashModernBertModel::load(
                 vb.pp("encoder"),
                 encoder_config,
                 ModelType::Embedding(Pool::Cls),
@@ -332,7 +332,7 @@ impl LayaModel {
 
 impl super::Model for LayaModel {
     fn is_padded(&self) -> bool {
-        true
+        false
     }
 
     fn decide(
