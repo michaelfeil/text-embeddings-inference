@@ -43,14 +43,30 @@ pub(crate) fn try_forward(
     {
         return Ok(None);
     }
+    // Q/K can be views into one token-major QKV projection.
+    for tensor in [q, k] {
+        let stride = tensor.stride();
+        if stride[1] != 128
+            || stride[2] != 1
+            || !stride[0].is_multiple_of(8)
+            || stride[0] > i32::MAX as usize
+        {
+            return Ok(None);
+        }
+    }
     for tensor in [q, k, &qn.weight, &kn.weight, cos, sin] {
         if tensor.dtype() != q.dtype()
             || !tensor.device().same_device(q.device())
-            || !tensor.is_contiguous()
             || !tensor.layout().start_offset().is_multiple_of(8)
         {
             return Ok(None);
         }
+    }
+    if [&qn.weight, &kn.weight, cos, sin]
+        .iter()
+        .any(|t| !t.is_contiguous())
+    {
+        return Ok(None);
     }
     let packed = q.apply_op2_no_bwd(
         k,
@@ -88,12 +104,13 @@ impl Fused {
         let (tokens, qheads, _) = ql.shape().dims3()?;
         let (_, kheads, _) = kl.shape().dims3()?;
         let device = q.device();
-        let q = q
-            .as_cuda_slice::<T>()?
-            .slice(ql.start_offset()..ql.start_offset() + ql.shape().elem_count());
-        let k = k
-            .as_cuda_slice::<T>()?
-            .slice(kl.start_offset()..kl.start_offset() + kl.shape().elem_count());
+        let q = q.as_cuda_slice::<T>()?.slice(
+            ql.start_offset()..ql.start_offset() + (tokens - 1) * ql.stride()[0] + qheads * 128,
+        );
+        let k = k.as_cuda_slice::<T>()?.slice(
+            kl.start_offset()
+                ..kl.start_offset() + (tokens - 1) * kl.stride()[0] + kl.dims()[1] * 128,
+        );
         let (qw, qwl) = self.qw.storage_and_layout();
         let (kw, kwl) = self.kw.storage_and_layout();
         let (cos, cl) = self.cos.storage_and_layout();
@@ -121,6 +138,8 @@ impl Fused {
         let function =
             device.get_or_load_custom_func(name, "tei-qk-norm-rope", ptx::QK_NORM_ROPE)?;
         let mut builder = function.builder();
+        let qstride = ql.stride()[0] as i32;
+        let kstride = kl.stride()[0] as i32;
         let tokens = tokens as i32;
         let qheads = qheads as i32;
         let kheads = kheads as i32;
@@ -135,6 +154,8 @@ impl Fused {
             .arg(&tokens)
             .arg(&qheads)
             .arg(&kheads)
+            .arg(&qstride)
+            .arg(&kstride)
             .arg(&self.epsilon);
         // Shape/dtype/alignment checks above bound every read/write. The launch builder
         // tracks all tensor buffers on their device stream, including the norm weights.
@@ -212,7 +233,14 @@ mod tests {
                 let sin = tensor(&[tokens, 64], 51, dtype, &device)?;
                 let qweight = tensor(&[128], 73, dtype, &device)?;
                 let kweight = tensor(&[128], 111, dtype, &device)?;
-                for epsilon in [1e-6, 1e-5] {
+                for (epsilon, strided) in [(1e-6, false), (1e-5, false), (1e-6, true), (1e-5, true)]
+                {
+                    let (q, k) = if strided {
+                        let qkv = Tensor::cat(&[&q, &k, &k], 1)?;
+                        (qkv.narrow(1, 0, 3)?, qkv.narrow(1, 3, 1)?)
+                    } else {
+                        (q.clone(), k.clone())
+                    };
                     let qnorm = RMSNorm::load(
                         VarBuilder::from_tensors(
                             HashMap::from([("weight".into(), qweight.clone())]),
@@ -231,8 +259,8 @@ mod tests {
                         128,
                         epsilon,
                     )?;
-                    let (expected_q, _) = qnorm.forward(&q, None)?;
-                    let (expected_k, _) = knorm.forward(&k, None)?;
+                    let (expected_q, _) = qnorm.forward(&q.contiguous()?, None)?;
+                    let (expected_k, _) = knorm.forward(&k.contiguous()?, None)?;
                     candle_rotary::apply_rotary_inplace(
                         &expected_q,
                         &expected_k,

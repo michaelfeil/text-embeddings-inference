@@ -28,7 +28,7 @@ fn index_select_internal_type(dtype: DType) -> Result<u32> {
     Ok(code)
 }
 
-/// Fast CUDA index_select along dim 0 for N-D contiguous inputs (rank >= 2).
+/// Fast CUDA index_select along dim 0 for N-D inputs with contiguous rows (rank >= 2).
 /// We flatten all trailing dimensions into a single `cols = dims[1..].product()`.
 pub struct IndexSelect {
     pub dim: usize,
@@ -37,7 +37,7 @@ pub struct IndexSelect {
 /// Validate input layouts and return (rows, cols_flat, index_count, out_shape).
 ///
 /// Requirements for fast path:
-/// - x: rank >= 2, fully contiguous, dim == 0
+/// - x: rank >= 2, contiguous trailing dimensions, dim == 0
 /// - ids: rank 1, contiguous
 fn validate_inputs(
     x_l: &Layout,
@@ -68,19 +68,12 @@ fn validate_inputs(
         candle::bail!("indices tensor must be contiguous for candle-index-select ({ids_stride:?})");
     }
 
-    // x must be fully contiguous (row-major).
-    // Candle's contiguous convention: stride[last] = 1, and
-    // stride[k-1] = stride[k] * dims[k] for all k>0.
-    if *x_stride.last().unwrap() != 1 {
-        candle::bail!(
-            "the last dim of x must be contiguous for candle-index-select ({x_stride:?})"
-        );
-    }
+    // QKV views may have gaps between rows, but each selected row must be contiguous.
     let mut expected = 1usize;
-    for (&d, &s) in x_dims.iter().rev().zip(x_stride.iter().rev()) {
-        if s != expected {
+    for (&d, &s) in x_dims[1..].iter().rev().zip(x_stride[1..].iter().rev()) {
+        if d != 1 && s != expected {
             candle::bail!(
-                "x must be fully contiguous for candle-index-select (dims={x_dims:?}, stride={x_stride:?})"
+                "x rows must be contiguous for candle-index-select (dims={x_dims:?}, stride={x_stride:?})"
             );
         }
         expected *= d;
@@ -155,6 +148,7 @@ mod cuda_impl {
                     dst_ptr,
                     rows as u32,
                     cols as u32,
+                    x_l.stride()[0] as u64,
                     index_count as u32,
                     multi_processors_count,
                     dtype_code,
@@ -230,10 +224,10 @@ impl candle::CustomOp2 for IndexSelect {
 ///
 /// * Fast path:
 ///   - Device: CUDA
-///   - x: rank >= 2, fully contiguous
+///   - x: rank >= 2, contiguous trailing dimensions
 ///   - indices: rank-1, contiguous, DType::U32
 ///   - dim == 0
-///   - dtype(x) ∈ {F16, F32}
+///   - dtype(x) ∈ {F16, BF16, F32}
 ///
 /// * Fallback:
 ///   - everything else → `x.index_select(indices, dim)`
@@ -252,7 +246,7 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
     let device = x.device();
 
     if !matches!(device, Device::Cuda(_)) {
-        return x.index_select(indices, dim);
+        return x.contiguous()?.index_select(indices, dim);
     }
 
     if !matches!(x.dtype(), DType::F16 | DType::BF16 | DType::F32) {
@@ -281,7 +275,7 @@ pub fn index_select(x: &Tensor, indices: &Tensor, dim: usize) -> Result<Tensor> 
         (Storage::Cuda(_), Storage::Cuda(_)) => {
             let xs = x_l.stride();
             let is = ids_l.stride();
-            // We’ll let validate_inputs enforce full contiguity, but we still
+            // We’ll let validate_inputs enforce contiguous rows, but we still
             // require the last dims to be contiguous here as a quick filter.
             if xs[xs.len() - 1] != 1 || is[is.len() - 1] != 1 {
                 return x.index_select(indices, dim);
@@ -335,6 +329,39 @@ mod tests {
                 actual.iter().map(|x| x.to_bits()).collect::<Vec<_>>(),
                 expected
             );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_strided_rows_match_contiguous() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let ids = Tensor::new(&[3u32, 0, 3, 2], &device)?;
+        for dtype in [DType::F16, DType::BF16, DType::F32] {
+            for width in [7, 8, 128] {
+                // Odd row strides and nonzero offsets also exercise scalar fallback.
+                for gap in [1, 4] {
+                    let packed = Tensor::arange(0f32, (6 * (3 * width + gap)) as f32, &device)?
+                        .reshape((6, 3 * width + gap))?
+                        .to_dtype(dtype)?;
+                    let view = packed.narrow(0, 1, 4)?.narrow(1, width, width)?;
+                    for view in [view.clone(), view.unsqueeze(1)?] {
+                        let actual = index_select(&view, &ids, 0)?;
+                        let expected = view.contiguous()?.index_select(&ids, 0)?;
+                        assert_eq!(actual.dims(), expected.dims());
+                        assert_eq!(
+                            actual
+                                .to_dtype(DType::F32)?
+                                .flatten_all()?
+                                .to_vec1::<f32>()?,
+                            expected
+                                .to_dtype(DType::F32)?
+                                .flatten_all()?
+                                .to_vec1::<f32>()?
+                        );
+                    }
+                }
+            }
         }
         Ok(())
     }
