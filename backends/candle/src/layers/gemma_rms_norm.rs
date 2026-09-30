@@ -8,6 +8,15 @@ mod ptx {
 }
 
 pub(crate) fn forward(x: &Tensor, scale: &Tensor, epsilon: f32) -> Result<Tensor> {
+    apply(x, scale, epsilon, false)
+}
+
+/// Match Candle's FP32 sum/mean, square root and division arithmetic.
+pub(crate) fn forward_reference(x: &Tensor, scale: &Tensor, epsilon: f32) -> Result<Tensor> {
+    apply(x, scale, epsilon, true)
+}
+
+fn apply(x: &Tensor, scale: &Tensor, epsilon: f32, reference: bool) -> Result<Tensor> {
     let width = x.dim(candle::D::Minus1)?;
     if x.dtype() != DType::BF16
         || scale.dtype() != DType::F32
@@ -25,7 +34,7 @@ pub(crate) fn forward(x: &Tensor, scale: &Tensor, epsilon: f32) -> Result<Tensor
     if x.elem_count() == 0 {
         return Ok(x.clone());
     }
-    x.apply_op2_no_bwd(scale, &Norm { epsilon })
+    x.apply_op2_no_bwd(scale, &Norm { epsilon, reference })
 }
 // Packed Q/K views have contiguous heads within each token and a gap between tokens.
 fn supported_layout(layout: &Layout) -> bool {
@@ -39,6 +48,7 @@ fn supported_layout(layout: &Layout) -> bool {
 }
 struct Norm {
     epsilon: f32,
+    reference: bool,
 }
 impl CustomOp2 for Norm {
     fn name(&self) -> &'static str {
@@ -80,7 +90,11 @@ impl CustomOp2 for Norm {
         // The grid writes every output element exactly once.
         let mut out = unsafe { device.alloc::<half::bf16>(n)? };
         let kernel = device.get_or_load_custom_func(
-            "gemma_rms_norm_bf16",
+            if self.reference {
+                "gemma_rms_norm_reference_bf16"
+            } else {
+                "gemma_rms_norm_bf16"
+            },
             "tei-gemma-rms-norm",
             ptx::GEMMA_RMS_NORM,
         )?;
@@ -96,7 +110,17 @@ impl CustomOp2 for Norm {
         unsafe {
             launch.launch(LaunchConfig {
                 grid_dim: ((n / width as usize) as u32, 1, 1),
-                block_dim: (if width <= 128 { 32 } else { 256 }, 1, 1),
+                block_dim: (
+                    if self.reference {
+                        width.min(1024).next_power_of_two()
+                    } else if width <= 128 {
+                        32
+                    } else {
+                        256
+                    },
+                    1,
+                    1,
+                ),
                 shared_mem_bytes: 0,
             })
         }
@@ -144,10 +168,44 @@ mod tests {
         Ok(())
     }
     #[test]
+    #[ignore = "requires CUDA"]
+    fn reference_math_matches_unfused_bitwise() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for tokens in [1, 7, 511] {
+            for width in [128, 256, 512, 1024, 2816] {
+                let packed = Tensor::randn(0f32, 2f32, (tokens, 5, width), &device)?
+                    .to_dtype(DType::BF16)?;
+                let x = packed.narrow(1, 1, 3)?;
+                for weighted in [false, true] {
+                    let scale = if weighted {
+                        Tensor::randn(1f32, 0.2f32, width, &device)?
+                    } else {
+                        Tensor::ones(width, DType::F32, &device)?
+                    };
+                    for epsilon in [1e-6, 1e-5] {
+                        let xf = x.to_dtype(DType::F32)?;
+                        let expected = xf
+                            .broadcast_div(
+                                &(xf.sqr()?.mean_keepdim(D::Minus1)? + epsilon)?.sqrt()?,
+                            )?
+                            .broadcast_mul(&scale)?
+                            .to_dtype(DType::BF16)?;
+                        let actual = forward_reference(&x, &scale, epsilon as f32)?;
+                        assert_eq!(actual.flatten_all()?.to_vec1::<half::bf16>()?,
+                            expected.flatten_all()?.to_vec1::<half::bf16>()?,
+                            "tokens={tokens}, width={width}, weighted={weighted}, epsilon={epsilon}");
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires CUDA; validates and times the fused Gemma normalization"]
     fn reference_and_timing() -> Result<()> {
         let device = Device::new_cuda(0)?;
-        for width in [32, 256, 768, 1024] {
+        for width in [32, 256, 768, 1024, 2816] {
             for rows in [1, 128, 2048] {
                 let x = Tensor::randn(0f32, 2f32, (rows, width), &device)?.to_dtype(DType::BF16)?;
                 let scale = (Tensor::randn(0f32, 0.2f32, width, &device)?
