@@ -440,10 +440,6 @@ impl FlashModernBertModel {
 }
 
 impl Model for FlashModernBertModel {
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         self.forward(batch)
     }

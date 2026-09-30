@@ -331,10 +331,6 @@ impl LayaModel {
 }
 
 impl super::Model for LayaModel {
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn decide(
         &self,
         mut batch: Batch,

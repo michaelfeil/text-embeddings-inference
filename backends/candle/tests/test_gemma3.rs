@@ -29,8 +29,6 @@ fn test_gemma3() -> Result<()> {
         0,
     )?;
 
-    assert!(!backend.is_padded());
-
     let input_batch = batch(
         vec![
             tokenizer.encode("What is Deep Learning?", true).unwrap(),

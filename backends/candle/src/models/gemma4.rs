@@ -372,137 +372,6 @@ impl Gemma4Attention {
             sliding_window: config.sliding_window,
         })
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn forward(
-        &self,
-        hidden_states: &Tensor,
-        padding_bias: Option<&Tensor>,
-        cos: &Tensor,
-        sin: &Tensor,
-        causal: bool,
-        shared_kv: &mut SharedKv,
-    ) -> Result<Tensor> {
-        let (batch_size, seq_len, _) = hidden_states.dims3()?;
-        let q = self.q_proj.forward(hidden_states)?.reshape((
-            batch_size,
-            seq_len,
-            self.num_attention_heads,
-            self.head_dim,
-        ))?;
-        let q = self.q_norm.forward(&q)?.transpose(1, 2)?;
-        let q = apply_rotary(&q, cos, sin, self.head_dim)?;
-
-        let (k, v) = if self.is_kv_shared {
-            shared_kv
-                .get(self.attention_type)
-                .cloned()
-                .ok_or_else(|| candle::Error::Msg("missing Gemma4 shared KV states".into()))?
-        } else {
-            let k_unrotated = self
-                .k_proj
-                .as_ref()
-                .unwrap()
-                .forward(hidden_states)?
-                .reshape((batch_size, seq_len, self.num_key_value_heads, self.head_dim))?;
-            let v_unrotated = match &self.v_proj {
-                Some(v_proj) => v_proj.forward(hidden_states)?.reshape((
-                    batch_size,
-                    seq_len,
-                    self.num_key_value_heads,
-                    self.head_dim,
-                ))?,
-                None => k_unrotated.clone(),
-            };
-            let k = self
-                .k_norm
-                .as_ref()
-                .unwrap()
-                .forward(&k_unrotated)?
-                .transpose(1, 2)?;
-            let k = apply_rotary(&k, cos, sin, self.head_dim)?;
-            let v = self
-                .v_norm
-                .as_ref()
-                .unwrap()
-                .forward(&v_unrotated)?
-                .transpose(1, 2)?;
-            if self.store_shared_kv {
-                shared_kv.set(self.attention_type, k.clone(), v.clone());
-            }
-            (k, v)
-        };
-
-        let repeat = self.num_attention_heads / self.num_key_value_heads;
-        let repeat_kv = |x: Tensor| -> Result<Tensor> {
-            if repeat == 1 {
-                Ok(x)
-            } else {
-                let (b, h, s, d) = x.dims4()?;
-                x.unsqueeze(2)?
-                    .expand((b, h, repeat, s, d))?
-                    .reshape((b, h * repeat, s, d))
-            }
-        };
-        let k = repeat_kv(k)?.contiguous()?;
-        let v = repeat_kv(v)?.contiguous()?;
-        let mut weights = q.matmul(&k.t()?)?;
-
-        let mask = self.attention_mask(
-            batch_size,
-            seq_len,
-            weights.dtype(),
-            weights.device(),
-            causal,
-        )?;
-        weights = weights.broadcast_add(&mask)?;
-        if let Some(padding_bias) = padding_bias {
-            weights = weights.broadcast_add(padding_bias)?;
-        }
-        // Gemma4 explicitly computes attention softmax in fp32 before casting back.
-        let weights = candle_nn::ops::softmax_last_dim(&weights.to_dtype(DType::F32)?)?
-            .to_dtype(q.dtype())?;
-        let states = weights.matmul(&v)?;
-        self.o_proj
-            .forward(&states.transpose(1, 2)?.flatten_from(D::Minus2)?)
-    }
-
-    fn attention_mask(
-        &self,
-        batch_size: usize,
-        seq_len: usize,
-        dtype: DType,
-        device: &Device,
-        causal: bool,
-    ) -> Result<Tensor> {
-        let min = if dtype == DType::F32 {
-            f32::MIN
-        } else {
-            -65_504.0
-        };
-        let sliding = self.attention_type == AttentionType::Sliding;
-        let mask: Vec<f32> = (0..seq_len)
-            .flat_map(|i| {
-                (0..seq_len).map(move |j| {
-                    let visible = if causal {
-                        j <= i && (!sliding || i - j < self.sliding_window)
-                    } else if sliding {
-                        i.abs_diff(j) <= self.sliding_window / 2
-                    } else {
-                        true
-                    };
-                    if visible {
-                        0.0
-                    } else {
-                        min
-                    }
-                })
-            })
-            .collect();
-        Tensor::from_vec(mask, (1, 1, seq_len, seq_len), device)?
-            .to_dtype(dtype)?
-            .expand((batch_size, self.num_attention_heads, seq_len, seq_len))
-    }
 }
 
 #[derive(Default)]
@@ -764,46 +633,6 @@ impl Gemma4Layer {
             layer_scalar: vb.get(1, "layer_scalar")?,
         })
     }
-
-    #[allow(clippy::too_many_arguments)]
-    fn forward(
-        &self,
-        states: &Tensor,
-        per_layer_input: Option<&Tensor>,
-        padding_bias: Option<&Tensor>,
-        cos: &Tensor,
-        sin: &Tensor,
-        causal: bool,
-        shared_kv: &mut SharedKv,
-    ) -> Result<Tensor> {
-        let residual = states;
-        let states = self.input_layernorm.forward(states)?;
-        let states = self
-            .attention
-            .forward(&states, padding_bias, cos, sin, causal, shared_kv)?;
-        let states = self.post_attention_layernorm.forward(&states)?;
-        let states = (residual + states)?;
-
-        let residual = &states;
-        let states = self.pre_feedforward_layernorm.forward(&states)?;
-        let states = self.mlp.forward(&states)?;
-        let states = match &self.moe {
-            Some(moe) => moe.forward(residual, &states, None)?,
-            None => states,
-        };
-        let states = self.post_feedforward_layernorm.forward(&states)?;
-        let mut states = (residual + states)?;
-
-        if let (Some(ple), Some(per_layer_input)) = (&self.ple, per_layer_input) {
-            let contribution = ple.input_gate.forward(&states)?;
-            let contribution = ple.activation.forward(&contribution)?;
-            let contribution = (contribution * per_layer_input)?;
-            let contribution = ple.projection.forward(&contribution)?;
-            let contribution = ple.norm.forward(&contribution)?;
-            states = (states + contribution)?;
-        }
-        states.broadcast_mul(&self.layer_scalar)
-    }
 }
 
 struct Gemma4Ple {
@@ -882,11 +711,6 @@ pub struct Gemma4Model {
     final_logit_softcapping: Option<f64>,
     local_rope: (Tensor, Tensor),
     full_rope: (Tensor, Tensor),
-    local_head_dim: usize,
-    full_head_dim: usize,
-    num_attention_heads: usize,
-    pad_token_id: u32,
-    dtype: DType,
     device: Device,
 }
 
@@ -957,6 +781,9 @@ impl Gemma4Model {
     }
 
     pub fn load(vb: VarBuilder, config: &Gemma4Config, model_type: ModelType) -> Result<Self> {
+        if !vb.device().is_cuda() || vb.dtype() != DType::BF16 || !cfg!(feature = "flash-attn") {
+            candle::bail!("Gemma4 requires CUDA BF16 with packed FlashAttention v2");
+        }
         let text = &config.text_config;
         if text.layer_types.len() != text.num_hidden_layers {
             candle::bail!(
@@ -1051,82 +878,8 @@ impl Gemma4Model {
             final_logit_softcapping: text.final_logit_softcapping,
             local_rope,
             full_rope,
-            local_head_dim: text.head_dim,
-            full_head_dim: text.global_head_dim,
-            num_attention_heads: text.num_attention_heads,
-            pad_token_id: text.pad_token_id,
-            dtype: vb.dtype(),
             device: vb.device().clone(),
         })
-    }
-
-    fn forward_hidden(&self, batch: &Batch, causal: bool) -> Result<(Tensor, Vec<usize>)> {
-        let batch_size = batch.len();
-        let max_length = batch.max_length as usize;
-        let mut ids = Vec::with_capacity(batch_size * max_length);
-        let mut positions = Vec::with_capacity(batch_size * max_length);
-        let mut padding = Vec::with_capacity(batch_size * max_length);
-        let mut lengths = Vec::with_capacity(batch_size);
-        for i in 0..batch_size {
-            let start = batch.cumulative_seq_lengths[i] as usize;
-            let end = batch.cumulative_seq_lengths[i + 1] as usize;
-            let length = end - start;
-            lengths.push(length);
-            ids.extend_from_slice(&batch.input_ids[start..end]);
-            positions.extend_from_slice(&batch.position_ids[start..end]);
-            padding.extend(std::iter::repeat_n(0f32, length));
-            ids.extend(std::iter::repeat_n(self.pad_token_id, max_length - length));
-            positions.extend(std::iter::repeat_n(0u32, max_length - length));
-            padding.extend(std::iter::repeat_n(-65_504f32, max_length - length));
-        }
-        let input_ids = Tensor::from_vec(ids, (batch_size, max_length), &self.device)?;
-        let position_ids = Tensor::from_vec(positions, (batch_size, max_length), &self.device)?;
-        let padding_bias = Tensor::from_vec(padding, (batch_size, 1, 1, max_length), &self.device)?
-            .to_dtype(self.dtype)?
-            .expand((batch_size, self.num_attention_heads, max_length, max_length))?;
-
-        let input_embeddings = (self.embeddings.forward(&input_ids)? * self.embedding_scale)?;
-        let per_layer_inputs = match &self.ple {
-            Some(ple) => Some(ple.forward(&input_ids, &input_embeddings)?),
-            None => None,
-        };
-        let rope = |cache: &(Tensor, Tensor), dim: usize| -> Result<(Tensor, Tensor)> {
-            let flat = position_ids.flatten_all()?;
-            let cos = cache
-                .0
-                .index_select(&flat, 0)?
-                .reshape((batch_size, 1, max_length, dim))?;
-            let sin = cache
-                .1
-                .index_select(&flat, 0)?
-                .reshape((batch_size, 1, max_length, dim))?;
-            Ok((cos, sin))
-        };
-        let local = rope(&self.local_rope, self.local_head_dim)?;
-        let full = rope(&self.full_rope, self.full_head_dim)?;
-
-        let mut states = input_embeddings;
-        let mut shared_kv = SharedKv::default();
-        for (idx, layer) in self.layers.iter().enumerate() {
-            let (cos, sin) = match layer.attention.attention_type {
-                AttentionType::Full => (&full.0, &full.1),
-                AttentionType::Sliding => (&local.0, &local.1),
-            };
-            let per_layer = match &per_layer_inputs {
-                Some(inputs) => Some(inputs.i((.., .., idx, ..))?),
-                None => None,
-            };
-            states = layer.forward(
-                &states,
-                per_layer.as_ref(),
-                Some(&padding_bias),
-                cos,
-                sin,
-                causal,
-                &mut shared_kv,
-            )?;
-        }
-        Ok((self.norm.forward(&states)?, lengths))
     }
 
     #[cfg(feature = "flash-attn")]
@@ -1177,84 +930,44 @@ impl Gemma4Model {
     }
 
     fn embed_batch(&self, batch: Batch, pool: Pool) -> Result<(Option<Tensor>, Option<Tensor>)> {
-        if self.device.is_cuda() {
-            #[cfg(feature = "flash-attn")]
-            {
-                return self.embed_batch_varlen(batch, pool);
-            }
-            #[cfg(not(feature = "flash-attn"))]
-            candle::bail!("Gemma4 CUDA inference requires FlashAttention")
+        #[cfg(feature = "flash-attn")]
+        {
+            self.embed_batch_varlen(batch, pool)
         }
-        let (outputs, lengths) = self.forward_hidden(&batch, false)?;
-        let pooled = if batch.pooled_indices.is_empty() {
-            None
-        } else {
-            let values = batch
-                .pooled_indices
-                .iter()
-                .map(|&i| {
-                    let i = i as usize;
-                    match pool {
-                        Pool::Cls => outputs.i((i, 0))?.unsqueeze(0),
-                        Pool::LastToken => outputs.i((i, lengths[i] - 1))?.unsqueeze(0),
-                        Pool::Mean => {
-                            outputs.i((i, ..lengths[i]))?.sum_keepdim(0)? / lengths[i] as f64
-                        }
-                        Pool::Splade => candle::bail!("Splade pooling is not supported for Gemma4"),
-                    }
-                })
-                .collect::<Result<Vec<_>>>()?;
-            Some(Tensor::cat(&values, 0)?)
-        };
-        let raw = if batch.raw_indices.is_empty() {
-            None
-        } else {
-            let values = batch
-                .raw_indices
-                .iter()
-                .map(|&i| outputs.i((i as usize, ..lengths[i as usize])))
-                .collect::<Result<Vec<_>>>()?;
-            Some(Tensor::cat(&values, 0)?)
-        };
-        Ok((pooled, raw))
+        #[cfg(not(feature = "flash-attn"))]
+        {
+            let _ = (batch, pool);
+            candle::bail!("Gemma4 requires packed FlashAttention v2")
+        }
     }
 
     fn predict_batch(&self, batch: Batch, score: &Linear) -> Result<Tensor> {
-        if self.device.is_cuda() {
-            #[cfg(feature = "flash-attn")]
-            {
-                let (states, compact) = self.forward_hidden_varlen(&batch, true)?;
-                let states = compact.scatter_unfold(&states)?;
-                let indices: Vec<u32> = batch
-                    .cumulative_seq_lengths
-                    .windows(2)
-                    .map(|bounds| bounds[1] - 1)
-                    .collect();
-                let indices = Tensor::from_vec(indices, batch.len(), &self.device)?;
-                let logits = score.forward(&index_select(&states, &indices, 0)?)?;
-                return match self.final_logit_softcapping {
-                    Some(cap) => (logits / cap)?.tanh()? * cap,
-                    None => Ok(logits),
-                };
+        #[cfg(feature = "flash-attn")]
+        {
+            let (states, compact) = self.forward_hidden_varlen(&batch, true)?;
+            let states = compact.scatter_unfold(&states)?;
+            let indices: Vec<u32> = batch
+                .cumulative_seq_lengths
+                .windows(2)
+                .map(|bounds| bounds[1] - 1)
+                .collect();
+            let indices = Tensor::from_vec(indices, batch.len(), &self.device)?;
+            let logits = score.forward(&index_select(&states, &indices, 0)?)?;
+            match self.final_logit_softcapping {
+                Some(cap) => (logits / cap)?.tanh()? * cap,
+                None => Ok(logits),
             }
-            #[cfg(not(feature = "flash-attn"))]
-            candle::bail!("Gemma4 CUDA inference requires FlashAttention")
         }
-        let (outputs, lengths) = self.forward_hidden(&batch, true)?;
-        let last = lengths
-            .iter()
-            .enumerate()
-            .map(|(i, &length)| outputs.i((i, length - 1))?.unsqueeze(0))
-            .collect::<Result<Vec<_>>>()?;
-        let logits = score.forward(&Tensor::cat(&last, 0)?)?;
-        match self.final_logit_softcapping {
-            Some(cap) => (logits / cap)?.tanh()? * cap,
-            None => Ok(logits),
+        #[cfg(not(feature = "flash-attn"))]
+        {
+            let _ = (batch, score);
+            candle::bail!("Gemma4 requires packed FlashAttention v2")
         }
     }
 }
 
 impl Model for Gemma4Model {
+    #[cfg(feature = "flash-attn")]
     fn decide(&self, batch: Batch, inputs: Vec<DecisionInput>) -> Result<Vec<DecisionOutput>> {
         let Gemma4Output::Decision(weights) = &self.output else {
             candle::bail!("Gemma4 was not loaded for decisions")
@@ -1276,36 +989,23 @@ impl Model for Gemma4Model {
                 _ => candle::bail!("Gemma4 requires valid option-token metadata"),
             })
             .collect::<Result<Vec<_>>>()?;
-        let last = if self.device.is_cuda() {
-            #[cfg(feature = "flash-attn")]
-            {
-                let (states, compact) = self.forward_hidden_varlen(&batch, true)?;
-                let states = compact.scatter_unfold(&states)?;
-                let indices = Tensor::from_vec(
-                    batch
-                        .cumulative_seq_lengths
-                        .iter()
-                        .skip(1)
-                        .map(|&end| end - 1)
-                        .collect::<Vec<_>>(),
-                    batch.len(),
-                    &self.device,
-                )?;
-                index_select(&states, &indices, 0)?
-            }
-            #[cfg(not(feature = "flash-attn"))]
-            candle::bail!("Gemma4 CUDA decisions require FlashAttention")
-        } else {
-            let (states, lengths) = self.forward_hidden(&batch, true)?;
-            Tensor::stack(
-                &lengths
+        #[cfg(feature = "flash-attn")]
+        let last = {
+            let (states, compact) = self.forward_hidden_varlen(&batch, true)?;
+            let states = compact.scatter_unfold(&states)?;
+            let indices = Tensor::from_vec(
+                batch
+                    .cumulative_seq_lengths
                     .iter()
-                    .enumerate()
-                    .map(|(i, &n)| states.i((i, n - 1)))
-                    .collect::<Result<Vec<_>>>()?,
-                0,
-            )?
+                    .skip(1)
+                    .map(|&end| end - 1)
+                    .collect::<Vec<_>>(),
+                batch.len(),
+                &self.device,
+            )?;
+            index_select(&states, &indices, 0)?
         };
+
         tokens
             .into_iter()
             .enumerate()
@@ -1326,10 +1026,6 @@ impl Model for Gemma4Model {
 
     fn supports_radix_mlp(&self) -> bool {
         self.device.is_cuda() && cfg!(feature = "flash-attn")
-    }
-
-    fn is_padded(&self) -> bool {
-        !(self.device.is_cuda() && cfg!(feature = "flash-attn"))
     }
 
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {

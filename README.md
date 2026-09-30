@@ -49,7 +49,6 @@ classification models. TEI enables high-performance extraction for the most popu
 Ember, GTE and E5. TEI implements many features such as:
 
 * No model graph compilation step
-* Metal support for local execution on Macs
 * Small docker images and fast boot times. Get ready for true serverless!
 * Token based dynamic batching
 * Optimized transformers code for inference using [Flash Attention](https://github.com/HazyResearch/flash-attention),
@@ -67,7 +66,7 @@ failure makes the whole service unhealthy.
 
 Use `CUDA_VISIBLE_DEVICES=0,1` to expose two GPUs, `--device-id 0` to select just one,
 or `--backend-device-ids 0,1` to select visible CUDA ordinals explicitly. Each GPU
-must have enough memory for the complete model and its batch. CPU and Metal retain
+must have enough memory for the complete model and its batch. CPU retains
 one backend.
 
 With multiple GPUs, batches have a soft early-dispatch target of 5,000 tokens while
@@ -88,7 +87,7 @@ Embedding text inputs automatically use `fastokens-b10` when the tokenizer confi
 #### Text Embeddings
 
 Text Embeddings Inference currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
-model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, MPNet, ModernBERT, Qwen3, Gemma3, and dense Gemma4 text models.
+model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, and dense Gemma4 text models.
 
 Below are some examples of the currently supported models:
 
@@ -107,7 +106,6 @@ Below are some examples of the currently supported models:
 | 52        | 335M                   | BERT           | [WhereIsAI/UAE-Large-V1](https://hf.co/WhereIsAI/UAE-Large-V1)                                   |
 | 58        | 137M                   | NomicBERT      | [nomic-ai/nomic-embed-text-v1](https://hf.co/nomic-ai/nomic-embed-text-v1)                       |
 | 79        | 137M                   | NomicBERT      | [nomic-ai/nomic-embed-text-v1.5](https://hf.co/nomic-ai/nomic-embed-text-v1.5)                   |
-| 103       | 109M                   | MPNet          | [sentence-transformers/all-mpnet-base-v2](https://hf.co/sentence-transformers/all-mpnet-base-v2) |
 | N/A       | 475M-A305M             | NomicBERT      | [nomic-ai/nomic-embed-text-v2-moe](https://hf.co/nomic-ai/nomic-embed-text-v2-moe)               |
 | N/A       | 434M                   | Alibaba GTE    | [Alibaba-NLP/gte-large-en-v1.5](https://hf.co/Alibaba-NLP/gte-large-en-v1.5)                     |
 | N/A       | 396M                   | ModernBERT     | [answerdotai/ModernBERT-large](https://hf.co/answerdotai/ModernBERT-large)                       |
@@ -364,8 +362,8 @@ Text Embeddings Inference ships with multiple Docker images that you can use to 
 | Ada Lovelace (RTX 4000 series, ...) | ghcr.io/huggingface/text-embeddings-inference:89-1.8                    |
 | Hopper (H100)                       | ghcr.io/huggingface/text-embeddings-inference:hopper-1.8 (experimental) |
 
-**Warning**: Flash Attention is turned off by default for the Turing image as it suffers from precision issues.
-You can turn Flash Attention v1 ON by using the `USE_FLASH_ATTENTION=True` environment variable.
+Turing uses packed FlashAttention v1 with float16. Models requiring sliding-window
+attention or ALiBi require FlashAttention v2 on Ampere or newer GPUs.
 
 ### API documentation
 
@@ -591,10 +589,9 @@ grpcurl -d '{"inputs": "What is Deep Learning"}' -plaintext 0.0.0.0:8080 tei.v1.
 Candle CPU inference uses packed (ragged) attention by default for float32 and
 float16 BERT/RoBERTa, DistilBERT, Jina, GTE, Nomic, ModernBERT, Qwen2/Qwen3,
 and Llama/Mistral models. Tokens remain unpadded throughout these model paths;
-attention respects each sequence's boundaries. Set `USE_FLASH_ATTENTION=false`
-to use the previous padded implementation where available. CPU BF16, MPNet,
-and Metal continue using their existing paths. Gemma3 still requires CUDA BF16.
-DistilBERT classifiers retain their padded implementation. Packed Llama requires
+attention respects each sequence's boundaries. Padded and ONNX backends are removed.
+MPNet, DistilBERT classification, CPU BF16, and Metal are unsupported.
+Gemma3 and Gemma4 require CUDA BF16 with FlashAttention v2. Packed Llama requires
 bias-free projections and the standard head dimension. The CPU batch-size cap
 remains four sequences.
 

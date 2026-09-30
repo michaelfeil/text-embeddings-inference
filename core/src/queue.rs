@@ -75,14 +75,12 @@ pub struct Queue {
 
 impl Queue {
     pub fn new(
-        padded_model: bool,
         max_batch_tokens: usize,
         max_batch_requests: Option<usize>,
         radix_mlp_threshold: f32,
         max_concurrent_requests: usize,
     ) -> Self {
         Self::with_replicas(
-            padded_model,
             max_batch_tokens,
             max_batch_requests,
             radix_mlp_threshold,
@@ -92,7 +90,6 @@ impl Queue {
     }
 
     pub fn with_replicas(
-        padded_model: bool,
         max_batch_tokens: usize,
         max_batch_requests: Option<usize>,
         radix_mlp_threshold: f32,
@@ -119,7 +116,6 @@ impl Queue {
         // Launch background queue task
         std::thread::spawn(move || {
             queue_blocking_task(
-                padded_model,
                 max_batch_tokens,
                 max_batch_requests,
                 radix_mlp_threshold,
@@ -193,7 +189,6 @@ impl Queue {
 // Background task responsible of the queue state
 #[allow(clippy::too_many_arguments)]
 fn queue_blocking_task(
-    padded_model: bool,
     max_batch_tokens: usize,
     max_batch_requests: Option<usize>,
     radix_mlp_threshold: f32,
@@ -318,12 +313,7 @@ fn queue_blocking_task(
                         break;
                     }
 
-                    let total_tokens = if padded_model {
-                        (max(max_length, entry_tokens as u32) * (metadata.len() + 1) as u32)
-                            as usize
-                    } else {
-                        current_tokens + entry_tokens
-                    };
+                    let total_tokens = current_tokens + entry_tokens;
 
                     if total_tokens > max_batch_tokens {
                         debug_assert!(

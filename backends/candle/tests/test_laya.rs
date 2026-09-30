@@ -79,7 +79,6 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
         None,
         0,
     )?;
-    assert!(!model.is_padded(), "Laya must use packed encoder batches");
     let sequences = fixture["sequences"].as_array().unwrap();
     let mut batch = Batch {
         input_ids: vec![],

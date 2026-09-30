@@ -466,10 +466,6 @@ impl FlashQwen2Model {
 }
 
 impl Model for FlashQwen2Model {
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn supports_radix_mlp(&self) -> bool {
         !self.is_causal
     }

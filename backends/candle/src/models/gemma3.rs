@@ -567,10 +567,6 @@ mod packed {
     }
 
     impl Model for Gemma3Model {
-        fn is_padded(&self) -> bool {
-            false
-        }
-
         fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
             let _enter = self.span.enter();
             self.forward_packed(batch)

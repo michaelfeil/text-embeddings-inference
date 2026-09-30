@@ -26,10 +26,9 @@ use crate::compute_cap::{
     compatible_compute_cap, get_compile_compute_cap, get_runtime_compute_cap,
 };
 use crate::models::{
-    BertConfig, BertModel, Dense, DenseConfig, DenseLayer, DistilBertConfig, DistilBertModel,
-    GTEConfig, GTEModel, Gemma3Config, Gemma4Config, Gemma4Model, JinaBertModel, JinaCodeBertModel,
-    LLamaConfig, MPNetConfig, MPNetModel, MistralConfig, Model, ModernBertConfig, ModernBertModel,
-    NomicBertModel, NomicConfig, Qwen2Config, Qwen3Config, Qwen3Model,
+    BertConfig, Dense, DenseConfig, DenseLayer, DistilBertConfig, GTEConfig, Gemma3Config,
+    Gemma4Config, LLamaConfig, MPNetConfig, MistralConfig, Model, ModernBertConfig, NomicConfig,
+    Qwen2Config, Qwen3Config,
 };
 use crate::models::{
     FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
@@ -358,33 +357,56 @@ impl CandleBackend {
             model_type
         };
 
-        let cpu_ragged = matches!(dtype, DType::F32 | DType::F16)
-            && std::env::var("USE_FLASH_ATTENTION")
-                .unwrap_or_else(|_| "true".into())
-                .eq_ignore_ascii_case("true");
-        let model: Result<Box<dyn Model + Send>, BackendError> = match (config, &device) {
+        let model: Result<Box<dyn Model + Send>, BackendError> = match config {
             #[cfg(feature = "experimental-deberta")]
-            (Config::Deberta(config), _) => {
-                tracing::info!("Starting packed DeBERTa-v2/v3 with FA4 relative attention");
-                Ok(Box::new(crate::models::DebertaModel::load(vb, &config, model_type).s()?))
-            },
-            #[cfg(not(feature = "cuda"))]
-            (_, Device::Cuda(_)) => Err(BackendError::Start(
-                "`cuda` feature is not enabled".to_string(),
+            Config::Deberta(config) => Ok(Box::new(
+                models::DebertaModel::load(vb, &config, model_type).s()?,
             )),
-            (Config::Mistral(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashMistralModel::load(vb, &config, model_type, false).s()?)),
-            (Config::Qwen2(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen2Model::load(vb, &config, model_type, false).s()?)),
-            (Config::Qwen3(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashQwen3Model::load(vb, &config, model_type, false).s()?)),
-            (Config::Llama(config), Device::Cpu) if cpu_ragged => {
+            Config::Bert(config) => match config {
+                BertConfigWrapper::Bert(config) => {
+                    Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?))
+                }
+                BertConfigWrapper::JinaBert(config) => Ok(Box::new(
+                    FlashJinaBertModel::load(vb, &config, model_type).s()?,
+                )),
+                BertConfigWrapper::JinaCodeBert(config) => Ok(Box::new(
+                    FlashJinaCodeBertModel::load(vb, &config, model_type).s()?,
+                )),
+            },
+            Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config) => Ok(
+                Box::new(FlashBertModel::load_roberta(vb, &config, model_type).s()?),
+            ),
+            Config::DistilBert(config) => Ok(Box::new(
+                FlashDistilBertModel::load(vb, &config, model_type).s()?,
+            )),
+            Config::Gte(config) => Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?)),
+            Config::ModernBert(config) => Ok(Box::new(
+                FlashModernBertModel::load(vb, &config, model_type).s()?,
+            )),
+            Config::NomicBert(config) => Ok(Box::new(
+                FlashNomicBertModel::load(vb, &config, model_type).s()?,
+            )),
+            Config::Mistral(config) => Ok(Box::new(
+                FlashMistralModel::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
+            )),
+            Config::Qwen2(config) => Ok(Box::new(
+                FlashQwen2Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
+            )),
+            Config::Qwen3(config) => Ok(Box::new(
+                FlashQwen3Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
+            )),
+            Config::Llama(config) => {
                 if config.attention_bias.unwrap_or(false)
                     || config.mlp_bias
                     || config.num_attention_heads == 0
-                    || !config.hidden_size.is_multiple_of(config.num_attention_heads)
-                    || config.head_dim.is_some_and(|dim| dim != config.hidden_size / config.num_attention_heads)
+                    || !config
+                        .hidden_size
+                        .is_multiple_of(config.num_attention_heads)
+                    || config
+                        .head_dim
+                        .is_some_and(|dim| dim != config.hidden_size / config.num_attention_heads)
                 {
-                    return Err(BackendError::Start(
-                        "CPU packed Llama requires bias-free projections and head_dim = hidden_size / num_attention_heads".into(),
-                    ));
+                    return Err(BackendError::Start("Packed Llama requires bias-free projections and head_dim = hidden_size / num_attention_heads".into()));
                 }
                 let cfg_mistral = MistralConfig {
                     vocab_size: config.vocab_size,
@@ -403,350 +425,56 @@ impl CandleBackend {
                     rope_scaling: config.rope_scaling,
                     use_bidirectional_attention: config.use_bidirectional_attention,
                 };
-                Ok(Box::new(FlashMistralModel::load(vb, &cfg_mistral, model_type, false).s()?))
-            }
-            (Config::Bert(config), Device::Cpu) if cpu_ragged => {
-                tracing::info!("Starting packed CPU BERT-family model");
-                match config {
-                    BertConfigWrapper::Bert(config) => Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?)),
-                    BertConfigWrapper::JinaBert(config) => Ok(Box::new(FlashJinaBertModel::load(vb, &config, model_type).s()?)),
-                    BertConfigWrapper::JinaCodeBert(config) => Ok(Box::new(FlashJinaCodeBertModel::load(vb, &config, model_type).s()?)),
-                }
-            }
-            (Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config), Device::Cpu) if cpu_ragged =>
-                Ok(Box::new(FlashBertModel::load_roberta(vb, &config, model_type).s()?)),
-            (Config::DistilBert(config), Device::Cpu) if cpu_ragged && !matches!(&model_type, ModelType::Classifier) => Ok(Box::new(FlashDistilBertModel::load(vb, &config, model_type).s()?)),
-            (Config::Gte(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?)),
-            (Config::ModernBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashModernBertModel::load(vb, &config, model_type).s()?)),
-            (Config::NomicBert(config), Device::Cpu) if cpu_ragged => Ok(Box::new(FlashNomicBertModel::load(vb, &config, model_type).s()?)),
-            (Config::Bert(config), Device::Cpu | Device::Metal(_)) => match config {
-                BertConfigWrapper::JinaBert(config) => {
-                    tracing::info!("Starting JinaBert model on {:?}", device);
-                    Ok(Box::new(JinaBertModel::load(vb, &config, model_type).s()?))
-                }
-                BertConfigWrapper::JinaCodeBert(config) => {
-                    tracing::info!("Starting JinaCodeBert model on {:?}", device);
-                    Ok(Box::new(
-                        JinaCodeBertModel::load(vb, &config, model_type).s()?,
-                    ))
-                }
-                BertConfigWrapper::Bert(config) => {
-                    tracing::info!("Starting Bert model on {:?}", device);
-                    Ok(Box::new(BertModel::load(vb, &config, model_type).s()?))
-                }
-            },
-            (
-                Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config),
-                Device::Cpu | Device::Metal(_),
-            ) => {
-                tracing::info!("Starting Bert model on {:?}", device);
                 Ok(Box::new(
-                    BertModel::load_roberta(vb, &config, model_type).s()?,
+                    FlashMistralModel::load(vb, &cfg_mistral, model_type, enable_fp8_dynamic)
+                        .s()?,
                 ))
             }
-            (Config::DistilBert(config), Device::Cpu | Device::Metal(_)) => {
-                tracing::info!("Starting DistilBert model on {:?}", device);
-                Ok(Box::new(
-                    DistilBertModel::load(vb, &config, model_type).s()?,
-                ))
-            }
-            (Config::Gemma3(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Gemma3 requires CUDA bfloat16 with packed FlashAttention".into(),
+            Config::MPNet(_) => Err(BackendError::Start(
+                "MPNet has no packed implementation".into(),
             )),
-            (Config::Gemma4(config), Device::Cpu | Device::Metal(_)) => {
-                if !matches!(dtype, DType::F32 | DType::BF16) {
-                    Err(BackendError::Start(
-                        "Gemma4 is only supported in fp32 and bf16 precision".to_string(),
-                    ))
-                } else {
-                    tracing::info!("Starting Gemma4 model on {:?}", device);
-                    Ok(Box::new(Gemma4Model::load(vb, &config, model_type).s()?))
-                }
-            }
-            (Config::Gte(config), Device::Cpu | Device::Metal(_)) => {
-                tracing::info!("Starting GTE model on {:?}", device);
-                Ok(Box::new(GTEModel::load(vb, &config, model_type).s()?))
-            }
-            (Config::MPNet(config), _) => {
-                tracing::info!("Starting MPNet model on {:?}", device);
-                Ok(Box::new(MPNetModel::load(vb, &config, model_type).s()?))
-            }
-            (Config::Mistral(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Mistral requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
-                    .to_string(),
-            )),
-            (Config::Llama(_config), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Llama requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
-                    .to_string(),
-            )),
-            (Config::ModernBert(config), Device::Cpu | Device::Metal(_)) => {
-                tracing::info!("Starting ModernBert model on {:?}", device);
-                Ok(Box::new(
-                    ModernBertModel::load(vb, &config, model_type).s()?,
-                ))
-            }
-            (Config::NomicBert(config), Device::Cpu | Device::Metal(_)) => {
-                tracing::info!("Starting NomicBert model on {:?}", device);
-                Ok(Box::new(NomicBertModel::load(vb, &config, model_type).s()?))
-            }
-            (Config::Qwen2(_), Device::Cpu | Device::Metal(_)) => Err(BackendError::Start(
-                "Qwen2 requires packed attention: CPU float32/float16 or CUDA float16/bfloat16, with USE_FLASH_ATTENTION=true"
-                    .to_string(),
-            )),
-            (Config::Qwen3(config), Device::Cpu | Device::Metal(_)) => {
-                tracing::info!("Starting Qwen3 model on {:?}", device);
-                Ok(Box::new(Qwen3Model::load(vb, &config, model_type).s()?))
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Bert(config), Device::Cuda(_)) => {
-                if cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
-                    && matches!(dtype, DType::F16 | DType::BF16)
-                    // Allow disabling because of flash attention v1 precision problems
-                    // See: https://github.com/huggingface/text-embeddings-inference/issues/37
-                    && &std::env::var("USE_FLASH_ATTENTION").unwrap_or("True".to_string()).to_lowercase() == "true"
-                {
-                    match config {
-                        BertConfigWrapper::JinaBert(config) => {
-                            tracing::info!("Starting FlashJinaBert model on {:?}", device);
-                            Ok(Box::new(
-                                FlashJinaBertModel::load(vb, &config, model_type).s()?,
-                            ))
-                        }
-                        BertConfigWrapper::JinaCodeBert(config) => {
-                            tracing::info!("Starting FlashJinaCodeBert model on {:?}", device);
-                            Ok(Box::new(
-                                FlashJinaCodeBertModel::load(vb, &config, model_type).s()?,
-                            ))
-                        }
-                        BertConfigWrapper::Bert(config) => {
-                            tracing::info!("Starting FlashBert model on {:?}", device);
-                            Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?))
-                        }
-                    }
-                } else {
-                    match config {
-                        BertConfigWrapper::JinaBert(config) => {
-                            tracing::info!("Starting JinaBert model on {:?}", device);
-                            Ok(Box::new(JinaBertModel::load(vb, &config, model_type).s()?))
-                        }
-                        BertConfigWrapper::JinaCodeBert(config) => {
-                            tracing::info!("Starting JinaCodeBert model on {:?}", device);
-                            Ok(Box::new(
-                                JinaCodeBertModel::load(vb, &config, model_type).s()?,
-                            ))
-                        }
-                        BertConfigWrapper::Bert(config) => {
-                            tracing::info!("Starting Bert model on {:?}", device);
-                            Ok(Box::new(BertModel::load(vb, &config, model_type).s()?))
-                        }
-                    }
-                }
-            }
-            #[cfg(feature = "cuda")]
-            (
-                Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config),
-                Device::Cuda(_),
-            ) => {
-                if cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
-                    && matches!(dtype, DType::F16 | DType::BF16)
-                    // Allow disabling because of flash attention v1 precision problems
-                    // See: https://github.com/huggingface/text-embeddings-inference/issues/37
-                    && &std::env::var("USE_FLASH_ATTENTION").unwrap_or("True".to_string()).to_lowercase() == "true"
-                {
-                    tracing::info!("Starting FlashBert model on {:?}", device);
-                    Ok(Box::new(
-                        FlashBertModel::load_roberta(vb, &config, model_type).s()?,
-                    ))
-                } else {
-                    tracing::info!("Starting Bert model on {:?}", device);
-                    Ok(Box::new(
-                        BertModel::load_roberta(vb, &config, model_type).s()?,
-                    ))
-                }
-            }
-            #[cfg(feature = "cuda")]
-            (Config::DistilBert(config), Device::Cuda(_)) => {
-                if cfg!(feature = "flash-attn")
-                    && matches!(dtype, DType::F16 | DType::BF16)
-                    && &std::env::var("USE_FLASH_ATTENTION")
-                        .unwrap_or("True".to_string())
-                        .to_lowercase()
-                        == "true"
-                {
-                    tracing::info!("Starting FlashDistilBert model on {:?}", device);
-                    Ok(Box::new(
-                        FlashDistilBertModel::load(vb, &config, model_type).s()?,
-                    ))
-                } else {
-                    tracing::info!("Starting DistilBertModel model on {:?}", device);
-                    Ok(Box::new(
-                        DistilBertModel::load(vb, &config, model_type).s()?,
-                    ))
-                }
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Gemma3(config), Device::Cuda(_)) => {
+            Config::Gemma3(config) => {
                 #[cfg(feature = "flash-attn")]
                 {
-                    tracing::info!("Starting packed Gemma3 model on {:?}", device);
-                    Ok(Box::new(crate::models::Gemma3Model::load(vb, &config, model_type).s()?))
+                    Ok(Box::new(
+                        models::Gemma3Model::load(vb, &config, model_type).s()?,
+                    ))
                 }
                 #[cfg(not(feature = "flash-attn"))]
                 {
                     let _ = config;
-                    Err(BackendError::Start("Gemma3 requires CUDA bfloat16 with packed FlashAttention".into()))
-                }
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Gemma4(config), Device::Cuda(_)) => {
-                if dtype != DType::BF16 || !cfg!(feature = "flash-attn") {
                     Err(BackendError::Start(
-                        "Gemma4 CUDA inference requires bfloat16 and FlashAttention".to_string(),
+                        "Gemma3 requires CUDA BF16 with FlashAttention v2".into(),
                     ))
-                } else {
-                    tracing::info!("Starting Gemma4 model on {:?}", device);
-                    Ok(Box::new(Gemma4Model::load(vb, &config, model_type).s()?))
                 }
             }
-            #[cfg(feature = "cuda")]
-            (Config::Gte(config), Device::Cuda(_)) => {
-                if !matches!(dtype, DType::F16 | DType::BF16)
-                    || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
-                    || &std::env::var("USE_FLASH_ATTENTION")
-                        .unwrap_or("True".to_string())
-                        .to_lowercase()
-                        != "true"
+            Config::Gemma4(config) => {
+                #[cfg(feature = "flash-attn")]
                 {
-                    tracing::info!("Starting GTE model on {:?}", device);
-                    Ok(Box::new(GTEModel::load(vb, &config, model_type).s()?))
-                } else {
-                    tracing::info!("Starting FlashGTE model on {:?}", device);
-                    Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?))
-                }
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Mistral(config), Device::Cuda(_)) => {
-                if !matches!(dtype, DType::F16 | DType::BF16)
-                    || !cfg!(feature = "flash-attn")
-                    || get_runtime_compute_cap(device_id).unwrap() < 80
-                    || &std::env::var("USE_FLASH_ATTENTION")
-                        .unwrap_or("True".to_string())
-                        .to_lowercase()
-                        != "true"
-                {
-                    return Err(BackendError::Start("Mistral is only supported on Cuda devices in fp16 or bf16 with flash attention v2 enabled".to_string()));
-                }
-                tracing::info!("Starting FlashMistral model on {:?}", device);
-                Ok(Box::new(
-                    FlashMistralModel::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
-                ))
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Llama(config), Device::Cuda(_)) => {
-                let cfg_mistral = MistralConfig {
-                    vocab_size: config.vocab_size,
-                    hidden_size: config.hidden_size,
-                    intermediate_size: config.intermediate_size,
-                    num_hidden_layers: config.num_hidden_layers,
-                    num_attention_heads: config.num_attention_heads,
-                    num_key_value_heads: config.num_key_value_heads,
-                    hidden_act: config.hidden_act,
-                    max_position_embeddings: config.max_position_embeddings,
-                    initializer_range: config.initializer_range,
-                    rms_norm_eps: config.rms_norm_eps,
-                    model_type: config.model_type.clone(),
-                    rope_theta: config.rope_theta,
-                    sliding_window: config.sliding_window,
-                    rope_scaling: config.rope_scaling,
-                    use_bidirectional_attention: config.use_bidirectional_attention,
-                };
-                Ok(Box::new(
-                    FlashMistralModel::load(vb, &cfg_mistral, model_type, enable_fp8_dynamic).s()?,
-                ))
-            }
-            #[cfg(feature = "cuda")]
-            (Config::ModernBert(config), Device::Cuda(_)) => {
-                if cfg!(feature = "flash-attn")
-                    && matches!(dtype, DType::F16 | DType::BF16)
-                    // Allow disabling because of flash attention v1 precision problems
-                    // See: https://github.com/huggingface/text-embeddings-inference/issues/37
-                    && &std::env::var("USE_FLASH_ATTENTION").unwrap_or("True".to_string()).to_lowercase() == "true"
-                {
-                    tracing::info!("Starting FlashModernBert model on {:?}", device);
                     Ok(Box::new(
-                        FlashModernBertModel::load(vb, &config, model_type).s()?,
-                    ))
-                } else {
-                    #[cfg(feature = "flash-attn-v1")]
-                    tracing::warn!("Flash attention V1 cannot be used with ModernBert because it lacks windowing support.");
-                    tracing::info!("Starting ModernBert model on {:?}", device);
-                    Ok(Box::new(
-                        ModernBertModel::load(vb, &config, model_type).s()?,
+                        models::Gemma4Model::load(vb, &config, model_type).s()?,
                     ))
                 }
-            }
-            #[cfg(feature = "cuda")]
-            (Config::NomicBert(config), Device::Cuda(_)) => {
-                if cfg!(feature = "flash-attn")
-                    && matches!(dtype, DType::F16 | DType::BF16)
-                    && &std::env::var("USE_FLASH_ATTENTION")
-                        .unwrap_or("True".to_string())
-                        .to_lowercase()
-                        == "true"
+                #[cfg(not(feature = "flash-attn"))]
                 {
-                    tracing::info!("Starting FlashNomicBert model on {:?}", device);
-                    Ok(Box::new(
-                        FlashNomicBertModel::load(vb, &config, model_type).s()?,
-                    ))
-                } else {
-                    tracing::info!("Starting NomicBert model on {:?}", device);
-                    Ok(Box::new(NomicBertModel::load(vb, &config, model_type).s()?))
-                }
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Qwen2(config), Device::Cuda(_)) => {
-                if !matches!(dtype, DType::F16 | DType::BF16)
-                    || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
-                    || &std::env::var("USE_FLASH_ATTENTION")
-                        .unwrap_or("True".to_string())
-                        .to_lowercase()
-                        != "true"
-                {
-                    return Err(BackendError::Start("Qwen2 is only supported on Cuda devices in fp16 or bf16 with flash attention v2 enabled".to_string()));
-                }
-                tracing::info!("Starting FlashQwen2 model on {:?}", device);
-                Ok(Box::new(
-                    FlashQwen2Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
-                ))
-            }
-            #[cfg(feature = "cuda")]
-            (Config::Qwen3(config), Device::Cuda(_)) => {
-                if !matches!(dtype, DType::F16 | DType::BF16)
-                    || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
-                    || &std::env::var("USE_FLASH_ATTENTION")
-                        .unwrap_or("True".to_string())
-                        .to_lowercase()
-                        != "true"
-                {
-                    tracing::info!("Starting Qwen3 model on {:?}", device);
-                    Ok(Box::new(Qwen3Model::load(vb, &config, model_type).s()?))
-                } else {
-                    tracing::info!("Starting FlashQwen3 model on {:?}", device);
-                    Ok(Box::new(
-                        FlashQwen3Model::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
+                    let _ = config;
+                    Err(BackendError::Start(
+                        "Gemma4 requires CUDA BF16 with FlashAttention v2".into(),
                     ))
                 }
             }
-            (Config::Qwen35(config), _) => {
+            Config::Qwen35(config) => {
                 #[cfg(all(feature = "cuda", feature = "flash-attn"))]
                 {
-                    Ok(Box::new(models::Qwen35Model::load(vb, &config, model_type).s()?))
+                    Ok(Box::new(
+                        models::Qwen35Model::load(vb, &config, model_type).s()?,
+                    ))
                 }
                 #[cfg(not(all(feature = "cuda", feature = "flash-attn")))]
                 {
                     let _ = config;
                     Err(BackendError::Start(
-                        "Qwen3.5-MoE requires a CUDA FlashAttention build".into(),
+                        "Qwen3.5-MoE requires CUDA with FlashAttention v2".into(),
                     ))
                 }
             }
@@ -865,10 +593,6 @@ impl Backend for CandleBackend {
         Ok(())
     }
 
-    fn is_padded(&self) -> bool {
-        self.model.is_padded()
-    }
-
     fn supports_radix_mlp(&self) -> bool {
         self.model.supports_radix_mlp()
     }
@@ -947,12 +671,6 @@ impl Backend for CandleBackend {
     fn predict_tokens(&self, batch: Batch) -> Result<TokenPredictions, BackendError> {
         let batch_size = batch.len();
         let cumulative_seq_lengths = batch.cumulative_seq_lengths.clone();
-
-        if self.is_padded() {
-            return Err(BackendError::Inference(
-                "predict_tokens does not support padded inputs".to_string(),
-            ));
-        }
 
         let results = self.model.predict_tokens(batch).e()?;
 

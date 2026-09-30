@@ -58,7 +58,6 @@ impl Inner {
 #[derive(Debug, Clone)]
 pub struct BackendPool {
     inner: Arc<Inner>,
-    pub padded_model: bool,
     pub radix_mlp_supported: bool,
     pub max_batch_size: Option<usize>,
     pub model_type: ModelType,
@@ -70,16 +69,13 @@ impl BackendPool {
             BackendError::Start("At least one backend replica is required".into())
         })?;
         if backends.iter().any(|b| {
-            b.model_type != first.model_type
-                || b.padded_model != first.padded_model
-                || b.radix_mlp_supported != first.radix_mlp_supported
+            b.model_type != first.model_type || b.radix_mlp_supported != first.radix_mlp_supported
         }) {
             return Err(BackendError::Start(
                 "Backend replicas have incompatible capabilities".into(),
             ));
         }
         let result = Self {
-            padded_model: first.padded_model,
             radix_mlp_supported: first.radix_mlp_supported,
             max_batch_size: backends.iter().filter_map(|b| b.max_batch_size).min(),
             model_type: first.model_type.clone(),
@@ -255,7 +251,7 @@ impl Execution {
     }
 
     pub async fn embed(self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
-        let tokens = compute_tokens(&batch, self.pool.padded_model);
+        let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend.embed(batch).await
         })
@@ -267,7 +263,7 @@ impl Execution {
         batch: Batch,
         inputs: Vec<text_embeddings_backend::DecisionInput>,
     ) -> Result<(Vec<text_embeddings_backend::DecisionOutput>, Duration), BackendError> {
-        let tokens = compute_tokens(&batch, self.pool.padded_model);
+        let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend.decide(batch, inputs).await
         })
@@ -278,7 +274,7 @@ impl Execution {
         self,
         batch: Batch,
     ) -> Result<(text_embeddings_backend::Predictions, Duration), BackendError> {
-        let tokens = compute_tokens(&batch, self.pool.padded_model);
+        let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend.predict(batch).await
         })
@@ -288,7 +284,7 @@ impl Execution {
         self,
         batch: Batch,
     ) -> Result<(text_embeddings_backend::TokenPredictions, Duration), BackendError> {
-        let tokens = compute_tokens(&batch, self.pool.padded_model);
+        let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend.predict_tokens(batch).await
         })
@@ -296,13 +292,6 @@ impl Execution {
     }
 }
 
-fn compute_tokens(batch: &Batch, padded: bool) -> usize {
-    if padded {
-        batch.max_length as usize * batch.len()
-    } else {
-        batch.input_ids.len()
-    }
-}
 pub(crate) struct Execution {
     pool: BackendPool,
     id: usize,

@@ -584,10 +584,6 @@ impl FlashQwen3Model {
 }
 
 impl Model for FlashQwen3Model {
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn supports_radix_mlp(&self) -> bool {
         !self.use_bidirectional_attention
     }

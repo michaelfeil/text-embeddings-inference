@@ -10,7 +10,7 @@
   - local: local_cpu
     title: Using TEI locally with CPU
   - local: local_metal
-    title: Using TEI locally with Metal
+    title: Running locally on a Mac
   - local: local_gpu
     title: Using TEI locally with GPU
   - local: private_models

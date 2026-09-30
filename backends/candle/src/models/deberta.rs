@@ -545,9 +545,6 @@ impl DebertaModel {
     }
 }
 impl Model for DebertaModel {
-    fn is_padded(&self) -> bool {
-        false
-    }
     fn embed(&self, b: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         let x = self.forward(&b)?;
         Ok((
