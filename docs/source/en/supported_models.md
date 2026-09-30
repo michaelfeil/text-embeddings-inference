@@ -93,7 +93,8 @@ Below are some examples of the currently supported models:
 ## Supported hardware
 
 Text Embeddings Inference supports can be used on CPU, Turing (T4, RTX 2000 series, ...), Ampere 80 (A100, A30),
-Ampere 86 (A10, A40, ...), Ada Lovelace (RTX 4000 series, ...), and Hopper (H100) architectures.
+Ampere 86 (A10, A40, ...), Ada Lovelace (RTX 4000 series, ...), Hopper (H100),
+and Blackwell SM120 (RTX Pro 6000 Blackwell, ...) architectures.
 
 The library does **not** support CUDA compute capabilities < 7.5, which means V100, Titan V, GTX 1000 series, etc. are not supported.
 
@@ -112,6 +113,7 @@ Find the appropriate Docker image for your hardware in the following table:
 | Ampere 86 (A10, A40, ...)           | ghcr.io/huggingface/text-embeddings-inference:86-1.8                     |
 | Ada Lovelace (RTX 4000 series, ...) | ghcr.io/huggingface/text-embeddings-inference:89-1.8                     |
 | Hopper (H100)                       | ghcr.io/huggingface/text-embeddings-inference:hopper-1.8 (experimental)  |
+| Blackwell SM120 (RTX Pro 6000, ...) | Build `Dockerfile-cuda` with `--build-arg CUDA_COMPUTE_CAP=120` (`sm120-` image family) |
 
 Turing uses packed FlashAttention v1 with float16. ALiBi and sliding-window
 attention require FlashAttention v2 on Ampere or newer GPUs.
@@ -119,9 +121,10 @@ attention require FlashAttention v2 on Ampere or newer GPUs.
 Padded and ONNX backends are removed. MPNet, DistilBERT classification,
 CPU BF16, and Metal are unsupported.
 
-### Experimental packed DeBERTa-v2/v3 (Hopper)
+### Experimental packed DeBERTa-v2/v3 (SM90 and SM120)
 
-The Hopper and CUDA-all images include this backend and its native kernels.
+The Hopper and SM120 CUDA builds include this backend and its native kernels,
+as do their corresponding binaries in the CUDA-all build.
 It is selected for supported DeBERTa models independently of `ATTN_BACKEND`;
 DeBERTa's relative attention has no FA2 fallback in this implementation.
 
@@ -129,7 +132,11 @@ The `experimental-deberta` build feature adds Candle inference for
 `model_type: deberta-v2`, including Microsoft's DeBERTa-v3 and mDeBERTa-v3
 backbones. It requires the FA4 native bundle built with `--deberta` and
 `FA4_NATIVE_LIB_DIR` at build time (plus its shared libraries at runtime).
-The current kernel supports H100/SM90, FP16/BF16, and head dimension 64.
+The current kernel supports SM90 and SM120 builds, FP16/BF16, and head dimension 64.
+SM120 exports are verified by offline compilation and native linking; end-to-end
+correctness against Transformers is verified on H100/SM90. SM120 runtime
+correctness remains untested. SM8x cannot use the upstream custom score hook
+required for DeBERTa relative attention.
 
 Tokens remain packed through embeddings, transformer layers, and pooling.
 Relative attention uses token-by-bucket tables and a linear relative-position
