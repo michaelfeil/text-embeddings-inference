@@ -102,6 +102,19 @@ build_and_push_variant() {
         done
     fi
 
+    # Separate cache manifests prevent parallel architectures/protocols overwriting
+    # each other. Registry cache preserves intermediate layers on fresh builders;
+    # the sccache mount itself remains local to the BuildKit builder.
+    local cache_args=()
+    local grpc_cache_args=()
+    if [[ -n "${BUILD_CACHE_REPO:-}" ]]; then
+        local cache_ref="${BUILD_CACHE_REPO}:cuda12.9-sm${compute_cap}"
+        cache_args=(--cache-from "type=registry,ref=${cache_ref}-http"
+                    --cache-to "type=registry,ref=${cache_ref}-http,mode=max")
+        grpc_cache_args=(--cache-from "type=registry,ref=${cache_ref}-grpc"
+                         --cache-to "type=registry,ref=${cache_ref}-grpc,mode=max")
+    fi
+
     # Tags to build
     local tags=()
     for registry in "${REGISTRIES[@]}"; do
@@ -116,6 +129,7 @@ build_and_push_variant() {
         --file "${dockerfile}" \
         "${build_args[@]}" \
         "${tags[@]}" \
+        "${cache_args[@]}" \
         --push \
         .
 
@@ -135,6 +149,7 @@ build_and_push_variant() {
             --file "${dockerfile}" \
             "${build_args[@]}" \
             "${grpc_tags[@]}" \
+            "${grpc_cache_args[@]}" \
             --push \
             .
     fi
@@ -228,7 +243,8 @@ show_usage() {
     echo ""
     echo "Environment Variables:"
     echo "  DOCKER_BUILDKIT  Set to 1 for improved build performance"
-    echo "  BUILDKIT_INLINE_CACHE  Set to 1 for inline caching"
+    echo "  BUILD_CACHE_REPO Optional registry repository for per-architecture build caches"
+    echo "                   Requires a builder supporting registry cache export"
     echo ""
     echo "Supported Variants:"
     for prefix_config in "${!IMAGES[@]}"; do
@@ -274,7 +290,6 @@ main() {
 
     # Set environment variables for better performance
     export DOCKER_BUILDKIT=1
-    export BUILDKIT_INLINE_CACHE=1
 
     log_info "Text Embeddings Inference Docker Build Script"
     log_info "Version: $VERSION"
