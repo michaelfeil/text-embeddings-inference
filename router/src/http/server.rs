@@ -2,13 +2,13 @@ use crate::http::ner::apply_aggregation;
 /// HTTP Server logic
 use crate::http::types::{
     DecodeRequest, DecodeResponse, EmbedAllRequest, EmbedAllResponse, EmbedRequest, EmbedResponse,
-    EmbedSparseRequest, EmbedSparseResponse, Embedding, EncodingFormat, Input, InputIds, InputType,
-    OpenAICompatEmbedding, OpenAICompatErrorResponse, OpenAICompatRequest, OpenAICompatResponse,
-    OpenAICompatUsage, PredictInput, PredictRequest, PredictResponse, PredictTokensRequest,
-    Prediction, Rank, RerankRequest, RerankResponse, Sequence, SimilarityInput,
-    SimilarityParameters, SimilarityRequest, SimilarityResponse, SimpleToken, SparseValue,
-    TokenPredictResponse, TokenizeInput, TokenizeRequest, TokenizeResponse, TruncationDirection,
-    VertexPrediction, VertexRequest, VertexResponse,
+    EmbedSparseRequest, EmbedSparseResponse, Embedding, EmbeddingInput, EncodingFormat, InputBatch,
+    InputIds, OpenAICompatEmbedding, OpenAICompatErrorResponse, OpenAICompatRequest,
+    OpenAICompatResponse, OpenAICompatUsage, PredictInput, PredictRequest, PredictResponse,
+    PredictTokensRequest, Prediction, Rank, RerankRequest, RerankResponse, Sequence,
+    SimilarityInput, SimilarityParameters, SimilarityRequest, SimilarityResponse, SimpleToken,
+    SparseValue, TokenPredictResponse, TokenizeInput, TokenizeRequest, TokenizeResponse,
+    TruncationDirection, VertexPrediction, VertexRequest, VertexResponse,
 };
 use crate::{
     logging, shutdown, ClassifierModel, EmbeddingModel, ErrorResponse, ErrorType, Info, ModelType,
@@ -742,13 +742,13 @@ async fn similarity(
 
     // Convert request to embed request
     let mut inputs = Vec::with_capacity(req.inputs.sentences.len() + 1);
-    inputs.push(InputType::String(req.inputs.source_sentence));
+    inputs.push(req.inputs.source_sentence);
     for s in req.inputs.sentences {
-        inputs.push(InputType::String(s));
+        inputs.push(s);
     }
     let parameters = req.parameters.unwrap_or_default();
     let embed_req = EmbedRequest {
-        inputs: Input::Batch(inputs),
+        inputs: EmbeddingInput::TextBatch(inputs),
         truncate: parameters.truncate,
         truncation_direction: parameters.truncation_direction,
         prompt_name: parameters.prompt_name,
@@ -807,8 +807,8 @@ async fn embed(
 
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
-    let (response, metadata) = match req.inputs {
-        Input::Single(input) => {
+    let (response, metadata) = match InputBatch::from(req.inputs) {
+        InputBatch::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
@@ -842,7 +842,7 @@ async fn embed(
                 ),
             )
         }
-        Input::Batch(inputs) => {
+        InputBatch::Batch(inputs) => {
             let counter = metrics::counter!("te_request_count", "method" => "batch");
             counter.increment(1);
 
@@ -1000,8 +1000,8 @@ async fn embed_sparse(
     };
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
-    let (response, metadata) = match req.inputs {
-        Input::Single(input) => {
+    let (response, metadata) = match InputBatch::from(req.inputs) {
+        InputBatch::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
@@ -1033,7 +1033,7 @@ async fn embed_sparse(
                 ),
             )
         }
-        Input::Batch(inputs) => {
+        InputBatch::Batch(inputs) => {
             let counter = metrics::counter!("te_request_count", "method" => "batch");
             counter.increment(1);
 
@@ -1182,8 +1182,8 @@ async fn embed_all(
 
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
-    let (response, metadata) = match req.inputs {
-        Input::Single(input) => {
+    let (response, metadata) = match InputBatch::from(req.inputs) {
+        InputBatch::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
@@ -1215,7 +1215,7 @@ async fn embed_all(
                 ),
             )
         }
-        Input::Batch(inputs) => {
+        InputBatch::Batch(inputs) => {
             let counter = metrics::counter!("te_request_count", "method" => "batch");
             counter.increment(1);
 
@@ -1378,8 +1378,8 @@ async fn openai_embed(
 
     let truncate = info.auto_truncate;
 
-    let (embeddings, metadata) = match req.input {
-        Input::Single(input) => {
+    let (embeddings, metadata) = match InputBatch::from(req.input) {
+        InputBatch::Single(input) => {
             metrics::counter!("te_request_count", "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
@@ -1418,7 +1418,7 @@ async fn openai_embed(
                 ),
             )
         }
-        Input::Batch(inputs) => {
+        InputBatch::Batch(inputs) => {
             let counter = metrics::counter!("te_request_count", "method" => "batch");
             counter.increment(1);
 
@@ -1843,6 +1843,7 @@ async fn metrics(prom_handle: Extension<PrometheusHandle>) -> String {
 }
 
 /// Serving method
+#[allow(clippy::too_many_arguments)]
 pub async fn run(
     infer: Infer,
     info: Info,
@@ -1886,7 +1887,7 @@ pub async fn run(
     text_embeddings_core::input::AudioFormat,
     text_embeddings_core::input::VideoSource,
     PredictInput,
-    Input,
+    EmbeddingInput,
     Info,
     ModelType,
     ClassifierModel,
@@ -1921,7 +1922,6 @@ pub async fn run(
     SimilarityRequest,
     SimilarityResponse,
     SimpleToken,
-    InputType,
     InputIds,
     DecodeRequest,
     DecodeResponse,

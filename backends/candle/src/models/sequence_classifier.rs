@@ -9,6 +9,8 @@ use text_embeddings_backend_core::Batch;
 
 #[derive(Deserialize)]
 struct Config {
+    #[serde(default)]
+    architectures: Vec<String>,
     hidden_size: usize,
     num_labels: Option<usize>,
     id2label: Option<HashMap<String, String>>,
@@ -22,6 +24,15 @@ pub(crate) struct SequenceClassifier {
 }
 
 impl SequenceClassifier {
+    pub(crate) fn supports(config: &str) -> Result<bool> {
+        let config: Config = serde_json::from_str(config).map_err(candle::Error::wrap)?;
+        Ok(
+            matches!(config.architectures.as_slice(), [architecture] if matches!(architecture.as_str(),
+                "LlamaForSequenceClassification" | "Qwen2ForSequenceClassification" | "Qwen3ForSequenceClassification"
+            )),
+        )
+    }
+
     pub(crate) fn load(model: Box<dyn Model + Send>, vb: VarBuilder, config: &str) -> Result<Self> {
         let config: Config = serde_json::from_str(config).map_err(candle::Error::wrap)?;
         let labels = config
@@ -100,6 +111,25 @@ mod tests {
             let states: Vec<f32> = batch.input_ids.into_iter().map(|id| id as f32).collect();
             Ok((None, Some(Tensor::from_vec(states, (n, 1), &Device::Cpu)?)))
         }
+    }
+
+    #[test]
+    fn only_sequence_classification_architectures_are_supported() -> Result<()> {
+        for family in ["Llama", "Qwen2", "Qwen3"] {
+            for (suffix, supported) in [
+                ("ForSequenceClassification", true),
+                ("ForTokenClassification", false),
+                ("ForCausalLM", false),
+            ] {
+                let config = serde_json::json!({"hidden_size":16,"architectures":[format!("{family}{suffix}")]}).to_string();
+                assert_eq!(SequenceClassifier::supports(&config)?, supported);
+            }
+        }
+        assert!(!SequenceClassifier::supports(r#"{"hidden_size":16}"#)?);
+        assert!(!SequenceClassifier::supports(
+            r#"{"hidden_size":16,"architectures":["Qwen3ForSequenceClassification","Qwen3ForTokenClassification"]}"#
+        )?);
+        Ok(())
     }
 
     #[test]

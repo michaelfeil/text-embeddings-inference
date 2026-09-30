@@ -277,7 +277,7 @@ impl TextEmbeddingsService {
         let compute_chars = match &inputs {
             EncodingInput::Single(s) => s.chars().count(),
             EncodingInput::Dual(s1, s2) => s1.chars().count() + s2.chars().count(),
-            EncodingInput::Ids(_) => unreachable!(),
+            EncodingInput::Ids(_) | EncodingInput::Messages(_) => unreachable!(),
         };
 
         let response = self

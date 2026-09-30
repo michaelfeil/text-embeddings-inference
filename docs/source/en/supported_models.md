@@ -69,7 +69,7 @@ curl http://localhost:8080/predict \
 
 `raw_scores=true` returns logits; the existing API applies sigmoid for one output
 or softmax for multiple outputs when raw scores are disabled. Single-label heads
-also use the existing `/rerank` endpoint. Multi-label classification uses
+also use the existing `/rerank` endpoint. Multi-class classification uses
 `/predict`. Decoder classifiers require their checkpoint's prompt formatting;
 `/predict` does not insert a chat or reranker template.
 

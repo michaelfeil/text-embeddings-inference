@@ -326,6 +326,17 @@ pub async fn run(
     };
 
     // Tokenization logic
+    let chat = if matches!(
+        &backend_model_type,
+        text_embeddings_backend::ModelType::Embedding(_)
+    ) {
+        text_embeddings_core::chat::ChatProcessor::load(&model_root).unwrap_or_else(|error| {
+            tracing::warn!("Native conversations disabled: {error}");
+            None
+        })
+    } else {
+        None
+    };
     let tokenization = Tokenization::new(
         tokenization_workers,
         tokenizer,
@@ -333,6 +344,7 @@ pub async fn run(
         position_offset,
         default_prompt,
         prompts,
+        chat,
     );
 
     let dtype = resolve_dtype(

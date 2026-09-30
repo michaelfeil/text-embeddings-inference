@@ -17,6 +17,18 @@ pub enum ModelInput {
     Messages(MessageInput),
 }
 
+/// Embedding request input: one text, independent texts, or one conversation.
+/// A message list always describes one input, regardless of the number of turns.
+/// An empty array is parsed as an empty text batch and rejected by the request handler.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[cfg_attr(feature = "openapi", derive(ToSchema))]
+#[serde(untagged)]
+pub enum EmbeddingInput {
+    Text(String),
+    TextBatch(Vec<String>),
+    Messages(Vec<Message>),
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[cfg_attr(feature = "openapi", derive(ToSchema))]
 #[serde(deny_unknown_fields)]
@@ -112,6 +124,43 @@ pub struct VideoSource {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn embedding_shapes_are_unambiguous() {
+        for value in [
+            json!("hello"),
+            json!(["first", "second"]),
+            json!([]),
+            json!([
+                {"role": "user", "content": [
+                    {"type": "text", "text": "Describe"},
+                    {"type": "image_url", "image_url": {"url": "https://bucket.example/image?signature=keep"}}
+                ]},
+                {"role": "assistant", "content": "An image"}
+            ]),
+        ] {
+            let parsed: EmbeddingInput = serde_json::from_value(value.clone()).unwrap();
+            assert_eq!(serde_json::to_value(parsed).unwrap(), value);
+        }
+        for invalid in [
+            json!(null),
+            json!(42),
+            json!([1, 2]),
+            json!([[1, 2]]),
+            json!(["text", {"role": "user", "content": "mixed"}]),
+            json!([[{"role": "user", "content": "nested"}]]),
+            json!({"messages": [{"role": "user", "content": "wrapped"}]}),
+            json!([{"role": "tool", "content": "unknown role"}]),
+            json!([{"role": "user", "content": {"image_url": "not a part list"}}]),
+            json!([{"role": "user", "content": [], "extra": "must not disappear"}]),
+        ] {
+            assert!(serde_json::from_value::<EmbeddingInput>(invalid).is_err());
+        }
+        assert!(
+            matches!(serde_json::from_value::<EmbeddingInput>(json!([])).unwrap(),
+            EmbeddingInput::TextBatch(texts) if texts.is_empty())
+        );
+    }
 
     #[test]
     fn preserves_native_roles_and_interleaved_media() {

@@ -1001,7 +1001,7 @@
         ],
         "properties": {
           "inputs": {
-            "$ref": "#/components/schemas/Input"
+            "$ref": "#/components/schemas/EmbeddingInput"
           },
           "prompt_name": {
             "type": "string",
@@ -1063,7 +1063,7 @@
             "minimum": 0
           },
           "inputs": {
-            "$ref": "#/components/schemas/Input"
+            "$ref": "#/components/schemas/EmbeddingInput"
           },
           "normalize": {
             "type": "boolean",
@@ -1117,7 +1117,7 @@
         ],
         "properties": {
           "inputs": {
-            "$ref": "#/components/schemas/Input"
+            "$ref": "#/components/schemas/EmbeddingInput"
           },
           "prompt_name": {
             "type": "string",
@@ -1295,19 +1295,6 @@
           }
         }
       },
-      "Input": {
-        "oneOf": [
-          {
-            "$ref": "#/components/schemas/InputType"
-          },
-          {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/InputType"
-            }
-          }
-        ]
-      },
       "InputIds": {
         "oneOf": [
           {
@@ -1327,21 +1314,6 @@
                 "format": "int32",
                 "minimum": 0
               }
-            }
-          }
-        ]
-      },
-      "InputType": {
-        "oneOf": [
-          {
-            "type": "string"
-          },
-          {
-            "type": "array",
-            "items": {
-              "type": "integer",
-              "format": "int32",
-              "minimum": 0
             }
           }
         ]
@@ -1448,7 +1420,7 @@
             "default": "float"
           },
           "input": {
-            "$ref": "#/components/schemas/Input"
+            "$ref": "#/components/schemas/EmbeddingInput"
           },
           "model": {
             "type": "string",
@@ -1895,6 +1867,210 @@
           "Left",
           "Right"
         ]
+      },
+      "AudioFormat": {
+        "type": "string",
+        "enum": [
+          "wav",
+          "mp3"
+        ]
+      },
+      "AudioSource": {
+        "type": "object",
+        "required": [
+          "data",
+          "format"
+        ],
+        "properties": {
+          "data": {
+            "type": "string",
+            "description": "Base64 encoded bytes. Not decoded by request deserialization."
+          },
+          "format": {
+            "$ref": "#/components/schemas/AudioFormat"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContentPart": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "text",
+              "type"
+            ],
+            "properties": {
+              "text": {
+                "type": "string"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "text"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "image_url",
+              "type"
+            ],
+            "properties": {
+              "image_url": {
+                "$ref": "#/components/schemas/ImageSource"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "image_url"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "input_audio",
+              "type"
+            ],
+            "properties": {
+              "input_audio": {
+                "$ref": "#/components/schemas/AudioSource"
+              },
+              "type": {
+                "type": "string",
+                "enum": [
+                  "input_audio"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "video_url",
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "video_url"
+                ]
+              },
+              "video_url": {
+                "$ref": "#/components/schemas/VideoSource"
+              }
+            }
+          }
+        ],
+        "description": "Ordered wire content, independent of a particular model's tensor format.\nThese types describe inputs; the loaded adapter must explicitly support each\nmodality. VideoUrl is an extension following the vLLM message convention.",
+        "discriminator": {
+          "propertyName": "type"
+        }
+      },
+      "EmbeddingInput": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            }
+          }
+        ],
+        "description": "Embedding request input: one text, independent texts, or one conversation.\nA message list always describes one input, regardless of the number of turns.\nAn empty array is parsed as an empty text batch and rejected by the request handler."
+      },
+      "ImageDetail": {
+        "type": "string",
+        "enum": [
+          "auto",
+          "low",
+          "high"
+        ]
+      },
+      "ImageSource": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "detail": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ImageDetail"
+              }
+            ],
+            "nullable": true
+          },
+          "url": {
+            "type": "string",
+            "description": "Remote URL or inline data URL; fetching is a processor responsibility."
+          }
+        },
+        "additionalProperties": false
+      },
+      "Message": {
+        "type": "object",
+        "required": [
+          "role",
+          "content"
+        ],
+        "properties": {
+          "content": {
+            "$ref": "#/components/schemas/MessageContent"
+          },
+          "role": {
+            "$ref": "#/components/schemas/MessageRole"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MessageContent": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ContentPart"
+            }
+          }
+        ]
+      },
+      "MessageRole": {
+        "type": "string",
+        "description": "Roles supported by the initial conversation contract. Additional roles require\nexplicit metadata and adapter support, rather than being silently discarded.",
+        "enum": [
+          "system",
+          "developer",
+          "user",
+          "assistant"
+        ]
+      },
+      "VideoSource": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
       }
     }
   },

@@ -265,7 +265,7 @@ impl Laya {
                         {
                             return Err("noul criteria must contain only false and true".into());
                         }
-                        let mut names = vec!["false".to_owned(), "true".to_owned()];
+                        let mut names = ["false".to_owned(), "true".to_owned()];
                         if let Some(custom) = q.get("labels") {
                             let m = custom.as_object().ok_or("noul labels must be an object")?;
                             if m.len() != 2 {

@@ -42,11 +42,57 @@ This uses the explicit native-chat state envelope from
 only plain text or this envelope; bare arrays and arbitrary objects are rejected.
 There is no second top-level messages field or separate media collection.
 
-The Rust contract is `SystemOneInput::Text(String)` or
-`SystemOneInput::Messages(MessageInput)`. Message content is either a string or
+The shared Rust contract in `text_embeddings_core::input` is
+`ModelInput::Text(String)` or `ModelInput::Messages(MessageInput)`.
+`SystemOneInput` remains a compatibility alias. Message content is either a string or
 ordered `ContentPart` values: Text, ImageUrl, InputAudio, VideoUrl. Initial roles
 are system, developer, user, assistant. Tool messages require a future explicit
 schema for call identifiers and metadata; they are currently rejected.
+
+## Shared embedding API
+
+The embedding endpoints use `EmbeddingInput`, sharing `Message`, `MessageRole`,
+`MessageContent`, and `ContentPart` with the decision API. The outer envelope
+remains endpoint-specific:
+
+| Input | Meaning |
+| --- | --- |
+| `"hello"` | One text input |
+| `["hello", "world"]` | Two independent text inputs |
+| `[{"role":"user","content":"hello"},{"role":"assistant","content":"world"}]` | One conversation input |
+
+Use `inputs` for `/embed`, `/embed_sparse`, and `/embed_all`; use `input` for
+`/v1/embeddings`. `/embed` and `/v1/embeddings` return one embedding per conversation,
+not one per turn. `/embed_all` retains its per-token output format. A batch of
+conversations, mixed string/message arrays, arbitrary objects, and numeric token-ID
+arrays are rejected. An empty array is an empty text batch and returns 400.
+Removing numeric token-ID arrays is a breaking HTTP embedding API change, including
+on `/v1/embeddings`; clients must send text. `/decode` retains its token-ID input.
+The decision API continues to use `state: {"messages": [...]}`.
+
+**Current capability:** text-only user/assistant conversations use the checkpoint's
+native chat template through fastokens. Template compilation happens once at
+startup and rendering runs in the bounded tokenizer workers, including when token
+encoding falls back to Hugging Face. Ordered text parts are concatenated within
+each message. Message order and roles are preserved. System/developer roles,
+images, audio, and video return 422 before rendering, so templates cannot silently
+drop unsupported content.
+
+The server loads `chat_template.jinja` or the single/default `chat_template` in
+`tokenizer_config.json`, using the model revision. A missing/invalid template
+disables conversation processing while leaving ordinary text available; ambiguous
+named templates require a `default` entry. Conversations use
+`add_generation_prompt=false` and `add_special_tokens=false`: they embed the
+supplied turns without starting an assistant reply or duplicating template BOS/EOS.
+Checkpoint-specific generation-prefix policies require a model processor.
+
+The native template owns conversation instructions. The plain-text default prompt
+is not prepended to conversations, and explicit `prompt_name` with messages is
+rejected. Over-limit conversation character counts are rejected before rendering;
+rendered character limits also reject rather than cutting template markers. Token
+truncation still follows the existing explicit/default truncation configuration.
+Plain strings and string batches retain their existing prompt and tokenization
+behavior. This change performs no image inference or remote media downloads.
 
 ## Semantics
 
