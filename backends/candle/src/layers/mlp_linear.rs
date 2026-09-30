@@ -6,7 +6,11 @@ use candle::{Result, Tensor};
 pub(crate) enum MlpLinear {
     Dense(Linear),
     #[cfg(feature = "experimental-fp8")]
-    Fp8(candle_cublaslt::fp8::Fp8Linear),
+    Fp8 {
+        linear: candle_cublaslt::fp8::Fp8Linear,
+        bias: Option<Tensor>,
+        act: Option<super::HiddenAct>,
+    },
 }
 
 #[cfg(feature = "experimental-fp8")]
@@ -19,21 +23,38 @@ thread_local! {
 
 impl MlpLinear {
     pub(crate) fn new(weight: Tensor, enable_fp8_dynamic: bool) -> Result<Self> {
+        Self::with_bias_activation(weight, None, None, enable_fp8_dynamic)
+    }
+
+    pub(crate) fn with_bias_activation(
+        weight: Tensor,
+        bias: Option<Tensor>,
+        act: Option<super::HiddenAct>,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         if enable_fp8_dynamic {
             #[cfg(feature = "experimental-fp8")]
-            return Ok(Self::Fp8(candle_cublaslt::fp8::Fp8Linear::new(&weight)?));
+            return Ok(Self::Fp8 {
+                linear: candle_cublaslt::fp8::Fp8Linear::new(&weight)?,
+                bias,
+                act,
+            });
             #[cfg(not(feature = "experimental-fp8"))]
             candle::bail!("Dynamic FP8 requires an experimental-fp8 build");
         }
-        Ok(Self::Dense(Linear::new(weight, None, None)))
+        Ok(Self::Dense(Linear::new(weight, bias, act)))
     }
 
     pub(crate) fn forward_gated(&self, x: &Tensor, act: &super::HiddenAct) -> Result<Tensor> {
         match self {
             Self::Dense(linear) => linear.forward(&super::gated_activation(x, Some(act))?),
             #[cfg(feature = "experimental-fp8")]
-            Self::Fp8(linear) => {
-                if matches!(act, super::HiddenAct::Silu) {
+            Self::Fp8 {
+                linear,
+                bias,
+                act: output_act,
+            } => {
+                if matches!(act, super::HiddenAct::Silu) && bias.is_none() && output_act.is_none() {
                     if let Some(y) =
                         with_fp8_executor(x, |executor| linear.forward_packed_swiglu(x, executor))?
                     {
@@ -41,7 +62,7 @@ impl MlpLinear {
                     }
                 }
                 let activated = super::gated_activation(x, Some(act))?;
-                with_fp8_executor(&activated, |executor| linear.forward(&activated, executor))
+                self.forward(&activated)
             }
         }
     }
@@ -50,7 +71,17 @@ impl MlpLinear {
         match self {
             Self::Dense(linear) => linear.forward(x),
             #[cfg(feature = "experimental-fp8")]
-            Self::Fp8(linear) => with_fp8_executor(x, |executor| linear.forward(x, executor)),
+            Self::Fp8 { linear, bias, act } => {
+                let y = with_fp8_executor(x, |executor| linear.forward(x, executor))?;
+                let y = match bias {
+                    Some(bias) => y.broadcast_add(bias)?,
+                    None => y,
+                };
+                match act {
+                    Some(act) => act.forward(&y),
+                    None => Ok(y),
+                }
+            }
         }
     }
 }
@@ -80,6 +111,74 @@ fn with_fp8_executor<T>(
 mod tests {
     use super::*;
     use candle::{DType, Device};
+
+    #[test]
+    #[ignore = "requires a Hopper GPU"]
+    fn fp8_bias_activation_matches_dense_mlp() -> Result<()> {
+        use super::super::HiddenAct;
+        let device = Device::new_cuda(0)?;
+        // Rectangular projections and odd token counts exercise encoder MLP
+        // expansion/contraction and the dynamic activation scaling tail.
+        for dtype in [DType::F16, DType::BF16] {
+            for (input, output) in [(128, 256), (256, 128)] {
+                // Deterministic broad-spectrum inputs avoid measuring relative
+                // error against an almost-zero, cancelling sinusoidal product.
+                let mut seed = 42u32;
+                let mut samples = |count: usize, scale: f32| -> Vec<f32> {
+                    (0..count)
+                        .map(|_| {
+                            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                            ((seed >> 8) as f32 / 16777216. * 2. - 1.) * scale
+                        })
+                        .collect()
+                };
+                let weight =
+                    Tensor::from_vec(samples(input * output, 0.05), (output, input), &device)?
+                        .to_dtype(dtype)?;
+                let bias = Tensor::arange(0f32, output as f32, &device)?
+                    .cos()?
+                    .affine(0.1, 0.)?
+                    .to_dtype(dtype)?;
+                for act in [None, Some(HiddenAct::Gelu), Some(HiddenAct::Relu)] {
+                    let dense = Linear::new(weight.clone(), Some(bias.clone()), act.clone());
+                    let disabled = MlpLinear::with_bias_activation(
+                        weight.clone(),
+                        Some(bias.clone()),
+                        act.clone(),
+                        false,
+                    )?;
+                    let fp8 = MlpLinear::with_bias_activation(
+                        weight.clone(),
+                        Some(bias.clone()),
+                        act.clone(),
+                        true,
+                    )?;
+                    for rows in [1, 13, 129] {
+                        let x =
+                            Tensor::from_vec(samples(rows * input, 1.), (rows, input), &device)?
+                                .to_dtype(dtype)?;
+                        let values =
+                            |t: Tensor| t.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>();
+                        let expected = values(dense.forward(&x)?)?;
+                        assert_eq!(values(disabled.forward(&x)?)?, expected);
+                        let actual = values(fp8.forward(&x)?)?;
+                        assert!(actual.iter().all(|v| v.is_finite()));
+                        let error: f32 = actual
+                            .iter()
+                            .zip(&expected)
+                            .map(|(a, b)| (a - b).powi(2))
+                            .sum();
+                        let energy: f32 = expected.iter().map(|v| v * v).sum();
+                        assert!(
+                            (error / energy.max(1e-12)).sqrt() < 0.08,
+                            "FP8 MLP error: {dtype:?}, {input}->{output}, rows={rows}, act={act:?}, relative_rmse={}", (error/energy.max(1e-12)).sqrt()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires a CUDA device"]

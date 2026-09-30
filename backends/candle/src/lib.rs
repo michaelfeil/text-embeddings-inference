@@ -266,13 +266,20 @@ impl CandleBackend {
         }
 
         if model_type == ModelType::Decision && model_path.join("rl_agent_config.json").exists() {
-            if enable_fp8_dynamic {
+            #[cfg(feature = "cuda")]
+            if enable_fp8_dynamic
+                && (!cfg!(feature = "flash-attn")
+                    || !matches!(dtype, DType::F16 | DType::BF16)
+                    || !device.is_cuda()
+                    || get_runtime_compute_cap(device_id).unwrap_or(0) != 90)
+            {
                 return Err(BackendError::Start(
-                    "Laya does not support dynamic FP8".into(),
+                    "Laya dynamic FP8 requires flash-attn and float16/bfloat16 on Hopper".into(),
                 ));
             }
-            let (model, _) = LayaModel::from_model_dir(model_path, dtype, &device)
-                .map_err(|e| BackendError::Start(format!("{e:#}")))?;
+            let (model, _) =
+                LayaModel::from_model_dir(model_path, dtype, &device, enable_fp8_dynamic)
+                    .map_err(|e| BackendError::Start(format!("{e:#}")))?;
             return Ok(Self {
                 device,
                 model: Box::new(model),
@@ -306,14 +313,22 @@ impl CandleBackend {
                 || !device.is_cuda()
                 || !matches!(
                     &config,
-                    Config::Qwen2(_) | Config::Qwen3(_) | Config::Llama(_) | Config::Mistral(_)
+                    Config::Qwen2(_)
+                        | Config::Qwen3(_)
+                        | Config::Llama(_)
+                        | Config::Mistral(_)
+                        | Config::Bert(BertConfigWrapper::Bert(_))
+                        | Config::Roberta(_)
+                        | Config::XlmRoberta(_)
+                        | Config::Camembert(_)
+                        | Config::ModernBert(_)
                 )
-                || !cfg!(any(feature = "flash-attn", feature = "flash-attn-v1"))
+                || !cfg!(feature = "flash-attn")
                 || !std::env::var("USE_FLASH_ATTENTION")
                     .unwrap_or("true".into())
                     .eq_ignore_ascii_case("true")
             {
-                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, flash attention and Qwen2/Qwen3/Llama/Mistral".into()));
+                return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, the flash-attn feature and a supported dense MLP model (Qwen2/Qwen3/Llama/Mistral/BERT/RoBERTa/ModernBERT)".into()));
             }
             #[cfg(feature = "cuda")]
             if get_runtime_compute_cap(device_id).unwrap_or(0) != 90 {
@@ -367,9 +382,9 @@ impl CandleBackend {
                 models::DebertaModel::load(vb, &config, model_type).s()?,
             )),
             Config::Bert(config) => match config {
-                BertConfigWrapper::Bert(config) => {
-                    Ok(Box::new(FlashBertModel::load(vb, &config, model_type).s()?))
-                }
+                BertConfigWrapper::Bert(config) => Ok(Box::new(
+                    FlashBertModel::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
+                )),
                 BertConfigWrapper::JinaBert(config) => Ok(Box::new(
                     FlashJinaBertModel::load(vb, &config, model_type).s()?,
                 )),
@@ -377,15 +392,18 @@ impl CandleBackend {
                     FlashJinaCodeBertModel::load(vb, &config, model_type).s()?,
                 )),
             },
-            Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config) => Ok(
-                Box::new(FlashBertModel::load_roberta(vb, &config, model_type).s()?),
-            ),
+            Config::Camembert(config) | Config::Roberta(config) | Config::XlmRoberta(config) => {
+                Ok(Box::new(
+                    FlashBertModel::load_roberta(vb, &config, model_type, enable_fp8_dynamic)
+                        .s()?,
+                ))
+            }
             Config::DistilBert(config) => Ok(Box::new(
                 FlashDistilBertModel::load(vb, &config, model_type).s()?,
             )),
             Config::Gte(config) => Ok(Box::new(FlashGTEModel::load(vb, &config, model_type).s()?)),
             Config::ModernBert(config) => Ok(Box::new(
-                FlashModernBertModel::load(vb, &config, model_type).s()?,
+                FlashModernBertModel::load(vb, &config, model_type, enable_fp8_dynamic).s()?,
             )),
             Config::NomicBert(config) => Ok(Box::new(
                 FlashNomicBertModel::load(vb, &config, model_type).s()?,

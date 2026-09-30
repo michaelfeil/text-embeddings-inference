@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::layers::{HiddenAct, LayerNormNoBias, Linear};
+use crate::layers::{HiddenAct, LayerNormNoBias, Linear, MlpLinear};
 use candle::{Module, Result, Tensor, D};
 use candle_nn::{Embedding, VarBuilder};
 use serde::Deserialize;
@@ -103,26 +103,30 @@ impl ModernBertEmbeddings {
 }
 
 pub struct ModernBertMLP {
-    wi: Linear,
-    wo: Linear,
+    wi: MlpLinear,
+    wo: MlpLinear,
     activation: ModernBertActivation,
     span: tracing::Span,
 }
 
 impl ModernBertMLP {
-    pub fn load(vb: VarBuilder, config: &ModernBertConfig) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &ModernBertConfig,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         let wi_weight = vb
             .pp("Wi")
             .get((config.intermediate_size * 2, config.hidden_size), "weight")?;
         let wi_bias = vb.pp("Wi").get(config.intermediate_size * 2, "bias").ok();
-        let wi = Linear::new(wi_weight, wi_bias, None);
+        let wi = MlpLinear::with_bias_activation(wi_weight, wi_bias, None, enable_fp8_dynamic)?;
 
         let wo_weight = vb
             .pp("Wo")
             .get((config.hidden_size, config.intermediate_size), "weight")?;
         let wo_bias = vb.pp("Wo").get(config.hidden_size, "bias").ok();
 
-        let wo = Linear::new(wo_weight, wo_bias, None);
+        let wo = MlpLinear::with_bias_activation(wo_weight, wo_bias, None, enable_fp8_dynamic)?;
 
         let activation = config.hidden_activation;
 
@@ -238,12 +242,18 @@ mod tests {
     fn check_approximate_gelu(device: &Device) -> Result<()> {
         // Wi yields [x, 1], so the complete gated MLP evaluates GELU(x).
         let mlp = ModernBertMLP {
-            wi: Linear::new(
+            wi: MlpLinear::with_bias_activation(
                 Tensor::from_slice(&[1f32, 0., 0., 1., 0., 0., 0., 0.], (4, 2), device)?,
                 Some(Tensor::from_slice(&[0f32, 0., 1., 1.], 4, device)?),
                 None,
-            ),
-            wo: Linear::new(Tensor::eye(2, DType::F32, device)?, None, None),
+                false,
+            )?,
+            wo: MlpLinear::with_bias_activation(
+                Tensor::eye(2, DType::F32, device)?,
+                None,
+                None,
+                false,
+            )?,
             activation: serde_json::from_str("\"gelu\"").unwrap(),
             span: tracing::span!(tracing::Level::TRACE, "test_mlp"),
         };
