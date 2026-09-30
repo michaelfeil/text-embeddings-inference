@@ -342,11 +342,14 @@ impl CandleBackend {
             && matches!(
                 &config,
                 Config::Qwen2(_) | Config::Qwen3(_) | Config::Llama(_)
-            );
+            )
+            && models::SequenceClassifier::supports(&config_json).s()?;
         let classifier_vb = sequence_classifier.then(|| vb.clone());
         let model_type = if sequence_classifier {
             if let Config::Qwen3(config) = &config {
-                if config.use_linear_output_projection {
+                if config.use_linear_output_projection
+                    || (config.use_bidirectional_attention && vb.contains_tensor("linear.weight"))
+                {
                     return Err(BackendError::Start("Sequence classifiers require score.weight, not an embedding output projection".into()));
                 }
             }
