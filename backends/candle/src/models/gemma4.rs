@@ -907,7 +907,12 @@ impl Gemma4Model {
             }
             ModelType::Embedding(pool) => Gemma4Output::Embedding(pool),
             ModelType::Classifier => {
-                let num_labels = config.num_labels.unwrap_or(config.id2label.len());
+                // Match the router and HF defaults when label metadata is omitted.
+                let num_labels = if config.id2label.is_empty() {
+                    config.num_labels.unwrap_or(2)
+                } else {
+                    config.id2label.len()
+                };
                 if num_labels == 0 {
                     candle::bail!("Gemma4 classifier config does not define any labels")
                 }
@@ -1042,11 +1047,8 @@ impl Gemma4Model {
                 .map(|bounds| bounds[1] - 1)
                 .collect();
             let indices = Tensor::from_vec(indices, batch.len(), &self.device)?;
-            let logits = score.forward(&index_select(&states, &indices, 0)?)?;
-            match self.final_logit_softcapping {
-                Some(cap) => (logits / cap)?.tanh()? * cap,
-                None => Ok(logits),
-            }
+            // final_logit_softcapping belongs to the LM head, not the classifier.
+            score.forward(&index_select(&states, &indices, 0)?)
         }
         #[cfg(not(feature = "flash-attn"))]
         {
