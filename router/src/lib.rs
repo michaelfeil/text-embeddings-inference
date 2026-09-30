@@ -336,7 +336,7 @@ pub async fn run(
     } else {
         None
     };
-    let tokenization = Tokenization::new_with_chat(
+    let tokenization = Tokenization::new(
         tokenization_workers,
         tokenizer,
         max_input_length,

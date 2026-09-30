@@ -160,15 +160,8 @@ mod tests {
                 &json!({"bos_token":"<s>", "eos_token":{"content":"</s>"}}),
             ).unwrap();
             let ordinary = hf.encode("prefix hello", true).unwrap().get_ids().to_vec();
-            let workers = Tokenization::new_with_chat(
-                1,
-                hf,
-                128,
-                0,
-                Some("prefix ".into()),
-                None,
-                Some(processor),
-            );
+            let workers =
+                Tokenization::new(1, hf, 128, 0, Some("prefix ".into()), None, Some(processor));
             tokio::runtime::Runtime::new().unwrap().block_on(async {
                 let messages = || {
                     EncodingInput::Messages(

@@ -35,26 +35,6 @@ impl Tokenization {
         position_offset: usize,
         default_prompt: Option<String>,
         prompts: Option<HashMap<String, String>>,
-    ) -> Self {
-        Self::new_with_chat(
-            workers,
-            tokenizer,
-            max_input_length,
-            position_offset,
-            default_prompt,
-            prompts,
-            None,
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_with_chat(
-        workers: usize,
-        tokenizer: Tokenizer,
-        max_input_length: usize,
-        position_offset: usize,
-        default_prompt: Option<String>,
-        prompts: Option<HashMap<String, String>>,
         chat: Option<crate::chat::ChatProcessor>,
     ) -> Self {
         let chat = chat.map(Arc::new);
@@ -369,7 +349,7 @@ fn tokenize_input(
     } else {
         add_special_tokens
     };
-    let input_chars = inputs.count_chars();
+    let mut input_chars = inputs.count_chars();
     if let EncodingInput::Messages(messages) = inputs {
         let processor = chat.ok_or_else(|| TextEmbeddingsError::Tokenizer(
             "The loaded model has no conversation processor; provide a string or a list of strings".into()
@@ -390,13 +370,12 @@ fn tokenize_input(
                 .render(messages)
                 .map_err(|e| TextEmbeddingsError::Tokenizer(e.into()))?,
         );
+        input_chars = inputs.count_chars();
     }
     // The native template owns instructions and special tokens for conversations.
     let default_prompt = if conversation { None } else { default_prompt };
 
     let pre_prompt = prepare_pre_prompt(default_prompt, prompt_name, prompts)?;
-
-    let input_chars = inputs.count_chars();
     let limit = max_input_length * MAX_CHAR_MULTIPLIER;
     if input_chars > limit {
         if conversation || truncate_params.is_none() {
@@ -863,6 +842,7 @@ mod fast_embedding_tests {
             2,
             Some("default: ".into()),
             Some(HashMap::from([("query".into(), "query: ".into())])),
+            None,
         );
         tokio::runtime::Runtime::new().unwrap().block_on(async {
             for direction in [TruncationDirection::Left, TruncationDirection::Right] {
@@ -932,6 +912,7 @@ mod fast_embedding_tests {
             crate::fast_tokenization::test_tokenizer(),
             256,
             0,
+            None,
             None,
             None,
         );

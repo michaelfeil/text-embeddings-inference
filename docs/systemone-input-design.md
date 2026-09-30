@@ -70,30 +70,13 @@ Removing numeric token-ID arrays is a breaking HTTP embedding API change, includ
 on `/v1/embeddings`; clients must send text. `/decode` retains its token-ID input.
 The decision API continues to use `state: {"messages": [...]}`.
 
-An embedding conversation can contain ordered text and image parts:
-
-```json
-{
-  "inputs": [
-    {
-      "role": "user",
-      "content": [
-        {"type": "text", "text": "Describe this picture."},
-        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
-      ]
-    }
-  ]
-}
-```
-
 **Current capability:** text-only user/assistant conversations use the checkpoint's
 native chat template through fastokens. Template compilation happens once at
 startup and rendering runs in the bounded tokenizer workers, including when token
 encoding falls back to Hugging Face. Ordered text parts are concatenated within
 each message. Message order and roles are preserved. System/developer roles,
 images, audio, and video return 422 before rendering, so templates cannot silently
-drop unsupported content. The image example above describes the future processor
-contract and currently returns 422.
+drop unsupported content.
 
 The server loads `chat_template.jinja` or the single/default `chat_template` in
 `tokenizer_config.json`, using the model revision. A missing/invalid template
@@ -110,20 +93,6 @@ rendered character limits also reject rather than cutting template markers. Toke
 truncation still follows the existing explicit/default truncation configuration.
 Plain strings and string batches retain their existing prompt and tokenization
 behavior. This change performs no image inference or remote media downloads.
-
-Template validation uses the Qwen3-VL-Embedding-2B tokenizer/template at revision
-`9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda`: single-turn and multi-turn text cases
-match Transformers exactly in rendered text and all 20/36 token IDs with
-`add_generation_prompt=false`. Worker tests also cover fast BPE and WordPiece
-fallback with no duplicate special tokens. These checks establish formatting and
-tokenization parity; they do not establish embedding quality or image inference.
-
-Remote image resolution belongs before final tokenization and queue admission of
-prepared inputs. A follow-on implementation must enforce configured HTTPS storage
-host/bucket allowlists, destination IP checks, byte/pixel/time limits, and redaction
-of signed URL queries. Decoding, template rendering, visual token expansion, and
-positions belong to the model processor. No remote URL is fetched by deserialization
-or by the current text processor.
 
 ## Semantics
 
