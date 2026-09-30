@@ -87,7 +87,12 @@ impl Gemma4ImageProcessor {
         for source in sources {
             resolved.push(self.resolver.resolve(source).await?);
         }
-        let worker = self.workers.clone().try_acquire_owned()?;
+        let worker = self
+            .workers
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| invalid("Image processing workers closed"))?;
         let processor = self.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         tokio::task::spawn_blocking(move || {
@@ -183,4 +188,95 @@ fn dimensions(w: u32, h: u32, max_soft_tokens: usize) -> Result<(u32, u32)> {
         rh = ((h / w) * 48).min(max_soft_tokens as u32 * 48);
     }
     Ok((rw, rh))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use sha2::{Digest, Sha256};
+
+    #[tokio::test]
+    async fn patches_match_transformers_reference() {
+        let config = MultimodalConfig::default();
+        let budget = MediaBudget::new(config.memory_budget_bytes).unwrap();
+        let resolver = MediaResolver::new(
+            vec![],
+            budget.clone(),
+            config.max_image_bytes,
+            config.download_concurrency,
+            config.timeout,
+        )
+        .unwrap();
+        let processor = Gemma4ImageProcessor {
+            resolver,
+            budget,
+            workers: Arc::new(Semaphore::new(2)),
+            config,
+            max_soft_tokens: 280,
+        };
+        // Transformers 5.17.0 / Torchvision 0.26.0: SHA256 of unpadded HWC
+        // float32 patches after bicubic resize and rescaling, little endian.
+        for (w, h, gw, gh, expected) in [
+            (
+                17,
+                23,
+                42,
+                57,
+                "6a6c6af34301fdaec94acaba92cc018a14344f72a3ef9c2cea3433cb92fa8cba",
+            ),
+            (
+                173,
+                95,
+                66,
+                36,
+                "a59eeb502ea11cb6918d452c4086cda5c174fa884cb41ae437079e1eab1faa81",
+            ),
+            (
+                1503,
+                1101,
+                57,
+                42,
+                "783d198017f1cb5d721a6daa19e94c6d55f6254e6b3e262e68e6ff07d56e331f",
+            ),
+            (
+                1,
+                1000,
+                3,
+                840,
+                "4fbf09c223f203966d8037045f79424ea2b01d733d7c7824f97f99e39363d1bf",
+            ),
+            (
+                1000,
+                1,
+                840,
+                3,
+                "cd7d53a42178bc29b87c8927528360885e3ad2909b2054ebf4ef7eb597007d93",
+            ),
+        ] {
+            let source = image::RgbImage::from_fn(w, h, |x, y| {
+                image::Rgb([
+                    ((x * 17 + y * 3) % 256) as u8,
+                    ((x * 5 + y * 29) % 256) as u8,
+                    (((x ^ y) * 23) % 256) as u8,
+                ])
+            });
+            let mut bytes = std::io::Cursor::new(Vec::new());
+            source
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            let url = format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(bytes.into_inner())
+            );
+            let prepared = processor.prepare(vec![url]).await.unwrap();
+            let image = &prepared.images[0];
+            assert_eq!(image.grid_thw, [1, gh, gw]);
+            let mut hash = Sha256::new();
+            for pixel in &image.pixels {
+                hash.update(pixel.to_le_bytes());
+            }
+            assert_eq!(format!("{:x}", hash.finalize()), expected, "{w}x{h}");
+        }
+    }
 }

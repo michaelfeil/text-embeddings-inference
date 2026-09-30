@@ -61,6 +61,16 @@ impl Rune {
         path: &Path,
         config: text_embeddings_core::multimodal::MultimodalConfig,
     ) -> anyhow::Result<Self> {
+        let model: Value = serde_json::from_slice(&std::fs::read(path.join("config.json"))?)?;
+        if !model["vision_config"].is_object()
+            || model["text_config"]["use_bidirectional_attention"] != "vision"
+            || model["text_config"]["hidden_size_per_layer_input"]
+                .as_u64()
+                .unwrap_or(0)
+                != 0
+        {
+            return Ok(self);
+        }
         self.images = Some(
             text_embeddings_core::multimodal::Gemma4ImageProcessor::load(path, config)
                 .map_err(|e| anyhow::anyhow!(e.to_string()))?,
@@ -68,18 +78,11 @@ impl Rune {
         Ok(self)
     }
 
-    pub(super) async fn prepare_images(
-        &self,
-        request: &mut SystemOneRequest,
-    ) -> Result<
-        Option<text_embeddings_core::multimodal::PreparedGemmaImages>,
-        text_embeddings_core::TextEmbeddingsError,
-    > {
+    pub(super) fn image_sources(request: &mut SystemOneRequest) -> Result<Vec<String>, String> {
         use text_embeddings_core::input::{ContentPart, ImageDetail, MessageContent, MessageRole};
-        let invalid =
-            |value: &str| text_embeddings_core::TextEmbeddingsError::Validation(value.into());
+        let invalid = |value: &str| value.to_owned();
         let ModelInput::Messages(state) = &mut request.state else {
-            return Ok(None);
+            return Ok(vec![]);
         };
         if state.messages.is_empty() {
             return Err(invalid("State messages must not be empty"));
@@ -109,16 +112,22 @@ impl Rune {
                 }
             }
         }
-        // Validate questions and text budget before fetching any image.
-        self.prepare(request.clone()).map_err(|e| invalid(&e))?;
-        if sources.is_empty() {
-            return Ok(None);
-        }
-        let processor = self
-            .images
-            .as_ref()
-            .ok_or_else(|| invalid("Rune image processor unavailable"))?;
-        processor.prepare(sources).await.map(Some)
+        Ok(sources)
+    }
+
+    pub(super) async fn prepare_images(
+        &self,
+        sources: Vec<String>,
+    ) -> Result<
+        text_embeddings_core::multimodal::PreparedGemmaImages,
+        text_embeddings_core::TextEmbeddingsError,
+    > {
+        let processor = self.images.as_ref().ok_or_else(|| {
+            text_embeddings_core::TextEmbeddingsError::Validation(
+                "Rune image processor unavailable".into(),
+            )
+        })?;
+        processor.prepare(sources).await
     }
 
     pub(super) fn attach_images(
@@ -186,24 +195,24 @@ impl Rune {
     }
 
     pub(super) fn prepare(&self, request: SystemOneRequest) -> Result<Vec<Question>, String> {
-        let state_json = match request.state {
-            ModelInput::Text(state) => serde_json::to_string(&state),
-            ModelInput::Messages(state) => serde_json::to_string(&state),
-        }
-        .map_err(|e| e.to_string())?;
-        if ["<|image|>", "<|image>", "<image|>"]
-            .iter()
-            .any(|token| state_json.contains(token))
-        {
-            return Err("State must not contain reserved image tokens".into());
-        }
+        let (state_json, state_chars) = match request.state {
+            ModelInput::Text(state) => (
+                serde_json::to_string(&state).map_err(|e| e.to_string())?,
+                state.chars().count(),
+            ),
+            ModelInput::Messages(state) => {
+                let json = serde_json::to_string(&state).map_err(|e| e.to_string())?;
+                let chars = json.chars().count();
+                (json, chars)
+            }
+        };
         if request.head_max_len.is_some() {
             return Err("head_max_len is specific to Laya".into());
         }
         if request.questions.is_empty() || request.questions.len() > 64 {
             return Err("Rune requires between 1 and 64 questions".into());
         }
-        if state_json.chars().count() > 50_000 {
+        if state_chars > 50_000 {
             return Err("State exceeds 50000 characters".into());
         }
         let limit = request
@@ -248,6 +257,9 @@ impl Rune {
             let system = SYSTEM.replace("option letter", &format!("option {word}"));
             let options = self.codes.iter().zip(&descriptions).map(|(code, description)| format!("{code}: {description}")).collect::<Vec<_>>().join("\n");
             let prompt = format!("<bos><|turn>system\n{system}<turn|>\n<|turn>user\nSHARED STATE (JSON string):\n{state_json}\n\nQUESTION:\n{instructions}\nOPTIONS:\n{options}\nAnswer with one option {word} only.<turn|>\n<|turn>model\n<|channel>thought\n<channel|>");
+            if ["<|image|>", "<|image>", "<image|>"].iter().any(|token| prompt.contains(token)) {
+                return Err("State and questions must not contain reserved image tokens".into());
+            }
             let ids = self.encode(&prompt)?;
             if ids.is_empty() || ids.len() > limit { return Err(format!("Rune prompt has {} tokens, exceeding max_len {limit}; prompts are never truncated", ids.len())); }
             let token_ids = self.codes[..n].iter().map(|code| {
@@ -389,6 +401,52 @@ mod tests {
     }
 
     #[test]
+    fn image_sources_preserve_order_and_reject_unsupported_content() {
+        let request = |content: Value, role: &str| {
+            serde_json::from_value::<SystemOneRequest>(json!({
+                "state":{"messages":[{"role":role,"content":content}]}, "questions":{}
+            }))
+            .unwrap()
+        };
+        let mut valid = request(
+            json!([
+                {"type":"text","text":"Compare these."},
+                {"type":"image_url","image_url":{"url":"https://example.test/first?secret=1"}},
+                {"type":"image_url","image_url":{"url":"data:image/png;base64,AAAA"}}
+            ]),
+            "user",
+        );
+        let sources = Rune::image_sources(&mut valid).unwrap();
+        assert_eq!(
+            sources,
+            [
+                "https://example.test/first?secret=1",
+                "data:image/png;base64,AAAA"
+            ]
+        );
+        let serialized = serde_json::to_string(&valid.state).unwrap();
+        assert!(serialized.contains("[image 1]") && serialized.contains("[image 2]"));
+        assert!(!serialized.contains("secret") && !serialized.contains("base64"));
+        for (content, role) in [
+            (json!("text"), "system"),
+            (
+                json!([{"type":"image_url","image_url":{"url":"x"}}]),
+                "assistant",
+            ),
+            (
+                json!([{"type":"image_url","image_url":{"url":"x","detail":"high"}}]),
+                "user",
+            ),
+            (
+                json!([{"type":"video_url","video_url":{"url":"x"}}]),
+                "user",
+            ),
+        ] {
+            assert!(Rune::image_sources(&mut request(content, role)).is_err());
+        }
+    }
+
+    #[test]
     fn checkpoint_prompt_fixture() -> anyhow::Result<()> {
         let Ok(path) = std::env::var("RUNE_CHECKPOINT_DIR") else {
             return Ok(());
@@ -415,14 +473,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(prepared[1].labels, ["false", "true"]);
-        for unsupported in [
-            json!({"messages":[{"role":"user","content":"hello"}]}),
-            json!({"messages":[{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.invalid/image"}}]}]}),
-        ] {
-            let mut invalid = request.clone();
-            invalid["state"] = unsupported;
-            assert!(service.prepare(serde_json::from_value(invalid)?).is_err());
-        }
+        let mut native: SystemOneRequest = serde_json::from_value(request.clone())?;
+        native.state =
+            serde_json::from_value(json!({"messages":[{"role":"user","content":"hello"}]}))?;
+        assert!(Rune::image_sources(&mut native).unwrap().is_empty());
+        assert!(service.prepare(native).is_ok());
         let extended = json!({"state":"Select an option.", "questions":{"extended":{
             "type":"choice", "instructions":"Pick option 29.",
             "criteria":(0..30).map(|i| (format!("k{i}"), json!(format!("Option {i}")))).collect::<Map<_,_>>()

@@ -81,6 +81,8 @@ pub struct Gemma4TextConfig {
     pub sliding_window: usize,
     #[serde(default)]
     pub use_double_wide_mlp: bool,
+    #[serde(default)]
+    pub use_bidirectional_attention: Option<String>,
     #[serde(default = "default_vocab_size")]
     pub vocab_size: usize,
     #[serde(default = "default_vocab_size")]
@@ -767,8 +769,15 @@ impl Gemma4Model {
             .iter()
             .flatten()
             .any(|media| !media.images.is_empty());
-        if has_images && batch.compact_input_ids.is_some() {
-            candle::bail!("Image inputs cannot use token-only Radix folding");
+        if has_images
+            && batch.compact_input_ids.is_some()
+            && !text_embeddings_backend_core::MultimodalEncoding::allows_radix(
+                &batch.multimodal,
+                &batch.input_ids,
+                &batch.cumulative_seq_lengths,
+            )
+        {
+            candle::bail!("Radix image folding requires identical images and image prefixes");
         }
         // Compute PLE from text embeddings before replacing vision slots.
 
@@ -780,10 +789,19 @@ impl Gemma4Model {
             None => None,
         };
         let image_spans = if has_images {
-            self.vision
+            let mut full_embeddings = if batch.compact_input_ids.is_some() {
+                let ids = Tensor::new(batch.input_ids.as_slice(), &self.device)?;
+                (self.embeddings.forward(&ids)? * self.embedding_scale)?
+            } else {
+                embeddings.clone()
+            };
+            let spans = self
+                .vision
                 .as_ref()
                 .ok_or_else(|| candle::Error::Msg("Gemma4 vision weights unavailable".into()))?
-                .inject(batch, &mut embeddings)?
+                .inject(batch, &mut full_embeddings)?;
+            embeddings = compact.fold_gather(&full_embeddings)?;
+            spans
         } else {
             vec![]
         };
@@ -849,7 +867,10 @@ impl Gemma4Model {
         }
 
         #[cfg(feature = "flash-attn")]
-        let vision = if model_type == ModelType::Decision {
+        let vision = if model_type == ModelType::Decision
+            && text.use_bidirectional_attention.as_deref() == Some("vision")
+            && text.hidden_size_per_layer_input == 0
+        {
             config
                 .vision_config
                 .as_ref()

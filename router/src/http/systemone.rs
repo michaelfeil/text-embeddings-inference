@@ -17,7 +17,7 @@ use text_embeddings_core::input::ModelInput;
 use text_embeddings_core::{infer::Infer, tokenization::ValidEncoding};
 use tokenizers::Tokenizer;
 
-#[derive(Debug, Clone, Deserialize, utoipa::ToSchema)]
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SystemOneRequest {
     pub state: ModelInput,
@@ -568,30 +568,36 @@ pub async fn systemone(
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
     metrics::counter!("te_systemone_count").increment(1);
     let start = Instant::now();
-    let images = if let SystemOne::Rune(model) = service.as_ref() {
-        model.prepare_images(&mut request).await.map_err(|e| {
-            let status = if matches!(e, text_embeddings_core::TextEmbeddingsError::Overloaded(_)) {
-                StatusCode::TOO_MANY_REQUESTS
-            } else {
-                StatusCode::UNPROCESSABLE_ENTITY
-            };
-            error(status, e)
-        })?
-    } else {
-        None
-    };
+    // Validate and tokenize questions before fetching media, off the async executor.
     let worker = service.clone();
-    let questions = tokio::task::spawn_blocking(move || {
+    let (mut questions, sources, max_len) = tokio::task::spawn_blocking(move || {
+        let sources = if matches!(worker.as_ref(), SystemOne::Rune(_)) {
+            rune::Rune::image_sources(&mut request)?
+        } else {
+            vec![]
+        };
         let max_len = request.max_len;
-        let mut questions = worker.prepare(request)?;
-        if let (SystemOne::Rune(model), Some(images)) = (worker.as_ref(), images) {
-            model.attach_images(&mut questions, images, max_len)?;
-        }
-        Ok::<_, String>(questions)
+        Ok::<_, String>((worker.prepare(request)?, sources, max_len))
     })
     .await
     .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
     .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    if let SystemOne::Rune(model) = service.as_ref() {
+        if !sources.is_empty() {
+            let images = model.prepare_images(sources).await.map_err(|e| {
+                let status =
+                    if matches!(e, text_embeddings_core::TextEmbeddingsError::Overloaded(_)) {
+                        StatusCode::TOO_MANY_REQUESTS
+                    } else {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    };
+                error(status, e)
+            })?;
+            model
+                .attach_images(&mut questions, images, max_len)
+                .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        }
+    }
     let tokenization = start.elapsed();
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();
     let input_tokens: usize = questions.iter().map(|q| q.encoding.input_ids.len()).sum();

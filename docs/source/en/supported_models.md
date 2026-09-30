@@ -168,3 +168,13 @@ Remote images require exact HTTPS hostnames configured with `--image-allowed-hos
 inline base64 PNG/JPEG/WebP is also accepted. See the repository README for a complete
 request and resource limits. JPEG decoding can differ from Pillow/libjpeg and is
 not pixel-identical. Qwen3-VL currently disables RadixMLP and rejects BF16.
+
+### Rune image decisions
+
+`michaelfeil/rune-26b-a4b` accepts text and user images through `/v1/systemone` in a
+Candle CUDA/FlashAttention deployment (`--decision-protocol rune --dtype bfloat16`).
+Use `state: {"messages": [...]}` with ordered text and `image_url` parts. Multiple
+questions share preprocessing and, when their complete image prefixes match,
+RadixMLP work. Images use the checkpoint's processor and the same media limits and
+exact-host allowlist as Qwen3-VL. See the README's Rune example for deployment and
+request details. Audio and video are not supported.
