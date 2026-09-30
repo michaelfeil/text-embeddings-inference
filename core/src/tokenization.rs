@@ -335,6 +335,15 @@ fn tokenize_input(
     tokenizer: &mut Tokenizer,
     fast_tokenizer: Option<&crate::fast_tokenization::FastTokenizer>,
 ) -> Result<(Option<String>, RawEncoding), TextEmbeddingsError> {
+    // A model processor must render conversations and resolve media before tokenization.
+    // Never flatten messages or tokenize image URLs as if they were plain text.
+    if matches!(&inputs, EncodingInput::Messages(_)) {
+        return Err(TextEmbeddingsError::Tokenizer(
+            "The loaded model has no conversation processor; provide a string or a list of strings"
+                .into(),
+        ));
+    }
+
     let pre_prompt = prepare_pre_prompt(default_prompt, prompt_name, prompts)?;
 
     let input_chars = inputs.count_chars();
@@ -349,6 +358,7 @@ fn tokenize_input(
     }
 
     let encoding = match inputs {
+        EncodingInput::Messages(_) => unreachable!("messages rejected before text tokenization"),
         // encode input
         EncodingInput::Single(s) => {
             let s = if let Some(mut pre_prompt) = pre_prompt {
@@ -490,6 +500,7 @@ pub enum EncodingInput {
     Single(String),
     Dual(String, String),
     Ids(Vec<u32>),
+    Messages(Vec<crate::input::Message>),
 }
 
 impl EncodingInput {
@@ -498,14 +509,31 @@ impl EncodingInput {
             EncodingInput::Single(s) => s.is_empty(),
             EncodingInput::Dual(s1, s2) => s1.is_empty() && s2.is_empty(),
             EncodingInput::Ids(v) => v.is_empty(),
+            EncodingInput::Messages(messages) => messages.is_empty(),
         }
     }
 
-    fn count_chars(&self) -> usize {
+    pub fn count_chars(&self) -> usize {
         match self {
             EncodingInput::Single(s) => s.chars().count(),
             EncodingInput::Dual(s1, s2) => s1.chars().count() + s2.chars().count(),
             EncodingInput::Ids(v) => v.len(),
+            EncodingInput::Messages(messages) => messages
+                .iter()
+                .map(|message| {
+                    use crate::input::{ContentPart, MessageContent};
+                    match &message.content {
+                        MessageContent::Text(text) => text.chars().count(),
+                        MessageContent::Parts(parts) => parts
+                            .iter()
+                            .map(|part| match part {
+                                ContentPart::Text { text } => text.chars().count(),
+                                _ => 0,
+                            })
+                            .sum(),
+                    }
+                })
+                .sum(),
         }
     }
 
@@ -524,7 +552,8 @@ impl EncodingInput {
                 truncate_string(s1, limit / 2);
                 truncate_string(s2, limit / 2);
             }
-            EncodingInput::Ids(_) => {}
+            // Conversation truncation belongs to the model processor; never cut media spans.
+            EncodingInput::Ids(_) | EncodingInput::Messages(_) => {}
         }
     }
 }
@@ -721,6 +750,40 @@ mod tests {
 #[cfg(test)]
 mod fast_embedding_tests {
     use super::*;
+
+    #[test]
+    fn text_processor_rejects_conversations_before_prompting_or_truncation() {
+        use crate::input::{ContentPart, ImageSource, Message, MessageContent, MessageRole};
+        let mut tokenizer = crate::fast_tokenization::test_tokenizer();
+        for content in [
+            MessageContent::Text("A conversation".into()),
+            MessageContent::Parts(vec![ContentPart::ImageUrl {
+                image_url: ImageSource {
+                    url: "https://example.com/image?secret=hidden".into(),
+                    detail: None,
+                },
+            }]),
+        ] {
+            let error = tokenize_input(
+                EncodingInput::Messages(vec![Message {
+                    role: MessageRole::User,
+                    content,
+                }]),
+                true,
+                1,
+                Some(TruncationParams::default()),
+                None,
+                Some("missing".into()),
+                None,
+                &mut tokenizer,
+                None,
+            )
+            .unwrap_err();
+            assert!(matches!(error, TextEmbeddingsError::Tokenizer(_)));
+            assert!(error.to_string().contains("no conversation processor"));
+            assert!(!error.to_string().contains("secret"));
+        }
+    }
 
     #[test]
     fn workers_preserve_prompts_truncation_and_metadata_endpoints() {

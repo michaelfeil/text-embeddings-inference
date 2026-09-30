@@ -42,11 +42,64 @@ This uses the explicit native-chat state envelope from
 only plain text or this envelope; bare arrays and arbitrary objects are rejected.
 There is no second top-level messages field or separate media collection.
 
-The Rust contract is `SystemOneInput::Text(String)` or
-`SystemOneInput::Messages(MessageInput)`. Message content is either a string or
+The shared Rust contract in `text_embeddings_core::input` is
+`ModelInput::Text(String)` or `ModelInput::Messages(MessageInput)`.
+`SystemOneInput` remains a compatibility alias. Message content is either a string or
 ordered `ContentPart` values: Text, ImageUrl, InputAudio, VideoUrl. Initial roles
 are system, developer, user, assistant. Tool messages require a future explicit
 schema for call identifiers and metadata; they are currently rejected.
+
+## Shared embedding API
+
+The embedding endpoints use `EmbeddingInput`, sharing `Message`, `MessageRole`,
+`MessageContent`, and `ContentPart` with the decision API. The outer envelope
+remains endpoint-specific:
+
+| Input | Meaning |
+| --- | --- |
+| `"hello"` | One text input |
+| `["hello", "world"]` | Two independent text inputs |
+| `[{"role":"user","content":"hello"},{"role":"assistant","content":"world"}]` | One conversation input |
+
+Use `inputs` for `/embed`, `/embed_sparse`, and `/embed_all`; use `input` for
+`/v1/embeddings`. `/embed` and `/v1/embeddings` return one embedding per conversation,
+not one per turn. `/embed_all` retains its per-token output format. A batch of
+conversations, mixed string/message arrays, arbitrary objects, and numeric token-ID
+arrays are rejected. An empty array is an empty text batch and returns 400.
+Removing numeric token-ID arrays is a breaking HTTP embedding API change, including
+on `/v1/embeddings`; clients must send text. `/decode` retains its token-ID input.
+The decision API continues to use `state: {"messages": [...]}`.
+
+An embedding conversation can contain ordered text and image parts:
+
+```json
+{
+  "inputs": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "Describe this picture."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+      ]
+    }
+  ]
+}
+```
+
+**Current capability:** this establishes the request contract and preserves the
+conversation until preprocessing. The current embedding text processor returns
+422 for every conversation, including text-only conversations. The example above
+requires a future model processor; this change does not enable image inference or
+remote downloads. Plain strings and string batches keep their existing behavior.
+System/developer roles and audio/video parts remain representable in the shared
+schema, with actual support owned by each model processor.
+
+Remote image resolution belongs before final tokenization and queue admission of
+prepared inputs. A follow-on implementation must enforce configured HTTPS storage
+host/bucket allowlists, destination IP checks, byte/pixel/time limits, and redaction
+of signed URL queries. Decoding, template rendering, visual token expansion, and
+positions belong to the model processor. No remote URL is fetched by deserialization
+or by the current text processor.
 
 ## Semantics
 
