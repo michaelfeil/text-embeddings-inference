@@ -268,12 +268,13 @@ impl CandleBackend {
         if model_type == ModelType::Decision && model_path.join("rl_agent_config.json").exists() {
             #[cfg(feature = "cuda")]
             if enable_fp8_dynamic
-                && (!matches!(dtype, DType::F16 | DType::BF16)
+                && (!cfg!(feature = "flash-attn")
+                    || !matches!(dtype, DType::F16 | DType::BF16)
                     || !device.is_cuda()
                     || get_runtime_compute_cap(device_id).unwrap_or(0) != 90)
             {
                 return Err(BackendError::Start(
-                    "Laya dynamic FP8 requires float16/bfloat16 on Hopper".into(),
+                    "Laya dynamic FP8 requires flash-attn and float16/bfloat16 on Hopper".into(),
                 ));
             }
             let (model, _) =
