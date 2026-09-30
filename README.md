@@ -532,6 +532,42 @@ The controlled FP32 test-set ablation measured 76.70% accuracy with the approxim
 encoder versus 76.60% with the historical exact encoder (2 of 2,000 decisions
 changed). Historical parity/BF16/latency artifacts are labelled accordingly.
 
+### Rune text decisions
+
+The Gemma4 MoE Rune checkpoint uses the same `/v1/systemone` endpoint and queue:
+
+```shell
+text-embeddings-router --model-id michaelfeil/rune-26b-a4b \
+  --revision d9507c3d09de24e948f69aaa53c7bcb4a271effb \
+  --decision-protocol rune --dtype bfloat16 \
+  --max-batch-tokens 8192 --max-client-batch-size 32 \
+  --radix-mlp-threshold 0.92
+```
+
+Requires a Candle CUDA/FlashAttention build and enough GPU memory for the BF16
+26B-A4B weights. The explicit protocol flag selects Rune's trained chat prompt
+and first-output-token LM-head scoring. `state` must be plain text; native
+messages, media, thinking, and Laya's `head_max_len` are rejected. Prompts over
+the configured token budget are rejected, never truncated.
+
+Use the `choice`, `noul`, and `score` question shapes shown above, with string
+instructions/descriptions. Choice criteria are ordered objects (null descriptions
+fall back to their keys); score criteria are ordered arrays. Omitted noul criteria
+default to false/true. Rune supports up to 255 single-token option codes and 512
+options per request. Its temperature is 1. Choice confidence is the peak probability
+rescaled from uniform to certainty; score confidence measures concentration around
+the modal level. Noul returns the probability of true. These confidence semantics
+are model-specific and differ from Laya's calibrated entropy-based answers.
+
+RadixMLP reuses causal shared-prefix projection and MLP/MoE work **within each
+queue batch**; attention still handles the separate sequences. This is not a
+persistent KV cache. `usage.input_tokens` counts full logical prompts, including
+each question's shared text; `output_tokens` is the number of decisions. The
+backend projects only the requested option-token rows, without generating text.
+BF16 batch shapes can change answers: the measured Radix on/off agreement is 98%
+on 2000 labelled decisions. See [verification and latency](docs/rune-verification.md)
+for the numerical limits and reproduction commands.
+
 ### Using SPLADE pooling
 
 You can choose to activate SPLADE pooling for Bert and Distilbert MaskedLM architectures:

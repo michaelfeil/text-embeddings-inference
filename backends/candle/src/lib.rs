@@ -261,7 +261,7 @@ impl CandleBackend {
             ));
         }
 
-        if model_type == ModelType::Decision {
+        if model_type == ModelType::Decision && model_path.join("rl_agent_config.json").exists() {
             if enable_fp8_dynamic {
                 return Err(BackendError::Start(
                     "Laya does not support dynamic FP8".into(),

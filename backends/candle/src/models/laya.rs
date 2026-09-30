@@ -343,13 +343,21 @@ impl super::Model for LayaModel {
         if inputs.len() != batch.len() {
             candle::bail!("Laya metadata count does not match batch")
         }
+        let inputs = inputs
+            .into_iter()
+            .map(|input| match input {
+                text_embeddings_backend_core::DecisionInput::Laya {
+                    question_type,
+                    markers,
+                } => Ok((question_type, markers)),
+                text_embeddings_backend_core::DecisionInput::Warmup => Ok((0, vec![0])),
+                _ => candle::bail!("Laya requires marker decision metadata"),
+            })
+            .collect::<Result<Vec<_>>>()?;
         let lengths = batch.cumulative_seq_lengths.clone();
         for (i, input) in inputs.iter().enumerate() {
             let length = (lengths[i + 1] - lengths[i]) as usize;
-            if input.question_type > 2
-                || input.markers.is_empty()
-                || input.markers.iter().any(|&p| p >= length)
-            {
+            if input.0 > 2 || input.1.is_empty() || input.1.iter().any(|&p| p >= length) {
                 candle::bail!("invalid Laya decision input")
             }
         }
@@ -370,7 +378,7 @@ impl super::Model for LayaModel {
                     length,
                     self.hidden,
                 ))?;
-                let output = self.forward_head(hidden, &input.markers, input.question_type)?;
+                let output = self.forward_head(hidden, &input.1, input.0)?;
                 Ok(text_embeddings_backend_core::DecisionOutput {
                     logits: output.logits,
                     action_probability: output.action_probability,

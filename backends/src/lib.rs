@@ -235,16 +235,7 @@ impl Backend {
             let batch = self.create_warmup_batch(*shape, max_token as u32, seq_bucket_size as u32);
             match &self.model_type {
                 ModelType::Decision => self
-                    .decide(
-                        batch.clone(),
-                        vec![
-                            DecisionInput {
-                                question_type: 0,
-                                markers: vec![0]
-                            };
-                            batch.len()
-                        ],
-                    )
+                    .decide(batch.clone(), vec![DecisionInput::Warmup; batch.len()])
                     .await
                     .map(|_| ()),
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),
@@ -379,16 +370,7 @@ impl Backend {
 
         match &self.model_type {
             ModelType::Decision => self
-                .decide(
-                    batch.clone(),
-                    vec![
-                        DecisionInput {
-                            question_type: 0,
-                            markers: vec![0]
-                        };
-                        batch.len()
-                    ],
-                )
+                .decide(batch.clone(), vec![DecisionInput::Warmup; batch.len()])
                 .await
                 .map(|_| ()),
             ModelType::Classifier => self.predict(batch).await.map(|_| ()),
@@ -431,16 +413,7 @@ impl Backend {
             };
             match &self.model_type {
                 ModelType::Decision => self
-                    .decide(
-                        batch.clone(),
-                        vec![
-                            DecisionInput {
-                                question_type: 0,
-                                markers: vec![0]
-                            };
-                            batch.len()
-                        ],
-                    )
+                    .decide(batch.clone(), vec![DecisionInput::Warmup; batch.len()])
                     .await
                     .map(|_| ()),
                 ModelType::Classifier => self.predict(batch).await.map(|_| ()),

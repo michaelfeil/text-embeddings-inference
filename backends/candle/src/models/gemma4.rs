@@ -7,7 +7,7 @@ use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
 use serde::Deserialize;
 use std::collections::HashMap;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use text_embeddings_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
 
 fn default_head_dim() -> usize {
     256
@@ -848,6 +848,7 @@ impl Gemma4Ple {
 }
 
 enum Gemma4Output {
+    Decision(Tensor),
     Embedding(Pool),
     Classifier(Linear),
 }
@@ -946,22 +947,7 @@ impl Gemma4Model {
             )
         }
 
-        let score = match model_type {
-            ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
-            ModelType::Embedding(pool) => Gemma4Output::Embedding(pool),
-            ModelType::Classifier => {
-                let num_labels = config.num_labels.unwrap_or(config.id2label.len());
-                if num_labels == 0 {
-                    candle::bail!("Gemma4 classifier config does not define any labels")
-                }
-                Gemma4Output::Classifier(Linear::new(
-                    vb.pp("score")
-                        .get((num_labels, text.hidden_size), "weight")?,
-                    None,
-                    None,
-                ))
-            }
-        };
+        let output_vb = vb.clone();
 
         let vb = if vb.contains_tensor("model.language_model.embed_tokens.weight") {
             vb.pp("model.language_model")
@@ -975,6 +961,32 @@ impl Gemma4Model {
                 .get((text.vocab_size, text.hidden_size), "weight")?,
             text.hidden_size,
         );
+        let score = match model_type {
+            ModelType::Decision => {
+                Gemma4Output::Decision(if config.tie_word_embeddings || text.tie_word_embeddings {
+                    embeddings.embeddings().clone()
+                } else {
+                    output_vb
+                        .pp("lm_head")
+                        .get((text.vocab_size, text.hidden_size), "weight")?
+                })
+            }
+            ModelType::Embedding(pool) => Gemma4Output::Embedding(pool),
+            ModelType::Classifier => {
+                let num_labels = config.num_labels.unwrap_or(config.id2label.len());
+                if num_labels == 0 {
+                    candle::bail!("Gemma4 classifier config does not define any labels")
+                }
+                Gemma4Output::Classifier(Linear::new(
+                    output_vb
+                        .pp("score")
+                        .get((num_labels, text.hidden_size), "weight")?,
+                    None,
+                    None,
+                ))
+            }
+        };
+
         let ple = Gemma4Ple::load(vb.clone(), text)?;
         let layers = (0..text.num_hidden_layers)
             .map(|idx| Gemma4Layer::load(vb.pp(format!("layers.{idx}")), text, idx))
@@ -1224,6 +1236,75 @@ impl Gemma4Model {
 }
 
 impl Model for Gemma4Model {
+    fn decide(&self, batch: Batch, inputs: Vec<DecisionInput>) -> Result<Vec<DecisionOutput>> {
+        let Gemma4Output::Decision(weights) = &self.output else {
+            candle::bail!("Gemma4 was not loaded for decisions")
+        };
+        if inputs.len() != batch.len() {
+            candle::bail!("Decision metadata count does not match batch")
+        }
+        let vocabulary = weights.dim(0)?;
+        let tokens = inputs
+            .into_iter()
+            .map(|input| match input {
+                DecisionInput::OptionTokens { token_ids }
+                    if !token_ids.is_empty()
+                        && token_ids.iter().all(|&id| (id as usize) < vocabulary) =>
+                {
+                    Ok(token_ids)
+                }
+                DecisionInput::Warmup => Ok(vec![0]),
+                _ => candle::bail!("Gemma4 requires valid option-token metadata"),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let last = if self.device.is_cuda() {
+            #[cfg(feature = "flash-attn")]
+            {
+                let (states, compact) = self.forward_hidden_varlen(&batch, true)?;
+                let states = compact.scatter_unfold(&states)?;
+                let indices = Tensor::from_vec(
+                    batch
+                        .cumulative_seq_lengths
+                        .iter()
+                        .skip(1)
+                        .map(|&end| end - 1)
+                        .collect::<Vec<_>>(),
+                    batch.len(),
+                    &self.device,
+                )?;
+                index_select(&states, &indices, 0)?
+            }
+            #[cfg(not(feature = "flash-attn"))]
+            candle::bail!("Gemma4 CUDA decisions require FlashAttention")
+        } else {
+            let (states, lengths) = self.forward_hidden(&batch, true)?;
+            Tensor::stack(
+                &lengths
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &n)| states.i((i, n - 1)))
+                    .collect::<Result<Vec<_>>>()?,
+                0,
+            )?
+        };
+        tokens
+            .into_iter()
+            .enumerate()
+            .map(|(i, ids)| {
+                let ids = Tensor::new(ids.as_slice(), &self.device)?;
+                let selected = weights.index_select(&ids, 0)?;
+                let mut logits = last.i(i)?.unsqueeze(0)?.matmul(&selected.t()?)?;
+                if let Some(cap) = self.final_logit_softcapping {
+                    logits = ((logits / cap)?.tanh()? * cap)?;
+                }
+                Ok(DecisionOutput {
+                    logits: logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
+                    action_probability: 1.0,
+                })
+            })
+            .collect()
+    }
+
     fn supports_radix_mlp(&self) -> bool {
         self.device.is_cuda() && cfg!(feature = "flash-attn")
     }
@@ -1235,7 +1316,7 @@ impl Model for Gemma4Model {
     fn embed(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         match &self.output {
             Gemma4Output::Embedding(pool) => self.embed_batch(batch, pool.clone()),
-            Gemma4Output::Classifier(_) => {
+            Gemma4Output::Classifier(_) | Gemma4Output::Decision(_) => {
                 candle::bail!("`embed` is not available for a Gemma4 classifier")
             }
         }
@@ -1244,7 +1325,7 @@ impl Model for Gemma4Model {
     fn predict(&self, batch: Batch) -> Result<Tensor> {
         match &self.output {
             Gemma4Output::Classifier(score) => self.predict_batch(batch, score),
-            Gemma4Output::Embedding(_) => {
+            Gemma4Output::Embedding(_) | Gemma4Output::Decision(_) => {
                 candle::bail!("`predict` is not available for a Gemma4 embedding model")
             }
         }

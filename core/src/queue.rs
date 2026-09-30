@@ -570,7 +570,7 @@ mod tests {
                 prompt_tokens: i + 2,
                 pooling: false,
                 token_classification: false,
-                decision: Some(text_embeddings_backend::DecisionInput {
+                decision: Some(text_embeddings_backend::DecisionInput::Laya {
                     question_type: i * 2,
                     markers: if i == 0 { vec![0] } else { vec![1, 2] },
                 }),
@@ -593,8 +593,15 @@ mod tests {
         };
         let (metadata, batch) = prune_canceled_batch((metadata, batch)).unwrap();
         assert_eq!(metadata.len(), 1);
-        assert_eq!(metadata[0].decision.as_ref().unwrap().question_type, 2);
-        assert_eq!(metadata[0].decision.as_ref().unwrap().markers, vec![1, 2]);
+        let text_embeddings_backend::DecisionInput::Laya {
+            question_type,
+            markers,
+        } = metadata[0].decision.as_ref().unwrap()
+        else {
+            panic!("expected Laya metadata")
+        };
+        assert_eq!(*question_type, 2);
+        assert_eq!(*markers, vec![1, 2]);
         assert_eq!(batch.input_ids, vec![20, 21, 22]);
         assert_eq!(batch.raw_indices, vec![0]);
         assert_eq!(batch.cumulative_seq_lengths, vec![0, 3]);
