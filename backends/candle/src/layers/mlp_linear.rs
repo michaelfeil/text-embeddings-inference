@@ -121,11 +121,20 @@ mod tests {
         // expansion/contraction and the dynamic activation scaling tail.
         for dtype in [DType::F16, DType::BF16] {
             for (input, output) in [(128, 256), (256, 128)] {
-                let weight = Tensor::arange(0f32, (input * output) as f32, &device)?
-                    .sin()?
-                    .affine(0.05, 0.)?
-                    .reshape((output, input))?
-                    .to_dtype(dtype)?;
+                // Deterministic broad-spectrum inputs avoid measuring relative
+                // error against an almost-zero, cancelling sinusoidal product.
+                let mut seed = 42u32;
+                let mut samples = |count: usize, scale: f32| -> Vec<f32> {
+                    (0..count)
+                        .map(|_| {
+                            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                            ((seed >> 8) as f32 / 16777216. * 2. - 1.) * scale
+                        })
+                        .collect()
+                };
+                let weight =
+                    Tensor::from_vec(samples(input * output, 0.05), (output, input), &device)?
+                        .to_dtype(dtype)?;
                 let bias = Tensor::arange(0f32, output as f32, &device)?
                     .cos()?
                     .affine(0.1, 0.)?
@@ -145,11 +154,9 @@ mod tests {
                         true,
                     )?;
                     for rows in [1, 13, 129] {
-                        let x = Tensor::arange(0f32, (rows * input) as f32, &device)?
-                            .affine(0.13, 0.)?
-                            .sin()?
-                            .reshape((rows, input))?
-                            .to_dtype(dtype)?;
+                        let x =
+                            Tensor::from_vec(samples(rows * input, 1.), (rows, input), &device)?
+                                .to_dtype(dtype)?;
                         let values =
                             |t: Tensor| t.flatten_all()?.to_dtype(DType::F32)?.to_vec1::<f32>();
                         let expected = values(dense.forward(&x)?)?;
@@ -164,7 +171,7 @@ mod tests {
                         let energy: f32 = expected.iter().map(|v| v * v).sum();
                         assert!(
                             (error / energy.max(1e-12)).sqrt() < 0.08,
-                            "FP8 MLP error: {dtype:?}, {input}->{output}, rows={rows}, act={act:?}"
+                            "FP8 MLP error: {dtype:?}, {input}->{output}, rows={rows}, act={act:?}, relative_rmse={}", (error/energy.max(1e-12)).sqrt()
                         );
                     }
                 }
