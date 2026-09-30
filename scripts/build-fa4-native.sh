@@ -1,8 +1,14 @@
 #!/usr/bin/env bash
-# Build the pinned SM90 bundle without requiring a GPU in the Docker builder.
+# Build a pinned architecture-specific bundle without requiring a GPU in the Docker builder.
 set -euo pipefail
 manifest_path=${1:?Candle Cargo.toml is required}
 bundle_path=${2:?Output directory is required}
+compute_cap=${3:-90}
+case "$compute_cap" in
+    90) arch=sm_90a; extra_flags=(--deberta) ;;
+    80|86|89|120) arch="sm_${compute_cap}"; extra_flags=() ;;
+    *) echo "Unsupported FA4 compute capability: $compute_cap" >&2; exit 1 ;;
+esac
 work_path=$(mktemp -d)
 trap 'rm -rf "$work_path"' EXIT
 revision=$(python3 - "$manifest_path" <<'PY'
@@ -32,7 +38,7 @@ print(pathlib.Path(tvm_ffi.__file__).parent)
 PY
 )
 "$python_bin" "$work_path/source/scripts/build_aot.py" "$bundle_path" \
-    --compile-only --deberta --runtime-dir "$runtime_path" --ffi-root "$ffi_path"
+    --compile-only --arch "$arch" "${extra_flags[@]}" --runtime-dir "$runtime_path" --ffi-root "$ffi_path"
 mkdir -p "$bundle_path/licenses/wrapper"
 cp "$work_path/source"/LICENSE* "$bundle_path/licenses/wrapper/"
 "$python_bin" - "$bundle_path/licenses" <<'PY'

@@ -63,7 +63,8 @@ impl Drop for BatchGuard {
 pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<BatchGuard> {
     if !enabled()?
         || !offsets.device().is_cuda()
-        || crate::flash_attn::runtime_compute_cap(offsets.device())? != 90
+        || crate::flash_attn::runtime_compute_cap(offsets.device())?
+            != candle_flash_attn_v4::compiled_compute_capability() as usize
     {
         return Ok(BatchGuard {
             previous: None,

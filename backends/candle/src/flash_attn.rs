@@ -91,7 +91,9 @@ pub(crate) fn flash_attn_varlen(
         let runtime_compute_cap = runtime_compute_cap(q.device())?;
 
         #[cfg(feature = "fa4")]
-        if runtime_compute_cap == 90 && alibi_slopes.is_none() {
+        if runtime_compute_cap == candle_flash_attn_v4::compiled_compute_capability() as usize
+            && alibi_slopes.is_none()
+        {
             if let Some(output) = crate::fa4_native::try_forward(
                 q,
                 k,
