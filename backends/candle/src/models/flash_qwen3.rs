@@ -166,9 +166,23 @@ impl Qwen3Attention {
         };
 
         // Expand Q, K, V to ORIGINAL layout for attention
-        let q = compact_tensors.scatter_unfold(&q)?;
-        let k = compact_tensors.scatter_unfold(&k)?;
-        let v = compact_tensors.scatter_unfold(&v)?;
+        #[cfg(feature = "cuda")]
+        let unfolded = compact_tensors
+            .scatter_unfold
+            .as_ref()
+            .map(|ids| crate::layers::qk_norm_rope::try_unfold_qkv(&q, &k, &v, ids))
+            .transpose()?
+            .flatten();
+        #[cfg(not(feature = "cuda"))]
+        let unfolded: Option<(Tensor, Tensor, Tensor)> = None;
+        let (q, k, v) = match unfolded {
+            Some(qkv) => qkv,
+            None => (
+                compact_tensors.scatter_unfold(&q)?,
+                compact_tensors.scatter_unfold(&k)?,
+                compact_tensors.scatter_unfold(&v)?,
+            ),
+        };
 
         let attention = flash_attn_varlen(
             &q,
