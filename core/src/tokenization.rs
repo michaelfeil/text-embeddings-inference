@@ -13,6 +13,7 @@ static MAX_CHAR_MULTIPLIER: usize = 250;
 /// Validation
 #[derive(Debug, Clone)]
 pub struct Tokenization {
+    multimodal: Option<crate::multimodal::Qwen3VlProcessor>,
     /// Channel to communicate with the background tokenization task
     sender: async_channel::Sender<TokenizerRequest>,
 }
@@ -69,7 +70,15 @@ impl Tokenization {
             }
         });
 
-        Self { sender }
+        Self {
+            sender,
+            multimodal: None,
+        }
+    }
+
+    pub fn with_multimodal(mut self, processor: crate::multimodal::Qwen3VlProcessor) -> Self {
+        self.multimodal = Some(processor);
+        self
     }
 
     #[instrument(skip_all)]
@@ -93,6 +102,25 @@ impl Tokenization {
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
+        if let Some(processor) = &self.multimodal {
+            if inputs.is_empty() {
+                return Err(TextEmbeddingsError::Empty(
+                    "`inputs` cannot be empty".into(),
+                ));
+            }
+            let prepared = processor
+                .prepare(inputs, truncate, truncation_direction, prompt_name)
+                .await?;
+            let length = prepared.input_ids.len();
+            return Ok(ValidEncoding {
+                multimodal: Some(prepared.media),
+                input_ids: prepared.input_ids,
+                token_type_ids: vec![0; length],
+                position_ids: (0..length as u32).collect(),
+                tokens: vec![],
+                offsets: vec![],
+            });
+        }
         self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
             .await
     }
@@ -500,6 +528,7 @@ fn encode_input(
     let histogram = metrics::histogram!("te_request_input_length");
     histogram.record(seq_len as f64);
     Ok(ValidEncoding {
+        multimodal: None,
         input_ids: encoding.get_ids().to_vec(),
         token_type_ids: encoding.get_type_ids().to_vec(),
         position_ids: (position_offset as u32..(seq_len + position_offset) as u32)
@@ -519,6 +548,7 @@ fn encode_input(
 
 #[derive(Debug)]
 pub struct ValidEncoding {
+    pub multimodal: Option<Arc<text_embeddings_backend::MultimodalEncoding>>,
     pub input_ids: Vec<u32>,
     pub token_type_ids: Vec<u32>,
     pub position_ids: Vec<u32>,

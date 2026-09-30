@@ -128,7 +128,8 @@ impl Rune {
             }).collect::<Result<Vec<_>, String>>()?;
             let length = ids.len();
             Ok(Question { id, kind: kind.into(), labels, criteria, compute_chars: prompt.chars().count(),
-                encoding: ValidEncoding { input_ids: ids, token_type_ids: vec![0; length], position_ids: (0..length as u32).collect(), tokens: vec![], offsets: vec![] },
+                encoding: ValidEncoding { multimodal: None,
+input_ids: ids, token_type_ids: vec![0; length], position_ids: (0..length as u32).collect(), tokens: vec![], offsets: vec![] },
                 input: DecisionInput::OptionTokens { token_ids } })
         }).collect()
     }
@@ -213,6 +214,7 @@ mod tests {
             criteria: json!(["low", "high"]),
             compute_chars: 0,
             encoding: ValidEncoding {
+                multimodal: None,
                 input_ids: vec![],
                 token_type_ids: vec![],
                 position_ids: vec![],

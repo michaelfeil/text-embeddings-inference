@@ -8,6 +8,7 @@ use text_embeddings_backend_core::{Backend, Batch, DecisionInput, ModelType};
 
 fn batch(rows: &[Vec<u32>]) -> Batch {
     let mut batch = Batch {
+        multimodal: vec![],
         input_ids: vec![],
         token_type_ids: vec![],
         position_ids: vec![],

@@ -438,6 +438,55 @@ impl FlashQwen3Model {
         })
     }
 
+    #[cfg(all(feature = "cuda", feature = "flash-attn"))]
+    pub(super) fn multimodal_embeddings(
+        &self,
+        batch: &Batch,
+        visual: Option<(&Tensor, &Tensor, &[Tensor])>,
+        cos: &Tensor,
+        sin: &Tensor,
+    ) -> Result<Tensor> {
+        let (_, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
+        let ids = Tensor::new(batch.input_ids.as_slice(), &self.device)?;
+        let mut hidden = self.embeddings.forward(&ids)?;
+        if let Some((indices, images, _)) = visual {
+            let scatter_indices = indices
+                .unsqueeze(1)?
+                .broadcast_as(images.shape())?
+                .contiguous()?;
+            hidden = hidden.scatter(&scatter_indices, images, 0)?;
+        }
+        let cu = Tensor::new(batch.cumulative_seq_lengths.as_slice(), &self.device)?;
+        let mut residual = None;
+        for (i, layer) in self.layers.iter().enumerate() {
+            let (h, r) = layer.forward(
+                &hidden,
+                residual.as_ref(),
+                &cu,
+                cos,
+                sin,
+                batch.max_length as usize,
+                &compact,
+            )?;
+            if let Some((indices, _, deepstack)) = visual {
+                if let Some(features) = deepstack.get(i) {
+                    hidden = (h + r)?.index_add(indices, features, 0)?;
+                    residual = None;
+                    continue;
+                }
+            }
+            hidden = h;
+            residual = Some(r);
+        }
+        let (hidden, _) = self.norm.forward(&hidden, residual.as_ref())?;
+        let indices: Vec<u32> = batch
+            .pooled_indices
+            .iter()
+            .map(|&i| batch.cumulative_seq_lengths[i as usize + 1] - 1)
+            .collect();
+        index_select(&hidden, &Tensor::new(indices.as_slice(), &self.device)?, 0)
+    }
+
     pub fn forward(&self, batch: Batch) -> Result<(Option<Tensor>, Option<Tensor>)> {
         let _enter = self.span.enter();
 
@@ -624,6 +673,7 @@ mod moe_radix_tests {
             var.set(&Tensor::from_vec(values, var.shape(), &Device::Cpu)?)?;
         }
         let batch = Batch {
+            multimodal: vec![],
             input_ids: vec![3, 4, 5, 3, 4, 6, 7, 3, 4, 5],
             token_type_ids: vec![0; 10],
             position_ids: vec![0, 1, 2, 0, 1, 2, 3, 0, 1, 2],

@@ -59,6 +59,12 @@ pub struct Qwen3VlProcessor {
     workers: Arc<Semaphore>,
 }
 
+impl std::fmt::Debug for Qwen3VlProcessor {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Qwen3VlProcessor").finish_non_exhaustive()
+    }
+}
+
 struct ProcessorState {
     chat: ChatProcessor,
     tokenizer: Tokenizer,
@@ -205,7 +211,14 @@ impl Qwen3VlProcessor {
                 }
             }
         }
-        let worker = self.workers.clone().try_acquire_owned()?;
+        // HTTP admission and media reservations already bound pending work. Wait
+        // for a CPU slot so an ordinary text batch can exceed the worker count.
+        let worker = self
+            .workers
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| invalid("Image processing workers closed"))?;
         let state = self.state.clone();
         let (sender, receiver) = oneshot::channel();
         tokio::task::spawn_blocking(move || {

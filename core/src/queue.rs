@@ -261,6 +261,7 @@ fn queue_blocking_task(
                 let target = target_for_backlog(queued_tokens, early_dispatch_tokens, replicas);
 
                 let mut input_ids = Vec::with_capacity(max_batch_tokens);
+                let mut multimodal = Vec::new();
                 let mut token_type_ids = Vec::with_capacity(max_batch_tokens);
                 let mut position_ids = Vec::with_capacity(max_batch_tokens);
                 let mut tokens = Vec::with_capacity(max_batch_tokens);
@@ -331,6 +332,7 @@ fn queue_blocking_task(
 
                     max_length = max(max_length, entry_tokens as u32);
 
+                    multimodal.push(entry.encoding.multimodal);
                     input_ids.extend(entry.encoding.input_ids);
                     token_type_ids.extend(entry.encoding.token_type_ids);
                     position_ids.extend(entry.encoding.position_ids);
@@ -350,7 +352,12 @@ fn queue_blocking_task(
 
                 // Compute RadixMLP compact representation with BOTH mappings
                 let (compact_input_ids, compact_position_ids, scatter_unfold, fold_gather) =
-                    if radix_mlp_threshold > 1e-6 && !input_ids.is_empty() {
+                    if radix_mlp_threshold > 1e-6
+                        && !input_ids.is_empty()
+                        && multimodal
+                            .iter()
+                            .all(|media| media.as_ref().is_none_or(|media| media.images.is_empty()))
+                    {
                         let (compact_ids, compact_pos, scatter, fold) =
                             radix_mlp::compute_fold_and_scatter(
                                 &input_ids,
@@ -390,6 +397,7 @@ fn queue_blocking_task(
                     Some((
                         metadata,
                         Batch {
+                            multimodal,
                             input_ids,
                             token_type_ids,
                             position_ids,
@@ -444,6 +452,7 @@ pub(crate) fn prune_canceled_batch((metadata, batch): NextBatch) -> Option<NextB
     }
     let mut kept = Vec::with_capacity(metadata.len());
     let mut packed = Batch {
+        multimodal: vec![],
         input_ids: Vec::with_capacity(batch.input_ids.len()),
         token_type_ids: Vec::with_capacity(batch.token_type_ids.len()),
         position_ids: Vec::with_capacity(batch.position_ids.len()),
@@ -462,6 +471,9 @@ pub(crate) fn prune_canceled_batch((metadata, batch): NextBatch) -> Option<NextB
         if entry.response_tx.is_closed() {
             log_response_dropped_after("after batching / before inference");
             continue;
+        }
+        if !batch.multimodal.is_empty() {
+            packed.multimodal.push(batch.multimodal[index].clone());
         }
         let start = batch.cumulative_seq_lengths[index] as usize;
         let end = batch.cumulative_seq_lengths[index + 1] as usize;
@@ -519,7 +531,27 @@ mod tests {
                 decision: None,
             })
             .collect();
+        let permits = Arc::new(tokio::sync::Semaphore::new(2));
+        let make_media = |value| {
+            Arc::new(text_embeddings_backend::MultimodalEncoding {
+                images: vec![(
+                    0,
+                    text_embeddings_backend::ImagePatches {
+                        pixels: vec![value],
+                        grid_thw: [1, 1, 1],
+                        patch_dim: 1,
+                        merge_size: 1,
+                    },
+                )],
+                position_ids: [vec![0], vec![0], vec![0]],
+                memory: Some(permits.clone().try_acquire_owned().unwrap()),
+            })
+        };
+        let canceled_media = make_media(1.0);
+        let live_media = make_media(2.0);
+        let identity = Arc::downgrade(&live_media);
         let batch = Batch {
+            multimodal: vec![Some(canceled_media), Some(live_media)],
             input_ids: vec![10, 20],
             token_type_ids: vec![0, 0],
             position_ids: vec![0, 0],
@@ -541,6 +573,18 @@ mod tests {
         assert_eq!(batch.raw_indices, vec![0]);
         assert_eq!(batch.tokens, vec!["live"]);
         assert_eq!(batch.offsets, vec![(2, 6)]);
+        assert_eq!(batch.multimodal.len(), 1);
+        assert!(Arc::ptr_eq(
+            batch.multimodal[0].as_ref().unwrap(),
+            &identity.upgrade().unwrap()
+        ));
+        assert_eq!(
+            batch.multimodal[0].as_ref().unwrap().images[0].1.pixels,
+            vec![2.0]
+        );
+        assert_eq!(permits.available_permits(), 1);
+        drop(batch);
+        assert_eq!(permits.available_permits(), 2);
         assert_eq!(target_for_backlog(100_000, Some(5_000), 8), Some(5_000));
         assert_eq!(target_for_backlog(160_000, Some(5_000), 8), None);
     }
@@ -567,6 +611,7 @@ mod tests {
             })
             .collect();
         let batch = Batch {
+            multimodal: vec![],
             input_ids: vec![10, 11, 20, 21, 22],
             token_type_ids: vec![0; 5],
             position_ids: vec![0, 1, 0, 1, 2],

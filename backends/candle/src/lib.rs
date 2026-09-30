@@ -109,6 +109,7 @@ enum Config {
     #[serde(alias = "new")]
     Gte(GTEConfig),
     #[serde(rename = "mpnet")]
+    #[allow(dead_code)]
     MPNet(MPNetConfig),
     #[allow(dead_code)]
     Mistral(MistralConfig),
@@ -121,6 +122,9 @@ enum Config {
     #[allow(dead_code)]
     #[serde(alias = "qwen3_moe")]
     Qwen3(Qwen3Config),
+    #[allow(dead_code)]
+    #[serde(rename = "qwen3_vl")]
+    Qwen3Vl(serde_json::Value),
     #[serde(rename = "qwen3_5_moe", alias = "qwen3_5_moe_text")]
     Qwen35(models::Qwen35Config),
     Roberta(BertConfig),
@@ -460,6 +464,21 @@ impl CandleBackend {
                     let _ = config;
                     Err(BackendError::Start(
                         "Gemma4 requires CUDA BF16 with FlashAttention v2".into(),
+                    ))
+                }
+            }
+            Config::Qwen3Vl(config) => {
+                #[cfg(all(feature = "cuda", feature = "flash-attn"))]
+                {
+                    Ok(Box::new(
+                        models::Qwen3VlModel::load(vb, config, model_type).s()?,
+                    ))
+                }
+                #[cfg(not(all(feature = "cuda", feature = "flash-attn")))]
+                {
+                    let _ = config;
+                    Err(BackendError::Start(
+                        "Qwen3-VL requires CUDA with FlashAttention v2".into(),
                     ))
                 }
             }

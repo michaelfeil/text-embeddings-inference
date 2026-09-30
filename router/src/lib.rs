@@ -77,6 +77,7 @@ pub async fn run(
     cors_allow_origin: Option<Vec<String>>,
     device_id: Option<usize>,
     backend_device_ids: Option<String>,
+    multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
 ) -> Result<()> {
     let model_id_path = Path::new(&model_id);
     let (model_root, api_repo) = if model_id_path.exists() && model_id_path.is_dir() {
@@ -140,6 +141,12 @@ pub async fn run(
         "Rune protocol requires a Gemma4 model"
     );
 
+    anyhow::ensure!(
+        config.model_type != "qwen3_vl"
+            || (default_prompt.is_none() && default_prompt_name.is_none()),
+        "Qwen3-VL uses its native chat template; default prompt overrides are unsupported"
+    );
+
     // Set model type from config
     let backend_model_type = if laya || rune {
         anyhow::ensure!(
@@ -147,6 +154,12 @@ pub async fn run(
             "Typed decisions do not use embedding pooling"
         );
         text_embeddings_backend::ModelType::Decision
+    } else if config.model_type == "qwen3_vl" {
+        anyhow::ensure!(
+            pooling.is_none() || pooling == Some(text_embeddings_backend::Pool::LastToken),
+            "Qwen3-VL requires last-token pooling"
+        );
+        text_embeddings_backend::ModelType::Embedding(text_embeddings_backend::Pool::LastToken)
     } else {
         get_backend_model_type(&config, &model_root, pooling)?
     };
@@ -231,6 +244,10 @@ pub async fn run(
     // Try to load ST Config
     let mut st_config: Option<STConfig> = None;
     for name in ST_CONFIG_NAMES {
+        // Qwen3-VL uses the multimodal ST format, not legacy max_seq_length.
+        if config.model_type == "qwen3_vl" {
+            break;
+        }
         let config_path = model_root.join(name);
         if let Ok(config) = fs::read_to_string(config_path) {
             st_config =
@@ -337,6 +354,19 @@ pub async fn run(
     } else {
         None
     };
+    let multimodal = if config.model_type == "qwen3_vl" {
+        Some(
+            text_embeddings_core::multimodal::Qwen3VlProcessor::load(
+                &model_root,
+                tokenizer.clone(),
+                max_input_length,
+                multimodal_config,
+            )
+            .map_err(|error| anyhow!(error.to_string()))?,
+        )
+    } else {
+        None
+    };
     let tokenization = Tokenization::new(
         tokenization_workers,
         tokenizer,
@@ -346,6 +376,11 @@ pub async fn run(
         prompts,
         chat,
     );
+
+    let tokenization = match multimodal {
+        Some(processor) => tokenization.with_multimodal(processor),
+        None => tokenization,
+    };
 
     let dtype = resolve_dtype(
         dtype,
@@ -608,6 +643,13 @@ fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type
                 any(feature = "candle", feature = "python"),
                 not(any(feature = "mkl", feature = "accelerate"))
             ))]
+            if model_type == "qwen3_vl" {
+                return DType::Float16;
+            }
+            #[cfg(all(
+                any(feature = "candle", feature = "python"),
+                not(any(feature = "mkl", feature = "accelerate"))
+            ))]
             if model_dtype == Some("bfloat16") {
                 return DType::Bfloat16;
             }
@@ -673,7 +715,7 @@ impl ModelConfig {
     fn resolve_text_config(&mut self) -> anyhow::Result<()> {
         if matches!(
             self.model_type.as_str(),
-            "gemma4" | "gemma4_unified" | "qwen3_5_moe"
+            "gemma4" | "gemma4_unified" | "qwen3_5_moe" | "qwen3_vl"
         ) {
             if self.max_position_embeddings == 0 {
                 self.max_position_embeddings = self

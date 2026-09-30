@@ -343,6 +343,7 @@ pub fn batch(encodings: Vec<Encoding>, pooled_indices: Vec<u32>, raw_indices: Ve
     }
 
     Batch {
+        multimodal: vec![],
         input_ids,
         token_type_ids,
         position_ids,

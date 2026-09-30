@@ -535,7 +535,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -583,7 +583,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -608,7 +608,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn-v4"
 version = "0.1.0-alpha.1"
-source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=37de7a120dc47be720af20401fd5e8b233ef7de5#37de7a120dc47be720af20401fd5e8b233ef7de5"
+source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=13b98b9d33adaca1744f91ee676ed6ac210b51fb#13b98b9d33adaca1744f91ee676ed6ac210b51fb"
 dependencies = [
  "candle-core",
  "half",
@@ -630,7 +630,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "cudaforge",
 ]
@@ -651,7 +651,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "block2",
  "half",
@@ -666,7 +666,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "accelerate-src",
  "candle-core",
@@ -697,7 +697,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=58c5155d963bebc7129172e25c34a5a73c79b8b9#58c5155d963bebc7129172e25c34a5a73c79b8b9"
+source = "git+https://github.com/michaelfeil/candle?rev=174de7005a2bafe7c73af872e05f462f03b2a66e#174de7005a2bafe7c73af872e05f462f03b2a66e"
 dependencies = [
  "byteorder",
  "candle-core",

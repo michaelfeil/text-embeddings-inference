@@ -35,6 +35,7 @@ fn packed_deberta_matches_transformers() -> anyhow::Result<()> {
                 0,
             )?;
             let batch = Batch {
+                multimodal: vec![],
                 input_ids: input_ids.clone(),
                 token_type_ids: token_type_ids.clone(),
                 position_ids: lengths.iter().flat_map(|&n| 0..n as u32).collect(),

@@ -62,6 +62,14 @@ struct Args {
     #[clap(long, env, conflicts_with = "pooling")]
     decision_protocol: Option<text_embeddings_router::DecisionProtocol>,
 
+    /// Exact HTTPS hostnames allowed for image downloads. Empty permits inline data URLs only.
+    #[clap(long, env, value_delimiter = ',')]
+    image_allowed_hosts: Vec<String>,
+
+    /// Memory budget for encoded images, CPU processing and prepared image patches, in MiB.
+    #[clap(long, env, default_value = "512")]
+    image_memory_budget_mib: usize,
+
     /// The maximum amount of concurrent requests for this particular deployment.
     /// Having a low limit will refuse clients requests instead of having them
     /// wait for too long and is usually good to handle backpressure correctly.
@@ -291,6 +299,14 @@ async fn main() -> Result<()> {
         args.cors_allow_origin,
         args.device_id,
         args.backend_device_ids,
+        text_embeddings_core::multimodal::MultimodalConfig {
+            allowed_image_hosts: args.image_allowed_hosts,
+            memory_budget_bytes: args
+                .image_memory_budget_mib
+                .checked_mul(1024 * 1024)
+                .ok_or_else(|| anyhow::anyhow!("Image memory budget is too large"))?,
+            ..Default::default()
+        },
     )
     .await?;
 

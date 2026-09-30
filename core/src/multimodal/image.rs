@@ -164,12 +164,12 @@ impl QwenImageProcessor {
         }
         let (w, h) = self.resized_dimensions(width, height)?;
         // Include EXIF rotation/conversion, the horizontal resize intermediate, output,
-        // patch floats and conservative decoder/resampler scratch space. Checked before decode.
+        // patch floats plus backend upload copy, and decoder/resampler scratch. Checked before decode.
         let memory = decoder.total_bytes() * 2
             + u64::from(width) * u64::from(height) * 3
             + u64::from(w) * u64::from(height) * 3
             + u64::from(w) * u64::from(h) * 3
-            + u64::from(w) * u64::from(h) * 3 * self.temporal_patch_size as u64 * 4
+            + u64::from(w) * u64::from(h) * 3 * self.temporal_patch_size as u64 * 4 * 2
             + (u64::from(width) + u64::from(height) + u64::from(w) + u64::from(h)) * 128;
         Ok(ImagePlan {
             token_count: (w as usize / (self.patch_size * self.merge_size))

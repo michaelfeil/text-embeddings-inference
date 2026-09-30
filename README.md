@@ -524,6 +524,37 @@ checkpoint's `choice:11+` temperature is outside this range; confidence for that
 bucket is not verified as calibrated. ModernBERT uses approximate (tanh) GELU;
 the custom head retains ReLU and exact scorer/action GELU.
 
+### Qwen3-VL image embeddings
+
+With a Candle CUDA/FlashAttention build, serve `Qwen/Qwen3-VL-Embedding-2B`:
+
+```shell
+text-embeddings-router --model-id Qwen/Qwen3-VL-Embedding-2B \
+  --dtype float16 --max-batch-tokens 8192 --auto-truncate \
+  --image-allowed-hosts bucket.s3.us-east-1.amazonaws.com
+```
+
+Send one conversation as `input` to `/v1/embeddings` (or as `inputs` to `/embed`):
+
+```json
+{"input":[{"role":"user","content":[
+  {"type":"image_url","image_url":{"url":"https://bucket.s3.us-east-1.amazonaws.com/image.png?SIGNED_QUERY"}},
+  {"type":"text","text":"Represent the product in this image."}
+]}]}
+```
+
+A string or list of independent strings remains valid. Ordered user/assistant messages
+produce one embedding. Images may be base64 PNG/JPEG/WebP data URLs; remote URLs require
+an exact configured HTTPS hostname. Redirects and private network addresses are rejected.
+The initial limits are four images per conversation, 20 MiB per image, 16 megapixels per
+image and a 30-second preprocessing timeout. `--image-memory-budget-mib` defaults to 512.
+Only images decoded to eight-bit samples are accepted; WebP metadata is capped at 64 KiB
+per chunk. Oversized image token spans are rejected even with truncation enabled.
+
+This model currently requires FP16 and returns pooled embeddings only. RadixMLP is disabled
+for Qwen3-VL because token identity alone does not identify image content. The text-only
+Qwen3 embedding models retain their existing behavior and do not accept images.
+
 ### Rune text decisions
 
 Use the existing `/v1/systemone` endpoint with a Candle CUDA/FlashAttention build:

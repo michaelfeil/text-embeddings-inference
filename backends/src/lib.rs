@@ -275,6 +275,7 @@ impl Backend {
             pooled_indices.push(batch_id);
         }
         Batch {
+            multimodal: vec![],
             input_ids: batched_input_ids,
             token_type_ids: batched_token_type_ids,
             position_ids: batched_position_ids,
@@ -340,6 +341,7 @@ impl Backend {
         }
 
         let batch = Batch {
+            multimodal: vec![],
             input_ids,
             token_type_ids,
             position_ids,
@@ -384,6 +386,7 @@ impl Backend {
             // by calling the model forward on a test batch
 
             let batch = Batch {
+                multimodal: vec![],
                 input_ids: vec![0],
                 token_type_ids: vec![0],
                 position_ids: vec![0],

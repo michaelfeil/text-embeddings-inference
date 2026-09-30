@@ -108,6 +108,7 @@ struct Batch {
 impl From<Batch> for text_embeddings_backend_core::Batch {
     fn from(b: Batch) -> Self {
         text_embeddings_backend_core::Batch {
+            multimodal: vec![],
             input_ids: b.input_ids,
             token_type_ids: b.token_type_ids,
             position_ids: b.position_ids,
