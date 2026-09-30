@@ -123,8 +123,8 @@ CPU BF16, and Metal are unsupported.
 
 ### Experimental packed DeBERTa-v2/v3 (SM90 and SM120)
 
-The Hopper and SM120 CUDA builds include this backend and its native kernels,
-as do their corresponding binaries in the CUDA-all build.
+The Hopper and SM120 CUDA builds include this backend and its native kernels.
+The CUDA-all build includes DeBERTa in its SM90 binary only.
 It is selected for supported DeBERTa models independently of `ATTN_BACKEND`;
 DeBERTa's relative attention has no FA2 fallback in this implementation.
 
