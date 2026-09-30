@@ -242,12 +242,18 @@ mod tests {
     fn check_approximate_gelu(device: &Device) -> Result<()> {
         // Wi yields [x, 1], so the complete gated MLP evaluates GELU(x).
         let mlp = ModernBertMLP {
-            wi: Linear::new(
+            wi: MlpLinear::with_bias_activation(
                 Tensor::from_slice(&[1f32, 0., 0., 1., 0., 0., 0., 0.], (4, 2), device)?,
                 Some(Tensor::from_slice(&[0f32, 0., 1., 1.], 4, device)?),
                 None,
-            ),
-            wo: Linear::new(Tensor::eye(2, DType::F32, device)?, None, None),
+                false,
+            )?,
+            wo: MlpLinear::with_bias_activation(
+                Tensor::eye(2, DType::F32, device)?,
+                None,
+                None,
+                false,
+            )?,
             activation: serde_json::from_str("\"gelu\"").unwrap(),
             span: tracing::span!(tracing::Level::TRACE, "test_mlp"),
         };
