@@ -681,6 +681,26 @@ mod tests {
     }
 }
 
+/// Normalize a rounded residual sum without allocating a saved residual output.
+pub fn layer_norm_with_rounded_residual(
+    x: &Tensor,
+    residual: &Tensor,
+    gamma: &Tensor,
+    epsilon: f32,
+) -> Result<Tensor> {
+    let op = NormalizedResidual {
+        norm: LayerNorm {
+            epsilon,
+            gamma: gamma.clone(),
+            beta: None,
+            is_rms_norm: false,
+        },
+        return_residual: false,
+        round_residual: true,
+    };
+    x.apply_op2_no_bwd(residual, &op)
+}
+
 /// Normalize a model-dtype rounded residual sum and return that sum alongside it.
 pub fn fused_add_layer_norm_rounded(
     x: &Tensor,
@@ -732,7 +752,24 @@ mod rounded_residual_tests {
                     let expected_sum = (&x + &r)?;
                     let expected = layer_norm(&expected_sum, &gamma, None, 1e-5)?;
                     let (actual, sum) = fused_add_layer_norm_rounded(&x, &r, &gamma, 1e-5)?;
-                    for (a, b) in [(actual, expected), (sum, expected_sum)] {
+                    let norm_only = layer_norm_with_rounded_residual(&x, &r, &gamma, 1e-5)?;
+                    let allocated = {
+                        let (storage, _) = norm_only.storage_and_layout();
+                        let Storage::Cuda(storage) = &*storage else {
+                            candle::bail!("expected CUDA storage")
+                        };
+                        match dtype {
+                            DType::F16 => storage.as_cuda_slice::<f16>()?.len(),
+                            DType::BF16 => storage.as_cuda_slice::<bf16>()?.len(),
+                            _ => unreachable!(),
+                        }
+                    };
+                    assert_eq!(allocated, rows * width);
+                    for (a, b) in [
+                        (actual, expected.clone()),
+                        (norm_only, expected),
+                        (sum, expected_sum),
+                    ] {
                         assert_eq!(
                             a.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?,
                             b.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?,

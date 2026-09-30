@@ -242,9 +242,9 @@ impl ModernBertEncoder {
         }
 
         match residual {
-            Some(residual) => Ok(final_norm
-                .forward_rounded_residual(&hidden_states, &residual)?
-                .0),
+            Some(residual) => {
+                final_norm.forward_rounded_residual_norm_only(&hidden_states, &residual)
+            }
             None => final_norm.forward(&hidden_states, None),
         }
     }
