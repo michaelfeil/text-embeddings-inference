@@ -803,8 +803,10 @@ and two-sided local attention, d128 causal GQA with a 4:1 query/KV head ratio,
 and d128 global GQA with a 2:1 ratio (including Voyage-4-nano). Use BF16 for
 Voyage to avoid FP16 non-finite outputs at long context.
 Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
-backend. FA4 execution errors propagate. DeBERTa and dynamic FP8 row scaling
-remain Hopper-only; SM100/110 FA4 bundles are not packaged.
+backend. FA4 execution errors propagate. DeBERTa is built for SM90 and SM120;
+SM120 DeBERTa exports are verified by offline compilation and linking, with
+end-to-end correctness checked on SM90. Dynamic FP8 row scaling remains
+Hopper-only; SM100/110 FA4 bundles are not packaged.
 
 Source builds use `--features fa4` and `FA4_NATIVE_LIB_DIR` pointing to the native
 bundle; include its shared libraries in `LD_LIBRARY_PATH`. `experimental-fa4`

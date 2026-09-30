@@ -6,7 +6,8 @@ bundle_path=${2:?Output directory is required}
 compute_cap=${3:-90}
 case "$compute_cap" in
     90) arch=sm_90a; extra_flags=(--deberta) ;;
-    80|86|89|120) arch="sm_${compute_cap}"; extra_flags=() ;;
+    120) arch=sm_120; extra_flags=(--deberta) ;;
+    80|86|89) arch="sm_${compute_cap}"; extra_flags=() ;;
     *) echo "Unsupported FA4 compute capability: $compute_cap" >&2; exit 1 ;;
 esac
 work_path=$(mktemp -d)
