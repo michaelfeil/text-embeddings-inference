@@ -111,7 +111,7 @@ impl HeadLayer {
             ))
         };
         let heads = (hidden / 64).max(1);
-        if hidden % heads != 0 {
+        if !hidden.is_multiple_of(heads) {
             candle::bail!("Laya hidden size must be divisible by head count")
         }
         Ok(Self {
