@@ -144,3 +144,24 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
     }
     Ok(())
 }
+
+#[cfg(all(feature = "experimental-fp8", not(feature = "flash-attn")))]
+#[test]
+#[ignore = "requires CUDA and LAYA_CHECKPOINT_DIR"]
+fn laya_fp8_without_flash_attention_fails_at_startup() -> Result<()> {
+    use text_embeddings_backend_candle::CandleBackend;
+    use text_embeddings_backend_core::ModelType;
+    let path = std::env::var("LAYA_CHECKPOINT_DIR")?;
+    let error = CandleBackend::new_with_fp8(
+        std::path::Path::new(&path),
+        "bfloat16".into(),
+        ModelType::Decision,
+        None,
+        0,
+        true,
+    )
+    .err()
+    .expect("Laya FP8 must reject a build without flash-attn at startup");
+    assert!(error.to_string().contains("flash-attn"), "{error}");
+    Ok(())
+}
