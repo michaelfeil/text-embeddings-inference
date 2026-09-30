@@ -455,7 +455,7 @@ impl UnfoldQkv {
             .arg(&stride);
         unsafe {
             builder.launch(LaunchConfig {
-                grid_dim: ((size / 8).div_ceil(256).min(4096) as u32, 1, 1),
+                grid_dim: (tokens.min(4096), 1, 1),
                 block_dim: (256, 1, 1),
                 shared_mem_bytes: 0,
             })

@@ -112,14 +112,18 @@ extern "C" __global__ void qkv_unfold_u16(
     uint64_t vstride) {
     const uint64_t qsize = uint64_t(tokens) * qwidth;
     const uint64_t kvsize = uint64_t(tokens) * kvwidth;
-    for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
-         i < qsize + 2 * kvsize; i += uint64_t(gridDim.x) * blockDim.x) {
-        const bool isq = i < qsize;
-        const bool isk = !isq && i < qsize + kvsize;
-        const uint64_t j = isq ? i : (isk ? i - qsize : i - qsize - kvsize);
-        const uint32_t width = isq ? qwidth : kvwidth;
-        const uint64_t row = ids[j / width];
-        const uint4* src = isq ? q : (isk ? k : v);
-        out[i] = src[row * (isq ? qwidth : (isk ? kvwidth : vstride)) + j % width];
+    for (uint32_t row = blockIdx.x; row < tokens; row += gridDim.x) {
+        const uint64_t source_row = ids[row];
+        for (uint32_t col = threadIdx.x; col < qwidth + 2 * kvwidth; col += blockDim.x) {
+            if (col < qwidth) {
+                out[uint64_t(row) * qwidth + col] = q[source_row * qwidth + col];
+            } else if (col < qwidth + kvwidth) {
+                const uint32_t c = col - qwidth;
+                out[qsize + uint64_t(row) * kvwidth + c] = k[source_row * kvwidth + c];
+            } else {
+                const uint32_t c = col - qwidth - kvwidth;
+                out[qsize + kvsize + uint64_t(row) * kvwidth + c] = v[source_row * vstride + c];
+            }
+        }
     }
 }
