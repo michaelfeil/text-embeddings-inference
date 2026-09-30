@@ -271,10 +271,14 @@ impl CandleBackend {
                 && (!cfg!(feature = "flash-attn")
                     || !matches!(dtype, DType::F16 | DType::BF16)
                     || !device.is_cuda()
-                    || get_runtime_compute_cap(device_id).unwrap_or(0) != 90)
+                    || !matches!(
+                        get_runtime_compute_cap(device_id).unwrap_or(0),
+                        89 | 90 | 100 | 120
+                    ))
             {
                 return Err(BackendError::Start(
-                    "Laya dynamic FP8 requires flash-attn and float16/bfloat16 on Hopper".into(),
+                    "Laya dynamic FP8 requires flash-attn and float16/bfloat16 on SM89/90/100/120"
+                        .into(),
                 ));
             }
             let (model, _) =
@@ -331,9 +335,12 @@ impl CandleBackend {
                 return Err(BackendError::Start("Dynamic FP8 currently requires CUDA, float16/bfloat16, the flash-attn feature and a supported dense MLP model (Qwen2/Qwen3/Llama/Mistral/BERT/RoBERTa/ModernBERT)".into()));
             }
             #[cfg(feature = "cuda")]
-            if get_runtime_compute_cap(device_id).unwrap_or(0) != 90 {
+            if !matches!(
+                get_runtime_compute_cap(device_id).unwrap_or(0),
+                89 | 90 | 100 | 120
+            ) {
                 return Err(BackendError::Start(
-                    "Dynamic FP8 row scaling requires Hopper (compute capability 9.0)".into(),
+                    "Dynamic FP8 requires Ada SM89, Hopper SM90, or Blackwell SM100/SM120".into(),
                 ));
             }
             tracing::warn!("Experimental dynamic FP8 MLP enabled: per-row weights quantized at load, per-token activations at inference; accuracy may change");
