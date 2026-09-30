@@ -118,6 +118,9 @@ impl QwenImageProcessor {
         ) {
             return Err("Only PNG, JPEG, and WebP images are supported".into());
         }
+        if reader.format() == Some(image::ImageFormat::WebP) {
+            validate_webp_chunks(bytes)?;
+        }
         let mut limits = image::Limits::default();
         limits.max_image_width = Some(16_384);
         limits.max_image_height = Some(16_384);
@@ -254,6 +257,37 @@ impl QwenImageProcessor {
     }
 }
 
+// image-webp's EXIF reader does not inherit ImageReader's allocation limit.
+// Check the complete container without allocating before constructing either decoder.
+// Metadata copies fit inside the encoded-input copy reservation held by ResolvedImage.
+fn validate_webp_chunks(bytes: &[u8]) -> Result<(), String> {
+    const MAX_METADATA_BYTES: usize = 64 * 1024;
+    let invalid = || "Invalid WebP chunk extents".to_string();
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"WEBP" {
+        return Err(invalid());
+    }
+    let size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+    if size.checked_add(8) != Some(bytes.len()) {
+        return Err(invalid());
+    }
+    let mut offset = 12usize;
+    while offset < bytes.len() {
+        let header_end = offset.checked_add(8).ok_or_else(invalid)?;
+        let header = bytes.get(offset..header_end).ok_or_else(invalid)?;
+        let length = u32::from_le_bytes(header[4..8].try_into().unwrap()) as usize;
+        let end = header_end.checked_add(length).ok_or_else(invalid)?;
+        let padded_end = end.checked_add(length & 1).ok_or_else(invalid)?;
+        if padded_end > bytes.len() {
+            return Err(invalid());
+        }
+        if matches!(&header[..4], b"EXIF" | b"ICCP" | b"XMP ") && length > MAX_METADATA_BYTES {
+            return Err("WebP metadata exceeds the 64 KiB limit".into());
+        }
+        offset = padded_end;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -354,6 +388,60 @@ mod tests {
                 matches!(result, Err(ref error) if error == "Only images decoded to 8-bit samples are supported")
             );
         }
+    }
+
+    #[test]
+    fn webp_metadata_is_bounded_before_both_orientation_calls() {
+        fn webp(chunk: &[u8], declared: u32, payload: &[u8]) -> Vec<u8> {
+            let mut bytes = b"RIFF\0\0\0\0WEBP".to_vec();
+            bytes.extend_from_slice(chunk);
+            bytes.extend_from_slice(&declared.to_le_bytes());
+            bytes.extend_from_slice(payload);
+            let size = (bytes.len() - 8) as u32;
+            bytes[4..8].copy_from_slice(&size.to_le_bytes());
+            bytes
+        }
+        let forged = webp(b"EXIF", 64 * 1024 * 1024, &[]);
+        let oversized = webp(b"EXIF", 65538, &vec![0; 65538]);
+        let truncated_padding = webp(b"EXIF", 1, &[0]);
+        for bytes in [&forged, &oversized, &truncated_padding] {
+            assert!(validate_webp_chunks(bytes).is_err());
+            let processor = processor();
+            assert!(processor.inspect(bytes, 4096).is_err());
+            let plan = ImagePlan {
+                output_width: 32,
+                output_height: 32,
+                memory_bytes: 0,
+                token_count: 1,
+            };
+            assert!(processor.prepare(bytes, &plan, 4096).is_err());
+        }
+        let padded = webp(b"EXIF", 1, &[0, 0]);
+        assert!(validate_webp_chunks(&padded).is_ok());
+        let mut bad_riff = padded;
+        bad_riff[4..8].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(validate_webp_chunks(&bad_riff).is_err());
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbImage::new(32, 32)
+            .write_to(&mut bytes, image::ImageFormat::WebP)
+            .unwrap();
+        let processor = processor();
+        let plan = processor.inspect(bytes.get_ref(), 4096).unwrap();
+        assert!(processor.prepare(bytes.get_ref(), &plan, 4096).is_ok());
+        // A real image header followed by a forged EXIF length previously reached
+        // orientation(), which allocated the declared 64 MiB before failing.
+        let mut extended = webp(b"VP8X", 10, &[8, 0, 0, 0, 31, 0, 0, 31, 0, 0]);
+        extended.extend_from_slice(&bytes.get_ref()[12..]);
+        extended.extend_from_slice(b"EXIF");
+        extended.extend_from_slice(&(64u32 * 1024 * 1024).to_le_bytes());
+        let size = (extended.len() - 8) as u32;
+        extended[4..8].copy_from_slice(&size.to_le_bytes());
+        assert!(
+            matches!(processor.inspect(&extended,4096), Err(ref error) if error == "Invalid WebP chunk extents")
+        );
+        assert!(
+            matches!(processor.prepare(&extended,&plan,4096), Err(ref error) if error == "Invalid WebP chunk extents")
+        );
     }
 
     #[test]
