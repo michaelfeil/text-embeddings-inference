@@ -524,50 +524,22 @@ Unknown request/question fields are rejected. Execution extensions such as
 `think`, `mode`, `depends_on`, `ask_if`, and `alone` are not implemented.
 Temperatures are clamped to [0.5, 5], matching upstream Laya. The published
 checkpoint's `choice:11+` temperature is outside this range; confidence for that
-bucket is not verified as calibrated. See [verification and benchmarks](docs/laya-verification.md)
-for measured parity, labelled accuracy, and latency limitations. ModernBERT's
-encoder uses approximate (tanh) GELU, intentionally differing from upstream
-Laya's exact GELU; the custom head retains ReLU and exact scorer/action GELU.
-The controlled FP32 test-set ablation measured 76.70% accuracy with the approximate
-encoder versus 76.60% with the historical exact encoder (2 of 2,000 decisions
-changed). Historical parity/BF16/latency artifacts are labelled accordingly.
+bucket is not verified as calibrated. ModernBERT uses approximate (tanh) GELU;
+the custom head retains ReLU and exact scorer/action GELU.
 
 ### Rune text decisions
 
-The Gemma4 MoE Rune checkpoint uses the same `/v1/systemone` endpoint and queue:
+Use the existing `/v1/systemone` endpoint with a Candle CUDA/FlashAttention build:
 
 ```shell
 text-embeddings-router --model-id michaelfeil/rune-26b-a4b \
-  --revision d9507c3d09de24e948f69aaa53c7bcb4a271effb \
-  --decision-protocol rune --dtype bfloat16 \
-  --max-batch-tokens 8192 --max-client-batch-size 32 \
-  --radix-mlp-threshold 0.92
+  --decision-protocol rune --dtype bfloat16 --radix-mlp-threshold 0.92
 ```
 
-Requires a Candle CUDA/FlashAttention build and enough GPU memory for the BF16
-26B-A4B weights. The explicit protocol flag selects Rune's trained chat prompt
-and first-output-token LM-head scoring. `state` must be plain text; native
-messages, media, thinking, and Laya's `head_max_len` are rejected. Prompts over
-the configured token budget are rejected, never truncated.
-
-Use the `choice`, `noul`, and `score` question shapes shown above, with string
-instructions/descriptions. Choice criteria are ordered objects (null descriptions
-fall back to their keys); score criteria are ordered arrays. Omitted noul criteria
-default to false/true. Rune supports up to 255 single-token option codes and 512
-options per request. Its temperature is 1. Choice confidence is the peak probability
-rescaled from uniform to certainty; score confidence measures concentration around
-the modal level. Noul returns the probability of true. These confidence semantics
-are model-specific and differ from Laya's calibrated entropy-based answers.
-
-RadixMLP reuses causal shared-prefix projection and MLP/MoE work **within each
-queue batch**; attention still handles the separate sequences. This is not a
-persistent KV cache. `usage.input_tokens` counts full logical prompts, including
-each question's shared text; `output_tokens` is the number of decisions. The
-backend projects only the requested option-token rows, without generating text.
-Radix on/off produced identical probabilities on 2000 labelled decisions after
-keeping the small MoE router projection at the logical batch shape. See
-[verification and latency](docs/rune-verification.md) for the measured results,
-Transformers numerical differences, and reproduction commands.
+Supports text states and `choice`, `noul`, and `score` questions with string
+instructions/descriptions. Native messages, media, and `head_max_len` are rejected;
+over-budget prompts are rejected without truncation. Rune uses first-option-token
+probabilities and its own confidence formulas. Radix shares prefix work within a batch.
 
 ### Using SPLADE pooling
 
