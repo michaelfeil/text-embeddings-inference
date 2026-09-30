@@ -2,9 +2,7 @@ use std::collections::HashMap;
 
 use crate::flash_attn::flash_attn_varlen;
 use crate::layers::rotary::apply_packed_rotary;
-use crate::layers::{
-    get_cos_sin, get_inv_freqs, index_select, residual_add, LayerNormNoBias, Linear,
-};
+use crate::layers::{get_cos_sin, get_inv_freqs, index_select, LayerNormNoBias, Linear};
 use crate::models::modernbert::{
     ClassificationHead, ModernBertClassificationHead, ModernBertConfig, ModernBertEmbeddings,
     ModernBertMLP,
@@ -124,7 +122,6 @@ struct ModernBertEncoderLayer {
     attn: ModernBertAttention,
     mlp_norm: LayerNormNoBias,
     mlp: ModernBertMLP,
-    round_residual: bool,
 
     span: tracing::Span,
 }
@@ -157,8 +154,6 @@ impl ModernBertEncoderLayer {
             attn,
             mlp_norm,
             mlp,
-            round_residual: std::env::var("TEI_MODERNBERT_RESIDUAL_ROUNDING").as_deref()
-                != Ok("fp32"),
             span,
         })
     }
@@ -166,31 +161,31 @@ impl ModernBertEncoderLayer {
     fn forward(
         &self,
         hidden_states: &Tensor,
+        residual: Option<&Tensor>,
         cu_seqlens: &Tensor,
         cos: &Tensor,
         sin: &Tensor,
         max_s: usize,
-    ) -> Result<Tensor> {
+    ) -> Result<(Tensor, Tensor)> {
         let _enter = self.span.enter();
 
-        let residual = hidden_states.clone();
-
-        let attn_norm = if let Some(attn_norm) = &self.attn_norm {
-            attn_norm.forward(hidden_states, None)?
-        } else {
-            hidden_states.clone()
+        // Carry the MLP output and residual separately between layers so the
+        // next normalization can perform the rounded addition in its kernel.
+        let (attn_norm, residual) = match (&self.attn_norm, residual) {
+            (Some(norm), Some(residual)) => {
+                norm.forward_rounded_residual(hidden_states, residual)?
+            }
+            (Some(norm), None) => (norm.forward(hidden_states, None)?, hidden_states.clone()),
+            (None, None) => (hidden_states.clone(), hidden_states.clone()),
+            (None, Some(_)) => {
+                candle::bail!("ModernBERT first layer cannot have a pending residual")
+            }
         };
-
         let attn_outputs = self.attn.forward(&attn_norm, cu_seqlens, cos, sin, max_s)?;
-
-        let (normed, hidden_states) = self.mlp_norm.forward_rounded_residual(
-            &attn_outputs,
-            &residual,
-            self.round_residual,
-        )?;
-        let mlp_output = self.mlp.forward(&normed)?;
-
-        residual_add(&hidden_states, &mlp_output)
+        let (normed, residual) = self
+            .mlp_norm
+            .forward_rounded_residual(&attn_outputs, &residual)?;
+        Ok((self.mlp.forward(&normed)?, residual))
     }
 }
 
@@ -223,19 +218,35 @@ impl ModernBertEncoder {
         cu_seqlens: &Tensor,
         rotary_cache: &HashMap<bool, (Tensor, Tensor)>,
         max_s: usize,
+        final_norm: &LayerNormNoBias,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
 
         let mut hidden_states = hidden_states.clone();
+        let mut residual = None;
 
         for (index, layer) in self.layers.iter().enumerate() {
             let use_local_attention = index % self.global_attn_every_n_layers != 0;
             let (cos, sin) = &rotary_cache[&use_local_attention];
 
-            hidden_states = layer.forward(&hidden_states, cu_seqlens, cos, sin, max_s)?;
+            let (output, next_residual) = layer.forward(
+                &hidden_states,
+                residual.as_ref(),
+                cu_seqlens,
+                cos,
+                sin,
+                max_s,
+            )?;
+            hidden_states = output;
+            residual = Some(next_residual);
         }
 
-        Ok(hidden_states)
+        match residual {
+            Some(residual) => Ok(final_norm
+                .forward_rounded_residual(&hidden_states, &residual)?
+                .0),
+            None => final_norm.forward(&hidden_states, None),
+        }
     }
 }
 
@@ -353,10 +364,13 @@ impl FlashModernBertModel {
         }
 
         let hidden_states = self.embeddings.forward(&input_ids)?;
-        let hidden_states =
-            self.encoder
-                .forward(&hidden_states, &cu_seqlens, &rotary_cache, max_length)?;
-        let outputs = self.final_norm.forward(&hidden_states, None)?;
+        let outputs = self.encoder.forward(
+            &hidden_states,
+            &cu_seqlens,
+            &rotary_cache,
+            max_length,
+            &self.final_norm,
+        )?;
 
         let has_pooling_requests = !batch.pooled_indices.is_empty();
         let has_raw_requests = !batch.raw_indices.is_empty();

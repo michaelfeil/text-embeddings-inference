@@ -23,28 +23,17 @@ impl LayerNormNoBias {
         &self,
         input: &Tensor,
         residual: &Tensor,
-        round_residual: bool,
     ) -> Result<(Tensor, Tensor)> {
         #[cfg(feature = "cuda")]
         if input.device().is_cuda() {
             let input_flat = input.flatten_to(D::Minus2)?;
             let residual_flat = residual.flatten_to(D::Minus2)?;
-            let (normed, sum) = if round_residual {
-                candle_layer_norm::fused_add_layer_norm_rounded(
-                    &input_flat,
-                    &residual_flat,
-                    &self.weight,
-                    self.epsilon,
-                )?
-            } else {
-                candle_layer_norm::fused_add_layer_norm(
-                    &input_flat,
-                    &residual_flat,
-                    &self.weight,
-                    None,
-                    self.epsilon,
-                )?
-            };
+            let (normed, sum) = candle_layer_norm::fused_add_layer_norm_rounded(
+                &input_flat,
+                &residual_flat,
+                &self.weight,
+                self.epsilon,
+            )?;
             return Ok((normed.reshape(input.shape())?, sum.reshape(input.shape())?));
         }
         let sum = super::residual_add(residual, input)?;
