@@ -111,6 +111,13 @@ truncation still follows the existing explicit/default truncation configuration.
 Plain strings and string batches retain their existing prompt and tokenization
 behavior. This change performs no image inference or remote media downloads.
 
+Template validation uses the Qwen3-VL-Embedding-2B tokenizer/template at revision
+`9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda`: single-turn and multi-turn text cases
+match Transformers exactly in rendered text and all 20/36 token IDs with
+`add_generation_prompt=false`. Worker tests also cover fast BPE and WordPiece
+fallback with no duplicate special tokens. These checks establish formatting and
+tokenization parity; they do not establish embedding quality or image inference.
+
 Remote image resolution belongs before final tokenization and queue admission of
 prepared inputs. A follow-on implementation must enforce configured HTTPS storage
 host/bucket allowlists, destination IP checks, byte/pixel/time limits, and redaction
