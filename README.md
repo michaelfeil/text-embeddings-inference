@@ -555,7 +555,7 @@ This model currently requires FP16 and returns pooled embeddings only. RadixMLP 
 for Qwen3-VL because token identity alone does not identify image content. The text-only
 Qwen3 embedding models retain their existing behavior and do not accept images.
 
-### Rune text and image decisions
+### Rune text decisions
 
 Use the existing `/v1/systemone` endpoint with a Candle CUDA/FlashAttention build:
 
@@ -564,49 +564,10 @@ text-embeddings-router --model-id michaelfeil/rune-26b-a4b \
   --decision-protocol rune --dtype bfloat16 --radix-mlp-threshold 0.92
 ```
 
-Supports text states and native `state.messages` with user/assistant text and user
-images. Questions support `choice`, `noul`, and `score` with string instructions and
-descriptions. Rune uses first-option-token probabilities and its own confidence formulas.
-
-```shell
-curl http://localhost:8080/v1/systemone \
-  -H 'Content-Type: application/json' -d '{
-    "state": {"messages": [{"role": "user", "content": [
-      {"type": "text", "text": "Inspect the parcel."},
-      {"type": "image_url", "image_url": {"url": "https://images.example.com/parcel.png"}}
-    ]}]},
-    "questions": {
-      "damage": {"type": "noul", "instructions": "Is the parcel visibly damaged?",
-        "criteria": {"false": "No visible damage", "true": "Visible damage"}},
-      "condition": {"type": "choice", "instructions": "Describe the parcel condition.",
-        "criteria": {"intact": "Intact", "torn": "Torn packaging", "crushed": "Crushed packaging"}}
-    }
-  }'
-```
-
-Add `--image-allowed-hosts images.example.com` to allow that exact remote host, or
-supply inline `data:image/png;base64,...` URLs. Images use the same bounded resolver
-as Qwen3-VL: PNG, JPEG, and WebP; at most four images per request, 20 MiB encoded per
-image, 16 megapixels decoded, and a shared 512 MiB host processing budget by default
-(`--image-memory-budget-mib`). Large inline images also need an appropriate
-`--payload-limit` for their JSON/base64 body (default: 2,000,000 bytes).
-JPEG decoding can differ numerically from Pillow.
-The checkpoint's image processor determines the patch budget (280 soft tokens by
-default for `michaelfeil/rune-26b-a4b`). Images precede the decision prompt; their
-ordered `[image N]` references remain in the serialized state, with URLs removed.
-
-Images are prepared once per request and shared across its questions. RadixMLP
-remains enabled for text and for batches whose questions share identical prepared
-images and complete image prefixes. Different images never share states based on
-placeholder token IDs. Image features are encoded once per unique prepared image
-within a batch. Image blocks use Gemma4's bidirectional local attention; text and
-global layers retain causal attention.
-
-Over-budget image/text prompts are rejected without truncation. Audio, video,
-assistant images, non-auto image detail, and `head_max_len` are unsupported. Rune
-images currently target the 26B-A4B vision configuration with no per-layer inputs.
-BF16 decision probabilities can vary with batch shape, particularly for ambiguous
-questions; Radix on/off equivalence is checked separately in the reference script.
+Supports text states and `choice`, `noul`, and `score` questions with string
+instructions/descriptions. Native messages, media, and `head_max_len` are rejected;
+over-budget prompts are rejected without truncation. Rune uses first-option-token
+probabilities and its own confidence formulas. Radix shares prefix work within a batch.
 
 ### Using SPLADE pooling
 
