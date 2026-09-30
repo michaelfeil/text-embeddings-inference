@@ -13,7 +13,6 @@ mod residual_add;
 mod rms_norm;
 pub(crate) mod rotary;
 
-pub use cublaslt::get_cublas_lt_wrapper;
 pub use gated_activation::gated_activation;
 #[allow(unused_imports)]
 pub use index_select::index_select;

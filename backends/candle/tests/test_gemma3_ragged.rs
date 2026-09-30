@@ -82,7 +82,6 @@ fn ragged_matches_transformers_and_rejects_other_dtypes() -> Result<()> {
         None,
         0,
     )?;
-    assert!(!backend.is_padded());
     let projected_backend = CandleBackend::new(
         &root,
         "bfloat16".into(),

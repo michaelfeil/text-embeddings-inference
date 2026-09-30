@@ -34,7 +34,6 @@ fn packed_deberta_matches_transformers() -> anyhow::Result<()> {
                 None,
                 0,
             )?;
-            assert!(!backend.is_padded());
             let batch = Batch {
                 input_ids: input_ids.clone(),
                 token_type_ids: token_type_ids.clone(),

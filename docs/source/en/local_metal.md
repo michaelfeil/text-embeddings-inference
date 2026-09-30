@@ -14,33 +14,12 @@ rendered properly in your Markdown viewer.
 
 -->
 
-# Using TEI locally with Metal
+# Running locally on a Mac
 
-You can install `text-embeddings-inference` locally to run it on your own Mac with Metal support.
-Here are the step-by-step instructions for installation:
-
-## Step 1: Install Rust
-
-[Install Rust](https://rustup.rs/) on your machine by run the following in your terminal, then following the instructions:
+Metal inference is unsupported after removal of padded model execution.
+Use the Candle CPU backend for models with packed CPU support:
 
 ```shell
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo install --path router --no-default-features --features candle,http
+text-embeddings-router --model-id BAAI/bge-small-en-v1.5 --dtype float32
 ```
-
-## Step 2: Install with Metal support
-
-```shell
-cargo install --path router -F metal
-```
-
-## Step 3: Launch Text Embeddings Inference
-
-Once the installation is successfully complete, you can launch Text Embeddings Inference with Metal with the following command:
-
-```shell
-model=Qwen/Qwen3-Embedding-0.6B
-
-text-embeddings-router --model-id $model --port 8080
-```
-
-Now you are ready to use `text-embeddings-inference` locally on your machine.

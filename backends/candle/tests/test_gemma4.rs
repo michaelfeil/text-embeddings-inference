@@ -14,7 +14,6 @@ fn gemma4_classifier_matches_reference_with_variable_length_attention() -> Resul
     let tokenizer = Tokenizer::from_file(root.join("tokenizer.json"))
         .map_err(|error| anyhow::anyhow!(error.to_string()))?;
     let backend = CandleBackend::new(&root, "bfloat16".into(), ModelType::Classifier, None, 0)?;
-    assert!(!backend.is_padded());
     let mut batch = Batch {
         input_ids: vec![],
         token_type_ids: vec![],
@@ -69,7 +68,6 @@ fn gemma4_classifier_matches_reference_with_variable_length_attention() -> Resul
         None,
         0,
     )?;
-    assert!(!embedding.is_padded());
     assert_eq!(embedding.embed(embedding_batch)?.len(), 2);
     Ok(())
 }

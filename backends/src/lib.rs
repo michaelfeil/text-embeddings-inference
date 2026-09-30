@@ -72,7 +72,6 @@ pub struct Backend {
     /// Health status
     health_receiver: watch::Receiver<bool>,
     _backend_thread: Arc<BackendThread>,
-    pub padded_model: bool,
     pub radix_mlp_supported: bool,
     pub max_batch_size: Option<usize>,
     pub model_type: ModelType,
@@ -160,7 +159,6 @@ impl Backend {
             enable_fp8_dynamic,
         )
         .await?;
-        let padded_model = backend.is_padded();
         let radix_mlp_supported = backend.supports_radix_mlp();
         let max_batch_size = backend.max_batch_size();
 
@@ -172,7 +170,6 @@ impl Backend {
             backend_sender,
             health_receiver,
             _backend_thread,
-            padded_model,
             radix_mlp_supported,
             max_batch_size,
             model_type,
@@ -300,7 +297,6 @@ impl Backend {
         max_input_length: usize,
         max_batch_tokens: usize,
         max_batch_requests: Option<usize>,
-        padded_model: bool,
     ) -> Result<(), BackendError> {
         if is_hpu() {
             return self
@@ -308,13 +304,7 @@ impl Backend {
                 .await;
         }
 
-        // In padded_model (CPU), use minimal warmup size (max_input_length tokens) for fast startup
-        // Non-padded (GPU), use full max_batch_tokens to exercise production batching limits
-        let warmup_tokens = if padded_model {
-            max_input_length.min(max_batch_tokens)
-        } else {
-            max_batch_tokens
-        };
+        let warmup_tokens = max_batch_tokens;
 
         let mut input_ids = Vec::with_capacity(warmup_tokens);
         let mut token_type_ids = Vec::with_capacity(warmup_tokens);

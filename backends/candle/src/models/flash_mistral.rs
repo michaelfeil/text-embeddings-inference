@@ -460,10 +460,6 @@ impl FlashMistralModel {
 }
 
 impl Model for FlashMistralModel {
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn supports_radix_mlp(&self) -> bool {
         !self.use_bidirectional_attention
     }

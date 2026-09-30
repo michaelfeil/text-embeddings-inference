@@ -465,10 +465,6 @@ impl Qwen35Model {
 }
 
 impl Model for Qwen35Model {
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn supports_radix_mlp(&self) -> bool {
         !self.use_bidirectional_attention
     }

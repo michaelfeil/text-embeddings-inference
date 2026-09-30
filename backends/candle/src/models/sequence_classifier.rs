@@ -48,10 +48,6 @@ impl SequenceClassifier {
 }
 
 impl Model for SequenceClassifier {
-    fn is_padded(&self) -> bool {
-        self.model.is_padded()
-    }
-
     fn supports_radix_mlp(&self) -> bool {
         self.model.supports_radix_mlp()
     }
@@ -74,7 +70,7 @@ impl Model for SequenceClassifier {
             };
             indices.push((start + index) as u32);
         }
-        // Reuse the model's packed/padded execution and Radix unfold. Gather before
+        // Reuse the model's packed execution and Radix unfold. Gather before
         // applying score.weight, avoiding a classifier projection for every token.
         batch.raw_indices = (0..batch.len() as u32).collect();
         batch.pooled_indices.clear();
@@ -94,9 +90,6 @@ mod tests {
 
     struct TokenStates;
     impl Model for TokenStates {
-        fn is_padded(&self) -> bool {
-            false
-        }
         fn supports_radix_mlp(&self) -> bool {
             true
         }
@@ -124,7 +117,6 @@ mod tests {
             vb,
             r#"{"hidden_size":1,"id2label":{"0":"no","1":"yes"},"pad_token_id":0}"#,
         )?;
-        assert!(!model.is_padded());
         assert!(model.supports_radix_mlp());
         let batch = Batch {
             input_ids: vec![1, 2, 0, 0, 3, 0, 4, 0, 0],

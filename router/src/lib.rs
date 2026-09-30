@@ -389,7 +389,6 @@ pub async fn run(
                     max_input_length,
                     max_batch_tokens,
                     replica_batch_limit,
-                    backend.padded_model,
                 )
                 .await
                 .with_context(|| format!("Warmup failed on device {device}"))?;
@@ -437,7 +436,6 @@ pub async fn run(
     }
 
     let queue = Queue::with_replicas(
-        backend.padded_model,
         max_batch_tokens,
         max_batch_requests,
         radix_mlp_threshold,

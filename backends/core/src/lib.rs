@@ -75,8 +75,6 @@ pub trait Backend {
         None
     }
 
-    fn is_padded(&self) -> bool;
-
     fn supports_radix_mlp(&self) -> bool {
         false
     }

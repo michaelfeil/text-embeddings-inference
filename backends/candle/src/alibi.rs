@@ -13,7 +13,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-use candle::{DType, Device, Result, Tensor};
 
 fn get_slopes_power_of_2(n: usize) -> Vec<f64> {
     let start: f64 = 2_f64.powf(-(2_f64.powf(-((n as f64).log2() - 3_f64))));
@@ -44,37 +43,4 @@ pub fn alibi_head_slopes(num_attention_heads: usize) -> Vec<f64> {
 
         slopes
     }
-}
-
-pub fn build_alibi_tensor(
-    num_positions: usize,
-    num_heads: usize,
-    device: &Device,
-    dtype: DType,
-) -> Result<Tensor> {
-    let context_positions =
-        Tensor::arange(0.0, num_positions as f64, &Device::Cpu)?.unsqueeze(1)?;
-    let memory_positions = Tensor::arange(0.0, num_positions as f64, &Device::Cpu)?.unsqueeze(0)?;
-
-    let relative_positions = memory_positions.broadcast_sub(&context_positions)?.abs()?;
-    // [num_heads, num_positions, num_positions]
-    let relative_positions =
-        relative_positions
-            .unsqueeze(0)?
-            .expand((num_heads, num_positions, num_positions))?;
-
-    // [num_heads, 1, 1]
-    let slopes = (Tensor::from_vec(
-        alibi_head_slopes(num_heads),
-        (num_heads, 1, 1),
-        &Device::Cpu,
-    )? * -1_f64)?;
-
-    // [num_heads, num_positions, num_positions]
-    let alibi = relative_positions.broadcast_mul(&slopes)?;
-
-    alibi
-        .reshape((1, num_heads, num_positions, num_positions))?
-        .to_dtype(dtype)?
-        .to_device(device)
 }

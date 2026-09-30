@@ -80,10 +80,6 @@ impl Backend for PythonBackend {
         ))
     }
 
-    fn is_padded(&self) -> bool {
-        false
-    }
-
     fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError> {
         if !batch.raw_indices.is_empty() {
             return Err(BackendError::Inference(

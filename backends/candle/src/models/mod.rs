@@ -16,7 +16,6 @@ mod gemma3;
 mod gemma4;
 mod gte;
 mod jina;
-mod jina_code;
 mod laya;
 mod llama;
 mod mistral;
@@ -47,24 +46,25 @@ mod flash_qwen2;
 
 mod flash_qwen3;
 
-pub use bert::{BertConfig, BertModel, PositionEmbeddingType};
+pub use bert::{BertConfig, PositionEmbeddingType};
 pub use dense::{Dense, DenseConfig, DenseLayer};
-pub use distilbert::{DistilBertConfig, DistilBertModel};
+pub use distilbert::DistilBertConfig;
 pub use gemma3::Gemma3Config;
 #[cfg(feature = "flash-attn")]
 pub use gemma3::Gemma3Model;
-pub use gemma4::{Gemma4Config, Gemma4Model};
-pub use gte::{GTEConfig, GTEModel};
-pub use jina::JinaBertModel;
-pub use jina_code::JinaCodeBertModel;
+pub use gemma4::Gemma4Config;
+#[cfg(feature = "flash-attn")]
+pub use gemma4::Gemma4Model;
+pub use gte::GTEConfig;
+
 pub use laya::{LayaConfig, LayaModel, LayaOutput};
 pub use llama::LLamaConfig;
 pub use mistral::MistralConfig;
-pub use modernbert::{ModernBertConfig, ModernBertModel};
-pub use mpnet::{MPNetConfig, MPNetModel};
-pub use nomic::{NomicBertModel, NomicConfig};
+pub use modernbert::ModernBertConfig;
+pub use mpnet::MPNetConfig;
+pub use nomic::NomicConfig;
 pub use qwen2::Qwen2Config;
-pub use qwen3::{Qwen3Config, Qwen3Model};
+pub use qwen3::Qwen3Config;
 
 pub use flash_bert::FlashBertModel;
 
@@ -94,7 +94,6 @@ pub(crate) trait Model {
     ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>> {
         candle::bail!("Model does not support typed decisions")
     }
-    fn is_padded(&self) -> bool;
 
     fn supports_radix_mlp(&self) -> bool {
         false

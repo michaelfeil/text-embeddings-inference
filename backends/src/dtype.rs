@@ -44,9 +44,13 @@ impl Default for DType {
         {
             DType::Float32
         }
-        #[cfg(not(any(feature = "accelerate", feature = "mkl", feature = "python")))]
+        #[cfg(all(feature = "candle", not(any(feature = "accelerate", feature = "mkl", feature = "python"))))]
         {
             DType::Float16
+        }
+        #[cfg(not(any(feature = "candle", feature = "python")))]
+        {
+            DType::Auto
         }
         #[cfg(feature = "python")]
         {
