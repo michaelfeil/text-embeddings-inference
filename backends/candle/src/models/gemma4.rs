@@ -1,6 +1,8 @@
-use crate::layers::{apply_rotary, get_cos_sin, get_inv_freqs, HiddenAct, Linear};
 #[cfg(feature = "flash-attn")]
-use crate::layers::{index_select, CompactUnfoldTensors};
+use crate::layers::index_select;
+use crate::layers::{
+    apply_rotary, get_cos_sin, get_inv_freqs, CompactUnfoldTensors, HiddenAct, Linear,
+};
 use crate::models::Model;
 
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
@@ -616,7 +618,12 @@ impl Gemma4Moe {
             expert_output_norm: norm("post_feedforward_layernorm_2")?,
         }))
     }
-    fn forward(&self, residual: &Tensor, dense: &Tensor) -> Result<Tensor> {
+    fn forward(
+        &self,
+        residual: &Tensor,
+        dense: &Tensor,
+        compact: Option<&CompactUnfoldTensors>,
+    ) -> Result<Tensor> {
         #[cfg(gemma4_moe_cuda)]
         {
             let shape = residual.shape();
@@ -625,9 +632,21 @@ impl Gemma4Moe {
             // Match vLLM: RMSNorm -> BF16 root-size scaling -> learned scale.
             let routing = (self.router_norm.forward(&residual)? * (hidden as f64).sqrt().recip())?
                 .broadcast_mul(&self.router_scale)?;
+            // cuBLAS changes FP32 reduction order with the row count. Tiny router
+            // differences propagate through MoE layers into different decisions.
+            // Keep this small projection at the logical batch shape; the dense
+            // and expert MLPs still operate on shared compact rows.
+            let routing = match compact {
+                Some(c) => c.scatter_unfold(&routing)?,
+                None => routing,
+            };
             let logits = routing
                 .to_dtype(DType::F32)?
                 .matmul(&self.router_weight.t()?)?;
+            let logits = match compact {
+                Some(c) => c.fold_gather(&logits)?,
+                None => logits,
+            };
             let input = self.expert_input_norm.forward(&residual)?;
             let expert = crate::layers::gemma4_moe::experts(
                 &input,
@@ -641,7 +660,7 @@ impl Gemma4Moe {
         }
         #[cfg(not(gemma4_moe_cuda))]
         {
-            let _ = (residual, dense);
+            let _ = (residual, dense, compact);
             candle::bail!("Gemma4 MoE requires an SM80+ CUDA build")
         }
     }
@@ -691,7 +710,7 @@ impl Gemma4Layer {
         let normalized = self.pre_feedforward_layernorm.forward(&states)?;
         let mlp = self.mlp.forward(&normalized)?;
         let mlp = match &self.moe {
-            Some(moe) => moe.forward(residual, &mlp)?,
+            Some(moe) => moe.forward(residual, &mlp, Some(compact))?,
             None => mlp,
         };
         let mut states = (residual + self.post_feedforward_layernorm.forward(&mlp)?)?;
@@ -769,7 +788,7 @@ impl Gemma4Layer {
         let states = self.pre_feedforward_layernorm.forward(&states)?;
         let states = self.mlp.forward(&states)?;
         let states = match &self.moe {
-            Some(moe) => moe.forward(residual, &states)?,
+            Some(moe) => moe.forward(residual, &states, None)?,
             None => states,
         };
         let states = self.post_feedforward_layernorm.forward(&states)?;

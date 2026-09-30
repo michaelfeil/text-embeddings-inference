@@ -564,9 +564,10 @@ queue batch**; attention still handles the separate sequences. This is not a
 persistent KV cache. `usage.input_tokens` counts full logical prompts, including
 each question's shared text; `output_tokens` is the number of decisions. The
 backend projects only the requested option-token rows, without generating text.
-BF16 batch shapes can change answers: the measured Radix on/off agreement is 98%
-on 2000 labelled decisions. See [verification and latency](docs/rune-verification.md)
-for the numerical limits and reproduction commands.
+Radix on/off produced identical probabilities on 2000 labelled decisions after
+keeping the small MoE router projection at the logical batch shape. See
+[verification and latency](docs/rune-verification.md) for the measured results,
+Transformers numerical differences, and reproduction commands.
 
 ### Using SPLADE pooling
 

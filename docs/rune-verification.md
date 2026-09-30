@@ -6,7 +6,7 @@
 - Trained prompt/readout: [Surogate decisions v1](https://github.com/invergent-ai/surogate/blob/d500563399c27c8ce425bcd1214194ce5dda87bb/docs/inference/decisions.md). This adapter accepts text states, string instructions/descriptions, and the existing SystemOne request envelope. It does not implement the upstream server's native object state, thinking, images, or order averaging.
 - Hardware: one H100 80GB, BF16, FlashAttention 2, dynamic CUDA linking. Optimized release build with LTO disabled and 16 codegen units; one replica, 8192 batch tokens, 32 client questions, 8 admission slots, 2 tokenizer workers, Rayon 8. Server device allocation after warmup was 53,435 MiB (52.2 GiB).
 
-The existing Gemma4 forward, MoE kernels and RadixMLP math are unchanged. The new head gathers only the requested vocabulary rows, projects the final causal hidden state, and applies Gemma4's configured logit softcap. The HTTP layer computes the selected-option softmax in double precision at temperature 1 and applies Rune's confidence formulas.
+The MoE router projection retains the full logical batch shape to keep its FP32 reduction order unchanged by Radix folding; dense and expert MLPs still reuse compact rows. The expert kernels and model precision are unchanged. The new head gathers only the requested vocabulary rows, projects the final causal hidden state, and applies Gemma4's configured logit softcap. The HTTP layer computes the selected-option softmax in double precision at temperature 1 and applies Rune's confidence formulas.
 
 ## Correctness and numerical limits
 
@@ -17,11 +17,13 @@ The CUDA checkpoint regression compares individual requests, a mixed-length batc
 - All three fixture decisions agree.
 - Maximum observed absolute logit difference from Transformers: **0.65625**.
 - Maximum selected-option probability difference: **0.02345**.
-- Test bounds are 1.0 for logits and 0.03 for probabilities, plus identical fixture decisions. These are approximate numerical checks, not bitwise equivalence.
+- Transformers comparison bounds are 1.0 for logits and 0.03 for probabilities, plus identical fixture decisions. These are approximate numerical checks; Radix versus the same unfurled batch separately requires exact logit equality.
 
-**Radix on/off is not decision-identical.** On the complete labelled test set, 40 of 2000 decisions change: 16 choice, 7 noul, 17 score argmaxes. Nineteen become correct and seventeen become incorrect; four change between incorrect answers. Agreement is 98%. The mean per-question maximum probability difference is 0.01935; its maximum is 0.42796. The synthetic latency cases also change 11 of 129 answers, with maximum probability difference 0.22557.
+**Radix on/off now has exact probability agreement on all 2000 labelled decisions.** Before the fix, 40 decisions changed and the maximum probability difference was 0.42796. Fresh runs with and without folding now have zero changed decisions and maximum/mean probability difference zero. All 129 synthetic latency-case answers also exactly match the unfurled baseline, including long states and 32-question requests. The CUDA regression requires exact selected-logit equality between its folded and unfurled batches; Transformers and single-versus-batch comparisons retain their separate approximate checks.
 
-Changing packed token shapes changes floating-point execution. The existing backbone uses FP32 router projection and a different scaling order from Transformers' BF16 router. It also chooses a Hopper expert kernel at 2048 physical tokens; folding can cross that boundary. However, 21 of the 40 test-set changes occur without crossing it, so kernel selection alone does not explain the differences. No model-math change or claim of exact parity is made here. Use `--radix-mlp-threshold 0` to measure or deploy without folding; ordinary batch-shape variation still exists.
+The cause was isolated on `agent_trace_observability_000017`, a real changed five-question case (1217 tokens). Repeated unfurled execution was bit-identical at every layer. Folded embeddings, first attention, dense MLP, and normalized MoE routing inputs were also identical. The first difference occurred in the FP32 router matrix multiplication: changing its row count changed 122599/155776 logits by at most 1.907e-6. First-layer top-eight expert IDs were unchanged, but changed weights affected 529 expert-output elements; the differences then propagated through the model. Unfolding only that small projection restored exact equality at all 30 layer outputs and final logits. This preserves the shared dense/expert computation.
+
+The 2048-token Hopper expert-kernel selection was separately considered: 19 of the original changed answers crossed that boundary and 21 did not. The complete rerun resolves both groups without changing that selection. This is measured parity for these inputs, dtype, and hardware, not a guarantee of bitwise invariance across every GPU or batch shape. The pre-existing Transformers and single-versus-batch numerical differences remain.
 
 ## Labelled evaluation
 
@@ -30,7 +32,7 @@ Changing packed token shapes changes floating-point execution. The existing back
 | Radix threshold | Accuracy | Correct / 2000 | ECE (10 bins) | Score MAE |
 |---|---:|---:|---:|---:|
 | 0 | 72.70% | 1454 | 0.14948 | 0.38699 |
-| 0.92 | 72.80% | 1456 | 0.14801 | 0.38658 |
+| 0.92 | 72.70% | 1454 | 0.14948 | 0.38699 |
 
 Accuracy uses choice/score argmax and noul threshold 0.5. ECE uses maximum option probability, rather than Rune's rescaled confidence. These results do not establish a general quality ranking against Laya or other decision models.
 
@@ -40,18 +42,18 @@ One client, three warmups and 20 samples per case. Questions have distinct instr
 
 | Approx. tokens/question | Questions | Radix off p50 (ms) | Radix on p50 (ms) | Radix on p95 (ms) |
 |---:|---:|---:|---:|---:|
-| 127 | 1 | 41.94 | 43.95 | 51.50 |
-| 128 | 2 | 50.67 | 48.41 | 50.00 |
-| 127 | 8 | 107.10 | 65.14 | 68.58 |
-| 128 | 32 | 362.31 | 146.13 | 156.30 |
-| 592 | 1 | 77.57 | 77.85 | 79.19 |
-| 592 | 2 | 121.94 | 84.58 | 86.40 |
-| 592 | 8 | 417.14 | 120.94 | 132.76 |
-| 593 | 32 | 1623.94 | 400.92 | 405.65 |
-| 2032 | 1 | 204.98 | 207.23 | 210.79 |
-| 2032 | 2 | 366.94 | 215.99 | 217.57 |
-| 2032 | 8 | 1406.63 | 500.20 | 512.71 |
-| 2033 | 32 | 5571.65 | 1991.92 | 2029.40 |
+| 127 | 1 | 39.91 | 39.72 | 41.04 |
+| 128 | 2 | 48.98 | 45.67 | 61.50 |
+| 127 | 8 | 105.42 | 63.78 | 64.56 |
+| 128 | 32 | 361.65 | 144.73 | 151.79 |
+| 592 | 1 | 76.46 | 75.79 | 76.52 |
+| 592 | 2 | 121.36 | 83.68 | 85.47 |
+| 592 | 8 | 414.59 | 120.56 | 124.51 |
+| 593 | 32 | 1623.96 | 405.32 | 414.98 |
+| 2032 | 1 | 204.82 | 205.93 | 210.56 |
+| 2032 | 2 | 367.22 | 217.37 | 219.16 |
+| 2032 | 8 | 1400.12 | 509.20 | 532.49 |
+| 2033 | 32 | 5601.58 | 2033.22 | 2085.35 |
 
 ## Reproduce
 

@@ -136,11 +136,7 @@ fn rune_selected_logits_batch_and_radix_match_reference() -> Result<()> {
         ] {
             compare(&output.logits, &expected, &format!("{name} row {i}"));
         }
-        compare(
-            &compact[i].logits,
-            &plain[i].logits,
-            &format!("Radix row {i}"),
-        );
+        assert_eq!(compact[i].logits, plain[i].logits, "Radix row {i}");
     }
     Ok(())
 }
