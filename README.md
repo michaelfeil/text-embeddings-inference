@@ -783,14 +783,14 @@ docker build . -f Dockerfile --platform=linux/arm64
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
 
-### Automatic attention selection on Hopper
+### Automatic attention selection
 
-Hopper CUDA images build and include the pinned FA4 native bundle.
-`ATTN_BACKEND=auto` is the default. On Hopper (SM90), builds containing FA4
+CUDA images for SM80, SM86, SM89, SM90 and SM120 build and include an architecture-specific FA4 native bundle.
+`ATTN_BACKEND=auto` is the default. On a device matching the linked bundle, builds containing FA4
 select it for validated FP16/BF16 packed attention shapes: head dimension 64
 with equal query/KV heads and global or bidirectional window masks; dimension
 128 with causal 4:1 GQA, or global bidirectional 2:1 GQA in BF16 only. Unsupported shapes,
-ALiBi, other GPUs, and builds without FA4 retain the existing attention backend.
+ALiBi, mismatched devices, and builds without FA4 retain the existing attention backend.
 EmbeddingGemma's dimension 256 remains on FA2. Set `ATTN_BACKEND=fa2` to disable
 FA4, or `ATTN_BACKEND=fa4` to explicitly request the same supported FA4 paths
 (with fallback for unsupported shapes). The environment selection is cached
@@ -798,18 +798,24 @@ on first use; restart the process to change it. FP8 is independently opt-in. The
 `TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
 
 When FA4 is enabled, models using the shared flash-attention dispatcher register
-their variable-length boundaries once per batch. The current native bundle supports SM90 d64 MHA global
+their variable-length boundaries once per batch. The current native bundles support d64 MHA global
 and two-sided local attention, d128 causal GQA with a 4:1 query/KV head ratio,
 and d128 global GQA with a 2:1 ratio (including Voyage-4-nano). Use BF16 for
 Voyage to avoid FP16 non-finite outputs at long context.
 Unsupported devices, masks (including ALiBi), shapes, and layouts use the existing
-backend. FA4 execution errors propagate. Other architectures retain their existing
-backend until their native bundles are runtime-qualified.
+backend. FA4 execution errors propagate. DeBERTa and dynamic FP8 row scaling
+remain Hopper-only; SM100/110 FA4 bundles are not packaged.
 
 Source builds use `--features fa4` and `FA4_NATIVE_LIB_DIR` pointing to the native
 bundle; include its shared libraries in `LD_LIBRARY_PATH`. `experimental-fa4`
 remains an alias. `scripts/build-fa4-native.sh` builds the pinned bundle without
-a GPU; Python dependencies stay in the build environment.
+a GPU; pass the compute capability as its third argument (default 90). Python
+dependencies stay in the build environment.
+
+A10G (SM86), L4 (SM89), and RTX Pro 6000 Blackwell (SM120) passed direct
+FA2/FA4 embedding comparisons for BGE-large, ModernBERT embed base and Qwen3
+Embedding 4B in FP16/BF16. SM80 is build-verified only. These comparisons do
+not qualify every model or attention shape.
 
 **Quality qualification:** the pinned bundle aligns FA4's softmax denominator
 reduction order and causal d128 key-tile boundaries with FA2. This fixes the observed ModernBERT discrepancy: raw and
