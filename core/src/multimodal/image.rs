@@ -1,0 +1,339 @@
+//! Qwen image preprocessing matching the pinned Transformers Torchvision processor.
+use image::{DynamicImage, ImageDecoder, ImageReader};
+use serde::Deserialize;
+use std::{io::Cursor, path::Path};
+use text_embeddings_backend::ImagePatches;
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct QwenImageProcessor {
+    patch_size: usize,
+    temporal_patch_size: usize,
+    merge_size: usize,
+    min_pixels: usize,
+    max_pixels: usize,
+    image_mean: [f32; 3],
+    image_std: [f32; 3],
+    rescale_factor: f64,
+    resample: u8,
+    do_resize: bool,
+    do_rescale: bool,
+    do_normalize: bool,
+    do_convert_rgb: bool,
+    #[serde(default)]
+    do_center_crop: Option<bool>,
+    #[serde(default)]
+    do_pad: Option<bool>,
+}
+
+pub(crate) struct ImagePlan {
+    pub output_width: u32,
+    pub output_height: u32,
+    pub memory_bytes: usize,
+    pub token_count: usize,
+}
+
+impl QwenImageProcessor {
+    pub fn load(root: &Path) -> Result<Self, String> {
+        let config: Self = serde_json::from_slice(
+            &std::fs::read(root.join("preprocessor_config.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        config.validate()?;
+        Ok(config)
+    }
+
+    fn validate(&self) -> Result<(), String> {
+        if self.patch_size == 0
+            || self.patch_size > 64
+            || self.temporal_patch_size != 2
+            || self.merge_size == 0
+            || self.merge_size > 8
+            || self.min_pixels == 0
+            || self.min_pixels > self.max_pixels
+            || self.max_pixels > 16_777_216
+            || self.resample != 3
+            || !self.do_resize
+            || !self.do_rescale
+            || !self.do_normalize
+            || !self.do_convert_rgb
+            || self.do_center_crop == Some(true)
+            || self.do_pad == Some(true)
+            || !self.rescale_factor.is_finite()
+            || self.rescale_factor <= 0.0
+            || self.image_mean.iter().any(|v| !v.is_finite())
+            || self.image_std.iter().any(|v| !v.is_finite() || *v <= 0.0)
+        {
+            return Err("Unsupported Qwen image processor configuration".into());
+        }
+        let scale = (1.0 / self.rescale_factor) as f32;
+        if self
+            .image_mean
+            .iter()
+            .chain(&self.image_std)
+            .any(|value| !(value * scale).is_finite())
+            || self.image_std.iter().any(|value| value * scale <= 0.0)
+        {
+            return Err("Invalid image normalization scale".into());
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resized_dimensions(&self, width: u32, height: u32) -> Result<(u32, u32), String> {
+        self.validate()?;
+        if width == 0
+            || height == 0
+            || f64::from(width.max(height)) / f64::from(width.min(height)) > 200.0
+        {
+            return Err("Image aspect ratio must be at most 200 with nonzero dimensions".into());
+        }
+        let (w, h) = (f64::from(width), f64::from(height));
+        let factor = (self.patch_size * self.merge_size) as f64;
+        // Python round is ties-to-even; the reference does not clamp this first rounding.
+        let (mut rw, mut rh) = (
+            (w / factor).round_ties_even() * factor,
+            (h / factor).round_ties_even() * factor,
+        );
+        if rw * rh > self.max_pixels as f64 {
+            let scale = (w * h / self.max_pixels as f64).sqrt();
+            rw = (w / scale / factor).floor().max(1.0) * factor;
+            rh = (h / scale / factor).floor().max(1.0) * factor;
+        } else if rw * rh < self.min_pixels as f64 {
+            let scale = (self.min_pixels as f64 / (w * h)).sqrt();
+            rw = (w * scale / factor).ceil() * factor;
+            rh = (h * scale / factor).ceil() * factor;
+        }
+        if rw <= 0.0 || rh <= 0.0 || rw * rh > 16_777_216.0 {
+            return Err("Resized image exceeds the supported pixel budget".into());
+        }
+        Ok((rw as u32, rh as u32))
+    }
+
+    fn decoder(bytes: &[u8], max_pixels: u64) -> Result<impl ImageDecoder + '_, String> {
+        let mut reader = ImageReader::new(Cursor::new(bytes))
+            .with_guessed_format()
+            .map_err(|_| "Invalid image header")?;
+        if !matches!(
+            reader.format(),
+            Some(image::ImageFormat::Png | image::ImageFormat::Jpeg | image::ImageFormat::WebP)
+        ) {
+            return Err("Only PNG, JPEG, and WebP images are supported".into());
+        }
+        let mut limits = image::Limits::default();
+        limits.max_image_width = Some(16_384);
+        limits.max_image_height = Some(16_384);
+        limits.max_alloc = Some(max_pixels.saturating_mul(16));
+        reader.limits(limits);
+        let decoder = reader
+            .into_decoder()
+            .map_err(|_| "Invalid image or decoder allocation limit exceeded")?;
+        let (w, h) = decoder.dimensions();
+        if u64::from(w) * u64::from(h) > max_pixels {
+            return Err("Image exceeds the decoded pixel limit".into());
+        }
+        Ok(decoder)
+    }
+
+    pub(crate) fn inspect(&self, bytes: &[u8], max_pixels: u64) -> Result<ImagePlan, String> {
+        let mut decoder = Self::decoder(bytes, max_pixels)?;
+        let (mut width, mut height) = decoder.dimensions();
+        let orientation = decoder
+            .orientation()
+            .map_err(|_| "Invalid image orientation")?;
+        if matches!(
+            orientation,
+            image::metadata::Orientation::Rotate90
+                | image::metadata::Orientation::Rotate270
+                | image::metadata::Orientation::Rotate90FlipH
+                | image::metadata::Orientation::Rotate270FlipH
+        ) {
+            std::mem::swap(&mut width, &mut height);
+        }
+        let (w, h) = self.resized_dimensions(width, height)?;
+        // Include EXIF rotation/conversion, the horizontal resize intermediate, output,
+        // patch floats and conservative decoder/resampler scratch space. Checked before decode.
+        let memory = decoder.total_bytes() * 2
+            + u64::from(width) * u64::from(height) * 3
+            + u64::from(w) * u64::from(height) * 3
+            + u64::from(w) * u64::from(h) * 3
+            + u64::from(w) * u64::from(h) * 3 * self.temporal_patch_size as u64 * 4
+            + (u64::from(width) + u64::from(height) + u64::from(w) + u64::from(h)) * 128;
+        Ok(ImagePlan {
+            token_count: (w as usize / (self.patch_size * self.merge_size))
+                * (h as usize / (self.patch_size * self.merge_size)),
+            output_width: w,
+            output_height: h,
+            memory_bytes: usize::try_from(memory).map_err(|_| "Image allocation is too large")?,
+        })
+    }
+
+    pub(crate) fn prepare(
+        &self,
+        bytes: &[u8],
+        plan: &ImagePlan,
+        max_pixels: u64,
+    ) -> Result<ImagePatches, String> {
+        let mut decoder = Self::decoder(bytes, max_pixels)?;
+        let orientation = decoder
+            .orientation()
+            .map_err(|_| "Invalid image orientation")?;
+        let mut decoded = DynamicImage::from_decoder(decoder).map_err(|_| "Invalid image data")?;
+        decoded.apply_orientation(orientation);
+        let rgb = decoded.into_rgb8();
+        let (w, h) = (plan.output_width, plan.output_height);
+        let src = fast_image_resize::images::Image::from_vec_u8(
+            rgb.width(),
+            rgb.height(),
+            rgb.into_raw(),
+            fast_image_resize::PixelType::U8x3,
+        )
+        .map_err(|_| "Invalid RGB image")?;
+        let mut intermediate = fast_image_resize::images::Image::new(
+            w,
+            src.height(),
+            fast_image_resize::PixelType::U8x3,
+        );
+        let mut output =
+            fast_image_resize::images::Image::new(w, h, fast_image_resize::PixelType::U8x3);
+        let options = fast_image_resize::ResizeOptions::new().resize_alg(
+            fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::CatmullRom),
+        );
+        let mut resizer = fast_image_resize::Resizer::new();
+        // Uint8 rounding/clipping makes order observable. The library's default 2D
+        // operation is vertical-first; Torchvision performs horizontal-first.
+        resizer
+            .resize(&src, &mut intermediate, &options)
+            .map_err(|_| "Image resize failed")?;
+        resizer
+            .resize(&intermediate, &mut output, &options)
+            .map_err(|_| "Image resize failed")?;
+        let (p, m) = (self.patch_size, self.merge_size);
+        let (gh, gw) = (h as usize / p, w as usize / p);
+        let patch_dim = 3 * self.temporal_patch_size * p * p;
+        let inverse_scale = (1.0 / self.rescale_factor) as f32;
+        let means = self.image_mean.map(|v| v * inverse_scale);
+        let stds = self.image_std.map(|v| v * inverse_scale);
+        let mut pixels = Vec::with_capacity(gh * gw * patch_dim);
+        for block_h in 0..gh / m {
+            for block_w in 0..gw / m {
+                for mh in 0..m {
+                    for mw in 0..m {
+                        for c in 0..3 {
+                            for _ in 0..self.temporal_patch_size {
+                                for ph in 0..p {
+                                    for pw in 0..p {
+                                        let x = (block_w * m + mw) * p + pw;
+                                        let y = (block_h * m + mh) * p + ph;
+                                        let value =
+                                            output.buffer()[(y * w as usize + x) * 3 + c] as f32;
+                                        pixels.push((value - means[c]) / stds[c]);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Ok(ImagePatches {
+            pixels,
+            grid_thw: [1, gh, gw],
+            patch_dim,
+            merge_size: m,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sha2::{Digest, Sha256};
+    fn processor() -> QwenImageProcessor {
+        serde_json::from_str(r#"{"patch_size":16,"temporal_patch_size":2,"merge_size":2,"min_pixels":4096,"max_pixels":1310720,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"rescale_factor":0.00392156862745098,"resample":3,"do_resize":true,"do_rescale":true,"do_normalize":true,"do_convert_rgb":true}"#).unwrap()
+    }
+    // Little-endian float32 reference patches: Transformers 5.17.0 / Torchvision 0.26.0,
+    // Qwen3-VL-Embedding-2B revision 9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda.
+    #[test]
+    fn patches_match_upstream_reference() {
+        let processor = processor();
+        for (w, h, rw, rh, expected) in [
+            (
+                64,
+                96,
+                64,
+                96,
+                "718a3e81694ed48829cb277c81c025acceefd01a5bde0bb706e75148f779c1e4",
+            ),
+            (
+                17,
+                23,
+                64,
+                96,
+                "90d04c10d68726c95188c3a93701d4ec55cce6844f9f847ae9c5fa9911423a2f",
+            ),
+            (
+                173,
+                95,
+                160,
+                96,
+                "baeef7dbc8df44b2553b4e86a8bb75a205cc95f4086fc7ed4a24cc72ee5a3dd4",
+            ),
+            (
+                95,
+                173,
+                96,
+                160,
+                "db66afd362c30d0e235d2440b21362b3b2d39b6b36a58a23fb2398ff8c5df6c9",
+            ),
+            (
+                1503,
+                1101,
+                1312,
+                960,
+                "bf73763ebd3cb289b25bdb7d1b33123d26add667593ddf00e65c42213d8f7b1d",
+            ),
+            (
+                80,
+                80,
+                64,
+                64,
+                "f10927859e2ad9a61b097e6b32b802cc6459d829dfeed9129c82282eb37accfd",
+            ),
+        ] {
+            let source = image::RgbImage::from_fn(w, h, |x, y| {
+                image::Rgb([
+                    ((x * 17 + y * 3) % 256) as u8,
+                    ((x * 5 + y * 29) % 256) as u8,
+                    (((x ^ y) * 23) % 256) as u8,
+                ])
+            });
+            let mut bytes = Cursor::new(Vec::new());
+            source
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            let plan = processor.inspect(bytes.get_ref(), 16_777_216).unwrap();
+            assert_eq!((plan.output_width, plan.output_height), (rw, rh));
+            let prepared = processor
+                .prepare(bytes.get_ref(), &plan, 16_777_216)
+                .unwrap();
+            let mut digest = Sha256::new();
+            for pixel in prepared.pixels {
+                digest.update(pixel.to_le_bytes());
+            }
+            assert_eq!(format!("{:x}", digest.finalize()), expected, "{w}x{h}");
+        }
+    }
+    #[test]
+    fn extreme_aspect_ratio_and_decode_limits() {
+        let processor = processor();
+        assert_eq!(processor.resized_dimensions(15, 3000).unwrap(), (32, 928));
+        assert_eq!(processor.resized_dimensions(3000, 15).unwrap(), (928, 32));
+        assert!(processor.resized_dimensions(15, 3001).is_err());
+        assert!(processor.resized_dimensions(0, 1).is_err());
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbImage::new(64, 64)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        assert!(processor.inspect(bytes.get_ref(), 4095).is_err());
+        assert!(processor.inspect(b"not an image", 4096).is_err());
+    }
+}

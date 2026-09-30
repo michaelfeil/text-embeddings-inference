@@ -6,6 +6,7 @@ authors.workspace = true
 homepage.workspace = true
 
 [dependencies]
+tokio = { workspace = true }
 thiserror = { workspace = true }
 clap = { workspace = true, optional = true }
 nohash-hasher = { workspace = true }

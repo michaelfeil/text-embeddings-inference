@@ -73,13 +73,21 @@ impl ChatProcessor {
                 content: MessageContent::Text(text),
             });
         }
+        self.render_native(&text_messages, false)
+    }
+
+    /// The model processor validates role/modality support before native rendering.
+    pub(crate) fn render_native(
+        &self,
+        messages: &[Message],
+        add_generation_prompt: bool,
+    ) -> Result<String, String> {
         let rendered = self
             .renderer
             .render_value(
-                minijinja::Value::from_serialize(text_messages),
+                minijinja::Value::from_serialize(messages),
                 ChatTemplateOptions {
-                    // Embed the supplied conversation; do not start generating another turn.
-                    add_generation_prompt: false,
+                    add_generation_prompt,
                     special_tokens: self.special_tokens.clone(),
                     ..Default::default()
                 },

@@ -4,6 +4,7 @@ pub mod download;
 mod fast_tokenization;
 pub mod infer;
 pub mod input;
+pub mod multimodal;
 pub mod queue;
 pub mod tokenization;
 
