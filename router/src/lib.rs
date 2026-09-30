@@ -596,7 +596,7 @@ fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type
             }
             #[cfg(all(
                 any(feature = "candle", feature = "python"),
-                not(any(feature = "mkl", feature = "accelerate", feature = "ort"))
+                not(any(feature = "mkl", feature = "accelerate"))
             ))]
             if model_dtype == Some("bfloat16") {
                 return DType::Bfloat16;
@@ -945,12 +945,7 @@ impl From<ResponseMetadata> for HeaderMap {
 #[cfg(all(
     test,
     feature = "candle",
-    not(any(
-        feature = "mkl",
-        feature = "accelerate",
-        feature = "ort",
-        feature = "python"
-    ))
+    not(any(feature = "mkl", feature = "accelerate", feature = "python"))
 ))]
 mod auto_dtype_tests {
     use super::*;

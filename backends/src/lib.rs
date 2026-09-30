@@ -25,9 +25,6 @@ pub use text_embeddings_backend_core::{
 #[cfg(feature = "candle")]
 use text_embeddings_backend_candle::CandleBackend;
 
-#[cfg(feature = "ort")]
-use text_embeddings_backend_ort::OrtBackend;
-
 #[cfg(feature = "python")]
 use text_embeddings_backend_python::PythonBackend;
 
@@ -509,47 +506,6 @@ async fn init_backend(
     }
     let mut backend_start_failed = false;
 
-    if cfg!(feature = "ort") && !enable_fp8_dynamic {
-        #[cfg(feature = "ort")]
-        {
-            if let Some(api_repo) = api_repo.as_ref() {
-                let start = std::time::Instant::now();
-                let model_files = download_onnx(api_repo)
-                    .await
-                    .map_err(|err| BackendError::WeightsNotFound(err.to_string()))?;
-                match model_files.is_empty() {
-                    true => {
-                        tracing::error!("Model ONNX files not found in the repository. You can easily create ONNX files using the following scripts: https://gist.github.com/tomaarsen/4b00b0e3be8884efa64cfab9230b161f, or use this Space: https://huggingface.co/spaces/sentence-transformers/backend-export")
-                    }
-                    false => {
-                        tracing::info!("Model ONNX weights downloaded in {:?}", start.elapsed())
-                    }
-                }
-            }
-
-            // NOTE: for ONNX we need to retrieve the `tokenizer_config.json` to identify which
-            // `padding_side` needs to be applied for the input processing and the pooling
-            if let Some(api_repo) = api_repo.as_ref() {
-                tracing::info!("Downloading `tokenizer_config.json`");
-                match api_repo.get("tokenizer_config.json").await {
-                    Ok(_) => (),
-                    Err(err) => {
-                        tracing::warn!("Could not download `tokenizer_config.json`: {}", err)
-                    }
-                }
-            }
-
-            let backend = OrtBackend::new(&model_path, dtype.to_string(), model_type.clone());
-            match backend {
-                Ok(b) => return Ok(Box::new(b)),
-                Err(err) => {
-                    tracing::error!("Could not start ORT backend: {err}");
-                    backend_start_failed = true;
-                }
-            }
-        }
-    }
-
     if let Some(api_repo) = api_repo.as_ref() {
         if cfg!(feature = "python") || cfg!(feature = "candle") {
             let start = std::time::Instant::now();
@@ -816,41 +772,6 @@ async fn download_safetensors(api: Arc<ApiRepo>) -> Result<Vec<PathBuf>, ApiErro
     Ok(safetensors_files)
 }
 
-#[cfg(feature = "ort")]
-async fn download_onnx(api: &ApiRepo) -> Result<Vec<PathBuf>, ApiError> {
-    let mut model_files: Vec<PathBuf> = Vec::new();
-
-    tracing::info!("Downloading `model.onnx`");
-    match api.get("model.onnx").await {
-        Ok(p) => model_files.push(p),
-        Err(err) => {
-            tracing::warn!("Could not download `model.onnx`: {err}");
-            tracing::info!("Downloading `onnx/model.onnx`");
-
-            match api.get("onnx/model.onnx").await {
-                Ok(p) => model_files.push(p.parent().unwrap().to_path_buf()),
-                Err(err) => tracing::warn!("Could not download `onnx/model.onnx`: {err}"),
-            };
-        }
-    };
-
-    tracing::info!("Downloading `model.onnx_data`");
-    match api.get("model.onnx_data").await {
-        Ok(p) => model_files.push(p),
-        Err(err) => {
-            tracing::warn!("Could not download `model.onnx_data`: {err}");
-            tracing::info!("Downloading `onnx/model.onnx_data`");
-
-            match api.get("onnx/model.onnx_data").await {
-                Ok(p) => model_files.push(p.parent().unwrap().to_path_buf()),
-                Err(err) => tracing::warn!("Could not download `onnx/model.onnx_data`: {err}"),
-            }
-        }
-    }
-
-    Ok(model_files)
-}
-
 #[cfg(feature = "candle")]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 enum ModuleType {
@@ -1009,7 +930,6 @@ pub fn supports_device_replication() -> bool {
             feature = "flash-attn",
             feature = "flash-attn-v1"
         ),
-        not(feature = "ort"),
         not(feature = "python")
     ))
 }
