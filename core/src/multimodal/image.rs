@@ -108,7 +108,7 @@ impl QwenImageProcessor {
         Ok((rw as u32, rh as u32))
     }
 
-    fn decoder(bytes: &[u8], max_pixels: u64) -> Result<impl ImageDecoder + '_, String> {
+    pub(super) fn decoder(bytes: &[u8], max_pixels: u64) -> Result<impl ImageDecoder + '_, String> {
         let mut reader = ImageReader::new(Cursor::new(bytes))
             .with_guessed_format()
             .map_err(|_| "Invalid image header")?;
@@ -186,40 +186,8 @@ impl QwenImageProcessor {
         plan: &ImagePlan,
         max_pixels: u64,
     ) -> Result<ImagePatches, String> {
-        let mut decoder = Self::decoder(bytes, max_pixels)?;
-        let orientation = decoder
-            .orientation()
-            .map_err(|_| "Invalid image orientation")?;
-        let mut decoded = DynamicImage::from_decoder(decoder).map_err(|_| "Invalid image data")?;
-        decoded.apply_orientation(orientation);
-        let rgb = decoded.into_rgb8();
         let (w, h) = (plan.output_width, plan.output_height);
-        let src = fast_image_resize::images::Image::from_vec_u8(
-            rgb.width(),
-            rgb.height(),
-            rgb.into_raw(),
-            fast_image_resize::PixelType::U8x3,
-        )
-        .map_err(|_| "Invalid RGB image")?;
-        let mut intermediate = fast_image_resize::images::Image::new(
-            w,
-            src.height(),
-            fast_image_resize::PixelType::U8x3,
-        );
-        let mut output =
-            fast_image_resize::images::Image::new(w, h, fast_image_resize::PixelType::U8x3);
-        let options = fast_image_resize::ResizeOptions::new().resize_alg(
-            fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::CatmullRom),
-        );
-        let mut resizer = fast_image_resize::Resizer::new();
-        // Uint8 rounding/clipping makes order observable. The library's default 2D
-        // operation is vertical-first; Torchvision performs horizontal-first.
-        resizer
-            .resize(&src, &mut intermediate, &options)
-            .map_err(|_| "Image resize failed")?;
-        resizer
-            .resize(&intermediate, &mut output, &options)
-            .map_err(|_| "Image resize failed")?;
+        let output = resize_rgb(bytes, w, h, max_pixels)?;
         let (p, m) = (self.patch_size, self.merge_size);
         let (gh, gw) = (h as usize / p, w as usize / p);
         let patch_dim = 3 * self.temporal_patch_size * p * p;
@@ -237,8 +205,7 @@ impl QwenImageProcessor {
                                     for pw in 0..p {
                                         let x = (block_w * m + mw) * p + pw;
                                         let y = (block_h * m + mh) * p + ph;
-                                        let value =
-                                            output.buffer()[(y * w as usize + x) * 3 + c] as f32;
+                                        let value = output[(y * w as usize + x) * 3 + c] as f32;
                                         pixels.push((value - means[c]) / stds[c]);
                                     }
                                 }
@@ -255,6 +222,40 @@ impl QwenImageProcessor {
             merge_size: m,
         })
     }
+}
+
+pub(super) fn resize_rgb(bytes: &[u8], w: u32, h: u32, max_pixels: u64) -> Result<Vec<u8>, String> {
+    let mut decoder = QwenImageProcessor::decoder(bytes, max_pixels)?;
+    let orientation = decoder
+        .orientation()
+        .map_err(|_| "Invalid image orientation")?;
+    let mut decoded = DynamicImage::from_decoder(decoder).map_err(|_| "Invalid image data")?;
+    decoded.apply_orientation(orientation);
+    let rgb = decoded.into_rgb8();
+    let src = fast_image_resize::images::Image::from_vec_u8(
+        rgb.width(),
+        rgb.height(),
+        rgb.into_raw(),
+        fast_image_resize::PixelType::U8x3,
+    )
+    .map_err(|_| "Invalid RGB image")?;
+    let mut intermediate =
+        fast_image_resize::images::Image::new(w, src.height(), fast_image_resize::PixelType::U8x3);
+    let mut output =
+        fast_image_resize::images::Image::new(w, h, fast_image_resize::PixelType::U8x3);
+    let options = fast_image_resize::ResizeOptions::new().resize_alg(
+        fast_image_resize::ResizeAlg::Convolution(fast_image_resize::FilterType::CatmullRom),
+    );
+    let mut resizer = fast_image_resize::Resizer::new();
+    // Uint8 rounding/clipping makes order observable. The library's default 2D
+    // operation is vertical-first; Torchvision performs horizontal-first.
+    resizer
+        .resize(&src, &mut intermediate, &options)
+        .map_err(|_| "Image resize failed")?;
+    resizer
+        .resize(&intermediate, &mut output, &options)
+        .map_err(|_| "Image resize failed")?;
+    Ok(output.into_vec())
 }
 
 // image-webp's EXIF reader does not inherit ImageReader's allocation limit.

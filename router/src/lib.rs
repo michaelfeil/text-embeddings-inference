@@ -337,6 +337,7 @@ pub async fn run(
             &model_root,
             tokenizer.clone(),
             max_input_length,
+            multimodal_config.clone(),
         )?))
     } else {
         None

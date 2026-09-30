@@ -129,3 +129,6 @@ pub use qwen35::Qwen35Model;
 mod qwen3_vl;
 #[cfg(all(feature = "cuda", feature = "flash-attn"))]
 pub use qwen3_vl::Qwen3VlModel;
+
+#[cfg(feature = "flash-attn")]
+mod gemma4_vision;

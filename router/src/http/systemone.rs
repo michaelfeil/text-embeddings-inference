@@ -49,11 +49,15 @@ impl SystemOne {
         path: &Path,
         tokenizer: Tokenizer,
         max_input_length: usize,
+        multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
     ) -> anyhow::Result<Self> {
         if path.join("rl_agent_config.json").exists() {
             Ok(Self::Laya(Laya::load(path, tokenizer, max_input_length)?))
         } else {
-            Ok(Self::Rune(rune::Rune::load(tokenizer, max_input_length)?))
+            Ok(Self::Rune(
+                rune::Rune::load(tokenizer, max_input_length)?
+                    .with_images(path, multimodal_config)?,
+            ))
         }
     }
 
@@ -540,7 +544,7 @@ pub async fn systemone(
     Extension(infer): Extension<Infer>,
     Extension(info): Extension<crate::Info>,
     Extension(service): Extension<Option<Arc<SystemOne>>>,
-    Json(request): Json<SystemOneRequest>,
+    Json(mut request): Json<SystemOneRequest>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
     metrics::counter!("te_request_count", "method" => "systemone").increment(1);
     let service = service.ok_or_else(|| {
@@ -564,11 +568,36 @@ pub async fn systemone(
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
     metrics::counter!("te_systemone_count").increment(1);
     let start = Instant::now();
+    // Validate and tokenize questions before fetching media, off the async executor.
     let worker = service.clone();
-    let questions = tokio::task::spawn_blocking(move || worker.prepare(request))
-        .await
-        .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
-        .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    let (mut questions, sources, max_len) = tokio::task::spawn_blocking(move || {
+        let sources = if matches!(worker.as_ref(), SystemOne::Rune(_)) {
+            rune::Rune::image_sources(&mut request)?
+        } else {
+            vec![]
+        };
+        let max_len = request.max_len;
+        Ok::<_, String>((worker.prepare(request)?, sources, max_len))
+    })
+    .await
+    .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
+    .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    if let SystemOne::Rune(model) = service.as_ref() {
+        if !sources.is_empty() {
+            let images = model.prepare_images(sources).await.map_err(|e| {
+                let status =
+                    if matches!(e, text_embeddings_core::TextEmbeddingsError::Overloaded(_)) {
+                        StatusCode::TOO_MANY_REQUESTS
+                    } else {
+                        StatusCode::UNPROCESSABLE_ENTITY
+                    };
+                error(status, e)
+            })?;
+            model
+                .attach_images(&mut questions, images, max_len)
+                .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+        }
+    }
     let tokenization = start.elapsed();
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();
     let input_tokens: usize = questions.iter().map(|q| q.encoding.input_ids.len()).sum();

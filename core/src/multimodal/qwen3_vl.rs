@@ -383,7 +383,7 @@ impl ProcessorState {
                 let image = images.next().unwrap();
                 let start = input_ids.len();
                 input_ids.resize(start + image.token_count(), id);
-                spans.push((start, image));
+                spans.push((start, Arc::new(image)));
             } else {
                 input_ids.push(id);
             }
@@ -395,7 +395,7 @@ impl ProcessorState {
             input_ids.len(),
             &spans
                 .iter()
-                .map(|(start, image)| (*start, image))
+                .map(|(start, image)| (*start, image.as_ref()))
                 .collect::<Vec<_>>(),
         )
         .map_err(invalid)?;
@@ -405,7 +405,7 @@ impl ProcessorState {
             media: Arc::new(MultimodalEncoding {
                 images: spans,
                 position_ids,
-                memory: Some(memory),
+                memory: Some(Arc::new(memory)),
             }),
         })
     }

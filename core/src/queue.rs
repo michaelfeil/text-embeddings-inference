@@ -354,9 +354,11 @@ fn queue_blocking_task(
                 let (compact_input_ids, compact_position_ids, scatter_unfold, fold_gather) =
                     if radix_mlp_threshold > 1e-6
                         && !input_ids.is_empty()
-                        && multimodal
-                            .iter()
-                            .all(|media| media.as_ref().is_none_or(|media| media.images.is_empty()))
+                        && text_embeddings_backend::MultimodalEncoding::allows_radix(
+                            &multimodal,
+                            &input_ids,
+                            &cu_seq_lengths,
+                        )
                     {
                         let (compact_ids, compact_pos, scatter, fold) =
                             radix_mlp::compute_fold_and_scatter(
@@ -536,15 +538,15 @@ mod tests {
             Arc::new(text_embeddings_backend::MultimodalEncoding {
                 images: vec![(
                     0,
-                    text_embeddings_backend::ImagePatches {
+                    Arc::new(text_embeddings_backend::ImagePatches {
                         pixels: vec![value],
                         grid_thw: [1, 1, 1],
                         patch_dim: 1,
                         merge_size: 1,
-                    },
+                    }),
                 )],
                 position_ids: [vec![0], vec![0], vec![0]],
-                memory: Some(permits.clone().try_acquire_owned().unwrap()),
+                memory: Some(Arc::new(permits.clone().try_acquire_owned().unwrap())),
             })
         };
         let canceled_media = make_media(1.0);
