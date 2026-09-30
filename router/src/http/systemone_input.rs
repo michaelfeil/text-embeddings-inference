@@ -1,137 +1,31 @@
-//! Public decision context. Model adapters own chat templates and media processing.
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
-
-/// A plain text state or an explicitly structured native conversation.
-/// Message objects are never interpreted as text or silently flattened.
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(untagged)]
-pub enum SystemOneInput {
-    Text(String),
-    Messages(MessageInput),
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct MessageInput {
-    pub messages: Vec<DecisionMessage>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct DecisionMessage {
-    pub role: MessageRole,
-    pub content: MessageContent,
-}
-
-/// Roles supported by the initial conversation contract. Additional roles require
-/// explicit metadata and adapter support, rather than being silently discarded.
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MessageRole {
-    System,
-    Developer,
-    User,
-    Assistant,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(untagged)]
-pub enum MessageContent {
-    Text(String),
-    Parts(Vec<ContentPart>),
-}
-
-/// Ordered wire content, independent of a particular model's tensor format.
-/// These types describe inputs; the loaded adapter must explicitly support each
-/// modality. VideoUrl is an extension following the vLLM message convention.
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ContentPart {
-    Text { text: String },
-    ImageUrl { image_url: ImageSource },
-    InputAudio { input_audio: AudioSource },
-    VideoUrl { video_url: VideoSource },
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct ImageSource {
-    /// Remote URL or inline data URL; fetching is a processor responsibility.
-    pub url: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub detail: Option<ImageDetail>,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum ImageDetail {
-    Auto,
-    Low,
-    High,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct AudioSource {
-    /// Base64 encoded bytes. Not decoded by request deserialization.
-    pub data: String,
-    pub format: AudioFormat,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum AudioFormat {
-    Wav,
-    Mp3,
-}
-
-#[derive(Debug, Clone, Deserialize, Serialize, ToSchema)]
-#[serde(deny_unknown_fields)]
-pub struct VideoSource {
-    pub url: String,
-}
+//! Compatibility names for the shared model input types.
+//!
+//! New adapters should import `text_embeddings_core::input` directly.
+pub use text_embeddings_core::input::{
+    AudioFormat, AudioSource, ContentPart, ImageDetail, ImageSource, Message as DecisionMessage,
+    MessageContent, MessageInput, MessageRole, ModelInput as SystemOneInput, VideoSource,
+};
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::json;
+    use utoipa::ToSchema;
 
     #[test]
-    fn preserves_native_roles_and_interleaved_media() {
-        let value = json!({"messages": [
-            {"role": "system", "content": "Inspect the conversation."},
-            {"role": "user", "content": [
-                {"type": "text", "text": "Before"},
-                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AA==", "detail": "high"}},
-                {"type": "text", "text": "After"},
-                {"type": "input_audio", "input_audio": {"data": "AA==", "format": "wav"}},
-                {"type": "video_url", "video_url": {"url": "https://example.com/clip.mp4"}}
-            ]},
-            {"role": "assistant", "content": "Previous response"}
-        ]});
-        let input: SystemOneInput = serde_json::from_value(value.clone()).unwrap();
-        assert!(matches!(input, SystemOneInput::Messages(_)));
-        assert_eq!(serde_json::to_value(input).unwrap(), value);
-    }
-
-    #[test]
-    fn invalid_messages_cannot_fall_back_to_text() {
-        for value in [
-            json!(null),
-            json!({"ticket": "legacy object"}),
-            json!([{ "role": "user", "content": "bare array" }]),
-            json!({"messages": [], "metadata": "must not be lost"}),
-            json!({"messages": [{"role": "unknown", "content": "x"}]}),
-            json!({"messages": [{"role": "user", "content": [{"type": "unknown", "text": "x"}]}]}),
-            json!({"messages": [{"role": "user", "content": [{"type": "image_url", "image_url": {}}]}]}),
-            json!({"messages": [{"role": "assistant", "content": "x", "tool_calls": []}]}),
-        ] {
-            assert!(serde_json::from_value::<SystemOneInput>(value).is_err());
-        }
-        assert!(matches!(
-            serde_json::from_value::<SystemOneInput>(json!("plain text")).unwrap(),
-            SystemOneInput::Text(_)
-        ));
+    fn systemone_schema_uses_shared_type_names() {
+        let (_, request) = super::super::systemone::SystemOneRequest::schema();
+        let request = serde_json::to_value(request).unwrap();
+        assert_eq!(
+            request["properties"]["state"]["$ref"],
+            "#/components/schemas/ModelInput"
+        );
+        let (_, messages) = MessageInput::schema();
+        let messages = serde_json::to_value(messages).unwrap();
+        assert_eq!(
+            messages["properties"]["messages"]["items"]["$ref"],
+            "#/components/schemas/Message"
+        );
+        assert_eq!(SystemOneInput::schema().0, "ModelInput");
+        assert_eq!(DecisionMessage::schema().0, "Message");
     }
 }
