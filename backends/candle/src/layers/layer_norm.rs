@@ -40,6 +40,24 @@ impl LayerNormNoBias {
         Ok((self.forward(&sum, None)?, sum))
     }
 
+    pub fn forward_rounded_residual_norm_only(
+        &self,
+        input: &Tensor,
+        residual: &Tensor,
+    ) -> Result<Tensor> {
+        #[cfg(feature = "cuda")]
+        if input.device().is_cuda() {
+            return candle_layer_norm::layer_norm_with_rounded_residual(
+                &input.flatten_to(D::Minus2)?,
+                &residual.flatten_to(D::Minus2)?,
+                &self.weight,
+                self.epsilon,
+            )?
+            .reshape(input.shape());
+        }
+        self.forward(&super::residual_add(residual, input)?, None)
+    }
+
     pub fn forward(&self, hidden_states: &Tensor, residual: Option<&Tensor>) -> Result<Tensor> {
         let _enter = self.span.enter();
 
