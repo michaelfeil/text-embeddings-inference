@@ -1,4 +1,5 @@
 pub mod backend_pool;
+pub mod chat;
 pub mod download;
 mod fast_tokenization;
 pub mod infer;

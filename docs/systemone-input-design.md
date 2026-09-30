@@ -86,13 +86,30 @@ An embedding conversation can contain ordered text and image parts:
 }
 ```
 
-**Current capability:** this establishes the request contract and preserves the
-conversation until preprocessing. The current embedding text processor returns
-422 for every conversation, including text-only conversations. The example above
-requires a future model processor; this change does not enable image inference or
-remote downloads. Plain strings and string batches keep their existing behavior.
-System/developer roles and audio/video parts remain representable in the shared
-schema, with actual support owned by each model processor.
+**Current capability:** text-only user/assistant conversations use the checkpoint's
+native chat template through fastokens. Template compilation happens once at
+startup and rendering runs in the bounded tokenizer workers, including when token
+encoding falls back to Hugging Face. Ordered text parts are concatenated within
+each message. Message order and roles are preserved. System/developer roles,
+images, audio, and video return 422 before rendering, so templates cannot silently
+drop unsupported content. The image example above describes the future processor
+contract and currently returns 422.
+
+The server loads `chat_template.jinja` or the single/default `chat_template` in
+`tokenizer_config.json`, using the model revision. A missing/invalid template
+disables conversation processing while leaving ordinary text available; ambiguous
+named templates require a `default` entry. Conversations use
+`add_generation_prompt=false` and `add_special_tokens=false`: they embed the
+supplied turns without starting an assistant reply or duplicating template BOS/EOS.
+Checkpoint-specific generation-prefix policies require a model processor.
+
+The native template owns conversation instructions. The plain-text default prompt
+is not prepended to conversations, and explicit `prompt_name` with messages is
+rejected. Over-limit conversation character counts are rejected before rendering;
+rendered character limits also reject rather than cutting template markers. Token
+truncation still follows the existing explicit/default truncation configuration.
+Plain strings and string batches retain their existing prompt and tokenization
+behavior. This change performs no image inference or remote media downloads.
 
 Remote image resolution belongs before final tokenization and queue admission of
 prepared inputs. A follow-on implementation must enforce configured HTTPS storage
