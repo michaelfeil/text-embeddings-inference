@@ -54,16 +54,17 @@ ARG RUSTFLAGS="-C target-cpu=x86-64-v3"
 ENV RUSTFLAGS=${RUSTFLAGS}
 
 ARG CUDA_COMPUTE_CAP=80
-ARG GIT_SHA
-ARG DOCKER_LABEL
 
 # Limit parallelism
 ARG RAYON_NUM_THREADS
 ARG CARGO_BUILD_JOBS
 ARG CARGO_BUILD_INCREMENTAL
 
-# sccache specific variables
-ARG SCCACHE_GHA_ENABLED
+# Keep compiler artifacts across source and release changes on this builder.
+# Cargo targets stay in layers: sharing their mutable output risks stale kernels.
+ENV SCCACHE_DIR=/var/cache/sccache
+ENV SCCACHE_CACHE_SIZE=20G
+ARG SCCACHE_GHA_ENABLED=false
 
 WORKDIR /usr/src
 
@@ -90,13 +91,14 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
 
 COPY --from=planner /usr/src/recipe.json recipe.json
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
+RUN --mount=type=cache,id=tei-sccache-cuda12.9-sm${CUDA_COMPUTE_CAP},target=/var/cache/sccache,sharing=shared \
+    --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
     if [ ${CUDA_COMPUTE_CAP} -ge 75 -a ${CUDA_COMPUTE_CAP} -lt 80 ]; \
     then \
-        cargo-static-cuda chef cook --release --features candle-cuda-turing --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
+        cargo-static-cuda chef cook --release --bin text-embeddings-router --features http --features candle-cuda-turing --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
     else \
-        cargo-static-cuda chef cook --release --features candle-cuda $(case "$CUDA_COMPUTE_CAP" in 90) printf %s --features=fa4,experimental-deberta,experimental-fp8 ;; 120) printf %s --features=fa4,experimental-deberta ;; 80|86|89) printf %s --features=fa4 ;; esac) --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
+        cargo-static-cuda chef cook --release --bin text-embeddings-router --features http --features candle-cuda $(case "$CUDA_COMPUTE_CAP" in 90) printf %s --features=fa4,experimental-deberta,experimental-fp8 ;; 120) printf %s --features=fa4,experimental-deberta ;; 80|86|89) printf %s --features=fa4 ;; esac) --features static-linking --no-default-features --recipe-path recipe.json && sccache -s; \
     fi;
 
 COPY backends backends
@@ -107,7 +109,11 @@ COPY Cargo.lock ./
 
 FROM builder AS http-builder
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
+ARG GIT_SHA
+ARG DOCKER_LABEL
+
+RUN --mount=type=cache,id=tei-sccache-cuda12.9-sm${CUDA_COMPUTE_CAP},target=/var/cache/sccache,sharing=shared \
+    --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
     if [ ${CUDA_COMPUTE_CAP} -ge 75 -a ${CUDA_COMPUTE_CAP} -lt 80 ]; \
     then \
@@ -130,7 +136,11 @@ RUN PROTOC_ZIP=protoc-21.12-linux-x86_64.zip && \
 
 COPY proto proto
 
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
+ARG GIT_SHA
+ARG DOCKER_LABEL
+
+RUN --mount=type=cache,id=tei-sccache-cuda12.9-sm${CUDA_COMPUTE_CAP},target=/var/cache/sccache,sharing=shared \
+    --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
     if [ ${CUDA_COMPUTE_CAP} -ge 75 -a ${CUDA_COMPUTE_CAP} -lt 80 ]; \
     then \
