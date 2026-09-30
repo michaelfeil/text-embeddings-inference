@@ -588,7 +588,9 @@ Add `--image-allowed-hosts images.example.com` to allow that exact remote host, 
 supply inline `data:image/png;base64,...` URLs. Images use the same bounded resolver
 as Qwen3-VL: PNG, JPEG, and WebP; at most four images per request, 20 MiB encoded per
 image, 16 megapixels decoded, and a shared 512 MiB host processing budget by default
-(`--image-memory-budget-mib`). JPEG decoding can differ numerically from Pillow.
+(`--image-memory-budget-mib`). Large inline images also need an appropriate
+`--payload-limit` for their JSON/base64 body (default: 2,000,000 bytes).
+JPEG decoding can differ numerically from Pillow.
 The checkpoint's image processor determines the patch budget (280 soft tokens by
 default for `michaelfeil/rune-26b-a4b`). Images precede the decision prompt; their
 ordered `[image N]` references remain in the serialized state, with URLs removed.
