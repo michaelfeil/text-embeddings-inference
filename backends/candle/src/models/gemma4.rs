@@ -142,8 +142,11 @@ impl Gemma4RmsNorm {
             } else {
                 hidden_states.clone()
             };
-            let states =
-                crate::layers::gemma_rms_norm::forward(&states, &self.weight, self.epsilon as f32)?;
+            let states = crate::layers::gemma_rms_norm::forward_reference(
+                &states,
+                &self.weight,
+                self.epsilon as f32,
+            )?;
             return if squeezed {
                 states.unsqueeze(0)
             } else {
