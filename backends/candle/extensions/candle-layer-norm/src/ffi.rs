@@ -25,6 +25,7 @@ extern "C" {
         ctype: u32,
 
         is_rms_norm: c_int,
+        round_residual: c_int,
         stream: *mut c_void,
     );
 }

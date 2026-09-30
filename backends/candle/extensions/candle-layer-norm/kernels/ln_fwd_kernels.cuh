@@ -132,6 +132,10 @@ void ln_fwd_kernel(FwdParams params) {
                     } else {
                         x_ij = has_residual ? compute_t(residual.data.elt[jt]) : 0.f;
                     }
+                    // Match a separate model-dtype residual add before computing statistics.
+                    if (has_residual && params.round_residual) {
+                        x_ij = compute_t(input_t(x_ij));
+                    }
                     if (save_x) { x.data.elt[jt] = x_ij; }
                     xf[it * NUM_ELTS + jt] = x_ij;
                 }
