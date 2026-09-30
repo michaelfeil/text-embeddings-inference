@@ -93,6 +93,8 @@ pub struct Gemma4TextConfig {
 pub struct Gemma4Config {
     pub text_config: Gemma4TextConfig,
     #[serde(default)]
+    pub vision_config: Option<serde_json::Value>,
+    #[serde(default)]
     pub tie_word_embeddings: bool,
     #[serde(default)]
     pub eos_token_id: Option<serde_json::Value>,
@@ -183,6 +185,7 @@ impl Gemma4Attention {
         causal: bool,
         compact: &CompactUnfoldTensors,
         shared_kv: &mut SharedKv,
+        image_spans: &[(usize, usize, usize)],
     ) -> Result<Tensor> {
         use crate::flash_attn::flash_attn_varlen;
         let compact_len = states.dim(0)?;
@@ -262,7 +265,7 @@ impl Gemma4Attention {
         } else {
             (None, None)
         };
-        let output = flash_attn_varlen(
+        let mut output = flash_attn_varlen(
             &q,
             &k,
             &v,
@@ -277,6 +280,35 @@ impl Gemma4Attention {
             window_right,
         )?
         .flatten_from(D::Minus2)?;
+        // Local layers use AND(sliding-window, OR(causal, same-image)).
+        // For image queries, a noncausal call ending at that image's last key
+        // adds precisely the within-image future keys; global layers stay causal.
+        if self.attention_type == AttentionType::Sliding {
+            for &(start, length, sequence_start) in image_spans {
+                let key_start = start
+                    .saturating_sub(self.sliding_window.saturating_sub(1))
+                    .max(sequence_start);
+                let key_length = start + length - key_start;
+                let cu_q = Tensor::new(&[0u32, length as u32], states.device())?;
+                let cu_k = Tensor::new(&[0u32, key_length as u32], states.device())?;
+                let image_output = flash_attn_varlen(
+                    &q.narrow(0, start, length)?.contiguous()?,
+                    &k.narrow(0, key_start, key_length)?.contiguous()?,
+                    &v.narrow(0, key_start, key_length)?.contiguous()?,
+                    None,
+                    &cu_q,
+                    &cu_k,
+                    length,
+                    key_length,
+                    1.0,
+                    false,
+                    Some(self.sliding_window.saturating_sub(1)),
+                    None,
+                )?
+                .flatten_from(D::Minus2)?;
+                output = output.slice_scatter0(&image_output, start)?;
+            }
+        }
         self.o_proj.forward(&compact.fold_gather(&output)?)
     }
 
@@ -561,6 +593,7 @@ impl Gemma4Layer {
         causal: bool,
         compact: &CompactUnfoldTensors,
         shared_kv: &mut SharedKv,
+        image_spans: &[(usize, usize, usize)],
     ) -> Result<Tensor> {
         let residual = states;
         let normalized = self.input_layernorm.forward(states)?;
@@ -573,6 +606,7 @@ impl Gemma4Layer {
             causal,
             compact,
             shared_kv,
+            image_spans,
         )?;
         let states = (residual + self.post_attention_layernorm.forward(&attention)?)?;
         let residual = &states;
@@ -702,6 +736,8 @@ enum Gemma4Output {
 }
 
 pub struct Gemma4Model {
+    #[cfg(feature = "flash-attn")]
+    vision: Option<super::gemma4_vision::Gemma4Vision>,
     embeddings: Embedding,
     embedding_scale: f64,
     ple: Option<Gemma4Ple>,
@@ -725,13 +761,31 @@ impl Gemma4Model {
             candle::bail!("Bidirectional Gemma4 inference cannot fold causal prefixes")
         }
         let (input_ids, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
-        let embeddings = (self.embeddings.forward(&input_ids)? * self.embedding_scale)?;
+        let mut embeddings = (self.embeddings.forward(&input_ids)? * self.embedding_scale)?;
+        let has_images = batch
+            .multimodal
+            .iter()
+            .flatten()
+            .any(|media| !media.images.is_empty());
+        if has_images && batch.compact_input_ids.is_some() {
+            candle::bail!("Image inputs cannot use token-only Radix folding");
+        }
+        // Compute PLE from text embeddings before replacing vision slots.
+
         let per_layer_inputs = match &self.ple {
             Some(ple) => Some(
                 ple.forward(&input_ids.unsqueeze(0)?, &embeddings.unsqueeze(0)?)?
                     .squeeze(0)?,
             ),
             None => None,
+        };
+        let image_spans = if has_images {
+            self.vision
+                .as_ref()
+                .ok_or_else(|| candle::Error::Msg("Gemma4 vision weights unavailable".into()))?
+                .inject(batch, &mut embeddings)?
+        } else {
+            vec![]
         };
         let cu_seqlens = Tensor::from_vec(
             batch.cumulative_seq_lengths.clone(),
@@ -775,6 +829,7 @@ impl Gemma4Model {
                 causal,
                 &compact,
                 &mut shared_kv,
+                &image_spans,
             )?;
         }
         Ok((self.norm.forward(&states)?, compact))
@@ -793,6 +848,18 @@ impl Gemma4Model {
             )
         }
 
+        #[cfg(feature = "flash-attn")]
+        let vision = if model_type == ModelType::Decision {
+            config
+                .vision_config
+                .as_ref()
+                .map(|vision| {
+                    super::gemma4_vision::Gemma4Vision::load(vb.clone(), vision, text.hidden_size)
+                })
+                .transpose()?
+        } else {
+            None
+        };
         let output_vb = vb.clone();
 
         let vb = if vb.contains_tensor("model.language_model.embed_tokens.weight") {
@@ -869,6 +936,8 @@ impl Gemma4Model {
         let full_rope = get_cos_sin(text.max_position_embeddings, &full_inv, vb.dtype(), true)?;
 
         Ok(Self {
+            #[cfg(feature = "flash-attn")]
+            vision,
             embeddings,
             embedding_scale: (text.hidden_size as f64).sqrt(),
             ple,

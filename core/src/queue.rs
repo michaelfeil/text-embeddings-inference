@@ -536,15 +536,15 @@ mod tests {
             Arc::new(text_embeddings_backend::MultimodalEncoding {
                 images: vec![(
                     0,
-                    text_embeddings_backend::ImagePatches {
+                    Arc::new(text_embeddings_backend::ImagePatches {
                         pixels: vec![value],
                         grid_thw: [1, 1, 1],
                         patch_dim: 1,
                         merge_size: 1,
-                    },
+                    }),
                 )],
                 position_ids: [vec![0], vec![0], vec![0]],
-                memory: Some(permits.clone().try_acquire_owned().unwrap()),
+                memory: Some(Arc::new(permits.clone().try_acquire_owned().unwrap())),
             })
         };
         let canceled_media = make_media(1.0);

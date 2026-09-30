@@ -1,5 +1,5 @@
 //! Prepared image tensors aligned to one token sequence.
-use std::fmt;
+use std::{fmt, sync::Arc};
 use tokio::sync::OwnedSemaphorePermit;
 
 #[derive(Clone)]
@@ -29,8 +29,8 @@ impl fmt::Debug for ImagePatches {
 #[derive(Debug)]
 pub struct MultimodalEncoding {
     /// (First image token, patches), in message/content order.
-    pub images: Vec<(usize, ImagePatches)>,
+    pub images: Vec<(usize, Arc<ImagePatches>)>,
     pub position_ids: [Vec<u32>; 3],
     /// Keeps the processor's memory reservation alive until the last batch consumer drops it.
-    pub memory: Option<OwnedSemaphorePermit>,
+    pub memory: Option<Arc<OwnedSemaphorePermit>>,
 }

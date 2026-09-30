@@ -7,3 +7,5 @@ mod positions;
 mod qwen3_vl;
 
 pub use qwen3_vl::{MultimodalConfig, PreparedMultimodal, Qwen3VlProcessor};
+mod gemma4;
+pub use gemma4::{Gemma4ImageProcessor, PreparedGemmaImages};
