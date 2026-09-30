@@ -19,6 +19,7 @@ extern "C" {
     /// - `dst`    : pointer to output [index_count, cols]
     /// - `rows`   : rows of x
     /// - `cols`   : cols of x
+    /// - `source_row_stride`: input row stride in elements
     /// - `index_count`: length of indices
     /// - `multi_processor_count`: SM count (for grid sizing)
     /// - `dtype_code`: 0 = f16, 1 = f32
@@ -28,6 +29,7 @@ extern "C" {
         dst: *mut c_void,
         rows: u32,
         cols: u32,
+        source_row_stride: u64,
         index_count: u32,
         multi_processor_count: c_int,
         dtype_code: u32,

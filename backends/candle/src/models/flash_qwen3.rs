@@ -10,9 +10,7 @@ use candle_nn::{Embedding, Module, VarBuilder};
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen3Attention {
-    q_proj: Linear,
-    k_proj: Linear,
-    v_proj: Linear,
+    qkv_proj: Linear,
     o_proj: Linear,
 
     q_norm: RMSNorm,
@@ -53,7 +51,6 @@ impl Qwen3Attention {
         } else {
             None
         };
-        let q_proj = Linear::new(query_weight, query_bias, None);
 
         let key_weight = vb.pp("k_proj").get(
             (num_key_value_heads * attention_head_size, hidden_size),
@@ -67,7 +64,6 @@ impl Qwen3Attention {
         } else {
             None
         };
-        let k_proj = Linear::new(key_weight, key_bias, None);
 
         let value_weight = vb.pp("v_proj").get(
             (num_key_value_heads * attention_head_size, hidden_size),
@@ -81,7 +77,12 @@ impl Qwen3Attention {
         } else {
             None
         };
-        let v_proj = Linear::new(value_weight, value_bias, None);
+        let qkv_weight = Tensor::cat(&[query_weight, key_weight, value_weight], 0)?;
+        let qkv_bias = match (query_bias, key_bias, value_bias) {
+            (Some(q), Some(k), Some(v)) => Some(Tensor::cat(&[q, k, v], 0)?),
+            _ => None,
+        };
+        let qkv_proj = Linear::new(qkv_weight, qkv_bias, None);
 
         let o_proj_weight = vb.pp("o_proj").get(
             (hidden_size, num_attention_heads * attention_head_size),
@@ -100,9 +101,7 @@ impl Qwen3Attention {
         let softmax_scale = (1. / (attention_head_size as f64).sqrt()) as f32;
 
         Ok(Self {
-            q_proj,
-            k_proj,
-            v_proj,
+            qkv_proj,
             o_proj,
             q_norm,
             k_norm,
@@ -126,36 +125,26 @@ impl Qwen3Attention {
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
 
-        let q = self.q_proj.forward(hidden_states)?;
-        let k = self.k_proj.forward(hidden_states)?;
-        let v = self.v_proj.forward(hidden_states)?;
-
-        // Reshape to [batch, seq_len, heads, head_dim]
-        let input_dims = hidden_states.dims();
-        let input_shape = &input_dims[..input_dims.len() - 1];
-
-        let q = q.reshape(
-            [
-                input_shape,
-                &[self.num_attention_heads, self.attention_head_size],
-            ]
-            .concat(),
+        let qkv = self.qkv_proj.forward(hidden_states)?;
+        let mut shape = hidden_states.dims().to_vec();
+        shape.pop();
+        shape.extend([
+            self.num_attention_heads + 2 * self.num_key_value_heads,
+            self.attention_head_size,
+        ]);
+        // Reshape before slicing: reshaping a strided view would copy Q/K.
+        let qkv = qkv.reshape(shape)?;
+        let q = qkv.narrow(candle::D::Minus2, 0, self.num_attention_heads)?;
+        let k = qkv.narrow(
+            candle::D::Minus2,
+            self.num_attention_heads,
+            self.num_key_value_heads,
         )?;
-        let k = k.reshape(
-            [
-                input_shape,
-                &[self.num_key_value_heads, self.attention_head_size],
-            ]
-            .concat(),
+        let v = qkv.narrow(
+            candle::D::Minus2,
+            self.num_attention_heads + self.num_key_value_heads,
+            self.num_key_value_heads,
         )?;
-        let v = v.reshape(
-            [
-                input_shape,
-                &[self.num_key_value_heads, self.attention_head_size],
-            ]
-            .concat(),
-        )?;
-
         #[cfg(feature = "cuda")]
         let fused = crate::layers::qk_norm_rope::try_forward(
             &q,
@@ -170,8 +159,8 @@ impl Qwen3Attention {
         let (q, k) = match fused {
             Some(pair) => pair,
             None => {
-                let (q, _) = self.q_norm.forward(&q, None)?;
-                let (k, _) = self.k_norm.forward(&k, None)?;
+                let (q, _) = self.q_norm.forward(&q.contiguous()?, None)?;
+                let (k, _) = self.k_norm.forward(&k.contiguous()?, None)?;
                 apply_packed_rotary(&q, &k, cos, sin)?
             }
         };
@@ -645,6 +634,48 @@ impl Model for FlashQwen3Model {
 #[cfg(test)]
 mod moe_radix_tests {
     use super::*;
+
+    #[test]
+    fn fused_qkv_matches_separate_gqa_projections() -> Result<()> {
+        for bias in [false, true] {
+            let config: Qwen3Config = serde_json::from_value(serde_json::json!({
+                "attention_bias": bias, "vocab_size": 32, "hidden_size": 12,
+                "head_dim": 8, "intermediate_size": 24, "num_hidden_layers": 1,
+                "num_attention_heads": 4, "num_key_value_heads": 2, "hidden_act": "silu",
+                "max_position_embeddings": 16, "rms_norm_eps": 0.000001,
+                "rope_theta": 10000., "use_sliding_window": false, "eos_token_id": 2
+            }))
+            .map_err(candle::Error::wrap)?;
+            let vars = candle_nn::VarMap::new();
+            let vb = VarBuilder::from_varmap(&vars, candle::DType::F32, &Device::Cpu);
+            Qwen3Attention::load(vb.clone(), &config)?;
+            for (name, var) in vars.data().lock().unwrap().iter() {
+                let offset = name.bytes().map(usize::from).sum::<usize>();
+                let data = (0..var.elem_count())
+                    .map(|i| ((i + offset) as f32).sin() * 0.1)
+                    .collect::<Vec<_>>();
+                var.set(&Tensor::from_vec(data, var.shape(), &Device::Cpu)?)?;
+            }
+            let model = Qwen3Attention::load(vb.clone(), &config)?;
+            let input = Tensor::arange(0f32, 36f32, &Device::Cpu)?.reshape((3, 12))?;
+            let mut separate = Vec::new();
+            for (name, width) in [("q_proj", 32), ("k_proj", 16), ("v_proj", 16)] {
+                let weight = vb.pp(name).get((width, 12), "weight")?;
+                let bias = if bias {
+                    Some(vb.pp(name).get(width, "bias")?)
+                } else {
+                    None
+                };
+                separate.push(Linear::new(weight, bias, None).forward(&input)?);
+            }
+            let error = (model.qkv_proj.forward(&input)? - Tensor::cat(&separate, 1)?)?
+                .abs()?
+                .max_all()?
+                .to_scalar::<f32>()?;
+            assert!(error < 1e-5, "QKV projection changed by {error}");
+        }
+        Ok(())
+    }
 
     #[test]
     fn moe_radix_mlp_preserves_shared_prefix_outputs() -> Result<()> {

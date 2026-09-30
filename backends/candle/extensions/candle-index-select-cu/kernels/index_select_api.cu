@@ -24,13 +24,13 @@ template <typename T>
 __global__ void index_select_rows_scalar(const T *__restrict__ x,
                                          const uint32_t *__restrict__ idx,
                                          T *__restrict__ out, uint32_t rows,
-                                         uint32_t cols, uint32_t index_count) {
+                                         uint32_t cols, uint64_t source_row_stride, uint32_t index_count) {
   uint32_t j = blockIdx.x;
   const uint32_t j_stride = gridDim.x;
 
   for (; j < index_count; j += j_stride) {
     const uint32_t r = idx[j];
-    const T *__restrict__ src_row = x + (size_t)r * cols;
+    const T *__restrict__ src_row = x + (size_t)r * source_row_stride;
     T *__restrict__ dst_row = out + (size_t)j * cols;
 
     for (uint32_t c = threadIdx.x; c < cols; c += blockDim.x) {
@@ -52,7 +52,7 @@ template <typename T, int Vec>
 __global__ void index_select_rows_vec(const T *__restrict__ x,
                                       const uint32_t *__restrict__ idx,
                                       T *__restrict__ out, uint32_t rows,
-                                      uint32_t cols, uint32_t index_count) {
+                                      uint32_t cols, uint64_t source_row_stride, uint32_t index_count) {
   using VecT = typename VecType<T, Vec>::Type;
 
   const uint32_t cols_vec = cols / Vec;
@@ -65,7 +65,7 @@ __global__ void index_select_rows_vec(const T *__restrict__ x,
   for (; j < index_count; j += j_stride) {
     const uint32_t r = idx[j];
 
-    const VecT *__restrict__ src_row = x_vec + (size_t)r * cols_vec;
+    const VecT *__restrict__ src_row = x_vec + (size_t)r * (source_row_stride / Vec);
     VecT *__restrict__ dst_row = out_vec + (size_t)j * cols_vec;
 
     for (uint32_t c_vec = threadIdx.x; c_vec < cols_vec; c_vec += blockDim.x) {
@@ -89,7 +89,7 @@ __global__ void index_select_rows_half2_warp(const __half *__restrict__ x,
                                              const uint32_t *__restrict__ idx,
                                              __half *__restrict__ out,
                                              uint32_t rows, uint32_t cols,
-                                             uint32_t index_count) {
+                                             uint64_t source_row_stride, uint32_t index_count) {
   const uint32_t cols_vec = cols / 2; // number of half2 per row
   const int threads_per_warp = 32;
   const int warps_per_block = WARPS_PER_BLOCK;
@@ -114,7 +114,7 @@ __global__ void index_select_rows_half2_warp(const __half *__restrict__ x,
     const uint32_t r = idx[j];
     // Optional debug: if (r >= rows) return;
 
-    const __half2 *__restrict__ src_row = x_vec + (size_t)r * cols_vec;
+    const __half2 *__restrict__ src_row = x_vec + (size_t)r * (source_row_stride / 2);
     __half2 *__restrict__ dst_row = out_vec + (size_t)j * cols_vec;
 
     // Each lane walks across the row in steps of warp size (32).
@@ -190,7 +190,7 @@ static inline void compute_launch_config_rows_half2(uint32_t index_count,
 template <typename T>
 static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
                                 uint32_t rows, uint32_t cols,
-                                uint32_t index_count,
+                                uint64_t source_row_stride, uint32_t index_count,
                                 int multi_processor_count, cudaStream_t stream) {
   if (index_count == 0 || rows == 0 || cols == 0) {
     return;
@@ -210,9 +210,9 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
     const bool aligned = ((x_addr % alignof(float4)) == 0) &&
                          ((dst_addr % alignof(float4)) == 0);
 
-    if (aligned && (cols % 4 == 0)) {
+    if (aligned && (cols % 4 == 0) && (source_row_stride % 4 == 0)) {
       index_select_rows_vec<float, 4>
-          <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, index_count);
+          <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, source_row_stride, index_count);
 #ifdef DEBUG
       {
         const cudaError_t err = cudaGetLastError();
@@ -227,7 +227,7 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
 
     // Scalar fallback
     index_select_rows_scalar<T>
-        <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, index_count);
+        <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, source_row_stride, index_count);
 #ifdef DEBUG
     {
       const cudaError_t err = cudaGetLastError();
@@ -243,7 +243,8 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
   // ---------- __half path: warp-specialized half2 + half2-row + scalar
   // fallback ----------
   if constexpr (std::is_same<T, __half>::value) {
-    const bool even_cols = (cols % 2 == 0);
+    const bool even_cols = (cols % 2 == 0) && (source_row_stride % 2 == 0)
+        && (reinterpret_cast<uintptr_t>(x_t) % alignof(__half2) == 0);
     const uint64_t cols_vec = cols / 2;
     const uint64_t work_items = (uint64_t)index_count * cols_vec;
 
@@ -261,7 +262,7 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
       __half *dst_h = static_cast<__half *>(dst);
 
       index_select_rows_half2_warp<WARPS_PER_BLOCK>
-          <<<grid, block, 0, stream>>>(x_h, idx, dst_h, rows, cols, index_count);
+          <<<grid, block, 0, stream>>>(x_h, idx, dst_h, rows, cols, source_row_stride, index_count);
 #ifdef DEBUG
       {
         const cudaError_t err = cudaGetLastError();
@@ -291,7 +292,7 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
 
       if (aligned) {
         index_select_rows_vec<__half, 2>
-            <<<grid, block, 0, stream>>>(x_h, idx, dst_h, rows, cols, index_count);
+            <<<grid, block, 0, stream>>>(x_h, idx, dst_h, rows, cols, source_row_stride, index_count);
 #ifdef DEBUG
         {
           const cudaError_t err = cudaGetLastError();
@@ -313,7 +314,7 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
                                       grid, block);
 
     index_select_rows_scalar<T>
-        <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, index_count);
+        <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, source_row_stride, index_count);
 #ifdef DEBUG
     {
       const cudaError_t err = cudaGetLastError();
@@ -331,7 +332,7 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
   compute_launch_config_rows_scalar(index_count, cols, multi_processor_count,
                                     grid, block);
   index_select_rows_scalar<T>
-      <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, index_count);
+      <<<grid, block, 0, stream>>>(x_t, idx, dst_t, rows, cols, source_row_stride, index_count);
 #ifdef DEBUG
   {
     const cudaError_t err = cudaGetLastError();
@@ -344,21 +345,21 @@ static void launch_index_select(const void *x, const uint32_t *idx, void *dst,
 }
 
 // =======================================
-// 6. C entry point (unchanged API)
+// 6. C entry point
 // =======================================
 extern "C" void run_index_select(const void *x, const uint32_t *indices,
                                  void *dst, uint32_t rows, uint32_t cols,
-                                 uint32_t index_count,
+                                 uint64_t source_row_stride, uint32_t index_count,
                                  int multi_processor_count,
                                  uint32_t dtype_code, cudaStream_t stream) {
   // dtype_code: 0 = f16, 1 = f32
   switch (dtype_code) {
   case 0:
-    launch_index_select<__half>(x, indices, dst, rows, cols, index_count,
+    launch_index_select<__half>(x, indices, dst, rows, cols, source_row_stride, index_count,
                                 multi_processor_count, stream);
     break;
   case 1:
-    launch_index_select<float>(x, indices, dst, rows, cols, index_count,
+    launch_index_select<float>(x, indices, dst, rows, cols, source_row_stride, index_count,
                                multi_processor_count, stream);
     break;
   default:

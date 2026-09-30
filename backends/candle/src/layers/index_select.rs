@@ -13,7 +13,7 @@ use candle_index_select_cu;
 pub fn index_select(tensor: &Tensor, ids: &Tensor, dim: usize) -> Result<Tensor> {
     #[cfg(not(feature = "cuda"))]
     {
-        tensor.index_select(ids, dim)
+        tensor.contiguous()?.index_select(ids, dim)
     }
     #[cfg(feature = "cuda")]
     {
