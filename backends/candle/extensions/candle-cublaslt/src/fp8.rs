@@ -5,6 +5,12 @@ use cudarc::driver::{DevicePtr, DevicePtrMut};
 use half::{bf16, f16};
 use std::mem::size_of;
 
+/// Architectures covered by the FP8 build matrix. SM90 supports cuBLASLt
+/// outer-vector scales; the others use FP32 output followed by row scaling.
+pub fn supported_compute_cap(cap: usize) -> bool {
+    matches!(cap, 89 | 90 | 100 | 120)
+}
+
 fn err(e: lt::CublasError) -> candle::Error {
     candle::Error::Cuda(Box::new(e))
 }
@@ -65,6 +71,7 @@ pub struct Fp8Matmul {
     plans: std::collections::HashMap<(usize, usize, usize, DType), Plan>,
     workspace: cudarc::driver::CudaSlice<u8>,
     device: candle::Device,
+    fused_row_scaling: bool,
 }
 impl Fp8Matmul {
     pub fn new(device: &candle::Device) -> Result<Self> {
@@ -79,8 +86,8 @@ impl Fp8Matmul {
             .context()
             .attribute(CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR)
             .map_err(candle::Error::wrap)?;
-        if (major, minor) != (9, 0) {
-            candle::bail!("FP8 outer-vector scaling requires Hopper (compute capability 9.0)");
+        if !supported_compute_cap(major as usize * 10 + minor as usize) {
+            candle::bail!("Dynamic FP8 requires Ada SM89, Hopper SM90, or Blackwell SM100/SM120");
         }
         dev.cuda_stream()
             .context()
@@ -93,6 +100,7 @@ impl Fp8Matmul {
             plans: Default::default(),
             workspace,
             device: device.clone(),
+            fused_row_scaling: (major, minor) == (9, 0),
         })
     }
     /// Compute FP16 `(x * sx) @ (w * sw).T` from contiguous E4M3 matrices.
@@ -117,6 +125,20 @@ impl Fp8Matmul {
         sw: &Tensor,
         dtype: DType,
     ) -> Result<Tensor> {
+        if !matches!(dtype, DType::F16 | DType::BF16) {
+            candle::bail!("FP8 GEMM output must be FP16 or BF16");
+        }
+        if !self.fused_row_scaling {
+            // cuBLASLt OUTER_VEC_32F is SM90-only. Tensorwide FP8 GEMM
+            // with unit scales works on Ada and Blackwell too. Keep the
+            // unscaled accumulation in FP32 to avoid FP16 overflow, apply
+            // the original row scales, and only then round to model dtype.
+            return self
+                .scaled_mm_typed::<f32>(x, w, sx, sw, DType::F32)?
+                .broadcast_mul(&sx.unsqueeze(1)?)?
+                .broadcast_mul(&sw.unsqueeze(0)?)?
+                .to_dtype(dtype);
+        }
         match dtype {
             DType::F16 => self.scaled_mm_typed::<f16>(x, w, sx, sw, dtype),
             DType::BF16 => self.scaled_mm_typed::<bf16>(x, w, sx, sw, dtype),
@@ -211,11 +233,15 @@ impl Fp8Matmul {
                 &cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
             )?;
             d.set(CUBLASLT_MATMUL_DESC_FAST_ACCUM, &1i8)?;
-            let mode = sys::cublasLtMatmulMatrixScale_t::CUBLASLT_MATMUL_MATRIX_SCALE_OUTER_VEC_32F;
-            d.set(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, &mode)?;
-            d.set(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, &mode)?;
-            d.set(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &spw)?;
-            d.set(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &spx)?;
+            if self.fused_row_scaling {
+                let mode =
+                    sys::cublasLtMatmulMatrixScale_t::CUBLASLT_MATMUL_MATRIX_SCALE_OUTER_VEC_32F;
+                d.set(CUBLASLT_MATMUL_DESC_A_SCALE_MODE, &mode)?;
+                d.set(CUBLASLT_MATMUL_DESC_B_SCALE_MODE, &mode)?;
+                d.set(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER, &spw)?;
+                d.set(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER, &spx)?;
+            }
+            // Otherwise leave scalar scale pointers unset (cuBLASLt defaults to 1).
             let a = Layout(
                 lt::create_matrix_layout(
                     sys::cudaDataType::CUDA_R_8F_E4M3,
@@ -236,10 +262,11 @@ impl Fp8Matmul {
             );
             let c = Layout(
                 lt::create_matrix_layout(
-                    if dtype == DType::BF16 {
-                        sys::cudaDataType::CUDA_R_16BF
-                    } else {
-                        sys::cudaDataType::CUDA_R_16F
+                    match dtype {
+                        DType::BF16 => sys::cudaDataType::CUDA_R_16BF,
+                        DType::F16 => sys::cudaDataType::CUDA_R_16F,
+                        DType::F32 => sys::cudaDataType::CUDA_R_32F,
+                        _ => unreachable!(),
                     },
                     n as u64,
                     m as u64,
@@ -286,15 +313,17 @@ impl Fp8Matmul {
             );
         }
         let plan = self.plans.get(&key).expect("plan inserted above");
-        // Scale allocations may change even when dimensions do not.
-        plan.desc.set(
-            sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,
-            &spw,
-        )?;
-        plan.desc.set(
-            sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
-            &spx,
-        )?;
+        if self.fused_row_scaling {
+            // Scale allocations may change even when dimensions do not.
+            plan.desc.set(
+                sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,
+                &spw,
+            )?;
+            plan.desc.set(
+                sys::cublasLtMatmulDescAttributes_t::CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,
+                &spx,
+            )?;
+        }
         let alpha = 1f32;
         let beta = 0f32;
         unsafe {
@@ -579,6 +608,44 @@ impl Fp8Linear {
 mod tests {
     use super::*;
     #[test]
+    fn portable_row_scaling_preserves_scales_and_avoids_fp16_overflow() -> Result<()> {
+        let dev = candle::Device::new_cuda(0)?;
+        let mut executor = Fp8Matmul::new(&dev)?;
+        // Exercise the Ada/Blackwell path even on the Hopper test host.
+        executor.fused_row_scaling = false;
+        for m in [1, 17, 129] {
+            let (n, k) = (32, 1024);
+            let x = Tensor::from_vec(vec![float8::F8E4M3::from_f32(448.); m * k], (m, k), &dev)?;
+            let w = Tensor::from_vec(vec![float8::F8E4M3::from_f32(448.); n * k], (n, k), &dev)?;
+            for factor in [1., 2.] {
+                let xs: Vec<f32> = (0..m)
+                    .map(|i| factor * (i % 4 + 1) as f32 / 4096.)
+                    .collect();
+                let ws: Vec<f32> = (0..n).map(|i| (i % 8 + 1) as f32 / 2048.).collect();
+                let sx = Tensor::from_vec(xs.clone(), m, &dev)?;
+                let sw = Tensor::from_vec(ws.clone(), n, &dev)?;
+                for dtype in [DType::F16, DType::BF16] {
+                    let y = executor
+                        .scaled_mm_dtype(&x, &w, &sx, &sw, dtype)?
+                        .to_dtype(DType::F32)?
+                        .to_vec2::<f32>()?;
+                    for i in 0..m {
+                        for j in 0..n {
+                            let expected = (k as f32 * 448. * 448.) * xs[i] * ws[j];
+                            let expected = match dtype {
+                                DType::F16 => f16::from_f32(expected).to_f32(),
+                                _ => bf16::from_f32(expected).to_f32(),
+                            };
+                            assert_eq!(y[i][j], expected);
+                        }
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn bf16_quantization_and_gemm_preserve_range() -> Result<()> {
         let dev = candle::Device::new_cuda(0)?;
         for k in [17, 1024, 3072] {
@@ -635,7 +702,10 @@ mod tests {
                 .iter()
                 .all(|x| *x == 32.));
         }
-        assert_eq!(executor.plans.len(), 2);
+        assert_eq!(
+            executor.plans.len(),
+            if executor.fused_row_scaling { 2 } else { 1 }
+        );
         Ok(())
     }
 
