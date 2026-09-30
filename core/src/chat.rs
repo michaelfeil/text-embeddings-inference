@@ -102,14 +102,23 @@ fn select_template(value: &Value) -> Result<Option<&str>, String> {
     let default = if let Some(templates) = value.as_array() {
         templates
             .iter()
-            .find(|entry| entry["name"] == "default")
+            .find(|entry| {
+                entry["name"] == "default" || (templates.len() == 1 && entry["name"].is_string())
+            })
             .and_then(|entry| entry["template"].as_str())
+    } else if let Some(templates) = value.as_object() {
+        let selected = if templates.len() == 1 {
+            templates.values().next()
+        } else {
+            templates.get("default")
+        };
+        selected.and_then(Value::as_str)
     } else {
-        value.get("default").and_then(Value::as_str)
+        None
     };
-    default
-        .map(Some)
-        .ok_or_else(|| "Named chat templates require a `default` template".into())
+    default.map(Some).ok_or_else(|| {
+        "Expected a single usable chat template or a named `default` template".into()
+    })
 }
 
 #[cfg(test)]
@@ -246,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn named_templates_require_explicit_default() {
+    fn named_templates_select_the_sole_entry_or_explicit_default() {
         assert_eq!(
             select_template(&json!({"default":"chosen", "tools":"other"})).unwrap(),
             Some("chosen")
@@ -255,6 +264,30 @@ mod tests {
             select_template(&json!([{"name":"default", "template":"chosen"}])).unwrap(),
             Some("chosen")
         );
-        assert!(select_template(&json!({"tools":"other"})).is_err());
+        assert_eq!(
+            select_template(&json!({"tools":"sole"})).unwrap(),
+            Some("sole")
+        );
+        assert_eq!(
+            select_template(&json!([{"name":"chat", "template":"sole"}])).unwrap(),
+            Some("sole")
+        );
+        assert_eq!(
+            select_template(&json!([
+                {"name":"chat", "template":"other"},
+                {"name":"default", "template":"chosen"}
+            ]))
+            .unwrap(),
+            Some("chosen")
+        );
+        for ambiguous in [
+            json!({"tools":"one", "chat":"two"}),
+            json!([{"name":"tools", "template":"one"}, {"name":"chat", "template":"two"}]),
+            json!([]),
+            json!({}),
+            json!([{"template":"missing name"}]),
+        ] {
+            assert!(select_template(&ambiguous).is_err());
+        }
     }
 }
