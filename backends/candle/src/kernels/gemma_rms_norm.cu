@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 #include <cuda_bf16.h>
 
-// Keep Gemma's (1 + weight) scale and normalization in FP32, rounding only
+// Apply the supplied scale and normalization in FP32, rounding only
 // the final result to BF16. No full-sized FP32 activation buffers are needed.
 extern "C" __global__ void gemma_rms_norm_bf16(
     const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,

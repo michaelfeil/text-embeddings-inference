@@ -147,7 +147,7 @@ mod tests {
     #[ignore = "requires CUDA; validates and times the fused Gemma normalization"]
     fn reference_and_timing() -> Result<()> {
         let device = Device::new_cuda(0)?;
-        for width in [32, 256, 768, 1024] {
+        for width in [32, 256, 768, 1024, 2816] {
             for rows in [1, 128, 2048] {
                 let x = Tensor::randn(0f32, 2f32, (rows, width), &device)?.to_dtype(DType::BF16)?;
                 let scale = (Tensor::randn(0f32, 0.2f32, width, &device)?

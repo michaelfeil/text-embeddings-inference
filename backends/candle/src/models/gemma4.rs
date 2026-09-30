@@ -108,7 +108,7 @@ pub struct Gemma4Config {
 
 #[derive(Debug)]
 struct Gemma4RmsNorm {
-    weight: Option<Tensor>,
+    weight: Tensor,
     epsilon: f64,
 }
 
@@ -116,27 +116,44 @@ impl Gemma4RmsNorm {
     fn load(vb: VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
         Ok(Self {
             // Normalization applies the scale in FP32; convert it once at load time.
-            weight: Some(vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?),
+            weight: vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?,
             epsilon,
         })
     }
 
-    fn without_weight(epsilon: f64) -> Self {
-        Self {
-            weight: None,
+    fn without_weight(vb: &VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
+        Ok(Self {
+            weight: Tensor::ones(hidden_size, DType::F32, vb.device())?,
             epsilon,
-        }
+        })
     }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
+        #[cfg(feature = "cuda")]
+        if dtype == DType::BF16
+            && hidden_states.device().is_cuda()
+            && hidden_states.dim(D::Minus1)? <= 8192
+        {
+            // Attention carries a singleton batch dimension around packed tokens.
+            let squeezed = hidden_states.rank() == 4 && hidden_states.dim(0)? == 1;
+            let states = if squeezed {
+                hidden_states.squeeze(0)?
+            } else {
+                hidden_states.clone()
+            };
+            let states =
+                crate::layers::gemma_rms_norm::forward(&states, &self.weight, self.epsilon as f32)?;
+            return if squeezed {
+                states.unsqueeze(0)
+            } else {
+                Ok(states)
+            };
+        }
         let states = hidden_states.to_dtype(DType::F32)?;
         let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
         let states = states.broadcast_div(&(variance + self.epsilon)?.sqrt()?)?;
-        let states = match &self.weight {
-            Some(weight) => states.broadcast_mul(weight)?,
-            None => states,
-        };
+        let states = states.broadcast_mul(&self.weight)?;
         states.to_dtype(dtype)
     }
 }
@@ -158,9 +175,8 @@ impl AttentionType {
 }
 
 struct Gemma4Attention {
-    q_proj: Linear,
-    k_proj: Option<Linear>,
-    v_proj: Option<Linear>,
+    qkv_proj: Linear,
+    k_eq_v: bool,
     o_proj: Linear,
     q_norm: Gemma4RmsNorm,
     k_norm: Option<Gemma4RmsNorm>,
@@ -199,12 +215,10 @@ impl Gemma4Attention {
             let expanded = compact.scatter_unfold(&flat)?;
             expanded.reshape((expanded.dim(0)?, heads, self.head_dim))
         };
-        let q = self.q_proj.forward(states)?.reshape((
-            1,
-            compact_len,
-            self.num_attention_heads,
-            self.head_dim,
-        ))?;
+        let qkv = self.qkv_proj.forward(states)?;
+        let projected_heads = qkv.dim(1)? / self.head_dim;
+        let qkv = qkv.reshape((1, compact_len, projected_heads, self.head_dim))?;
+        let q = qkv.narrow(2, 0, self.num_attention_heads)?;
         let q = self.q_norm.forward(&q)?.transpose(1, 2)?;
         let q = apply_rotary(&q, cos, sin, self.head_dim)?
             .transpose(1, 2)?
@@ -218,20 +232,15 @@ impl Gemma4Attention {
                 .cloned()
                 .ok_or_else(|| candle::Error::Msg("missing Gemma4 shared KV states".into()))?
         } else {
-            let k_unrotated = self.k_proj.as_ref().unwrap().forward(states)?.reshape((
-                1,
-                compact_len,
-                self.num_key_value_heads,
-                self.head_dim,
-            ))?;
-            let v_unrotated = match &self.v_proj {
-                Some(proj) => proj.forward(states)?.reshape((
-                    1,
-                    compact_len,
+            let k_unrotated = qkv.narrow(2, self.num_attention_heads, self.num_key_value_heads)?;
+            let v_unrotated = if self.k_eq_v {
+                k_unrotated.clone()
+            } else {
+                qkv.narrow(
+                    2,
+                    self.num_attention_heads + self.num_key_value_heads,
                     self.num_key_value_heads,
-                    self.head_dim,
-                ))?,
-                None => k_unrotated.clone(),
+                )?
             };
             let k = self
                 .k_norm
@@ -351,44 +360,48 @@ impl Gemma4Attention {
             Ok(Linear::new(weight, bias, None))
         };
 
-        let q_proj = load_linear(
-            vb.pp("q_proj"),
-            config.num_attention_heads * head_dim,
-            config.hidden_size,
-        )?;
-        let (k_proj, v_proj, k_norm, v_norm) = if is_kv_shared {
-            (None, None, None, None)
+        // Shared-KV layers project Q only; K=V layers project Q and K once.
+        let mut projections = vec![("q_proj", config.num_attention_heads * head_dim)];
+        if !is_kv_shared {
+            projections.push(("k_proj", num_key_value_heads * head_dim));
+            if !use_alternative_attention {
+                projections.push(("v_proj", num_key_value_heads * head_dim));
+            }
+        }
+        let mut weights = Vec::with_capacity(projections.len());
+        let mut biases = Vec::with_capacity(projections.len());
+        for (name, width) in projections {
+            weights.push(vb.pp(name).get((width, config.hidden_size), "weight")?);
+            if config.attention_bias {
+                biases.push(vb.pp(name).get(width, "bias")?);
+            }
+        }
+        let bias = if config.attention_bias {
+            Some(Tensor::cat(&biases, 0)?)
         } else {
-            let k_proj = load_linear(
-                vb.pp("k_proj"),
-                num_key_value_heads * head_dim,
-                config.hidden_size,
-            )?;
-            let v_proj = if use_alternative_attention {
-                None
-            } else {
-                Some(load_linear(
-                    vb.pp("v_proj"),
-                    num_key_value_heads * head_dim,
-                    config.hidden_size,
-                )?)
-            };
+            None
+        };
+        let qkv_proj = Linear::new(Tensor::cat(&weights, 0)?, bias, None);
+        let (k_norm, v_norm) = if is_kv_shared {
+            (None, None)
+        } else {
             (
-                Some(k_proj),
-                v_proj,
                 Some(Gemma4RmsNorm::load(
                     vb.pp("k_norm"),
                     head_dim,
                     config.rms_norm_eps,
                 )?),
-                Some(Gemma4RmsNorm::without_weight(config.rms_norm_eps)),
+                Some(Gemma4RmsNorm::without_weight(
+                    &vb,
+                    head_dim,
+                    config.rms_norm_eps,
+                )?),
             )
         };
 
         Ok(Self {
-            q_proj,
-            k_proj,
-            v_proj,
+            qkv_proj,
+            k_eq_v: use_alternative_attention,
             o_proj: load_linear(
                 vb.pp("o_proj"),
                 config.hidden_size,
@@ -506,7 +519,7 @@ impl Gemma4Moe {
         let h = config.hidden_size;
         let norm = |name: &str| Gemma4RmsNorm::load(vb.pp(name), h, config.rms_norm_eps);
         Ok(Some(Self {
-            router_norm: Gemma4RmsNorm::without_weight(config.rms_norm_eps),
+            router_norm: Gemma4RmsNorm::without_weight(&vb, h, config.rms_norm_eps)?,
             router_scale: vb.get(h, "router.scale")?,
             router_weight: vb
                 .get((128, h), "router.proj.weight")?
@@ -1140,6 +1153,71 @@ impl Model for Gemma4Model {
 #[cfg(test)]
 mod moe_tests {
     use super::*;
+    #[test]
+    fn fused_projection_preserves_kv_variants() -> anyhow::Result<()> {
+        for bias in [false, true] {
+            for (kind, shared, k_eq_v) in [
+                ("sliding_attention", false, false),
+                ("full_attention", false, false),
+                ("full_attention", false, true),
+                ("full_attention", true, true),
+            ] {
+                let config: Gemma4TextConfig = serde_json::from_value(serde_json::json!({
+                    "attention_bias": bias, "attention_k_eq_v": k_eq_v,
+                    "hidden_activation": "gelu_pytorch_tanh", "hidden_size": 12,
+                    "head_dim": 4, "global_head_dim": 8, "intermediate_size": 24,
+                    "layer_types": [kind, kind], "num_hidden_layers": 2,
+                    "num_kv_shared_layers": if shared { 1 } else { 0 },
+                    "num_attention_heads": 4, "num_key_value_heads": 2,
+                    "num_global_key_value_heads": 1, "max_position_embeddings": 32,
+                    "pad_token_id": 0, "sliding_window": 8,
+                    "rope_parameters": {"full_attention": {"rope_theta": 10000.0},
+                                        "sliding_attention": {"rope_theta": 10000.0}}
+                }))?;
+                let vars = candle_nn::VarMap::new();
+                let vb = VarBuilder::from_varmap(&vars, DType::F32, &Device::Cpu);
+                Gemma4Attention::load(vb.clone(), &config, 1)?;
+                for (name, var) in vars.data().lock().unwrap().iter() {
+                    let offset = name.bytes().map(usize::from).sum::<usize>();
+                    let data = (0..var.elem_count())
+                        .map(|i| ((i + offset) as f32).sin() * 0.1)
+                        .collect::<Vec<_>>();
+                    var.set(&Tensor::from_vec(data, var.shape(), &Device::Cpu)?)?;
+                }
+                let model = Gemma4Attention::load(vb.clone(), &config, 1)?;
+                assert_eq!(model.is_kv_shared, shared);
+                assert_eq!(vb.contains_tensor("k_proj.weight"), !shared);
+                assert_eq!(vb.contains_tensor("v_proj.weight"), !shared && !k_eq_v);
+                let input = Tensor::arange(0f32, 36f32, &Device::Cpu)?.reshape((3, 12))?;
+                let mut separate = Vec::new();
+                for name in ["q_proj", "k_proj", "v_proj"] {
+                    if !vb.contains_tensor(&format!("{name}.weight")) {
+                        continue;
+                    }
+                    let heads = if name == "q_proj" {
+                        model.num_attention_heads
+                    } else {
+                        model.num_key_value_heads
+                    };
+                    let width = heads * model.head_dim;
+                    let weight = vb.pp(name).get((width, 12), "weight")?;
+                    let bias = if bias {
+                        Some(vb.pp(name).get(width, "bias")?)
+                    } else {
+                        None
+                    };
+                    separate.push(Linear::new(weight, bias, None).forward(&input)?);
+                }
+                let error = (model.qkv_proj.forward(&input)? - Tensor::cat(&separate, 1)?)?
+                    .abs()?
+                    .max_all()?
+                    .to_scalar::<f32>()?;
+                assert!(error < 1e-5, "Gemma4 projection changed by {error}");
+            }
+        }
+        Ok(())
+    }
+
     #[test]
     fn dense_and_moe_config_fields() -> anyhow::Result<()> {
         let mut value = serde_json::json!({
