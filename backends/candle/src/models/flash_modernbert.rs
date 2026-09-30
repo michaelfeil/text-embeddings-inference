@@ -124,6 +124,7 @@ struct ModernBertEncoderLayer {
     attn: ModernBertAttention,
     mlp_norm: LayerNormNoBias,
     mlp: ModernBertMLP,
+    round_residual: bool,
 
     span: tracing::Span,
 }
@@ -156,6 +157,8 @@ impl ModernBertEncoderLayer {
             attn,
             mlp_norm,
             mlp,
+            round_residual: std::env::var("TEI_MODERNBERT_RESIDUAL_ROUNDING").as_deref()
+                != Ok("fp32"),
             span,
         })
     }
@@ -180,11 +183,12 @@ impl ModernBertEncoderLayer {
 
         let attn_outputs = self.attn.forward(&attn_norm, cu_seqlens, cos, sin, max_s)?;
 
-        let hidden_states = residual_add(&residual, &attn_outputs)?;
-
-        let mlp_output = self
-            .mlp
-            .forward(&self.mlp_norm.forward(&hidden_states, None)?)?;
+        let (normed, hidden_states) = self.mlp_norm.forward_rounded_residual(
+            &attn_outputs,
+            &residual,
+            self.round_residual,
+        )?;
+        let mlp_output = self.mlp.forward(&normed)?;
 
         residual_add(&hidden_states, &mlp_output)
     }

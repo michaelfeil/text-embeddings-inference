@@ -218,7 +218,7 @@ extern "C" void run_ln(
     uint32_t otype,
     uint32_t ctype,
 
-    int is_rms_norm, cudaStream_t stream
+    int is_rms_norm, int round_residual, cudaStream_t stream
 ) {
     layer_norm::LaunchParams<layer_norm::FwdParams> launch_params;
 
@@ -253,6 +253,7 @@ extern "C" void run_ln(
     params.inverse_cols = 1.f / float(params.cols);
     params.rowscale_const = 1.f;
     params.is_rms_norm = is_rms_norm;
+    params.round_residual = round_residual;
 
     // Query the kernel-specific launch parameters.
     launcher(launch_params, true);

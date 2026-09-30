@@ -52,6 +52,7 @@ struct ParamsBase {
         , dropout_keep_p(1.f)
         , dropout_scale(1.f)
         , is_rms_norm(false)
+        , round_residual(false)
         , workspace(nullptr)
         , barrier(nullptr)
     {
@@ -87,6 +88,7 @@ struct ParamsBase {
     float rowscale_const;
 
     bool is_rms_norm;
+    bool round_residual;
 
     // Multi-CTA workspace in gmem.
     void *workspace;

@@ -38,6 +38,7 @@ impl LayerNorm {
         r: Option<&candle::CudaStorage>,
         r_l: Option<&Layout>,
         return_residual: bool,
+        round_residual: bool,
     ) -> Result<(candle::CudaStorage, Shape)> {
         // Assume all tensors are on the same device and take device of x
         let dev = x.device();
@@ -217,6 +218,7 @@ impl LayerNorm {
                 layer_norm_type,
                 2,
                 is_rms_norm,
+                i32::from(round_residual),
                 stream.cu_stream() as *mut core::ffi::c_void,
             )
         }
@@ -243,9 +245,9 @@ impl candle::CustomOp1 for LayerNorm {
         x_l: &Layout,
     ) -> Result<(candle::CudaStorage, Shape)> {
         match x.dtype() {
-            DType::F16 => self.fwd::<f16>(x, x_l, None, None, false),
-            DType::BF16 => self.fwd::<bf16>(x, x_l, None, None, false),
-            DType::F32 => self.fwd::<f32>(x, x_l, None, None, false),
+            DType::F16 => self.fwd::<f16>(x, x_l, None, None, false, false),
+            DType::BF16 => self.fwd::<bf16>(x, x_l, None, None, false, false),
+            DType::F32 => self.fwd::<f32>(x, x_l, None, None, false, false),
             dt => {
                 candle::bail!("fused-layer-norm is only supported for f32, f16 and bf16 ({dt:?})")
             }
@@ -276,9 +278,9 @@ impl candle::CustomOp2 for LayerNorm {
         r_l: &Layout,
     ) -> Result<(candle::CudaStorage, Shape)> {
         match x.dtype() {
-            DType::F16 => self.fwd::<f16>(x, x_l, Some(r), Some(r_l), true),
-            DType::BF16 => self.fwd::<bf16>(x, x_l, Some(r), Some(r_l), true),
-            DType::F32 => self.fwd::<f32>(x, x_l, Some(r), Some(r_l), true),
+            DType::F16 => self.fwd::<f16>(x, x_l, Some(r), Some(r_l), true, false),
+            DType::BF16 => self.fwd::<bf16>(x, x_l, Some(r), Some(r_l), true, false),
+            DType::F32 => self.fwd::<f32>(x, x_l, Some(r), Some(r_l), true, false),
             dt => {
                 candle::bail!("fused-layer-norm is only supported for f32, f16 and bf16 ({dt:?})")
             }
@@ -287,7 +289,11 @@ impl candle::CustomOp2 for LayerNorm {
 }
 
 // Keep the existing residual-returning operation available for pre-norm models.
-struct NormalizedResidual(LayerNorm);
+struct NormalizedResidual {
+    norm: LayerNorm,
+    return_residual: bool,
+    round_residual: bool,
+}
 
 impl candle::CustomOp2 for NormalizedResidual {
     fn name(&self) -> &'static str {
@@ -312,9 +318,30 @@ impl candle::CustomOp2 for NormalizedResidual {
         r_l: &Layout,
     ) -> Result<(candle::CudaStorage, Shape)> {
         match x.dtype() {
-            DType::F16 => self.0.fwd::<f16>(x, x_l, Some(r), Some(r_l), false),
-            DType::BF16 => self.0.fwd::<bf16>(x, x_l, Some(r), Some(r_l), false),
-            DType::F32 => self.0.fwd::<f32>(x, x_l, Some(r), Some(r_l), false),
+            DType::F16 => self.norm.fwd::<f16>(
+                x,
+                x_l,
+                Some(r),
+                Some(r_l),
+                self.return_residual,
+                self.round_residual,
+            ),
+            DType::BF16 => self.norm.fwd::<bf16>(
+                x,
+                x_l,
+                Some(r),
+                Some(r_l),
+                self.return_residual,
+                self.round_residual,
+            ),
+            DType::F32 => self.norm.fwd::<f32>(
+                x,
+                x_l,
+                Some(r),
+                Some(r_l),
+                self.return_residual,
+                self.round_residual,
+            ),
             dt => {
                 candle::bail!("fused-layer-norm is only supported for f32, f16 and bf16 ({dt:?})")
             }
@@ -331,12 +358,16 @@ pub fn layer_norm_with_residual(
     beta: Option<&Tensor>,
     epsilon: f32,
 ) -> Result<Tensor> {
-    let op = NormalizedResidual(LayerNorm {
-        epsilon,
-        gamma: gamma.clone(),
-        beta: beta.cloned(),
-        is_rms_norm: false,
-    });
+    let op = NormalizedResidual {
+        norm: LayerNorm {
+            epsilon,
+            gamma: gamma.clone(),
+            beta: beta.cloned(),
+            is_rms_norm: false,
+        },
+        return_residual: false,
+        round_residual: false,
+    };
     x.apply_op2_no_bwd(res, &op)
 }
 
@@ -646,6 +677,71 @@ mod tests {
         let truth = layer_norm_truth(&truth_add, &g, Some(&b), 1e-12, true)?;
         assert_eq!(to_vec2_round(res_add, 3)?, to_vec2_round(truth_add, 3)?);
         assert_eq!(to_vec2_round(res, 3)?, to_vec2_round(truth, 3)?);
+        Ok(())
+    }
+}
+
+/// Normalize a model-dtype rounded residual sum and return that sum alongside it.
+pub fn fused_add_layer_norm_rounded(
+    x: &Tensor,
+    residual: &Tensor,
+    gamma: &Tensor,
+    epsilon: f32,
+) -> Result<(Tensor, Tensor)> {
+    let op = NormalizedResidual {
+        norm: LayerNorm {
+            epsilon,
+            gamma: gamma.clone(),
+            beta: None,
+            is_rms_norm: false,
+        },
+        return_residual: true,
+        round_residual: true,
+    };
+    let rows = x.dim(0)?;
+    let out = x.apply_op2_no_bwd(residual, &op)?;
+    Ok((out.narrow(0, 0, rows)?, out.narrow(0, rows, rows)?))
+}
+
+#[cfg(test)]
+mod rounded_residual_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn rounded_residual_matches_separate_add_and_norm() -> Result<()> {
+        let device = candle::Device::new_cuda(0)?;
+        for dtype in [DType::F16, DType::BF16] {
+            for width in [768, 1024] {
+                for rows in [1, 13] {
+                    let x: Vec<f32> = (0..rows * width)
+                        .map(|i| ((i * 17 % 997) as f32 - 498.) / 137.)
+                        .collect();
+                    let r: Vec<f32> = (0..rows * width)
+                        .map(|i| ((i * 43 % 991) as f32 - 495.) / 311.)
+                        .collect();
+                    let x = Tensor::from_vec(x, (rows, width), &device)?.to_dtype(dtype)?;
+                    let r = Tensor::from_vec(r, (rows, width), &device)?.to_dtype(dtype)?;
+                    let gamma = Tensor::from_vec(
+                        (0..width)
+                            .map(|i| 0.5 + (i % 19) as f32 / 16.)
+                            .collect::<Vec<_>>(),
+                        width,
+                        &device,
+                    )?
+                    .to_dtype(dtype)?;
+                    let expected_sum = (&x + &r)?;
+                    let expected = layer_norm(&expected_sum, &gamma, None, 1e-5)?;
+                    let (actual, sum) = fused_add_layer_norm_rounded(&x, &r, &gamma, 1e-5)?;
+                    for (a, b) in [(actual, expected), (sum, expected_sum)] {
+                        assert_eq!(
+                            a.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?,
+                            b.to_dtype(DType::F32)?.flatten_all()?.to_vec1::<f32>()?,
+                            "{dtype:?} rows={rows} width={width}"
+                        );
+                    }
+                }
+            }
+        }
         Ok(())
     }
 }
