@@ -108,7 +108,7 @@ pub struct Gemma4Config {
 
 #[derive(Debug)]
 struct Gemma4RmsNorm {
-    weight: Option<Tensor>,
+    weight: Tensor,
     epsilon: f64,
 }
 
@@ -116,27 +116,47 @@ impl Gemma4RmsNorm {
     fn load(vb: VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
         Ok(Self {
             // Normalization applies the scale in FP32; convert it once at load time.
-            weight: Some(vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?),
+            weight: vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?,
             epsilon,
         })
     }
 
-    fn without_weight(epsilon: f64) -> Self {
-        Self {
-            weight: None,
+    fn without_weight(vb: &VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
+        Ok(Self {
+            weight: Tensor::ones(hidden_size, DType::F32, vb.device())?,
             epsilon,
-        }
+        })
     }
 
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
+        #[cfg(feature = "cuda")]
+        if dtype == DType::BF16
+            && hidden_states.device().is_cuda()
+            && hidden_states.dim(D::Minus1)? <= 8192
+        {
+            // Attention carries a singleton batch dimension around packed tokens.
+            let squeezed = hidden_states.rank() == 4 && hidden_states.dim(0)? == 1;
+            let states = if squeezed {
+                hidden_states.squeeze(0)?
+            } else {
+                hidden_states.clone()
+            };
+            let states = crate::layers::gemma_rms_norm::forward_reference(
+                &states,
+                &self.weight,
+                self.epsilon as f32,
+            )?;
+            return if squeezed {
+                states.unsqueeze(0)
+            } else {
+                Ok(states)
+            };
+        }
         let states = hidden_states.to_dtype(DType::F32)?;
         let variance = states.sqr()?.mean_keepdim(D::Minus1)?;
         let states = states.broadcast_div(&(variance + self.epsilon)?.sqrt()?)?;
-        let states = match &self.weight {
-            Some(weight) => states.broadcast_mul(weight)?,
-            None => states,
-        };
+        let states = states.broadcast_mul(&self.weight)?;
         states.to_dtype(dtype)
     }
 }
@@ -381,7 +401,11 @@ impl Gemma4Attention {
                     head_dim,
                     config.rms_norm_eps,
                 )?),
-                Some(Gemma4RmsNorm::without_weight(config.rms_norm_eps)),
+                Some(Gemma4RmsNorm::without_weight(
+                    &vb,
+                    head_dim,
+                    config.rms_norm_eps,
+                )?),
             )
         };
 
@@ -506,7 +530,7 @@ impl Gemma4Moe {
         let h = config.hidden_size;
         let norm = |name: &str| Gemma4RmsNorm::load(vb.pp(name), h, config.rms_norm_eps);
         Ok(Some(Self {
-            router_norm: Gemma4RmsNorm::without_weight(config.rms_norm_eps),
+            router_norm: Gemma4RmsNorm::without_weight(&vb, h, config.rms_norm_eps)?,
             router_scale: vb.get(h, "router.scale")?,
             router_weight: vb
                 .get((128, h), "router.proj.weight")?
