@@ -1,5 +1,5 @@
 use crate::flash_attn::flash_attn_varlen;
-use crate::layers::{index_select, LayerNorm, Linear};
+use crate::layers::{index_select, LayerNorm, Linear, MlpLinear};
 use crate::models::bert::{
     load_roberta_classification_head, BertClassificationHead, BertConfig, BertEmbeddings,
     BertSpladeHead, ClassificationHead, PositionEmbeddingType,
@@ -117,14 +117,14 @@ impl BertAttention {
 
 struct BertLayer {
     attention: BertAttention,
-    intermediate: Linear,
-    output: Linear,
+    intermediate: MlpLinear,
+    output: MlpLinear,
     layer_norm: LayerNorm,
     span: tracing::Span,
 }
 
 impl BertLayer {
-    pub fn load(vb: VarBuilder, config: &BertConfig) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &BertConfig, enable_fp8_dynamic: bool) -> Result<Self> {
         let attention = BertAttention::load(vb.pp("attention"), config)?;
 
         let intermediate_weight = vb
@@ -135,11 +135,12 @@ impl BertLayer {
             .pp("intermediate")
             .pp("dense")
             .get(config.intermediate_size, "bias")?;
-        let intermediate = Linear::new(
+        let intermediate = MlpLinear::with_bias_activation(
             intermediate_weight,
             Some(intermediate_bias),
             Some(config.hidden_act.clone()),
-        );
+            enable_fp8_dynamic,
+        )?;
 
         let output_weight = vb
             .pp("output")
@@ -149,7 +150,12 @@ impl BertLayer {
             .pp("output")
             .pp("dense")
             .get(config.hidden_size, "bias")?;
-        let output = Linear::new(output_weight, Some(output_bias), None);
+        let output = MlpLinear::with_bias_activation(
+            output_weight,
+            Some(output_bias),
+            None,
+            enable_fp8_dynamic,
+        )?;
 
         let layer_norm = LayerNorm::load(
             vb.pp("output").pp("LayerNorm"),
@@ -191,9 +197,11 @@ struct BertEncoder {
 }
 
 impl BertEncoder {
-    pub fn load(vb: VarBuilder, config: &BertConfig) -> Result<Self> {
+    pub fn load(vb: VarBuilder, config: &BertConfig, enable_fp8_dynamic: bool) -> Result<Self> {
         let layers = (0..config.num_hidden_layers)
-            .map(|index| BertLayer::load(vb.pp(format!("layer.{index}")), config))
+            .map(|index| {
+                BertLayer::load(vb.pp(format!("layer.{index}")), config, enable_fp8_dynamic)
+            })
             .collect::<Result<Vec<_>>>()?;
         let span = tracing::span!(tracing::Level::TRACE, "encoder");
 
@@ -227,7 +235,12 @@ pub struct FlashBertModel {
 }
 
 impl FlashBertModel {
-    pub fn load(vb: VarBuilder, config: &BertConfig, model_type: ModelType) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &BertConfig,
+        model_type: ModelType,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         crate::flash_attn::validate_packed_device(&vb)?;
 
         // Check position embedding type
@@ -257,13 +270,17 @@ impl FlashBertModel {
 
         let (embeddings, encoder) = match (
             BertEmbeddings::load(vb.pp("embeddings"), config),
-            BertEncoder::load(vb.pp("encoder"), config),
+            BertEncoder::load(vb.pp("encoder"), config, enable_fp8_dynamic),
         ) {
             (Ok(embeddings), Ok(encoder)) => (embeddings, encoder),
             (Err(err), _) | (_, Err(err)) => {
                 if let (Ok(embeddings), Ok(encoder)) = (
                     BertEmbeddings::load(vb.pp("bert.embeddings".to_string()), config),
-                    BertEncoder::load(vb.pp("bert.encoder".to_string()), config),
+                    BertEncoder::load(
+                        vb.pp("bert.encoder".to_string()),
+                        config,
+                        enable_fp8_dynamic,
+                    ),
                 ) {
                     (embeddings, encoder)
                 } else {
@@ -287,6 +304,7 @@ impl FlashBertModel {
         vb: VarBuilder,
         config: &BertConfig,
         model_type: ModelType,
+        enable_fp8_dynamic: bool,
     ) -> Result<Self> {
         crate::flash_attn::validate_packed_device(&vb)?;
 
@@ -316,23 +334,35 @@ impl FlashBertModel {
 
         let (embeddings, encoder) = match (
             BertEmbeddings::load(vb.pp("embeddings"), config),
-            BertEncoder::load(vb.pp("encoder"), config),
+            BertEncoder::load(vb.pp("encoder"), config, enable_fp8_dynamic),
         ) {
             (Ok(embeddings), Ok(encoder)) => (embeddings, encoder),
             (Err(err), _) | (_, Err(err)) => {
                 if let (Ok(embeddings), Ok(encoder)) = (
                     BertEmbeddings::load(vb.pp("roberta.embeddings".to_string()), config),
-                    BertEncoder::load(vb.pp("roberta.encoder".to_string()), config),
+                    BertEncoder::load(
+                        vb.pp("roberta.encoder".to_string()),
+                        config,
+                        enable_fp8_dynamic,
+                    ),
                 ) {
                     (embeddings, encoder)
                 } else if let (Ok(embeddings), Ok(encoder)) = (
                     BertEmbeddings::load(vb.pp("xlm-roberta.embeddings".to_string()), config),
-                    BertEncoder::load(vb.pp("xlm-roberta.encoder".to_string()), config),
+                    BertEncoder::load(
+                        vb.pp("xlm-roberta.encoder".to_string()),
+                        config,
+                        enable_fp8_dynamic,
+                    ),
                 ) {
                     (embeddings, encoder)
                 } else if let (Ok(embeddings), Ok(encoder)) = (
                     BertEmbeddings::load(vb.pp("camembert.embeddings".to_string()), config),
-                    BertEncoder::load(vb.pp("camembert.encoder".to_string()), config),
+                    BertEncoder::load(
+                        vb.pp("camembert.encoder".to_string()),
+                        config,
+                        enable_fp8_dynamic,
+                    ),
                 ) {
                     (embeddings, encoder)
                 } else {

@@ -11,7 +11,7 @@ fn laya_checkpoint_scores_all_markers() -> Result<()> {
         return Ok(());
     };
     let path = std::path::Path::new(&path);
-    let (model, config) = LayaModel::from_model_dir(path, DType::F32, &Device::Cpu)?;
+    let (model, config) = LayaModel::from_model_dir(path, DType::F32, &Device::Cpu, false)?;
     let tokenizer = Tokenizer::from_file(path.join("tokenizer/tokenizer.json"))
         .map_err(|err| anyhow::anyhow!(err.to_string()))?;
     let cls = tokenizer.token_to_id("[CLS]").unwrap();

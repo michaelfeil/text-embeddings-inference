@@ -94,8 +94,8 @@ struct Args {
     #[clap(long, env)]
     max_batch_requests: Option<usize>,
 
-    /// Experimental calibration-free FP8 MLPs (Hopper FP16/BF16 Qwen2/Qwen3/Llama/Mistral).
-    /// Bundled in official Hopper images; disabled by default. May change embedding accuracy.
+    /// Experimental calibration-free FP8 MLPs (Hopper FP16/BF16 dense decoder and BERT/ModernBERT encoders).
+    /// Bundled in official Hopper images; disabled by default. May change embedding, reranking, and decision accuracy.
     #[clap(long, env)]
     enable_fp8_dynamic: bool,
 

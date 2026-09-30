@@ -127,7 +127,12 @@ struct ModernBertEncoderLayer {
 }
 
 impl ModernBertEncoderLayer {
-    pub fn load(vb: VarBuilder, index: usize, config: &ModernBertConfig) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        index: usize,
+        config: &ModernBertConfig,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         let attn_norm = if index != 0 {
             Some(LayerNormNoBias::load(
                 vb.pp("attn_norm"),
@@ -145,7 +150,7 @@ impl ModernBertEncoderLayer {
             config.hidden_size,
             config.norm_eps as f32,
         )?;
-        let mlp = ModernBertMLP::load(vb.pp("mlp"), config)?;
+        let mlp = ModernBertMLP::load(vb.pp("mlp"), config, enable_fp8_dynamic)?;
 
         let span = tracing::span!(tracing::Level::TRACE, "layer");
 
@@ -198,9 +203,20 @@ struct ModernBertEncoder {
 }
 
 impl ModernBertEncoder {
-    pub fn load(vb: VarBuilder, config: &ModernBertConfig) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &ModernBertConfig,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         let layers = (0..config.num_hidden_layers)
-            .map(|index| ModernBertEncoderLayer::load(vb.pp(format!("{index}")), index, config))
+            .map(|index| {
+                ModernBertEncoderLayer::load(
+                    vb.pp(format!("{index}")),
+                    index,
+                    config,
+                    enable_fp8_dynamic,
+                )
+            })
             .collect::<Result<Vec<_>>>()?;
 
         let span = tracing::span!(tracing::Level::TRACE, "encoder");
@@ -265,7 +281,12 @@ pub struct FlashModernBertModel {
 }
 
 impl FlashModernBertModel {
-    pub fn load(vb: VarBuilder, config: &ModernBertConfig, model_type: ModelType) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &ModernBertConfig,
+        model_type: ModelType,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self> {
         crate::flash_attn::validate_packed_device(&vb)?;
 
         let (pool, classifier) = match model_type {
@@ -289,8 +310,8 @@ impl FlashModernBertModel {
 
         let embeddings = ModernBertEmbeddings::load(vb.pp("model.embeddings"), config)
             .or_else(|_| ModernBertEmbeddings::load(vb.pp("embeddings"), config))?;
-        let encoder = ModernBertEncoder::load(vb.pp("model.layers"), config)
-            .or_else(|_| ModernBertEncoder::load(vb.pp("layers"), config))?;
+        let encoder = ModernBertEncoder::load(vb.pp("model.layers"), config, enable_fp8_dynamic)
+            .or_else(|_| ModernBertEncoder::load(vb.pp("layers"), config, enable_fp8_dynamic))?;
         let final_norm = LayerNormNoBias::load(
             vb.pp("model.final_norm"),
             config.hidden_size,

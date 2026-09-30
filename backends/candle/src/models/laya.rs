@@ -183,12 +183,13 @@ impl LayaModel {
         path: &Path,
         dtype: DType,
         device: &Device,
+        enable_fp8_dynamic: bool,
     ) -> anyhow::Result<(Self, LayaConfig)> {
         let (config, encoder_config) = LayaConfig::from_model_dir(path)?;
         let weights = path.join("model.safetensors");
         anyhow::ensure!(weights.is_file(), "Laya model.safetensors is missing");
         let vb = unsafe { VarBuilder::from_mmaped_safetensors(&[weights], dtype, device)? };
-        let model = Self::load(vb, &encoder_config, &config)?;
+        let model = Self::load(vb, &encoder_config, &config, enable_fp8_dynamic)?;
         Ok((model, config))
     }
 
@@ -196,6 +197,7 @@ impl LayaModel {
         vb: VarBuilder,
         encoder_config: &ModernBertConfig,
         config: &LayaConfig,
+        enable_fp8_dynamic: bool,
     ) -> Result<Self> {
         let hidden = encoder_config.hidden_size;
         let linear = |vb: VarBuilder, input: usize, output: usize| -> Result<Linear> {
@@ -213,6 +215,7 @@ impl LayaModel {
                 vb.pp("encoder"),
                 encoder_config,
                 ModelType::Embedding(Pool::Cls),
+                enable_fp8_dynamic,
             )?,
             type_emb: Embedding::new(vb.pp("type_emb").get((3, hidden), "weight")?, hidden),
             head,
