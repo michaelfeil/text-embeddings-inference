@@ -155,3 +155,16 @@ The model requires mean pooling and its two checkpoint-provided Dense projection
 modules. Use the checkpoint's named query/document prompts for retrieval.
 `ATTN_BACKEND=auto` is the default and retains FA2 for EmbeddingGemma because
 its head shape is not supported by the bundled FA4 kernels.
+
+### Qwen3-VL multimodal embeddings
+
+`Qwen/Qwen3-VL-Embedding-2B` supports text and images through the existing
+`/embed` and `/v1/embeddings` endpoints, with a Candle CUDA/FlashAttention build,
+FP16, and last-token pooling. Send text, a list of independent texts, or one list
+of user/assistant messages containing text and user image parts. The text-only
+Qwen3 embedding models do not accept images.
+
+Remote images require exact HTTPS hostnames configured with `--image-allowed-hosts`;
+inline base64 PNG/JPEG/WebP is also accepted. See the repository README for a complete
+request and resource limits. JPEG decoding can differ from Pillow/libjpeg and is
+not pixel-identical. Qwen3-VL currently disables RadixMLP and rejects BF16.

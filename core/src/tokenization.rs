@@ -103,6 +103,11 @@ impl Tokenization {
         prompt_name: Option<String>,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
         if let Some(processor) = &self.multimodal {
+            if inputs.is_empty() {
+                return Err(TextEmbeddingsError::Empty(
+                    "`inputs` cannot be empty".into(),
+                ));
+            }
             let prepared = processor
                 .prepare(inputs, truncate, truncation_direction, prompt_name)
                 .await?;

@@ -109,6 +109,7 @@ enum Config {
     #[serde(alias = "new")]
     Gte(GTEConfig),
     #[serde(rename = "mpnet")]
+    #[allow(dead_code)]
     MPNet(MPNetConfig),
     #[allow(dead_code)]
     Mistral(MistralConfig),

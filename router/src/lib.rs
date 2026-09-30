@@ -141,6 +141,12 @@ pub async fn run(
         "Rune protocol requires a Gemma4 model"
     );
 
+    anyhow::ensure!(
+        config.model_type != "qwen3_vl"
+            || (default_prompt.is_none() && default_prompt_name.is_none()),
+        "Qwen3-VL uses its native chat template; default prompt overrides are unsupported"
+    );
+
     // Set model type from config
     let backend_model_type = if laya || rune {
         anyhow::ensure!(
@@ -238,6 +244,10 @@ pub async fn run(
     // Try to load ST Config
     let mut st_config: Option<STConfig> = None;
     for name in ST_CONFIG_NAMES {
+        // Qwen3-VL uses the multimodal ST format, not legacy max_seq_length.
+        if config.model_type == "qwen3_vl" {
+            break;
+        }
         let config_path = model_root.join(name);
         if let Ok(config) = fs::read_to_string(config_path) {
             st_config =

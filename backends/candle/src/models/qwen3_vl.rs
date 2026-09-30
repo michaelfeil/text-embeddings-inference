@@ -11,7 +11,7 @@ pub struct Qwen3VlModel {
     device: Device,
     dtype: DType,
     head_dim: usize,
-    theta: f64,
+    inv_freq: Vec<f32>,
     sections: [usize; 3],
     merge_size: usize,
 }
@@ -47,7 +47,11 @@ impl Qwen3VlModel {
             device: vb.device().clone(),
             dtype: vb.dtype(),
             head_dim,
-            theta: text.rope_theta as f64,
+            inv_freq: (0..head_dim / 2)
+                .map(|j| {
+                    (1.0 / (text.rope_theta as f64).powf((2 * j) as f64 / head_dim as f64)) as f32
+                })
+                .collect(),
             sections,
             merge_size: vision.spatial_merge_size,
         })
@@ -72,7 +76,14 @@ impl Model for Qwen3VlModel {
         if !batch.multimodal.is_empty() && batch.multimodal.len() != batch.len() {
             candle::bail!("Missing multimodal preprocessing metadata");
         }
-        let mut pixels = Vec::new();
+        let pixel_count = batch
+            .multimodal
+            .iter()
+            .flatten()
+            .flat_map(|media| &media.images)
+            .map(|(_, image)| image.pixels.len())
+            .sum();
+        let mut pixels = Vec::with_capacity(pixel_count);
         let mut grids = Vec::new();
         let mut indices = Vec::new();
         let mut positions = [Vec::new(), Vec::new(), Vec::new()];
@@ -88,11 +99,11 @@ impl Model for Qwen3VlModel {
                 }
                 continue;
             };
-            for axis in 0..3 {
+            for (axis, positions) in positions.iter_mut().enumerate() {
                 if media.position_ids[axis].len() != length {
                     candle::bail!("Invalid image position length");
                 }
-                positions[axis].extend_from_slice(&media.position_ids[axis]);
+                positions.extend_from_slice(&media.position_ids[axis]);
             }
             for (start, image) in &media.images {
                 if image.merge_size != self.merge_size
@@ -117,7 +128,7 @@ impl Model for Qwen3VlModel {
         let mut cos = Vec::with_capacity(batch.input_ids.len() * half);
         let mut sin = Vec::with_capacity(cos.capacity());
         for i in 0..batch.input_ids.len() {
-            for j in 0..half {
+            for (j, frequency) in self.inv_freq.iter().enumerate() {
                 let axis = if j % 3 == 1 && j < self.sections[1] * 3 {
                     1
                 } else if j % 3 == 2 && j < self.sections[2] * 3 {
@@ -125,8 +136,7 @@ impl Model for Qwen3VlModel {
                 } else {
                     0
                 };
-                let angle = positions[axis][i] as f32
-                    * (1.0 / self.theta.powf((2 * j) as f64 / self.head_dim as f64)) as f32;
+                let angle = positions[axis][i] as f32 * frequency;
                 cos.push(angle.cos());
                 sin.push(angle.sin());
             }
@@ -136,9 +146,11 @@ impl Model for Qwen3VlModel {
         let sin = Tensor::from_vec(sin, (batch.input_ids.len(), half), &self.device)?
             .to_dtype(self.dtype)?;
         let visual = if let Some(dim) = patch_dim {
-            let pixels = Tensor::from_vec(pixels.clone(), (pixels.len() / dim, dim), &self.device)?
-                .to_dtype(self.dtype)?;
-            let grid = Tensor::from_vec(grids.clone(), (grids.len() / 3, 3), &self.device)?;
+            let rows = pixels.len() / dim;
+            let pixels =
+                Tensor::from_vec(pixels, (rows, dim), &self.device)?.to_dtype(self.dtype)?;
+            let images = grids.len() / 3;
+            let grid = Tensor::from_vec(grids, (images, 3), &self.device)?;
             let (features, deepstack) = self.vision.forward(&pixels, &grid)?;
             Some((
                 Tensor::new(indices.as_slice(), &self.device)?,

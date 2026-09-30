@@ -13,6 +13,7 @@ mod bert;
 mod dense;
 mod distilbert;
 mod gemma3;
+#[cfg_attr(not(feature = "flash-attn"), allow(dead_code, unused_imports))]
 mod gemma4;
 mod gte;
 mod jina;

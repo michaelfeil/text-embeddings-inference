@@ -211,7 +211,14 @@ impl Qwen3VlProcessor {
                 }
             }
         }
-        let worker = self.workers.clone().try_acquire_owned()?;
+        // HTTP admission and media reservations already bound pending work. Wait
+        // for a CPU slot so an ordinary text batch can exceed the worker count.
+        let worker = self
+            .workers
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|_| invalid("Image processing workers closed"))?;
         let state = self.state.clone();
         let (sender, receiver) = oneshot::channel();
         tokio::task::spawn_blocking(move || {
