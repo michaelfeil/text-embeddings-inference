@@ -232,7 +232,12 @@ impl Fp8Matmul {
                 CUBLASLT_MATMUL_DESC_TRANSA,
                 &cudarc::cublas::sys::cublasOperation_t::CUBLAS_OP_T,
             )?;
-            d.set(CUBLASLT_MATMUL_DESC_FAST_ACCUM, &1i8)?;
+            // Unscaled FP8 products can be large. The portable path needs
+            // full accumulation before applying row scales to FP32 output.
+            d.set(
+                CUBLASLT_MATMUL_DESC_FAST_ACCUM,
+                &(self.fused_row_scaling as i8),
+            )?;
             if self.fused_row_scaling {
                 let mode =
                     sys::cublasLtMatmulMatrixScale_t::CUBLASLT_MATMUL_MATRIX_SCALE_OUTER_VEC_32F;
@@ -289,7 +294,7 @@ impl Fp8Matmul {
                 lt::get_matmul_algo_heuristic(self.handle.0, d.0, a.0, b.0, c.0, c.0, pref.0)
             };
             let (algo, _fast_accum) = match query() {
-                Ok(algo) => (algo, true),
+                Ok(algo) => (algo, self.fused_row_scaling),
                 Err(error) if error.0 == sys::cublasStatus_t::CUBLAS_STATUS_NOT_SUPPORTED => {
                     // CUDA 12.9 lacks fast-accumulation tactics for some short,
                     // wide-K projections. Keep the same FP8 inputs and scales,
