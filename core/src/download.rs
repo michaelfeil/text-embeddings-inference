@@ -75,6 +75,12 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
 
     download_file(api, "config.json").await?;
     let path = download_file(api, "tokenizer.json").await?;
+    // Optional native conversation artifacts, using the same pinned repository revision.
+    for name in ["tokenizer_config.json", "chat_template.jinja"] {
+        if let Err(err) = download_file(api, name).await {
+            tracing::debug!("Optional chat artifact {name} unavailable: {err}");
+        }
+    }
 
     tracing::info!("Model artifacts downloaded in {:?}", start.elapsed());
 

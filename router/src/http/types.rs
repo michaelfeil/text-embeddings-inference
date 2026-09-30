@@ -297,36 +297,24 @@ pub(crate) struct Rank {
 #[derive(Serialize, ToSchema)]
 pub(crate) struct RerankResponse(pub Vec<Rank>);
 
-#[derive(Deserialize, ToSchema, Debug)]
-#[serde(untagged)]
-pub(crate) enum InputType {
-    String(String),
-    Ids(Vec<u32>),
+pub(crate) use text_embeddings_core::input::EmbeddingInput;
+
+/// Internal batching shape. A conversation remains a single model input.
+pub(crate) enum InputBatch {
+    Single(EncodingInput),
+    Batch(Vec<EncodingInput>),
 }
 
-impl InputType {
-    pub(crate) fn count_chars(&self) -> usize {
-        match self {
-            InputType::String(s) => s.chars().count(),
-            InputType::Ids(v) => v.len(),
-        }
-    }
-}
-
-impl From<InputType> for EncodingInput {
-    fn from(value: InputType) -> Self {
+impl From<EmbeddingInput> for InputBatch {
+    fn from(value: EmbeddingInput) -> Self {
         match value {
-            InputType::String(s) => Self::Single(s),
-            InputType::Ids(v) => Self::Ids(v),
+            EmbeddingInput::Text(text) => Self::Single(EncodingInput::Single(text)),
+            EmbeddingInput::TextBatch(texts) => {
+                Self::Batch(texts.into_iter().map(EncodingInput::Single).collect())
+            }
+            EmbeddingInput::Messages(messages) => Self::Single(EncodingInput::Messages(messages)),
         }
     }
-}
-
-#[derive(Deserialize, ToSchema)]
-#[serde(untagged)]
-pub(crate) enum Input {
-    Single(InputType),
-    Batch(Vec<InputType>),
 }
 
 #[derive(Deserialize, ToSchema, Default)]
@@ -339,7 +327,7 @@ pub(crate) enum EncodingFormat {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct OpenAICompatRequest {
-    pub input: Input,
+    pub input: EmbeddingInput,
     #[allow(dead_code)]
     #[schema(nullable = true, example = "null")]
     pub model: Option<String>,
@@ -433,7 +421,7 @@ pub(crate) struct SimilarityResponse(pub Vec<f32>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedRequest {
-    pub inputs: Input,
+    pub inputs: EmbeddingInput,
 
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
@@ -475,7 +463,7 @@ pub(crate) struct EmbedResponse(pub Vec<Vec<f32>>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedSparseRequest {
-    pub inputs: Input,
+    pub inputs: EmbeddingInput,
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
@@ -506,7 +494,7 @@ pub(crate) struct EmbedSparseResponse(pub Vec<Vec<SparseValue>>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedAllRequest {
-    pub inputs: Input,
+    pub inputs: EmbeddingInput,
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
@@ -646,4 +634,47 @@ pub(crate) struct TokenPrediction {
 #[serde(untagged)]
 pub(crate) enum TokenPredictResponse {
     Batch(Vec<Vec<TokenPrediction>>),
+}
+
+#[cfg(test)]
+mod embedding_input_tests {
+    use super::*;
+
+    #[test]
+    fn conversation_is_one_input_and_texts_remain_a_batch() {
+        let value = json!([
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "world"}
+        ]);
+        let req: EmbedRequest = serde_json::from_value(json!({"inputs": value})).unwrap();
+        let InputBatch::Single(EncodingInput::Messages(messages)) = InputBatch::from(req.inputs)
+        else {
+            panic!("a conversation must be one input");
+        };
+        assert_eq!(serde_json::to_value(messages).unwrap(), value);
+        let req: OpenAICompatRequest =
+            serde_json::from_value(json!({"input": ["hello", "world"]})).unwrap();
+        let InputBatch::Batch(inputs) = InputBatch::from(req.input) else {
+            panic!("independent texts must stay a batch");
+        };
+        assert_eq!(inputs.len(), 2);
+        assert!(matches!(&inputs[0], EncodingInput::Single(text) if text == "hello"));
+        assert!(matches!(&inputs[1], EncodingInput::Single(text) if text == "world"));
+    }
+
+    #[test]
+    fn embedding_schemas_reference_the_shared_contract() {
+        for (schema, field) in [
+            (EmbedRequest::schema().1, "inputs"),
+            (EmbedAllRequest::schema().1, "inputs"),
+            (EmbedSparseRequest::schema().1, "inputs"),
+            (OpenAICompatRequest::schema().1, "input"),
+        ] {
+            let value = serde_json::to_value(schema).unwrap();
+            assert_eq!(
+                value["properties"][field]["$ref"],
+                "#/components/schemas/EmbeddingInput"
+            );
+        }
+    }
 }
