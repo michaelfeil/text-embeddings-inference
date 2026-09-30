@@ -10,6 +10,9 @@ use candle_nn::{Embedding, Module, VarBuilder};
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen3Attention {
+    #[cfg(feature = "cuda")]
+    overlap_stream: Option<std::sync::Arc<candle::cuda_backend::cudarc::driver::CudaStream>>,
+    fused_unfold: bool,
     qkv_proj: Linear,
     o_proj: Linear,
 
@@ -101,6 +104,18 @@ impl Qwen3Attention {
         let softmax_scale = (1. / (attention_head_size as f64).sqrt()) as f32;
 
         Ok(Self {
+            #[cfg(feature = "cuda")]
+            overlap_stream: if std::env::var("TEI_QWEN3_OVERLAP").as_deref() == Ok("1") {
+                if let Device::Cuda(device) = vb.device() {
+                    Some(device.cuda_stream().fork().map_err(candle::Error::wrap)?)
+                } else {
+                    None
+                }
+            } else {
+                None
+            },
+            fused_unfold: cfg!(feature = "cuda")
+                && std::env::var("TEI_QWEN3_FUSED_UNFOLD").as_deref() == Ok("1"),
             qkv_proj,
             o_proj,
             q_norm,
@@ -146,14 +161,37 @@ impl Qwen3Attention {
             self.num_key_value_heads,
         )?;
         #[cfg(feature = "cuda")]
-        let fused = crate::layers::qk_norm_rope::try_forward(
+        let stream = self
+            .overlap_stream
+            .as_ref()
+            .filter(|_| compact_tensors.scatter_unfold.is_some())
+            .cloned();
+        #[cfg(feature = "cuda")]
+        let pending = stream
+            .clone()
+            .map(|s| crate::layers::qk_norm_rope::PendingStream::new(q.device(), s))
+            .transpose()?;
+        #[cfg(feature = "cuda")]
+        let fused = crate::layers::qk_norm_rope::try_forward_on_stream(
             &q,
             &k,
             &self.q_norm,
             &self.k_norm,
             &cos,
             &sin,
+            stream,
         )?;
+        // V does not depend on Q/K normalization and can run on the main stream.
+        let fused_unfold = self.fused_unfold && compact_tensors.scatter_unfold.is_some();
+        let v = if fused_unfold {
+            v
+        } else {
+            compact_tensors.scatter_unfold(&v)?
+        };
+        #[cfg(feature = "cuda")]
+        if let Some(pending) = pending {
+            pending.finish()?;
+        }
         #[cfg(not(feature = "cuda"))]
         let fused: Option<(Tensor, Tensor)> = None;
         let (q, k) = match fused {
@@ -166,9 +204,26 @@ impl Qwen3Attention {
         };
 
         // Expand Q, K, V to ORIGINAL layout for attention
-        let q = compact_tensors.scatter_unfold(&q)?;
-        let k = compact_tensors.scatter_unfold(&k)?;
-        let v = compact_tensors.scatter_unfold(&v)?;
+        #[cfg(feature = "cuda")]
+        let (q, k, v) = if fused_unfold {
+            crate::layers::qk_norm_rope::unfold_qkv(
+                &q,
+                &k,
+                &v,
+                compact_tensors.scatter_unfold.as_ref().unwrap(),
+            )?
+        } else {
+            (
+                compact_tensors.scatter_unfold(&q)?,
+                compact_tensors.scatter_unfold(&k)?,
+                v,
+            )
+        };
+        #[cfg(not(feature = "cuda"))]
+        let (q, k) = (
+            compact_tensors.scatter_unfold(&q)?,
+            compact_tensors.scatter_unfold(&k)?,
+        );
 
         let attention = flash_attn_varlen(
             &q,

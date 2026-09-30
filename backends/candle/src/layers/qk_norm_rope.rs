@@ -11,6 +11,42 @@ mod ptx {
     include!(concat!(env!("OUT_DIR"), "/qk_ptx.rs"));
 }
 
+use candle::cuda_backend::cudarc::driver::CudaStream;
+use std::sync::Arc;
+
+pub(crate) struct PendingStream {
+    main: Arc<CudaStream>,
+    auxiliary: Arc<CudaStream>,
+    joined: bool,
+}
+impl PendingStream {
+    pub(crate) fn new(device: &Device, auxiliary: Arc<CudaStream>) -> Result<Self> {
+        let Device::Cuda(device) = device else {
+            candle::bail!("Expected CUDA device")
+        };
+        Ok(Self {
+            main: device.cuda_stream(),
+            auxiliary,
+            joined: false,
+        })
+    }
+    pub(crate) fn finish(mut self) -> Result<()> {
+        self.main
+            .join(&self.auxiliary)
+            .map_err(candle::Error::wrap)?;
+        self.joined = true;
+        Ok(())
+    }
+}
+impl Drop for PendingStream {
+    fn drop(&mut self) {
+        if !self.joined {
+            // Error cleanup: do not let borrowed tensor allocations escape live work.
+            let _ = self.auxiliary.synchronize();
+        }
+    }
+}
+
 pub(crate) fn try_forward(
     q: &Tensor,
     k: &Tensor,
@@ -18,6 +54,18 @@ pub(crate) fn try_forward(
     kn: &RMSNorm,
     cos: &Tensor,
     sin: &Tensor,
+) -> Result<Option<(Tensor, Tensor)>> {
+    try_forward_on_stream(q, k, qn, kn, cos, sin, None)
+}
+
+pub(crate) fn try_forward_on_stream(
+    q: &Tensor,
+    k: &Tensor,
+    qn: &RMSNorm,
+    kn: &RMSNorm,
+    cos: &Tensor,
+    sin: &Tensor,
+    stream: Option<Arc<CudaStream>>,
 ) -> Result<Option<(Tensor, Tensor)>> {
     if q.rank() != 3 || k.rank() != 3 {
         return Ok(None);
@@ -76,6 +124,7 @@ pub(crate) fn try_forward(
             cos: cos.clone(),
             sin: sin.clone(),
             epsilon: qn.epsilon,
+            stream,
         },
     )?;
     let nq = q.elem_count();
@@ -91,6 +140,7 @@ struct Fused {
     cos: Tensor,
     sin: Tensor,
     epsilon: f32,
+    stream: Option<Arc<CudaStream>>,
 }
 impl Fused {
     fn launch<T: CudaDType + DeviceRepr>(
@@ -137,7 +187,13 @@ impl Fused {
         let mut output = unsafe { device.alloc::<T>(rows * 128)? };
         let function =
             device.get_or_load_custom_func(name, "tei-qk-norm-rope", ptx::QK_NORM_ROPE)?;
-        let mut builder = function.builder();
+        let stream = self.stream.clone().unwrap_or_else(|| device.cuda_stream());
+        if self.stream.is_some() {
+            stream
+                .join(&device.cuda_stream())
+                .map_err(candle::Error::wrap)?;
+        }
+        let mut builder = stream.launch_builder(&function);
         let qstride = ql.stride()[0] as i32;
         let kstride = kl.stride()[0] as i32;
         let tokens = tokens as i32;
@@ -287,6 +343,198 @@ mod tests {
                             );
                         }
                     }
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(crate) fn unfold_qkv(
+    q: &Tensor,
+    k: &Tensor,
+    v: &Tensor,
+    ids: &Tensor,
+) -> Result<(Tensor, Tensor, Tensor)> {
+    let (compact, qheads, width) = q.dims3()?;
+    let (ktokens, kheads, kwidth) = k.dims3()?;
+    if compact == 0
+        || qheads == 0
+        || kheads == 0
+        || width == 0
+        || ids.rank() != 1
+        || ids.elem_count() == 0
+        || ktokens != compact
+        || v.dims() != k.dims()
+        || width != kwidth
+        || !q.is_contiguous()
+        || !k.is_contiguous()
+        || v.stride()[2] != 1
+        || v.stride()[1] != width
+        || !v.stride()[0].is_multiple_of(8)
+        || !width.is_multiple_of(8)
+        || ids.dtype() != DType::U32
+        || !ids.is_contiguous()
+        || !matches!(q.dtype(), DType::BF16 | DType::F16)
+        || [k, v]
+            .iter()
+            .any(|t| t.dtype() != q.dtype() || !t.device().same_device(q.device()))
+        || !ids.device().same_device(q.device())
+        || [q, k, v]
+            .iter()
+            .any(|t| !t.layout().start_offset().is_multiple_of(8))
+    {
+        candle::bail!("Unsupported fused QKV unfold layout")
+    }
+    let tokens = ids.elem_count();
+    let packed = q.apply_op3_no_bwd(k, v, &UnfoldQkv { ids: ids.clone() })?;
+    let nq = tokens * qheads * width;
+    let nk = tokens * kheads * width;
+    Ok((
+        packed.narrow(0, 0, nq)?.reshape((tokens, qheads, width))?,
+        packed.narrow(0, nq, nk)?.reshape((tokens, kheads, width))?,
+        packed
+            .narrow(0, nq + nk, nk)?
+            .reshape((tokens, kheads, width))?,
+    ))
+}
+struct UnfoldQkv {
+    ids: Tensor,
+}
+impl UnfoldQkv {
+    fn launch<T: CudaDType + DeviceRepr>(
+        &self,
+        q: &CudaStorage,
+        ql: &Layout,
+        k: &CudaStorage,
+        kl: &Layout,
+        v: &CudaStorage,
+        vl: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let device = q.device();
+        let q = q
+            .as_cuda_slice::<T>()?
+            .slice(ql.start_offset()..ql.start_offset() + ql.shape().elem_count());
+        let k = k
+            .as_cuda_slice::<T>()?
+            .slice(kl.start_offset()..kl.start_offset() + kl.shape().elem_count());
+        let v = v.as_cuda_slice::<T>()?.slice(
+            vl.start_offset()
+                ..vl.start_offset()
+                    + (vl.dims()[0] - 1) * vl.stride()[0]
+                    + vl.dims()[1] * vl.dims()[2],
+        );
+        let (storage, layout) = self.ids.storage_and_layout();
+        let Storage::Cuda(ids) = &*storage else {
+            candle::bail!("Expected CUDA indices")
+        };
+        let ids = ids
+            .as_cuda_slice::<u32>()?
+            .slice(layout.start_offset()..layout.start_offset() + self.ids.elem_count());
+        let tokens = u32::try_from(self.ids.elem_count()).map_err(candle::Error::wrap)?;
+        let qw = u32::try_from(ql.dims()[1] * ql.dims()[2] / 8).map_err(candle::Error::wrap)?;
+        let kw = u32::try_from(kl.dims()[1] * kl.dims()[2] / 8).map_err(candle::Error::wrap)?;
+        let stride = (vl.stride()[0] / 8) as u64;
+        let size = tokens as usize * (qw as usize + 2 * kw as usize) * 8;
+        let mut output = unsafe { device.alloc::<T>(size)? };
+        let function = device.get_or_load_custom_func(
+            "qkv_unfold_u16",
+            "tei-qk-norm-rope",
+            ptx::QK_NORM_ROPE,
+        )?;
+        let mut builder = function.builder();
+        builder
+            .arg(&q)
+            .arg(&k)
+            .arg(&v)
+            .arg(&ids)
+            .arg(&mut output)
+            .arg(&tokens)
+            .arg(&qw)
+            .arg(&kw)
+            .arg(&stride);
+        unsafe {
+            builder.launch(LaunchConfig {
+                grid_dim: ((size / 8).div_ceil(256).min(4096) as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            })
+        }
+        .map_err(candle::Error::wrap)?;
+        Ok((
+            CudaStorage::wrap_cuda_slice(output, device.clone()),
+            (size,).into(),
+        ))
+    }
+}
+impl candle::CustomOp3 for UnfoldQkv {
+    fn name(&self) -> &'static str {
+        "qkv-unfold"
+    }
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("QKV unfold requires CUDA")
+    }
+    fn cuda_fwd(
+        &self,
+        q: &CudaStorage,
+        ql: &Layout,
+        k: &CudaStorage,
+        kl: &Layout,
+        v: &CudaStorage,
+        vl: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        match q.dtype() {
+            DType::BF16 => self.launch::<half::bf16>(q, ql, k, kl, v, vl),
+            DType::F16 => self.launch::<half::f16>(q, ql, k, kl, v, vl),
+            _ => candle::bail!("Unsupported QKV unfold dtype"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod unfold_tests {
+    use super::*;
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn fused_unfold_preserves_bits_for_strided_values() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for dtype in [DType::BF16, DType::F16] {
+            for tokens in [1usize, 7, 511] {
+                let values: Vec<f32> = (0..tokens * 4096)
+                    .map(|i| ((i % 127) as f32 - 63.) / 16.)
+                    .collect();
+                let packed =
+                    Tensor::from_vec(values, (tokens, 32, 128), &device)?.to_dtype(dtype)?;
+                let q = packed.narrow(1, 0, 16)?.contiguous()?;
+                let k = packed.narrow(1, 16, 8)?.contiguous()?;
+                let v = packed.narrow(1, 24, 8)?;
+                // Reverse, duplicate, and select both boundaries; include a nonzero ID offset.
+                let ids = Tensor::new(
+                    vec![0u32, (tokens - 1) as u32, 0, (tokens / 2) as u32, 0],
+                    &device,
+                )?
+                .narrow(0, 1, 4)?;
+                let (uq, uk, uv) = unfold_qkv(&q, &k, &v, &ids)?;
+                for (actual, input) in [(uq, q), (uk, k), (uv, v)] {
+                    let expected = crate::layers::index_select(&input, &ids, 0)?;
+                    assert_eq!(
+                        actual
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?,
+                        expected
+                            .to_dtype(DType::F32)?
+                            .flatten_all()?
+                            .to_vec1::<f32>()?
+                    );
                 }
             }
         }
