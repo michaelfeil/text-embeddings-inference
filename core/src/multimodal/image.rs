@@ -126,6 +126,17 @@ impl QwenImageProcessor {
         let decoder = reader
             .into_decoder()
             .map_err(|_| "Invalid image or decoder allocation limit exceeded")?;
+        // Higher-depth conversion differs from Pillow (notably L16 clamping).
+        // Reject it from decoder metadata before allocating/normalizing pixels.
+        if !matches!(
+            decoder.color_type(),
+            image::ColorType::L8
+                | image::ColorType::La8
+                | image::ColorType::Rgb8
+                | image::ColorType::Rgba8
+        ) {
+            return Err("Only images decoded to 8-bit samples are supported".into());
+        }
         let (w, h) = decoder.dimensions();
         if u64::from(w) * u64::from(h) > max_pixels {
             return Err("Image exceeds the decoded pixel limit".into());
@@ -322,6 +333,29 @@ mod tests {
             assert_eq!(format!("{:x}", digest.finalize()), expected, "{w}x{h}");
         }
     }
+    #[test]
+    fn rejects_16_bit_samples_before_pixel_conversion() {
+        // Pillow clamps integer grayscale values above 255, while image's generic
+        // conversion scales u16 values. Do not silently accept that mismatch.
+        let gray = image::ImageBuffer::from_fn(32, 32, |x, _| {
+            image::Luma([if x == 0 { 255u16 } else { 32768u16 }])
+        });
+        let rgb = image::ImageBuffer::from_pixel(32, 32, image::Rgb([255u16, 32768, 65535]));
+        for source in [
+            DynamicImage::ImageLuma16(gray),
+            DynamicImage::ImageRgb16(rgb),
+        ] {
+            let mut bytes = Cursor::new(Vec::new());
+            source
+                .write_to(&mut bytes, image::ImageFormat::Png)
+                .unwrap();
+            let result = processor().inspect(bytes.get_ref(), 4096);
+            assert!(
+                matches!(result, Err(ref error) if error == "Only images decoded to 8-bit samples are supported")
+            );
+        }
+    }
+
     #[test]
     fn extreme_aspect_ratio_and_decode_limits() {
         let processor = processor();
