@@ -17,11 +17,7 @@
 // #[serial_test::serial]
 // #[cfg(feature = "http")]
 // async fn test_predict() -> Result<()> {
-//     let model_id = if cfg!(feature = "ort") {
-//         "SamLowe/roberta-base-go_emotions-onnx"
-//     } else {
-//         "SamLowe/roberta-base-go_emotions"
-//     };
+//     let model_id = "SamLowe/roberta-base-go_emotions";
 //
 //     start_server(model_id.to_string(), None, DType::Float32).await?;
 //

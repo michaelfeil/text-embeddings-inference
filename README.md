@@ -56,7 +56,6 @@ Ember, GTE and E5. TEI implements many features such as:
   [Candle](https://github.com/huggingface/candle)
   and [cuBLASLt](https://docs.nvidia.com/cuda/cublas/#using-the-cublaslt-api)
 * [Safetensors](https://github.com/huggingface/safetensors) weight loading
-* [ONNX](https://github.com/onnx/onnx) weight loading
 * Production ready (distributed tracing with Open Telemetry, Prometheus metrics)
 
 ## GPU replicas
@@ -188,7 +187,7 @@ Options:
 
           Auto prefers config.json's dtype over torch_dtype and selects bfloat16 when configured.
           Otherwise it keeps the backend default (float16 for Candle CUDA). MKL, Accelerate,
-          ONNX, and gemma3_text retain their float32 defaults. Explicit dtype values override auto.
+          and gemma3_text retain their float32 defaults. Explicit dtype values override auto.
 
       --pooling <POOLING>
           Optionally control the pooling method for embedding models.
@@ -611,8 +610,8 @@ curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 Then run:
 
 ```shell
-# On x86 with ONNX backend (recommended)
-cargo install --path router -F ort
+# On x86 with Candle
+cargo install --path router -F candle
 # On x86 with Intel backend
 cargo install --path router -F mkl
 # On M1 or M2

@@ -13,7 +13,7 @@ pub enum DType {
         all(feature = "candle", not(feature = "accelerate"))
     ))]
     Float16,
-    #[cfg(any(feature = "python", feature = "candle", feature = "ort"))]
+    #[cfg(any(feature = "python", feature = "candle"))]
     Float32,
     #[cfg(any(feature = "python", feature = "candle"))]
     Bfloat16,
@@ -29,7 +29,7 @@ impl fmt::Display for DType {
                 all(feature = "candle", not(feature = "accelerate"))
             ))]
             DType::Float16 => write!(f, "float16"),
-            #[cfg(any(feature = "python", feature = "candle", feature = "ort"))]
+            #[cfg(any(feature = "python", feature = "candle"))]
             DType::Float32 => write!(f, "float32"),
             #[cfg(any(feature = "python", feature = "candle"))]
             DType::Bfloat16 => write!(f, "bfloat16"),
@@ -40,16 +40,11 @@ impl fmt::Display for DType {
 #[allow(clippy::derivable_impls)]
 impl Default for DType {
     fn default() -> Self {
-        #[cfg(any(feature = "accelerate", feature = "mkl", feature = "ort"))]
+        #[cfg(any(feature = "accelerate", feature = "mkl"))]
         {
             DType::Float32
         }
-        #[cfg(not(any(
-            feature = "accelerate",
-            feature = "mkl",
-            feature = "ort",
-            feature = "python"
-        )))]
+        #[cfg(not(any(feature = "accelerate", feature = "mkl", feature = "python")))]
         {
             DType::Float16
         }

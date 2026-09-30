@@ -50,7 +50,7 @@ Options:
 
           Auto prefers config.json's dtype over torch_dtype and selects bfloat16 when configured.
           Otherwise it keeps the backend default (float16 for Candle CUDA). MKL, Accelerate,
-          ONNX, and gemma3_text retain their float32 defaults. Explicit dtype values override auto.
+          and gemma3_text retain their float32 defaults. Explicit dtype values override auto.
 
       --pooling <POOLING>
           Optionally control the pooling method for embedding models.
