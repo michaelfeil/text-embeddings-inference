@@ -4916,6 +4916,7 @@ version = "1.8.16-rc.0"
 dependencies = [
  "async-channel",
  "base64 0.22.1",
+ "bytemuck",
  "fast_image_resize",
  "fastokens-b10",
  "hf-hub",
