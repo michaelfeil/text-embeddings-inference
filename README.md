@@ -530,8 +530,9 @@ up to the server's maximum input length. Requests that cannot retain all options
 or make options identical after token truncation, return 422. The server accepts
 Jev's `model` field as an alias and always uses its configured checkpoint.
 
-Limits: at most 64 questions (also bounded by `--max-client-batch-size`), 100
-choice options, 32 score levels, 512 total options, and 50,000 state characters.
+Limits: at most `MAX_DECISION_QUESTIONS` questions (default 256), independent of
+`--max-client-batch-size`; 100 choice options, 32 score levels, 512 total options,
+and 50,000 state characters.
 Use the existing `--max-batch-tokens`, `--max-batch-requests`,
 `--max-concurrent-requests`, and replica options to control serving capacity.
 For a local checkpoint, retain `rl_agent_config.json`, `encoder/config.json`,
