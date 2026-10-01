@@ -1137,6 +1137,12 @@ impl Model for Gemma4Model {
         if scores.is_empty() {
             return Ok(Vec::new());
         }
+        if scores.len() == 1 {
+            return Ok(vec![DecisionOutput {
+                logits: scores[0].to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
+                action_probability: 1.0,
+            }]);
+        }
         // Keep each GEMM's shape and arithmetic, then read all scores once.
         let scores = Tensor::cat(&scores, 1)?
             .to_dtype(DType::F32)?
