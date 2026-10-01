@@ -34,17 +34,39 @@ extern "C" __global__ void gemma_rms_norm_bf16(
 }
 
 // Preserve the reduction tree and FP32 operations of Candle's unfused path.
-extern "C" __global__ void gemma_rms_norm_reference_bf16(
+template<bool VIRTUAL_LANES, bool PAIRED = false>
+__device__ __forceinline__ void gemma_rms_norm_reference_impl(
     const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
-    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps) {
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps,
+    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {}) {
     const size_t base = static_cast<size_t>(blockIdx.x / heads) * token_stride
         + static_cast<size_t>(blockIdx.x % heads) * width;
     const size_t out_base = static_cast<size_t>(blockIdx.x) * width;
     __shared__ float sums[1024];
     float sum = 0.f;
-    for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
-        float v = __bfloat162float(x[base + col]);
-        sum += v * v;
+    if constexpr (VIRTUAL_LANES) {
+        // Emulate the original logical lanes before reducing across this smaller
+        // block. Pairing lane 0+512, then 0+256 preserves the 1024-lane tree.
+        unsigned int logical_threads = 1;
+        while (logical_threads < width && logical_threads < 1024) logical_threads <<= 1;
+        const unsigned int lanes = logical_threads / blockDim.x;
+        float partial[4] = {0.f, 0.f, 0.f, 0.f};
+        for (unsigned int lane = 0; lane < lanes; ++lane) {
+            for (unsigned int col = threadIdx.x + lane * blockDim.x;
+                 col < width; col += logical_threads) {
+                float v = __bfloat162float(x[base + col]);
+                partial[lane] += v * v;
+            }
+        }
+        for (unsigned int stride = lanes / 2; stride; stride >>= 1)
+            for (unsigned int lane = 0; lane < stride; ++lane)
+                partial[lane] += partial[lane + stride];
+        sum = partial[0];
+    } else {
+        for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+            float v = __bfloat162float(x[base + col]);
+            sum += v * v;
+        }
     }
     sums[threadIdx.x] = sum;
     for (unsigned int stride = blockDim.x / 2; stride >= 32; stride >>= 1) {
@@ -69,7 +91,36 @@ extern "C" __global__ void gemma_rms_norm_reference_bf16(
     for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
         float normalized = __bfloat162float(x[base + col]) / sums[0];
         out[out_base + col] = __float2bfloat16_rn(normalized * scale[col]);
+        if constexpr (PAIRED) {
+            __nv_bfloat16 router = __float2bfloat16_rn(normalized * 1.f);
+            router = router * root + __float2bfloat16_rn(0.f);
+            out[static_cast<size_t>(gridDim.x) * width + out_base + col]
+                = router * router_scale[col];
+        }
     }
+}
+
+extern "C" __global__ void gemma_rms_norm_reference_bf16(
+    const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps) {
+    gemma_rms_norm_reference_impl<false>(x, scale, out, width, heads, token_stride, eps);
+}
+
+
+extern "C" __global__ void gemma_rms_norm_pair_bf16(
+    const __nv_bfloat16* x, const float* expert_scale,
+    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
+    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
+    gemma_rms_norm_reference_impl<false, true>(
+        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
+}
+
+extern "C" __global__ void gemma_rms_norm_pair_compact_bf16(
+    const __nv_bfloat16* x, const float* expert_scale,
+    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
+    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
+    gemma_rms_norm_reference_impl<true, true>(
+        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
 }
 
 // NeoX rotary embedding with BF16 rounding after each product, as in Candle's
