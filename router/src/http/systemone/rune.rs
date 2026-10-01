@@ -238,8 +238,8 @@ impl Rune {
         if request.head_max_len.is_some() {
             return Err("head_max_len is specific to Laya".into());
         }
-        if request.questions.is_empty() || request.questions.len() > 64 {
-            return Err("Rune requires between 1 and 64 questions".into());
+        if request.questions.is_empty() {
+            return Err("Rune requires at least one question".into());
         }
         if state_chars > 50_000 {
             return Err("State exceeds 50000 characters".into());

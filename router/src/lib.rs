@@ -837,7 +837,7 @@ pub struct Info {
     pub max_batch_requests: Option<usize>,
     #[cfg_attr(feature = "http", schema(example = "32"))]
     pub max_client_batch_size: usize,
-    /// Maximum question fanout for /v1/systemone; model and client batch limits also apply.
+    /// Maximum question fanout for /v1/systemone, independent of the client batch limit.
     pub max_decision_questions: usize,
     pub auto_truncate: bool,
     #[cfg_attr(feature = "http", schema(example = "4"))]

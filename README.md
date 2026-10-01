@@ -234,10 +234,10 @@ Options:
       --max-decision-questions <MAX_DECISION_QUESTIONS>
           Maximum number of questions in one /v1/systemone request
 
-          Existing model and max-client-batch-size limits also apply
+          Independent of max-client-batch-size; model option budgets still apply
 
           [env: MAX_DECISION_QUESTIONS=]
-          [default: 64]
+          [default: 256]
 
       --auto-truncate
           Automatically truncate inputs that are longer than the maximum supported size
@@ -485,10 +485,11 @@ ModernBERT encodes the batch once; Laya's custom head scores each question's
 options. This is bidirectional inference; RadixMLP is disabled for this model.
 
 Set `MAX_DECISION_QUESTIONS=8` (or `--max-decision-questions 8`) to cap question
-fanout per `/v1/systemone` request. The default is 64; values must be positive.
-`MAX_CLIENT_BATCH_SIZE` and the model's 64-question limit also apply. Requests
-above a limit return HTTP 422 before tokenization or inference. The configured
-limit is exposed as `max_decision_questions` in `/info`.
+fanout per `/v1/systemone` request. The default is 256; values must be positive.
+This is independent of `MAX_CLIENT_BATCH_SIZE`, which controls other batch
+endpoints. Model option budgets still apply, including the 512 total options
+per request. Excess questions return HTTP 422 before tokenization or inference.
+The configured limit is exposed as `max_decision_questions` in `/info`.
 
 `usage.input_tokens`, `x-compute-tokens`, and `x-baseten-input-tokens` sum the
 actual formatted sequence lengths across questions, including repeated state,
