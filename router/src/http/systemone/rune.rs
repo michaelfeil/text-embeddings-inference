@@ -5,6 +5,7 @@ pub struct Rune {
     tokenizer: Tokenizer,
     max_input_length: usize,
     codes: Vec<String>,
+    continuation_ids: Option<Vec<u32>>,
     images: Option<text_embeddings_core::multimodal::Gemma4ImageProcessor>,
 }
 
@@ -48,10 +49,38 @@ impl Rune {
                 .iter()),
             "Rune needs single-token A-Z option labels"
         );
+        // An unmodified special token splits the tokenizer input into independent
+        // segments. Every trained prompt ends here, so its option continuation
+        // can be checked once without re-encoding the state for every option.
+        // Keep the full-prompt check for tokenizers without this boundary.
+        let boundary_id = tokenizer.token_to_id("<channel|>").unwrap();
+        let boundary = tokenizer.get_added_tokens_decoder();
+        let continuation_ids = if boundary.get(&boundary_id).is_some_and(|token| {
+            token.special
+                && !token.normalized
+                && !token.lstrip
+                && !token.rstrip
+                && !token.single_word
+        }) && boundary
+            .iter()
+            .all(|(&id, token)| id == boundary_id || !token.content.contains("<channel|>"))
+        {
+            codes
+                .iter()
+                .map(|code| {
+                    let joined = tokenizer.encode(format!("<channel|>{code}"), false).ok()?;
+                    let ids = joined.get_ids();
+                    (ids.len() == 2 && ids[0] == boundary_id).then(|| ids[1])
+                })
+                .collect::<Option<Vec<_>>>()
+        } else {
+            None
+        };
         Ok(Self {
             tokenizer,
             max_input_length,
             codes,
+            continuation_ids,
             images: None,
         })
     }
@@ -262,13 +291,15 @@ impl Rune {
             }
             let ids = self.encode(&prompt)?;
             if ids.is_empty() || ids.len() > limit { return Err(format!("Rune prompt has {} tokens, exceeding max_len {limit}; prompts are never truncated", ids.len())); }
-            let token_ids = self.codes[..n].iter().map(|code| {
+            let token_ids = if let Some(token_ids) = &self.continuation_ids {
+                token_ids[..n].to_vec()
+            } else { self.codes[..n].iter().map(|code| {
                 let joined = self.encode(&format!("{prompt}{code}"))?;
                 if joined.len() != ids.len() + 1 || !joined.starts_with(&ids) {
                     return Err(format!("Option {code} is not one continuation token"));
                 }
                 Ok(joined[ids.len()])
-            }).collect::<Result<Vec<_>, String>>()?;
+            }).collect::<Result<Vec<_>, String>>()? };
             let length = ids.len();
             Ok(Question { id, kind: kind.into(), labels, criteria, compute_chars: prompt.chars().count(),
                 encoding: ValidEncoding { multimodal: None,
@@ -347,6 +378,54 @@ pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Valu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checkpoint_cached_continuations_match_full_prompt_checks() -> anyhow::Result<()> {
+        let Ok(path) = std::env::var("RUNE_CHECKPOINT_DIR") else {
+            return Ok(());
+        };
+        let tokenizer = Tokenizer::from_file(Path::new(&path).join("tokenizer.json"))
+            .map_err(|e| anyhow::anyhow!(e.to_string()))?;
+        let cached = Rune::load(tokenizer.clone(), 32768)?;
+        assert!(cached.continuation_ids.is_some());
+        let mut reference = Rune::load(tokenizer, 32768)?;
+        reference.continuation_ids = None;
+        for state in [
+            "Café 東京 👩🏽‍💻 \"quoted\"\n<channel|> data".to_owned(),
+            "Archive contains no new facts. ".repeat(1000),
+        ] {
+            for count in [2, 26, 27, cached.codes.len().min(255)] {
+                let criteria: Map<String, Value> = (0..count)
+                    .map(|i| (format!("option{i}"), json!(format!("Description {i}"))))
+                    .collect();
+                let request = json!({"state":state,"questions":{"q":{
+                    "type":"choice","instructions":"Choose.","criteria":criteria
+                }}});
+                let actual = cached
+                    .prepare(serde_json::from_value(request.clone())?)
+                    .map_err(anyhow::Error::msg)?;
+                let expected = reference
+                    .prepare(serde_json::from_value(request)?)
+                    .map_err(anyhow::Error::msg)?;
+                assert_eq!(actual[0].encoding.input_ids, expected[0].encoding.input_ids);
+                let DecisionInput::OptionTokens { token_ids: actual } = &actual[0].input else {
+                    panic!("expected option tokens");
+                };
+                let DecisionInput::OptionTokens {
+                    token_ids: expected,
+                } = &expected[0].input
+                else {
+                    panic!("expected option tokens");
+                };
+                assert_eq!(actual, expected);
+            }
+        }
+        let mut overlapping = cached.tokenizer.clone();
+        overlapping
+            .add_special_tokens(&[tokenizers::AddedToken::from("thought\n<channel|>A", true)]);
+        assert!(Rune::load(overlapping, 32768)?.continuation_ids.is_none());
+        Ok(())
+    }
 
     #[test]
     fn confidences_use_rune_formulas_and_first_tie() {
