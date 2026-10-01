@@ -11,6 +11,17 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use text_embeddings_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
 
+fn packed_rotary(x: &Tensor, cos: &Tensor, sin: &Tensor, width: usize) -> Result<Tensor> {
+    #[cfg(feature = "cuda")]
+    if x.device().is_cuda() && x.dtype() == DType::BF16 {
+        return crate::layers::gemma_rms_norm::rotary_reference(x, cos, sin);
+    }
+    apply_rotary(x, cos, sin, width)?
+        .transpose(1, 2)?
+        .squeeze(0)?
+        .contiguous()
+}
+
 fn default_head_dim() -> usize {
     256
 }
@@ -226,10 +237,7 @@ impl Gemma4Attention {
             self.head_dim,
         ))?;
         let q = self.q_norm.forward(&q)?.transpose(1, 2)?;
-        let q = apply_rotary(&q, cos, sin, self.head_dim)?
-            .transpose(1, 2)?
-            .squeeze(0)?
-            .contiguous()?;
+        let q = packed_rotary(&q, cos, sin, self.head_dim)?;
         let q = unfold_heads(q, self.num_attention_heads)?;
 
         let (k, v) = if self.is_kv_shared {
@@ -259,10 +267,7 @@ impl Gemma4Attention {
                 .unwrap()
                 .forward(&k_unrotated)?
                 .transpose(1, 2)?;
-            let k = apply_rotary(&k, cos, sin, self.head_dim)?
-                .transpose(1, 2)?
-                .squeeze(0)?
-                .contiguous()?;
+            let k = packed_rotary(&k, cos, sin, self.head_dim)?;
             let v = self
                 .v_norm
                 .as_ref()
