@@ -34,21 +34,31 @@ fn linear(vb: VarBuilder, input: usize, output: usize) -> Result<Linear> {
     Ok(Linear::new(vb.get((output, input), "weight")?, None, None))
 }
 struct Dense {
-    gate: Linear,
-    up: Linear,
+    gate_up: Linear,
     down: Linear,
 }
 impl Dense {
     fn load(vb: VarBuilder, h: usize, i: usize) -> Result<Self> {
         Ok(Self {
-            gate: linear(vb.pp("gate_proj"), h, i)?,
-            up: linear(vb.pp("up_proj"), h, i)?,
+            gate_up: Linear::new(
+                Tensor::cat(
+                    &[
+                        vb.pp("gate_proj").get((i, h), "weight")?,
+                        vb.pp("up_proj").get((i, h), "weight")?,
+                    ],
+                    0,
+                )?,
+                None,
+                None,
+            ),
             down: linear(vb.pp("down_proj"), i, h)?,
         })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        self.down
-            .forward(&(candle_nn::ops::silu(&self.gate.forward(x)?)? * self.up.forward(x)?)?)
+        self.down.forward(&crate::layers::gated_activation(
+            &self.gate_up.forward(x)?,
+            Some(&crate::layers::HiddenAct::Silu),
+        )?)
     }
 }
 struct FullAttention {
@@ -195,13 +205,36 @@ enum Attention {
     Full(FullAttention),
     Linear(DeltaAttention),
 }
+enum FeedForward {
+    Dense(Dense),
+    Moe {
+        experts: super::qwen3_moe::Qwen3Moe,
+        shared: Dense,
+        gate: Linear,
+    },
+}
+impl FeedForward {
+    fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        match self {
+            Self::Dense(dense) => dense.forward(x),
+            Self::Moe {
+                experts,
+                shared,
+                gate,
+            } => {
+                experts.forward(x)?
+                    + shared
+                        .forward(x)?
+                        .broadcast_mul(&candle_nn::ops::sigmoid(&gate.forward(x)?)?)?
+            }
+        }
+    }
+}
 struct Layer {
     attn: Attention,
     input_norm: Norm,
     post_norm: Norm,
-    moe: super::qwen3_moe::Qwen3Moe,
-    shared: Dense,
-    shared_gate: Linear,
+    mlp: FeedForward,
 }
 impl Layer {
     fn load(
@@ -224,13 +257,23 @@ impl Layer {
                 c.hidden_size,
                 c.rms_norm_eps,
             )?,
-            moe: super::qwen3_moe::Qwen3Moe::load(vb.pp("mlp"), moe_config)?,
-            shared: Dense::load(
-                vb.pp("mlp.shared_expert"),
-                c.hidden_size,
-                c.shared_expert_intermediate_size,
-            )?,
-            shared_gate: linear(vb.pp("mlp.shared_expert_gate"), c.hidden_size, 1)?,
+            mlp: if c.num_experts == 0 {
+                FeedForward::Dense(Dense::load(
+                    vb.pp("mlp"),
+                    c.hidden_size,
+                    c.intermediate_size,
+                )?)
+            } else {
+                FeedForward::Moe {
+                    experts: super::qwen3_moe::Qwen3Moe::load(vb.pp("mlp"), moe_config)?,
+                    shared: Dense::load(
+                        vb.pp("mlp.shared_expert"),
+                        c.hidden_size,
+                        c.shared_expert_intermediate_size,
+                    )?,
+                    gate: linear(vb.pp("mlp.shared_expert_gate"), c.hidden_size, 1)?,
+                }
+            },
         })
     }
     fn forward(
@@ -258,11 +301,7 @@ impl Layer {
         };
         let residual = (x + attention)?;
         let n = self.post_norm.forward(&residual)?;
-        let shared = self
-            .shared
-            .forward(&n)?
-            .broadcast_mul(&candle_nn::ops::sigmoid(&self.shared_gate.forward(&n)?)?)?;
-        residual + (self.moe.forward(&n)? + shared)?
+        residual + self.mlp.forward(&n)?
     }
 }
 pub struct Qwen35Model {
