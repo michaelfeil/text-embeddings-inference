@@ -4,11 +4,66 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::gemma4::{
     config::Gemma4VisionConfig, multimodal_embedding::MultimodalEmbedder, vision::VisionTower,
 };
+use sha2::{Digest, Sha256};
+use std::{collections::VecDeque, sync::Mutex};
 use text_embeddings_backend_core::Batch;
+
+const FEATURE_CACHE_BYTES: usize = 64 * 1024 * 1024;
+const FEATURE_CACHE_ENTRIES: usize = 32;
+
+#[derive(Default)]
+struct FeatureCache {
+    entries: VecDeque<([u8; 32], Tensor)>,
+    bytes: usize,
+}
+
+impl FeatureCache {
+    fn get(&mut self, key: &[u8; 32]) -> Option<Tensor> {
+        let index = self.entries.iter().position(|(k, _)| k == key)?;
+        let entry = self.entries.remove(index)?;
+        let value = entry.1.clone();
+        self.entries.push_back(entry);
+        Some(value)
+    }
+
+    fn insert(&mut self, key: [u8; 32], value: Tensor) {
+        let size = value.elem_count() * value.dtype().size_in_bytes();
+        if size > FEATURE_CACHE_BYTES {
+            return;
+        }
+        if let Some(index) = self.entries.iter().position(|(k, _)| k == &key) {
+            let (_, old) = self.entries.remove(index).unwrap();
+            self.bytes -= old.elem_count() * old.dtype().size_in_bytes();
+        }
+        while self.bytes + size > FEATURE_CACHE_BYTES || self.entries.len() >= FEATURE_CACHE_ENTRIES
+        {
+            let (_, old) = self.entries.pop_front().unwrap();
+            self.bytes -= old.elem_count() * old.dtype().size_in_bytes();
+        }
+        self.bytes += size;
+        self.entries.push_back((key, value));
+    }
+}
+
+fn image_key(image: &text_embeddings_backend_core::ImagePatches) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    for value in image
+        .grid_thw
+        .into_iter()
+        .chain([image.patch_dim, image.merge_size])
+    {
+        hash.update(value.to_le_bytes());
+    }
+    // Hash the actual prepared pixels and layout; URLs and image placeholders
+    // cannot identify model inputs. The cache belongs to one model/device.
+    hash.update(bytemuck::cast_slice(&image.pixels));
+    hash.finalize().into()
+}
 
 pub(super) struct Gemma4Vision {
     tower: VisionTower,
     projection: MultimodalEmbedder,
+    features: Mutex<FeatureCache>,
 }
 
 impl Gemma4Vision {
@@ -34,6 +89,7 @@ impl Gemma4Vision {
             }
         });
         Ok(Self {
+            features: Mutex::new(FeatureCache::default()),
             tower: VisionTower::new(&config, vision_vb.pp("model.vision_tower"))?,
             projection: MultimodalEmbedder::new(
                 config.hidden_size,
@@ -75,9 +131,19 @@ impl Gemma4Vision {
                 {
                     candle::bail!("Invalid Gemma4 image patches");
                 }
-                let features =
-                    if let Some(features) = features_by_image.get(&std::sync::Arc::as_ptr(image)) {
-                        Tensor::clone(features)
+                let features = if let Some(features) =
+                    features_by_image.get(&std::sync::Arc::as_ptr(image))
+                {
+                    Tensor::clone(features)
+                } else {
+                    let key = image_key(image);
+                    let cached = self
+                        .features
+                        .lock()
+                        .map_err(|_| candle::Error::Msg("Image feature cache poisoned".into()))?
+                        .get(&key);
+                    let features = if let Some(features) = cached {
+                        features
                     } else {
                         let pv = Tensor::from_slice(
                             &image.pixels,
@@ -94,9 +160,15 @@ impl Gemma4Vision {
                         if features.dim(0)? != image.token_count() {
                             candle::bail!("Gemma4 vision token count mismatch");
                         }
-                        features_by_image.insert(std::sync::Arc::as_ptr(image), features.clone());
+                        self.features
+                            .lock()
+                            .map_err(|_| candle::Error::Msg("Image feature cache poisoned".into()))?
+                            .insert(key, features.clone());
                         features
                     };
+                    features_by_image.insert(std::sync::Arc::as_ptr(image), features.clone());
+                    features
+                };
                 *embeddings = embeddings.slice_scatter0(&features, offset + start)?;
                 spans.push((offset + start, image.token_count(), offset));
                 previous_end = start + image.token_count();
@@ -111,6 +183,46 @@ mod tests {
     use super::*;
     use candle::{DType, Device};
     use std::{collections::BTreeSet, path::PathBuf};
+
+    #[test]
+    fn feature_cache_tracks_content_and_evicts_old_entries() -> Result<()> {
+        let image = text_embeddings_backend_core::ImagePatches {
+            pixels: vec![0.; 12],
+            grid_thw: [1, 2, 2],
+            patch_dim: 3,
+            merge_size: 1,
+        };
+        assert_eq!(image_key(&image), image_key(&image.clone()));
+        let mut changed = image.clone();
+        changed.pixels[11] = 1.;
+        assert_ne!(image_key(&image), image_key(&changed));
+        changed = image.clone();
+        changed.grid_thw = [1, 1, 4];
+        assert_ne!(image_key(&image), image_key(&changed));
+        let mut cache = FeatureCache::default();
+        let value = Tensor::zeros((2, 4), DType::F32, &Device::Cpu)?;
+        for id in 0..FEATURE_CACHE_ENTRIES {
+            cache.insert([id as u8; 32], value.clone());
+        }
+        assert!(cache.get(&[0; 32]).is_some());
+        cache.insert([255; 32], value.clone());
+        assert!(cache.get(&[1; 32]).is_none());
+        assert!(cache.get(&[0; 32]).is_some());
+        cache.insert([255; 32], value);
+        assert_eq!(cache.entries.len(), FEATURE_CACHE_ENTRIES);
+        assert_eq!(cache.bytes, FEATURE_CACHE_ENTRIES * 2 * 4 * 4);
+        let mut cache = FeatureCache::default();
+        let large = Tensor::zeros(FEATURE_CACHE_BYTES / 8 + 1, DType::F32, &Device::Cpu)?;
+        cache.insert([0; 32], large.clone());
+        cache.insert([1; 32], large);
+        assert!(cache.get(&[0; 32]).is_none());
+        assert!(cache.get(&[1; 32]).is_some());
+        assert!(cache.bytes <= FEATURE_CACHE_BYTES);
+        let oversized = Tensor::zeros(FEATURE_CACHE_BYTES / 4 + 1, DType::F32, &Device::Cpu)?;
+        cache.insert([2; 32], oversized);
+        assert!(cache.get(&[2; 32]).is_none());
+        Ok(())
+    }
 
     #[test]
     #[ignore = "requires Rune checkpoint, Transformers pixel/features fixtures, and CUDA"]
