@@ -16,6 +16,14 @@ fn main() {
         );
         println!("cargo:rerun-if-changed=extensions/candle-gemma4-moe/kernels/grouped_gemm.cu");
         let out = std::path::PathBuf::from(std::env::var("OUT_DIR").unwrap());
+        println!("cargo:rerun-if-changed=src/kernels/prefix_kv.cu");
+        cudaforge::KernelBuilder::new()
+            .source_files(["src/kernels/prefix_kv.cu"])
+            .arg("-O3")
+            .build_ptx()
+            .expect("compile prefix KV copy")
+            .write(out.join("prefix_kv_ptx.rs"))
+            .expect("write prefix KV PTX");
         // Routed BF16 experts need Ampere Tensor Cores. Keep older CUDA
         // targets buildable for the models they already support.
         if set_compute_cap().expect("CUDA compute capability") >= 80 {

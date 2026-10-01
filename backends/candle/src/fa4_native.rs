@@ -6,7 +6,7 @@ use std::sync::OnceLock;
 
 thread_local! {
     static LOGGED: Cell<u8> = const { Cell::new(0) };
-    static BATCH: RefCell<Option<(Tensor, Seqlens)>> = const { RefCell::new(None) };
+    static BATCH: RefCell<Option<BatchLengths>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -47,9 +47,14 @@ fn dtype_qualified(backend: Backend, dtype: DType, dim: usize, causal: bool) -> 
     !(backend == Backend::Auto && dtype == DType::F16 && dim == 128 && !causal)
 }
 
+struct BatchLengths {
+    query: (Tensor, Seqlens),
+    kv: Option<(Tensor, Seqlens)>,
+}
+
 pub(crate) struct BatchGuard {
     // None denotes an inactive scope; Some(None) an active scope with no parent.
-    previous: Option<Option<(Tensor, Seqlens)>>,
+    previous: Option<Option<BatchLengths>>,
     _thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl Drop for BatchGuard {
@@ -61,6 +66,14 @@ impl Drop for BatchGuard {
 }
 
 pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<BatchGuard> {
+    prepare_cross_batch(offsets, host_offsets, None)
+}
+
+pub(crate) fn prepare_cross_batch(
+    offsets: &Tensor,
+    host_offsets: &[u32],
+    kv: Option<(&Tensor, &[u32])>,
+) -> Result<BatchGuard> {
     if !enabled()?
         || !offsets.device().is_cuda()
         || crate::flash_attn::runtime_compute_cap(offsets.device())?
@@ -72,7 +85,17 @@ pub(crate) fn prepare_batch(offsets: &Tensor, host_offsets: &[u32]) -> Result<Ba
         });
     }
     let lengths = Seqlens::new(host_offsets, offsets.device())?;
-    let previous = BATCH.with(|batch| batch.replace(Some((offsets.clone(), lengths))));
+    let kv = kv
+        .map(|(offsets, host)| -> Result<_> {
+            Ok((offsets.clone(), Seqlens::new(host, offsets.device())?))
+        })
+        .transpose()?;
+    let previous = BATCH.with(|batch| {
+        batch.replace(Some(BatchLengths {
+            query: (offsets.clone(), lengths),
+            kv,
+        }))
+    });
     Ok(BatchGuard {
         previous: Some(previous),
         _thread: std::marker::PhantomData,
@@ -97,8 +120,7 @@ pub(crate) fn try_forward(
     }
     let (_, h, d) = q.dims3()?;
     let (_, hk, kd) = k.dims3()?;
-    if offsets_q.id() != offsets_k.id() || d != kd || !matches!(q.dtype(), DType::F16 | DType::BF16)
-    {
+    if d != kd || !matches!(q.dtype(), DType::F16 | DType::BF16) {
         return Ok(None);
     }
     if v.dims() != k.dims() || h == 0 || hk == 0 {
@@ -138,26 +160,36 @@ pub(crate) fn try_forward(
     };
     BATCH.with(|batch| {
         let batch = batch.borrow();
-        let Some((offsets, lengths)) = batch.as_ref() else {
+        let Some(lengths) = batch.as_ref() else {
             return Ok(None);
         };
-        if offsets.id() != offsets_q.id() {
+        if lengths.kv.is_none() && offsets_q.id() != offsets_k.id() {
+            return Ok(None);
+        }
+        let (registered_q, q_lengths) = &lengths.query;
+        let (registered_kv, kv_lengths) = lengths.kv.as_ref().unwrap_or(&lengths.query);
+        if registered_q.id() != offsets_q.id() || registered_kv.id() != offsets_k.id() {
             candle::bail!("FA4 batch boundary registration mismatch");
         }
-        let output = candle_flash_attn_v4::flash_attn_varlen_with_config(
+        let output = candle_flash_attn_v4::flash_attn_varlen_cross(
             q,
             k,
             v,
-            lengths,
+            q_lengths,
+            kv_lengths,
             AttentionConfig {
                 mask,
                 softmax_scale: Some(scale),
             },
         )?;
-        let bit = match mask {
-            Mask::Global => 1,
-            Mask::Causal => 2,
-            _ => 4,
+        let bit = if offsets_q.id() != offsets_k.id() {
+            16
+        } else {
+            match mask {
+                Mask::Global => 1,
+                Mask::Causal => 2,
+                _ => 4,
+            }
         };
         LOGGED.with(|logged| {
             if logged.get() & bit == 0 {
@@ -166,6 +198,8 @@ pub(crate) fn try_forward(
                     heads = h,
                     kv_heads = hk,
                     dim = d,
+                    query_tokens = q.dims()[0],
+                    kv_tokens = k.dims()[0],
                     "Shared FA4 wrapper active"
                 );
                 logged.set(logged.get() | bit);
@@ -191,7 +225,11 @@ fn supported_mask(
     match (d, h == hk, causal, left, right) {
         (64, true, false, None, None) => Some(Mask::Global),
         (64, true, false, Some(left), Some(right)) => Some(Mask::Window { left, right }),
-        (128, _, true, None, None) if hk.checked_mul(4) == Some(h) => Some(Mask::Causal),
+        (128, _, true, None, None)
+            if hk.checked_mul(4) == Some(h) || hk.checked_mul(2) == Some(h) =>
+        {
+            Some(Mask::Causal)
+        }
         (128, _, false, None, None) if hk.checked_mul(2) == Some(h) => Some(Mask::Global),
         _ => None,
     }
@@ -247,9 +285,13 @@ mod tests {
             supported_mask(128, 16, 8, false, None, None),
             Some(Mask::Global)
         ));
+        assert!(matches!(
+            supported_mask(128, 16, 8, true, None, None),
+            Some(Mask::Causal)
+        ));
         for shape in [
             (256, 3, 1, false, None, None),
-            (128, 16, 8, true, None, None),
+            (128, 16, 16, true, None, None),
             (128, 16, 4, false, None, None),
             (64, 12, 12, true, None, None),
             (64, 12, 12, false, Some(64), None),
@@ -258,6 +300,31 @@ mod tests {
         ] {
             assert!(supported_mask(shape.0, shape.1, shape.2, shape.3, shape.4, shape.5).is_none());
         }
+    }
+
+    #[test]
+    #[ignore = "requires SM90, FA4 native bundle, and ATTN_BACKEND=fa4"]
+    fn cached_prefix_uses_bottom_right_causal_mask() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let q_offsets = Tensor::new(&[0u32, 1, 3], &device)?;
+        let kv_offsets = Tensor::new(&[0u32, 3, 7], &device)?;
+        let q = Tensor::zeros((3, 16, 128), DType::F16, &device)?;
+        let k = Tensor::zeros((7, 8, 128), DType::F16, &device)?;
+        let values: Vec<f32> = [1., 2., 3., 10., 20., 30., 40.]
+            .into_iter()
+            .flat_map(|v| [v; 8 * 128])
+            .collect();
+        let v = Tensor::from_vec(values, (7, 8, 128), &device)?.to_dtype(DType::F16)?;
+        let _guard = prepare_cross_batch(&q_offsets, &[0, 1, 3], Some((&kv_offsets, &[0, 3, 7])))?;
+        let output = try_forward(&q, &k, &v, &q_offsets, &kv_offsets, 0.125, true, None, None)?
+            .expect("cached-prefix attention must select FA4")
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        for (row, expected) in output.chunks_exact(16 * 128).zip([2., 20., 25.]) {
+            assert!(row.iter().all(|v| (*v - expected).abs() < 0.02));
+        }
+        Ok(())
     }
 
     #[test]

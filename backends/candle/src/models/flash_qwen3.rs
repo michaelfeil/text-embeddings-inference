@@ -1,4 +1,5 @@
 use crate::flash_attn::flash_attn_varlen;
+use crate::layers::prefix_kv::{PrefixKvCache, PrefixPlan};
 use crate::layers::rotary::apply_packed_rotary;
 use crate::layers::MlpLinear;
 use crate::layers::{
@@ -7,6 +8,7 @@ use crate::layers::{
 use crate::models::{Model, Qwen3Config};
 use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
+use std::sync::Mutex;
 use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen3Attention {
@@ -114,6 +116,7 @@ impl Qwen3Attention {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
@@ -122,6 +125,7 @@ impl Qwen3Attention {
         sin: &Tensor,
         max_s: usize,
         compact_tensors: &CompactUnfoldTensors,
+        prefix: Option<(&PrefixKvCache, &PrefixPlan, usize)>,
     ) -> Result<Tensor> {
         let _enter = self.span.enter();
 
@@ -170,15 +174,22 @@ impl Qwen3Attention {
         let k = compact_tensors.scatter_unfold(&k)?;
         let v = compact_tensors.scatter_unfold(&v)?;
 
+        let (k, v) = match prefix {
+            Some((cache, plan, layer)) => cache.assemble(layer, plan, &k, &v)?,
+            None => (k, v),
+        };
+        let (kv_offsets, max_k) = prefix
+            .map(|(_, plan, _)| (&plan.kv_offsets, plan.max_k))
+            .unwrap_or((cu_seqlens, max_s));
         let attention = flash_attn_varlen(
             &q,
             &k,
             &v,
             None,
             cu_seqlens,
-            cu_seqlens,
+            kv_offsets,
             max_s,
-            max_s,
+            max_k,
             self.softmax_scale,
             !self.use_bidirectional_attention,
             None,
@@ -315,6 +326,7 @@ impl Qwen3Layer {
         sin: &Tensor,
         max_s: usize,
         compact_tensors: &CompactUnfoldTensors,
+        prefix: Option<(&PrefixKvCache, &PrefixPlan, usize)>,
     ) -> Result<(Tensor, Tensor)> {
         let _enter = self.span.enter();
 
@@ -327,6 +339,7 @@ impl Qwen3Layer {
             sin,
             max_s,
             compact_tensors,
+            prefix,
         )?;
 
         let (normed_attn_res_output, attn_res) = self
@@ -348,6 +361,7 @@ pub struct FlashQwen3Model {
     sin_cache: Tensor,
     pool: Pool,
     pub device: Device,
+    prefix_cache: Option<Mutex<PrefixKvCache>>,
     use_bidirectional_attention: bool,
 
     span: tracing::Span,
@@ -413,7 +427,32 @@ impl FlashQwen3Model {
             false,
         )?;
 
+        let capacity = std::env::var("TEI_QWEN3_PREFIX_CACHE_TOKENS")
+            .ok()
+            .map(|s| s.parse::<usize>().map_err(candle::Error::wrap))
+            .transpose()?
+            .unwrap_or(0);
+        if capacity > 0
+            && (config.use_bidirectional_attention || enable_fp8_dynamic || config.num_experts > 0)
+        {
+            candle::bail!(
+                "Qwen3 prefix KV prototype requires a causal dense model without dynamic FP8"
+            );
+        }
+        #[cfg(feature = "cuda")]
+        if capacity > 0
+            && vb.device().is_cuda()
+            && crate::flash_attn::runtime_compute_cap(vb.device())? != 90
+        {
+            candle::bail!("Qwen3 prefix KV prototype is currently qualified only on Hopper");
+        }
+        let prefix_cache = (capacity > 0).then(|| {
+            Mutex::new(PrefixKvCache::new(
+                capacity.min(config.max_position_embeddings),
+            ))
+        });
         Ok(Self {
+            prefix_cache,
             embeddings,
             layers,
             norm,
@@ -456,6 +495,7 @@ impl FlashQwen3Model {
                 sin,
                 batch.max_length as usize,
                 &compact,
+                None,
             )?;
             if let Some((indices, _, deepstack)) = visual {
                 if let Some(features) = deepstack.get(i) {
@@ -481,33 +521,59 @@ impl FlashQwen3Model {
 
         let batch_size = batch.cumulative_seq_lengths.len() - 1;
 
-        // Create compact/unfold tensors and get embeddings
-        let (input_ids, compact_tensors) = CompactUnfoldTensors::from_batch(&batch, &self.device)?;
+        let mut cache = self
+            .prefix_cache
+            .as_ref()
+            .map(|cache| {
+                cache
+                    .lock()
+                    .map_err(|_| candle::Error::Msg("prefix cache lock poisoned".into()))
+            })
+            .transpose()?;
+        let plan = match cache.as_mut() {
+            Some(cache) => cache.plan(
+                &batch,
+                &self.device,
+                self.embeddings.embeddings().dtype(),
+                self.layers.len(),
+                self.layers[0].attention.num_key_value_heads,
+                self.layers[0].attention.attention_head_size,
+            )?,
+            None => None,
+        };
+        let work = plan.as_ref().map(|p| &p.suffix).unwrap_or(&batch);
+        let (input_ids, compact_tensors) = CompactUnfoldTensors::from_batch(work, &self.device)?;
         let mut hidden_states = self.embeddings.forward(&input_ids)?.contiguous()?;
 
         let cu_seqlens = Tensor::from_vec(
-            batch.cumulative_seq_lengths.clone(),
+            work.cumulative_seq_lengths.clone(),
             batch_size + 1,
             &self.device,
         )?;
         #[cfg(feature = "fa4")]
-        let _fa4_batch =
-            crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
+        let _fa4_batch = crate::fa4_native::prepare_cross_batch(
+            &cu_seqlens,
+            &work.cumulative_seq_lengths,
+            plan.as_ref()
+                .map(|p| (&p.kv_offsets, batch.cumulative_seq_lengths.as_slice())),
+        )?;
 
         // sin and cos are applied on the compact formation, therefore should be on the compact array
         let cos = index_select(&self.cos_cache, &compact_tensors.position_ids_compact, 0)?;
         let sin = index_select(&self.sin_cache, &compact_tensors.position_ids_compact, 0)?;
 
         let mut residual = None;
-        for layer in &self.layers {
+        for (index, layer) in self.layers.iter().enumerate() {
             let (h, r) = layer.forward(
                 &hidden_states,
                 residual.as_ref(),
                 &cu_seqlens,
                 &cos,
                 &sin,
-                batch.max_length as usize,
+                work.max_length as usize,
                 &compact_tensors,
+                plan.as_ref()
+                    .map(|p| (&**cache.as_ref().unwrap(), p, index)),
             )?;
             hidden_states = h;
             residual = Some(r);
@@ -523,6 +589,15 @@ impl FlashQwen3Model {
 
         // Expand final outputs to original layout for pooling/raw extraction
         let outputs = compact_tensors.scatter_unfold(&outputs)?;
+        let outputs = match plan.as_ref() {
+            Some(plan) => cache.as_mut().unwrap().finish(plan, &batch, outputs)?,
+            None => outputs,
+        };
+        // Pooling uses original sequence offsets after prefix states are restored.
+        let cu_seqlens = match plan.as_ref() {
+            Some(p) => p.kv_offsets.clone(),
+            None => cu_seqlens,
+        };
         let has_pooling_requests = !batch.pooled_indices.is_empty();
         let has_raw_requests = !batch.raw_indices.is_empty();
 
@@ -634,6 +709,128 @@ impl Model for FlashQwen3Model {
 #[cfg(test)]
 mod moe_radix_tests {
     use super::*;
+
+    #[test]
+    fn prefix_cache_matches_full_forward_across_batches() -> Result<()> {
+        let config: Qwen3Config = serde_json::from_value(serde_json::json!({
+            "attention_bias": false, "vocab_size": 32, "hidden_size": 16,
+            "intermediate_size": 24, "num_hidden_layers": 2, "num_attention_heads": 2,
+            "num_key_value_heads": 1, "head_dim": 8, "hidden_act": "silu",
+            "max_position_embeddings": 32, "rms_norm_eps": 0.000001,
+            "rope_theta": 10000., "use_sliding_window": false, "eos_token_id": 2
+        }))
+        .map_err(candle::Error::wrap)?;
+        let vars = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&vars, candle::DType::F32, &Device::Cpu);
+        FlashQwen3Model::load(
+            vb.clone(),
+            &config,
+            ModelType::Embedding(Pool::LastToken),
+            false,
+        )?;
+        for (name, var) in vars.data().lock().unwrap().iter() {
+            let offset = name.bytes().map(usize::from).sum::<usize>();
+            let data = (0..var.elem_count())
+                .map(|i| ((i + offset) as f32 * 0.13).sin() * 0.2)
+                .collect::<Vec<_>>();
+            var.set(&Tensor::from_vec(data, var.shape(), &Device::Cpu)?)?;
+        }
+        fn batch(seqs: &[&[u32]], position_offset: u32, compact: bool) -> Batch {
+            let mut b = Batch {
+                multimodal: vec![],
+                input_ids: vec![],
+                token_type_ids: vec![],
+                position_ids: vec![],
+                cumulative_seq_lengths: vec![0],
+                max_length: 0,
+                pooled_indices: (0..seqs.len() as u32).collect(),
+                raw_indices: (0..seqs.len() as u32).collect(),
+                compact_input_ids: None,
+                compact_position_ids: None,
+                scatter_unfold: None,
+                fold_gather: None,
+                tokens: vec![],
+                offsets: vec![],
+            };
+            for seq in seqs {
+                b.input_ids.extend_from_slice(seq);
+                b.position_ids
+                    .extend((0..seq.len() as u32).map(|i| i + position_offset));
+                b.cumulative_seq_lengths.push(b.input_ids.len() as u32);
+                b.max_length = b.max_length.max(seq.len() as u32);
+            }
+            b.token_type_ids = vec![0; b.input_ids.len()];
+            if compact {
+                let mut paths = std::collections::HashMap::new();
+                let (mut ids, mut positions, mut scatter, mut fold) =
+                    (vec![], vec![], vec![], vec![]);
+                for w in b.cumulative_seq_lengths.windows(2) {
+                    for row in w[0] as usize..w[1] as usize {
+                        let next = ids.len() as u32;
+                        let index = *paths
+                            .entry(b.input_ids[w[0] as usize..=row].to_vec())
+                            .or_insert_with(|| {
+                                ids.push(b.input_ids[row]);
+                                positions.push(b.position_ids[row]);
+                                fold.push(row as u32);
+                                next
+                            });
+                        scatter.push(index);
+                    }
+                }
+                b.compact_input_ids = Some(ids);
+                b.compact_position_ids = Some(positions);
+                b.scatter_unfold = Some(scatter);
+                b.fold_gather = Some(fold);
+            }
+            b
+        }
+        for capacity in [2, 8] {
+            for pool in [Pool::LastToken, Pool::Mean, Pool::Cls] {
+                let plain = FlashQwen3Model::load(
+                    vb.clone(),
+                    &config,
+                    ModelType::Embedding(pool.clone()),
+                    false,
+                )?;
+                let mut cached =
+                    FlashQwen3Model::load(vb.clone(), &config, ModelType::Embedding(pool), false)?;
+                cached.prefix_cache = Some(Mutex::new(PrefixKvCache::new(capacity)));
+                let batches = [
+                    batch(&[&[0, 0]], 0, false), // startup probe must not seed
+                    batch(&[&[3, 4, 5, 6], &[3, 4, 7]], 0, true), // cold fill + radix
+                    batch(
+                        &[&[3, 4, 9], &[3, 4, 5, 6], &[8, 9], &[3], &[3, 4, 5]],
+                        0,
+                        true,
+                    ),
+                    batch(&[&[3, 4, 5, 6]], 5, false), // positions differ => miss
+                    batch(&[&[3, 4, 5, 6, 7, 8, 9]], 0, false), // growing suffix
+                    batch(&[&[3, 4, 5, 6]], 0, false), // repeat after intervening batches
+                ];
+                let mut retained = Vec::new();
+                for b in batches {
+                    let expected = plain.forward(b.clone())?;
+                    let actual = cached.forward(b)?;
+                    for (a, e) in [
+                        (actual.0.unwrap(), expected.0.unwrap()),
+                        (actual.1.unwrap(), expected.1.unwrap()),
+                    ] {
+                        let error = (&a - &e)?.abs()?.max_all()?.to_scalar::<f32>()?;
+                        assert!(error < 1e-5, "prefix cache error {error}");
+                        retained.push((a, e));
+                    }
+                }
+                for (a, e) in retained {
+                    assert!(
+                        (a - e)?.abs()?.max_all()?.to_scalar::<f32>()? < 1e-5,
+                        "later call mutated earlier output"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 
     #[test]
     fn fused_qkv_matches_separate_gqa_projections() -> Result<()> {
