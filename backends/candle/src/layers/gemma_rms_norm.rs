@@ -132,6 +132,121 @@ impl CustomOp2 for Norm {
     }
 }
 
+/// Share the RMS reduction for expert input and routing, preserving each
+/// branch's original BF16 rounding and the router's root-size/learned scaling.
+pub(crate) fn paired_moe(
+    x: &Tensor,
+    expert_scale: &Tensor,
+    router_scale: &Tensor,
+    epsilon: f32,
+) -> Result<(Tensor, Tensor)> {
+    let (rows, width) = x.dims2()?;
+    if width == 0
+        || width > 8192
+        || rows > i32::MAX as usize
+        || x.dtype() != DType::BF16
+        || expert_scale.dtype() != DType::F32
+        || router_scale.dtype() != DType::BF16
+        || !x.device().is_cuda()
+        || !supported_layout(x.layout())
+        || [expert_scale, router_scale].iter().any(|t| {
+            !t.device().same_device(x.device()) || !t.is_contiguous() || t.dims() != [width]
+        })
+    {
+        candle::bail!(
+            "Paired Gemma RMS requires CUDA BF16 rows, FP32 expert and BF16 router scales"
+        );
+    }
+    x.elem_count()
+        .checked_mul(2)
+        .ok_or_else(|| candle::Error::Msg("Paired RMS size overflow".into()))?;
+    if rows == 0 {
+        return Ok((x.clone(), x.clone()));
+    }
+    let out = x.apply_op3_no_bwd(expert_scale, router_scale, &PairedMoe { epsilon })?;
+    Ok((out.get(0)?, out.get(1)?))
+}
+struct PairedMoe {
+    epsilon: f32,
+}
+impl candle::CustomOp3 for PairedMoe {
+    fn name(&self) -> &'static str {
+        "gemma-paired-moe-rms"
+    }
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("Paired Gemma RMS requires CUDA")
+    }
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        xl: &Layout,
+        expert: &CudaStorage,
+        el: &Layout,
+        router: &CudaStorage,
+        rl: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let (rows, width) = xl.shape().dims2()?;
+        let device = x.device();
+        let xs = x.as_cuda_slice::<half::bf16>()?.slice(xl.start_offset()..);
+        let es = expert
+            .as_cuda_slice::<f32>()?
+            .slice(el.start_offset()..el.start_offset() + width);
+        let rs = router
+            .as_cuda_slice::<half::bf16>()?
+            .slice(rl.start_offset()..rl.start_offset() + width);
+        let mut out = unsafe { device.alloc::<half::bf16>(2 * rows * width)? };
+        let compact = width > 256 && rows >= 2048;
+        let kernel = device.get_or_load_custom_func(
+            if compact {
+                "gemma_rms_norm_pair_compact_bf16"
+            } else {
+                "gemma_rms_norm_pair_bf16"
+            },
+            "tei-gemma-rms-norm",
+            ptx::GEMMA_RMS_NORM,
+        )?;
+        let width32 = width as u32;
+        let stride = xl.stride()[0] as u64;
+        let root = half::bf16::from_f64((width as f64).sqrt().recip());
+        let mut launch = kernel.builder();
+        launch
+            .arg(&xs)
+            .arg(&es)
+            .arg(&rs)
+            .arg(&mut out)
+            .arg(&width32)
+            .arg(&stride)
+            .arg(&self.epsilon)
+            .arg(&root);
+        unsafe {
+            launch.launch(LaunchConfig {
+                grid_dim: (rows as u32, 1, 1),
+                block_dim: (
+                    width32
+                        .min(if compact { 256 } else { 1024 })
+                        .next_power_of_two(),
+                    1,
+                    1,
+                ),
+                shared_mem_bytes: 0,
+            })
+        }
+        .map_err(candle::Error::wrap)?;
+        Ok((
+            CudaStorage::wrap_cuda_slice(out, device.clone()),
+            (2, rows, width).into(),
+        ))
+    }
+}
+
 /// Gemma4's NeoX rotation, writing packed tokens without a transpose copy.
 pub(crate) fn rotary_reference(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
     let (batch, heads, tokens, width) = x.dims4()?;
@@ -229,6 +344,46 @@ impl candle::CustomOp3 for Rotary {
 mod tests {
     use super::*;
     use candle::{Device, D};
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn paired_moe_matches_separate_candle_operations_bitwise() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for rows in [1, 17, 1152, 2049] {
+            for width in [72, 2816] {
+                let packed = Tensor::randn(0f32, 2f32, (rows + 2, width + 8), &device)?
+                    .to_dtype(DType::BF16)?;
+                let x = packed.narrow(0, 1, rows)?.narrow(1, 3, width)?;
+                let expert = Tensor::randn(1f32, 0.2f32, width, &device)?;
+                let router = Tensor::randn(1f32, 0.2f32, width, &device)?.to_dtype(DType::BF16)?;
+                let ones = Tensor::ones(width, DType::F32, &device)?;
+                for epsilon in [1e-6, 1e-5] {
+                    let expected_expert = forward_reference(&x, &expert, epsilon)?;
+                    let expected_router = (forward_reference(&x, &ones, epsilon)?
+                        * (width as f64).sqrt().recip())?
+                    .broadcast_mul(&router)?;
+                    let (a, b) = paired_moe(&x, &expert, &router, epsilon)?;
+                    let bits = |t: &Tensor| -> Result<Vec<u16>> {
+                        Ok(t.flatten_all()?
+                            .to_vec1::<half::bf16>()?
+                            .into_iter()
+                            .map(|v| v.to_bits())
+                            .collect())
+                    };
+                    assert_eq!(
+                        bits(&a)?,
+                        bits(&expected_expert)?,
+                        "expert rows={rows},width={width}"
+                    );
+                    assert_eq!(
+                        bits(&b)?,
+                        bits(&expected_router)?,
+                        "router rows={rows},width={width}"
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
     #[test]
     #[ignore = "requires CUDA"]
     fn rotary_matches_composed_bitwise() -> Result<()> {

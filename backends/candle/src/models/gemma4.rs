@@ -506,7 +506,6 @@ struct Gemma4PleLayer {
 // these tensors. Its forward implementation is only available with the kernels.
 #[cfg_attr(not(gemma4_moe_cuda), allow(dead_code))]
 struct Gemma4Moe {
-    router_norm: Gemma4RmsNorm,
     router_scale: Tensor,
     router_weight: Tensor,
     expert_scale: Tensor,
@@ -535,7 +534,6 @@ impl Gemma4Moe {
         let h = config.hidden_size;
         let norm = |name: &str| Gemma4RmsNorm::load(vb.pp(name), h, config.rms_norm_eps);
         Ok(Some(Self {
-            router_norm: Gemma4RmsNorm::without_weight(&vb, h, config.rms_norm_eps)?,
             router_scale: vb.get(h, "router.scale")?,
             router_weight: vb
                 .get((128, h), "router.proj.weight")?
@@ -561,9 +559,14 @@ impl Gemma4Moe {
             let shape = residual.shape();
             let hidden = residual.dim(D::Minus1)?;
             let residual = residual.reshape((residual.elem_count() / hidden, hidden))?;
-            // Match vLLM: RMSNorm -> BF16 root-size scaling -> learned scale.
-            let routing = (self.router_norm.forward(&residual)? * (hidden as f64).sqrt().recip())?
-                .broadcast_mul(&self.router_scale)?;
+            // Both branches normalize this residual with the same epsilon.
+            // Keep the router's intermediate BF16 rounding before each scale.
+            let (input, routing) = crate::layers::gemma_rms_norm::paired_moe(
+                &residual,
+                &self.expert_input_norm.weight,
+                &self.router_scale,
+                self.expert_input_norm.epsilon as f32,
+            )?;
             // cuBLAS changes FP32 reduction order with the row count. Tiny router
             // differences propagate through MoE layers into different decisions.
             // Keep this small projection at the logical batch shape; the dense
@@ -579,7 +582,6 @@ impl Gemma4Moe {
                 Some(c) => c.fold_gather(&logits)?,
                 None => logits,
             };
-            let input = self.expert_input_norm.forward(&residual)?;
             let expert = crate::layers::gemma4_moe::experts(
                 &input,
                 &logits,
