@@ -7,7 +7,7 @@
 set -euo pipefail
 
 # Configuration
-VERSION="1.8.15rc1"
+VERSION="1.8.15rc2"
 REGISTRIES=(
     # "registry.internal.huggingface.tech/api-inference/text-embeddings-inference"
     # "ghcr.io/huggingface/text-embeddings-inference"
