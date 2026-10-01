@@ -231,6 +231,14 @@ Options:
           [env: MAX_CLIENT_BATCH_SIZE=]
           [default: 32]
 
+      --max-decision-questions <MAX_DECISION_QUESTIONS>
+          Maximum number of questions in one /v1/systemone request
+
+          Independent of max-client-batch-size; model option budgets still apply
+
+          [env: MAX_DECISION_QUESTIONS=]
+          [default: 256]
+
       --auto-truncate
           Automatically truncate inputs that are longer than the maximum supported size
 
@@ -476,6 +484,19 @@ batch queue, backend replicas, concurrency limits, authentication, and metrics.
 ModernBERT encodes the batch once; Laya's custom head scores each question's
 options. This is bidirectional inference; RadixMLP is disabled for this model.
 
+Set `MAX_DECISION_QUESTIONS=8` (or `--max-decision-questions 8`) to cap question
+fanout per `/v1/systemone` request. The default is 256; values must be positive.
+This is independent of `MAX_CLIENT_BATCH_SIZE`, which controls other batch
+endpoints. Model option budgets still apply, including the 512 total options
+per request. Excess questions return HTTP 422 before tokenization or inference.
+The configured limit is exposed as `max_decision_questions` in `/info`.
+
+`usage.input_tokens`, `x-compute-tokens`, and `x-baseten-input-tokens` sum the
+actual formatted sequence lengths across questions, including repeated state,
+instructions, options, and special tokens after truncation. Each question is a
+separate sequence in the shared batch; ModernBERT runs once per queue batch and
+Laya's decision head then scores each question's options.
+
 ```shell
 curl http://localhost:3000/v1/systemone \
   -H 'Content-Type: application/json' \
@@ -509,8 +530,9 @@ up to the server's maximum input length. Requests that cannot retain all options
 or make options identical after token truncation, return 422. The server accepts
 Jev's `model` field as an alias and always uses its configured checkpoint.
 
-Limits: at most 64 questions (also bounded by `--max-client-batch-size`), 100
-choice options, 32 score levels, 512 total options, and 50,000 state characters.
+Limits: at most `MAX_DECISION_QUESTIONS` questions (default 256), independent of
+`--max-client-batch-size`; 100 choice options, 32 score levels, 512 total options,
+and 50,000 state characters.
 Use the existing `--max-batch-tokens`, `--max-batch-requests`,
 `--max-concurrent-requests`, and replica options to control serving capacity.
 For a local checkpoint, retain `rl_agent_config.json`, `encoder/config.json`,

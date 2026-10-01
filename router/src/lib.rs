@@ -60,6 +60,7 @@ pub async fn run(
     radix_mlp_threshold: f32,
     enable_fp8_dynamic: bool,
     max_client_batch_size: usize,
+    max_decision_questions: usize,
     auto_truncate: bool,
     default_prompt: Option<String>,
     default_prompt_name: Option<String>,
@@ -506,6 +507,7 @@ pub async fn run(
         tokenization_workers,
         max_batch_requests,
         max_client_batch_size,
+        max_decision_questions,
         auto_truncate,
         radix_mlp_threshold,
         enable_fp8_dynamic,
@@ -835,6 +837,8 @@ pub struct Info {
     pub max_batch_requests: Option<usize>,
     #[cfg_attr(feature = "http", schema(example = "32"))]
     pub max_client_batch_size: usize,
+    /// Maximum question fanout for /v1/systemone, independent of the client batch limit.
+    pub max_decision_questions: usize,
     pub auto_truncate: bool,
     #[cfg_attr(feature = "http", schema(example = "4"))]
     pub tokenization_workers: usize,

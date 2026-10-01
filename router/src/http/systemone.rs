@@ -160,9 +160,6 @@ impl Laya {
                 );
             }
         };
-        if request.questions.len() > 64 {
-            return Err("At most 64 questions are allowed".into());
-        }
         // Jev model aliases are accepted; a TEI deployment serves its configured checkpoint.
         let _model_alias = request.model;
         let max_len = request
@@ -553,12 +550,12 @@ pub async fn systemone(
             "Loaded model does not support typed decisions",
         )
     })?;
-    if request.questions.len() > info.max_client_batch_size {
+    if request.questions.len() > info.max_decision_questions {
         return Err(error(
             StatusCode::UNPROCESSABLE_ENTITY,
             format!(
-                "At most {} questions are allowed by max-client-batch-size",
-                info.max_client_batch_size
+                "At most {} questions are allowed by max-decision-questions",
+                info.max_decision_questions
             ),
         ));
     }
