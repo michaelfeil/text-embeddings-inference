@@ -175,7 +175,7 @@ pub(crate) fn try_forward(
     })
 }
 
-// Four cheap shape/mask comparisons. Do not cache tensor layouts or sequence
+// Cheap shape/mask comparisons. Do not cache tensor layouts or sequence
 // boundaries: those can change between batches even within the same layer.
 fn supported_mask(
     d: usize,
@@ -191,7 +191,11 @@ fn supported_mask(
     match (d, h == hk, causal, left, right) {
         (64, true, false, None, None) => Some(Mask::Global),
         (64, true, false, Some(left), Some(right)) => Some(Mask::Window { left, right }),
-        (128, _, true, None, None) if hk.checked_mul(4) == Some(h) => Some(Mask::Causal),
+        (128, _, true, None, None)
+            if hk.checked_mul(4) == Some(h) || hk.checked_mul(2) == Some(h) =>
+        {
+            Some(Mask::Causal)
+        }
         (128, _, false, None, None) if hk.checked_mul(2) == Some(h) => Some(Mask::Global),
         _ => None,
     }
@@ -247,9 +251,13 @@ mod tests {
             supported_mask(128, 16, 8, false, None, None),
             Some(Mask::Global)
         ));
+        assert!(matches!(
+            supported_mask(128, 16, 8, true, None, None),
+            Some(Mask::Causal)
+        ));
         for shape in [
             (256, 3, 1, false, None, None),
-            (128, 16, 8, true, None, None),
+            (128, 16, 16, true, None, None),
             (128, 16, 4, false, None, None),
             (64, 12, 12, true, None, None),
             (64, 12, 12, false, Some(64), None),
