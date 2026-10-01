@@ -111,6 +111,11 @@ struct Args {
     #[clap(default_value = "32", long, env)]
     max_client_batch_size: usize,
 
+    /// Maximum number of questions in one /v1/systemone request.
+    /// Existing model and max-client-batch-size limits also apply.
+    #[clap(default_value = "64", long, env)]
+    max_decision_questions: std::num::NonZeroUsize,
+
     /// Automatically truncate inputs that are longer than the maximum supported size
     ///
     /// Unused for gRPC servers
@@ -282,6 +287,7 @@ async fn main() -> Result<()> {
         args.radix_mlp_threshold,
         args.enable_fp8_dynamic,
         args.max_client_batch_size,
+        args.max_decision_questions.get(),
         args.auto_truncate,
         args.default_prompt,
         args.default_prompt_name,

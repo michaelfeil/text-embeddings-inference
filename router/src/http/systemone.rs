@@ -553,6 +553,15 @@ pub async fn systemone(
             "Loaded model does not support typed decisions",
         )
     })?;
+    if request.questions.len() > info.max_decision_questions {
+        return Err(error(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            format!(
+                "At most {} questions are allowed by max-decision-questions",
+                info.max_decision_questions
+            ),
+        ));
+    }
     if request.questions.len() > info.max_client_batch_size {
         return Err(error(
             StatusCode::UNPROCESSABLE_ENTITY,

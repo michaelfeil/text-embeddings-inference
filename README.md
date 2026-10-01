@@ -231,6 +231,14 @@ Options:
           [env: MAX_CLIENT_BATCH_SIZE=]
           [default: 32]
 
+      --max-decision-questions <MAX_DECISION_QUESTIONS>
+          Maximum number of questions in one /v1/systemone request
+
+          Existing model and max-client-batch-size limits also apply
+
+          [env: MAX_DECISION_QUESTIONS=]
+          [default: 64]
+
       --auto-truncate
           Automatically truncate inputs that are longer than the maximum supported size
 
@@ -475,6 +483,18 @@ The existing API server exposes `POST /v1/systemone`. Questions use TEI's shared
 batch queue, backend replicas, concurrency limits, authentication, and metrics.
 ModernBERT encodes the batch once; Laya's custom head scores each question's
 options. This is bidirectional inference; RadixMLP is disabled for this model.
+
+Set `MAX_DECISION_QUESTIONS=8` (or `--max-decision-questions 8`) to cap question
+fanout per `/v1/systemone` request. The default is 64; values must be positive.
+`MAX_CLIENT_BATCH_SIZE` and the model's 64-question limit also apply. Requests
+above a limit return HTTP 422 before tokenization or inference. The configured
+limit is exposed as `max_decision_questions` in `/info`.
+
+`usage.input_tokens`, `x-compute-tokens`, and `x-baseten-input-tokens` sum the
+actual formatted sequence lengths across questions, including repeated state,
+instructions, options, and special tokens after truncation. Each question is a
+separate sequence in the shared batch; ModernBERT runs once per queue batch and
+Laya's decision head then scores each question's options.
 
 ```shell
 curl http://localhost:3000/v1/systemone \
