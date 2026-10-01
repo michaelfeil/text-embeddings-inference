@@ -58,10 +58,10 @@ half = { version = "2.3.1", features = ["num-traits"] }
 radix_mlp = { version = "0.0.2" }
 
 [patch.crates-io]
-candle = { git = "https://github.com/michaelfeil/candle", rev = "273a89981a7b3b32059170413ea0f2e30d97fefc", package = "candle-core" }
-candle-nn = { git = "https://github.com/michaelfeil/candle", rev = "273a89981a7b3b32059170413ea0f2e30d97fefc", package = "candle-nn" }
-candle-transformers = { git = "https://github.com/michaelfeil/candle", rev = "273a89981a7b3b32059170413ea0f2e30d97fefc", package = "candle-transformers" }
-candle-flash-attn = { git = "https://github.com/michaelfeil/candle", rev = "273a89981a7b3b32059170413ea0f2e30d97fefc", package = "candle-flash-attn" }
+candle = { git = "https://github.com/michaelfeil/candle", rev = "540ff06f0ca26fb75ee04175971f0b309502a1b6", package = "candle-core" }
+candle-nn = { git = "https://github.com/michaelfeil/candle", rev = "540ff06f0ca26fb75ee04175971f0b309502a1b6", package = "candle-nn" }
+candle-transformers = { git = "https://github.com/michaelfeil/candle", rev = "540ff06f0ca26fb75ee04175971f0b309502a1b6", package = "candle-transformers" }
+candle-flash-attn = { git = "https://github.com/michaelfeil/candle", rev = "540ff06f0ca26fb75ee04175971f0b309502a1b6", package = "candle-flash-attn" }
 
 [profile.release]
 debug = 0

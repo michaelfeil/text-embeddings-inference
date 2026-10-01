@@ -401,7 +401,7 @@ dependencies = [
  "bitflags 2.9.0",
  "cexpr",
  "clang-sys",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "lazy_static",
  "lazycell",
  "log",
@@ -535,7 +535,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=273a89981a7b3b32059170413ea0f2e30d97fefc#273a89981a7b3b32059170413ea0f2e30d97fefc"
+source = "git+https://github.com/michaelfeil/candle?rev=540ff06f0ca26fb75ee04175971f0b309502a1b6#540ff06f0ca26fb75ee04175971f0b309502a1b6"
 dependencies = [
  "accelerate-src",
  "byteorder",
@@ -583,7 +583,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=273a89981a7b3b32059170413ea0f2e30d97fefc#273a89981a7b3b32059170413ea0f2e30d97fefc"
+source = "git+https://github.com/michaelfeil/candle?rev=540ff06f0ca26fb75ee04175971f0b309502a1b6#540ff06f0ca26fb75ee04175971f0b309502a1b6"
 dependencies = [
  "anyhow",
  "candle-core",
@@ -608,7 +608,7 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn-v4"
 version = "0.1.0-alpha.1"
-source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=dfb62e174b83522dc9400f50b7e19091a7df5d62#dfb62e174b83522dc9400f50b7e19091a7df5d62"
+source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=859d777e99988ecf063ef8fac298f39398d411c0#859d777e99988ecf063ef8fac298f39398d411c0"
 dependencies = [
  "candle-core",
  "half",
@@ -630,7 +630,7 @@ dependencies = [
 [[package]]
 name = "candle-kernels"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=273a89981a7b3b32059170413ea0f2e30d97fefc#273a89981a7b3b32059170413ea0f2e30d97fefc"
+source = "git+https://github.com/michaelfeil/candle?rev=540ff06f0ca26fb75ee04175971f0b309502a1b6#540ff06f0ca26fb75ee04175971f0b309502a1b6"
 dependencies = [
  "cudaforge",
 ]
@@ -651,7 +651,7 @@ dependencies = [
 [[package]]
 name = "candle-metal-kernels"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=273a89981a7b3b32059170413ea0f2e30d97fefc#273a89981a7b3b32059170413ea0f2e30d97fefc"
+source = "git+https://github.com/michaelfeil/candle?rev=540ff06f0ca26fb75ee04175971f0b309502a1b6#540ff06f0ca26fb75ee04175971f0b309502a1b6"
 dependencies = [
  "block2",
  "half",
@@ -666,7 +666,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=273a89981a7b3b32059170413ea0f2e30d97fefc#273a89981a7b3b32059170413ea0f2e30d97fefc"
+source = "git+https://github.com/michaelfeil/candle?rev=540ff06f0ca26fb75ee04175971f0b309502a1b6#540ff06f0ca26fb75ee04175971f0b309502a1b6"
 dependencies = [
  "accelerate-src",
  "candle-core",
@@ -697,7 +697,7 @@ dependencies = [
 [[package]]
 name = "candle-transformers"
 version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=273a89981a7b3b32059170413ea0f2e30d97fefc#273a89981a7b3b32059170413ea0f2e30d97fefc"
+source = "git+https://github.com/michaelfeil/candle?rev=540ff06f0ca26fb75ee04175971f0b309502a1b6#540ff06f0ca26fb75ee04175971f0b309502a1b6"
 dependencies = [
  "byteorder",
  "candle-core",
@@ -2537,15 +2537,6 @@ dependencies = [
 
 [[package]]
 name = "itertools"
-version = "0.12.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba291022dbbd398a455acf126c1e341954079855bc60dfdda641363bd6922569"
-dependencies = [
- "either",
-]
-
-[[package]]
-name = "itertools"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
@@ -3741,8 +3732,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "22505a5c94da8e3b7c2996394d1c933236c4d743e81a410bcca4e6989fc066a4"
 dependencies = [
  "bytes",
- "heck 0.5.0",
- "itertools 0.12.1",
+ "heck 0.4.1",
+ "itertools 0.10.5",
  "log",
  "multimap 0.10.0",
  "once_cell",
@@ -3775,7 +3766,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "81bddcdb20abf9501610992b6759a4c888aef7d1a7247ef75e2404275ac24af1"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.10.5",
  "proc-macro2",
  "quote",
  "syn 2.0.100",
