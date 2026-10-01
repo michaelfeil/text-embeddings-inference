@@ -42,5 +42,5 @@ pub(crate) mod qwen3_moe;
 #[cfg(feature = "cuda")]
 pub(crate) mod qwen35_gdn;
 
-pub(crate) mod prefix_kv;
 mod prefix_index;
+pub(crate) mod prefix_kv;
