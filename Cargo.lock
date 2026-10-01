@@ -4855,6 +4855,7 @@ version = "1.8.15"
 dependencies = [
  "accelerate-src",
  "anyhow",
+ "bytemuck",
  "candle-core",
  "candle-cublaslt",
  "candle-flash-attn",
@@ -4877,6 +4878,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
+ "sha2",
  "text-embeddings-backend-core",
  "thiserror 1.0.69",
  "tokenizers 0.21.1",

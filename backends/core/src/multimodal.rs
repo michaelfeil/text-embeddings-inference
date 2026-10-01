@@ -11,6 +11,18 @@ pub struct ImagePatches {
 }
 
 impl ImagePatches {
+    fn same_content(&self, other: &Self) -> bool {
+        self.grid_thw == other.grid_thw
+            && self.patch_dim == other.patch_dim
+            && self.merge_size == other.merge_size
+            && self.pixels.len() == other.pixels.len()
+            && self
+                .pixels
+                .iter()
+                .zip(&other.pixels)
+                .all(|(a, b)| a.to_bits() == b.to_bits())
+    }
+
     pub fn token_count(&self) -> usize {
         self.grid_thw.iter().product::<usize>() / (self.merge_size * self.merge_size)
     }
@@ -37,8 +49,8 @@ pub struct MultimodalEncoding {
 
 impl MultimodalEncoding {
     /// Token-only folding is safe for images only when every sequence has the
-    /// same prepared images and identical context through the final image block.
-    /// Arc identity is request-local; equal placeholder IDs alone are insufficient.
+    /// same prepared pixel bits/layout and context through the final image block.
+    /// Equal placeholder IDs alone are insufficient.
     pub fn allows_radix(media: &[Option<Arc<Self>>], ids: &[u32], cumulative: &[u32]) -> bool {
         let Some(first) = media.iter().flatten().find(|m| !m.images.is_empty()) else {
             return true;
@@ -67,7 +79,7 @@ impl MultimodalEncoding {
                     .images
                     .iter()
                     .zip(&first.images)
-                    .all(|((a, x), (b, y))| a == b && Arc::ptr_eq(x, y))
+                    .all(|((a, x), (b, y))| a == b && (Arc::ptr_eq(x, y) || x.same_content(y)))
                 || (0..3).any(|axis| {
                     item.position_ids[axis].get(..end) != first.position_ids[axis].get(..end)
                 })
@@ -94,7 +106,7 @@ impl MultimodalEncoding {
 mod tests {
     use super::*;
     #[test]
-    fn radix_requires_identical_image_identity_and_complete_prefix() {
+    fn radix_requires_identical_image_content_and_complete_prefix() {
         let image = Arc::new(ImagePatches {
             pixels: vec![0.; 12],
             grid_thw: [1, 2, 2],
@@ -115,8 +127,22 @@ mod tests {
             &ids,
             &[0, 6, 12]
         ));
-        assert!(!MultimodalEncoding::allows_radix(
+        assert!(MultimodalEncoding::allows_radix(
             &[first.clone(), media(Arc::new((*image).clone()))],
+            &ids,
+            &[0, 6, 12]
+        ));
+        let mut different = (*image).clone();
+        different.pixels[11] = 1.;
+        assert!(!MultimodalEncoding::allows_radix(
+            &[first.clone(), media(Arc::new(different))],
+            &ids,
+            &[0, 6, 12]
+        ));
+        let mut different = (*image).clone();
+        different.grid_thw = [1, 1, 4];
+        assert!(!MultimodalEncoding::allows_radix(
+            &[first.clone(), media(Arc::new(different))],
             &ids,
             &[0, 6, 12]
         ));
