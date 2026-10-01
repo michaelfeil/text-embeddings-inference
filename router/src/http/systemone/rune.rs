@@ -291,7 +291,10 @@ impl Rune {
             }
             let ids = self.encode(&prompt)?;
             if ids.is_empty() || ids.len() > limit { return Err(format!("Rune prompt has {} tokens, exceeding max_len {limit}; prompts are never truncated", ids.len())); }
-            let token_ids = if let Some(token_ids) = &self.continuation_ids {
+            let cached_ids = self.continuation_ids.as_ref().filter(|_| {
+                ids.last().copied() == self.tokenizer.token_to_id("<channel|>")
+            });
+            let token_ids = if let Some(token_ids) = cached_ids {
                 token_ids[..n].to_vec()
             } else { self.codes[..n].iter().map(|code| {
                 let joined = self.encode(&format!("{prompt}{code}"))?;
@@ -424,6 +427,29 @@ mod tests {
         overlapping
             .add_special_tokens(&[tokenizers::AddedToken::from("thought\n<channel|>A", true)]);
         assert!(Rune::load(overlapping, 32768)?.continuation_ids.is_none());
+        let mut partial = cached.tokenizer.clone();
+        partial.add_special_tokens(&[tokenizers::AddedToken::from("thought\n<channel", true)]);
+        let checked = Rune::load(partial.clone(), 32768)?;
+        let mut reference = Rune::load(partial, 32768)?;
+        reference.continuation_ids = None;
+        let request = json!({"state":"data","questions":{"q":{
+            "type":"choice","instructions":"Choose.","criteria":{"a":"A","b":"B"}
+        }}});
+        let actual = checked.prepare(serde_json::from_value(request.clone())?);
+        let expected = reference.prepare(serde_json::from_value(request)?);
+        match (actual, expected) {
+            (Ok(actual), Ok(expected)) => {
+                let DecisionInput::OptionTokens { token_ids: a } = &actual[0].input else {
+                    panic!("expected option tokens");
+                };
+                let DecisionInput::OptionTokens { token_ids: b } = &expected[0].input else {
+                    panic!("expected option tokens");
+                };
+                assert_eq!(a, b);
+            }
+            (Err(a), Err(b)) => assert_eq!(a, b),
+            _ => panic!("partial boundary overlap changed validation"),
+        }
         Ok(())
     }
 
