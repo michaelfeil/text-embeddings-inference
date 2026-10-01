@@ -71,3 +71,27 @@ extern "C" __global__ void gemma_rms_norm_reference_bf16(
         out[out_base + col] = __float2bfloat16_rn(normalized * scale[col]);
     }
 }
+
+// NeoX rotary embedding with BF16 rounding after each product, as in Candle's
+// composed expression. Write packed [tokens, heads, width] directly.
+extern "C" __global__ void gemma_rope_reference_bf16(
+    const __nv_bfloat16* x, const __nv_bfloat16* cos, const __nv_bfloat16* sin,
+    __nv_bfloat16* out, unsigned int count, unsigned int heads,
+    unsigned int width, unsigned long long head_stride,
+    unsigned long long token_stride, unsigned long long col_stride) {
+    unsigned int i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= count) return;
+    unsigned int col = i % width;
+    unsigned int head = (i / width) % heads;
+    unsigned int token = i / (width * heads);
+    size_t base = static_cast<size_t>(head) * head_stride
+        + static_cast<size_t>(token) * token_stride;
+    unsigned int other_col = col < width / 2 ? col + width / 2 : col - width / 2;
+    float a = __bfloat162float(x[base + static_cast<size_t>(col) * col_stride]);
+    float b = __bfloat162float(x[base + static_cast<size_t>(other_col) * col_stride]);
+    if (col < width / 2) b = -b;
+    size_t freq = static_cast<size_t>(token) * width + col;
+    float first = __bfloat162float(__float2bfloat16_rn(__fmul_rn(a, __bfloat162float(cos[freq]))));
+    float second = __bfloat162float(__float2bfloat16_rn(__fmul_rn(b, __bfloat162float(sin[freq]))));
+    out[i] = __float2bfloat16_rn(__fadd_rn(first, second));
+}

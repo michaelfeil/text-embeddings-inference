@@ -6,7 +6,7 @@ authors.workspace = true
 homepage.workspace = true
 
 [dependencies]
-candle-flash-attn-v4 = { git = "https://github.com/michaelfeil/candle-flash-attn-v4", rev = "1eb66516174d4e1da380ef110420240d0835dec8", optional = true }
+candle-flash-attn-v4 = { git = "https://github.com/michaelfeil/candle-flash-attn-v4", rev = "451c35eeaef04bdfe07855608fb4ceac5cabda89", optional = true }
 anyhow = { workspace = true }
 accelerate-src = { version = "0.3.2", optional = true }
 intel-mkl-src = { workspace = true, optional = true }

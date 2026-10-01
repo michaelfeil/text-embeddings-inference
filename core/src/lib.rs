@@ -6,6 +6,7 @@ pub mod infer;
 pub mod input;
 pub mod multimodal;
 pub mod queue;
+mod radix;
 pub mod tokenization;
 
 use text_embeddings_backend::BackendError;

@@ -132,10 +132,171 @@ impl CustomOp2 for Norm {
     }
 }
 
+/// Gemma4's NeoX rotation, writing packed tokens without a transpose copy.
+pub(crate) fn rotary_reference(x: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
+    let (batch, heads, tokens, width) = x.dims4()?;
+    if batch != 1
+        || heads == 0
+        || width == 0
+        || width % 2 != 0
+        || cos.dims() != [1, 1, tokens, width]
+        || sin.dims() != cos.dims()
+        || !cos.is_contiguous()
+        || !sin.is_contiguous()
+        || !x.device().is_cuda()
+        || [x, cos, sin]
+            .iter()
+            .any(|t| t.dtype() != DType::BF16 || !t.device().same_device(x.device()))
+    {
+        candle::bail!(
+            "Gemma rotary requires CUDA BF16 [1,H,T,D] and contiguous [1,1,T,D] frequencies"
+        );
+    }
+    u32::try_from(x.elem_count()).map_err(candle::Error::wrap)?;
+    if tokens == 0 {
+        return x.transpose(1, 2)?.squeeze(0)?.contiguous();
+    }
+    x.apply_op3_no_bwd(cos, sin, &Rotary)
+}
+struct Rotary;
+impl candle::CustomOp3 for Rotary {
+    fn name(&self) -> &'static str {
+        "gemma-precise-rotary"
+    }
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("Gemma precise rotary requires CUDA")
+    }
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        xl: &Layout,
+        cos: &CudaStorage,
+        cl: &Layout,
+        sin: &CudaStorage,
+        sl: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let (_, heads, tokens, width) = xl.shape().dims4()?;
+        let device = x.device();
+        let xs = x.as_cuda_slice::<half::bf16>()?.slice(xl.start_offset()..);
+        let cs = cos
+            .as_cuda_slice::<half::bf16>()?
+            .slice(cl.start_offset()..);
+        let ss = sin
+            .as_cuda_slice::<half::bf16>()?
+            .slice(sl.start_offset()..);
+        let count = u32::try_from(xl.shape().elem_count()).map_err(candle::Error::wrap)?;
+        let heads32 = heads as u32;
+        let width32 = width as u32;
+        let head_stride = xl.stride()[1] as u64;
+        let token_stride = xl.stride()[2] as u64;
+        let col_stride = xl.stride()[3] as u64;
+        let mut output = unsafe { device.alloc::<half::bf16>(count as usize)? };
+        let kernel = device.get_or_load_custom_func(
+            "gemma_rope_reference_bf16",
+            "tei-gemma-precise-rope",
+            ptx::GEMMA_RMS_NORM,
+        )?;
+        let mut launch = kernel.builder();
+        launch
+            .arg(&xs)
+            .arg(&cs)
+            .arg(&ss)
+            .arg(&mut output)
+            .arg(&count)
+            .arg(&heads32)
+            .arg(&width32)
+            .arg(&head_stride)
+            .arg(&token_stride)
+            .arg(&col_stride);
+        unsafe { launch.launch(LaunchConfig::for_num_elems(count)) }
+            .map_err(candle::Error::wrap)?;
+        Ok((
+            CudaStorage::wrap_cuda_slice(output, device.clone()),
+            (tokens, heads, width).into(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use candle::{Device, D};
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn rotary_matches_composed_bitwise() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for tokens in [1, 17, 1152, 4507] {
+            for (heads, width) in [(8, 256), (16, 512)] {
+                let backing =
+                    Tensor::randn(0f32, 2f32, (1, tokens + 2, heads + 2, width), &device)?
+                        .to_dtype(DType::BF16)?;
+                let x = backing
+                    .narrow(1, 1, tokens)?
+                    .narrow(2, 1, heads)?
+                    .transpose(1, 2)?;
+                let freq = Tensor::randn(0f32, 1f32, (tokens + 2, width), &device)?;
+                let cos = freq
+                    .cos()?
+                    .to_dtype(DType::BF16)?
+                    .narrow(0, 1, tokens)?
+                    .reshape((1, 1, tokens, width))?;
+                let sin = freq
+                    .sin()?
+                    .to_dtype(DType::BF16)?
+                    .narrow(0, 1, tokens)?
+                    .reshape((1, 1, tokens, width))?;
+                let first = x.narrow(D::Minus1, 0, width / 2)?;
+                let second = x.narrow(D::Minus1, width / 2, width / 2)?;
+                let rotated = Tensor::cat(&[&second.neg()?, &first], D::Minus1)?;
+                let expected = (x.broadcast_mul(&cos)? + rotated.broadcast_mul(&sin)?)?
+                    .transpose(1, 2)?
+                    .squeeze(0)?
+                    .contiguous()?;
+                let actual = rotary_reference(&x, &cos, &sin)?;
+                assert!(
+                    actual
+                        .flatten_all()?
+                        .to_vec1::<half::bf16>()?
+                        .iter()
+                        .map(|v| v.to_bits())
+                        .eq(expected
+                            .flatten_all()?
+                            .to_vec1::<half::bf16>()?
+                            .iter()
+                            .map(|v| v.to_bits())),
+                    "rotary rounding/layout differs"
+                );
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn rotary_handles_empty_and_rejects_invalid_frequencies() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        let empty = Tensor::zeros((1, 2, 0, 256), DType::BF16, &device)?;
+        let frequencies = Tensor::zeros((1, 1, 0, 256), DType::BF16, &device)?;
+        assert_eq!(
+            rotary_reference(&empty, &frequencies, &frequencies)?.dims(),
+            &[0, 2, 256]
+        );
+        let x = Tensor::zeros((1, 2, 3, 256), DType::BF16, &device)?;
+        let wrong = Tensor::zeros((1, 1, 3, 128), DType::BF16, &device)?;
+        assert!(rotary_reference(&x, &wrong, &wrong).is_err());
+        let strided = Tensor::zeros((1, 1, 3, 512), DType::BF16, &device)?.narrow(3, 0, 256)?;
+        assert!(rotary_reference(&x, &strided, &strided).is_err());
+        let cpu = Tensor::zeros((1, 1, 3, 256), DType::BF16, &Device::Cpu)?;
+        assert!(rotary_reference(&x, &cpu, &cpu).is_err());
+        Ok(())
+    }
     #[test]
     #[ignore = "requires CUDA"]
     fn strided_matches_contiguous() -> Result<()> {
