@@ -174,27 +174,48 @@ impl Qwen3Attention {
         let k = compact_tensors.scatter_unfold(&k)?;
         let v = compact_tensors.scatter_unfold(&v)?;
 
-        let (k, v) = match prefix {
-            Some((cache, plan, layer)) => cache.assemble(layer, plan, &k, &v)?,
-            None => (k, v),
+        #[cfg(feature = "prefix-cache-paged")]
+        let paged_attention = match prefix {
+            Some((cache, plan, layer)) => {
+                cache.paged_attention(layer, plan, &q, &k, &v, self.softmax_scale)?
+            }
+            None => None,
         };
-        let (kv_offsets, max_k) = prefix
-            .map(|(_, plan, _)| (&plan.kv_offsets, plan.max_k))
-            .unwrap_or((cu_seqlens, max_s));
-        let attention = flash_attn_varlen(
-            &q,
-            &k,
-            &v,
-            None,
-            cu_seqlens,
-            kv_offsets,
-            max_s,
-            max_k,
-            self.softmax_scale,
-            !self.use_bidirectional_attention,
-            None,
-            None,
-        )?;
+        #[cfg(not(feature = "prefix-cache-paged"))]
+        let paged_attention: Option<Tensor> = None;
+        let attention = if let Some(attention) = paged_attention {
+            #[cfg(feature = "prefix-cache-paged")]
+            if let Some((cache, plan, layer)) = prefix {
+                cache.capture_paged(layer, plan, &k, &v)?;
+            }
+            attention
+        } else {
+            let (k, v) = match prefix {
+                Some((cache, plan, layer)) => cache.assemble(layer, plan, &k, &v)?,
+                None => (k, v),
+            };
+            let (kv_offsets, max_k) = prefix
+                .map(|(_, plan, _)| (&plan.kv_offsets, plan.max_k))
+                .unwrap_or((cu_seqlens, max_s));
+            let attention = flash_attn_varlen(
+                &q,
+                &k,
+                &v,
+                None,
+                cu_seqlens,
+                kv_offsets,
+                max_s,
+                max_k,
+                self.softmax_scale,
+                !self.use_bidirectional_attention,
+                None,
+                None,
+            )?;
+            if let Some((cache, plan, layer)) = prefix {
+                cache.capture(layer, plan, &k, &v)?;
+            }
+            attention
+        };
         let attention = attention.flatten_from(candle::D::Minus2)?;
 
         // Compact attention output back to COMPACT layout before o_proj
@@ -446,11 +467,24 @@ impl FlashQwen3Model {
         {
             candle::bail!("Qwen3 prefix KV prototype is currently qualified only on Hopper");
         }
-        let prefix_cache = (capacity > 0).then(|| {
-            Mutex::new(PrefixKvCache::new(
-                capacity.min(config.max_position_embeddings),
-            ))
-        });
+        let prefix_cache = if capacity > 0 {
+            let max_prefix = std::env::var("TEI_QWEN3_PREFIX_CACHE_MAX_PREFIX_TOKENS")
+                .ok()
+                .map(|s| s.parse::<usize>().map_err(candle::Error::wrap))
+                .transpose()?
+                .unwrap_or(2048)
+                .min(config.max_position_embeddings);
+            let paged = match std::env::var("TEI_QWEN3_PREFIX_CACHE_MODE").as_deref() {
+                Ok("paged") => true,
+                Ok("sequence") | Err(_) => false,
+                Ok(_) => candle::bail!("prefix cache mode must be sequence or paged"),
+            };
+            Some(Mutex::new(PrefixKvCache::configured(
+                capacity, max_prefix, paged,
+            )?))
+        } else {
+            None
+        };
         Ok(Self {
             prefix_cache,
             embeddings,

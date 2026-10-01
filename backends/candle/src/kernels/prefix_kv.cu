@@ -12,3 +12,13 @@ extern "C" __global__ void prefix_kv_copy(
     for (unsigned int col = threadIdx.x; col < width; col += blockDim.x)
         dst[(unsigned long long)blockIdx.x * width + col] = src[col];
 }
+
+// Every destination appears once; source storage is separate from the cache.
+extern "C" __global__ void prefix_kv_scatter(
+    unsigned short* dst, const unsigned short* src, const unsigned int* pairs,
+    unsigned int width, unsigned long long dst_stride,
+    unsigned long long src_stride) {
+    unsigned int dest = pairs[2 * blockIdx.x], source = pairs[2 * blockIdx.x + 1];
+    for (unsigned int col = threadIdx.x; col < width; col += blockDim.x)
+        dst[dest * dst_stride + col] = src[source * src_stride + col];
+}

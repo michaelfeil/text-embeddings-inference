@@ -43,3 +43,4 @@ pub(crate) mod qwen3_moe;
 pub(crate) mod qwen35_gdn;
 
 pub(crate) mod prefix_kv;
+mod prefix_index;

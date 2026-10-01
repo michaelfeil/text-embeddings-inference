@@ -126,3 +126,69 @@ mod tests {
         Ok(())
     }
 }
+
+pub(super) struct Scatter(pub Tensor);
+impl Scatter {
+    fn launch<T: CudaDType + DeviceRepr>(
+        &self,
+        dst: &mut CudaStorage,
+        dl: &Layout,
+        src: &CudaStorage,
+        sl: &Layout,
+    ) -> Result<()> {
+        let device = dst.device().clone();
+        let width = (dl.shape().elem_count() / dl.dims()[0]) as u32;
+        let mut dst = dst.as_cuda_slice_mut::<T>()?.slice_mut(dl.start_offset()..);
+        let src = src.as_cuda_slice::<T>()?.slice(sl.start_offset()..);
+        let (pairs, pl) = self.0.storage_and_layout();
+        let Storage::Cuda(pairs) = &*pairs else {
+            candle::bail!("CUDA scatter requires device indices")
+        };
+        let pairs = pairs
+            .as_cuda_slice::<u32>()?
+            .slice(pl.start_offset()..pl.start_offset() + self.0.elem_count());
+        let ds = dl.stride()[0] as u64;
+        let ss = sl.stride()[0] as u64;
+        let function =
+            device.get_or_load_custom_func("prefix_kv_scatter", "tei-prefix-kv", ptx::PREFIX_KV)?;
+        let mut builder = function.builder();
+        builder
+            .arg(&mut dst)
+            .arg(&src)
+            .arg(&pairs)
+            .arg(&width)
+            .arg(&ds)
+            .arg(&ss);
+        // The host index plan bounds every pair and guarantees unique destinations.
+        unsafe {
+            builder.launch(LaunchConfig {
+                grid_dim: ((self.0.elem_count() / 2) as u32, 1, 1),
+                block_dim: (256, 1, 1),
+                shared_mem_bytes: 0,
+            })
+        }
+        .map_err(candle::Error::wrap)?;
+        Ok(())
+    }
+}
+impl candle::InplaceOp2 for Scatter {
+    fn name(&self) -> &'static str {
+        "prefix-kv-scatter"
+    }
+    fn cpu_fwd(&self, _: &mut CpuStorage, _: &Layout, _: &CpuStorage, _: &Layout) -> Result<()> {
+        candle::bail!("CUDA scatter called on CPU")
+    }
+    fn cuda_fwd(
+        &self,
+        dst: &mut CudaStorage,
+        dl: &Layout,
+        src: &CudaStorage,
+        sl: &Layout,
+    ) -> Result<()> {
+        match dst.dtype() {
+            DType::F16 => self.launch::<half::f16>(dst, dl, src, sl),
+            DType::BF16 => self.launch::<half::bf16>(dst, dl, src, sl),
+            _ => candle::bail!("prefix scatter requires half values"),
+        }
+    }
+}

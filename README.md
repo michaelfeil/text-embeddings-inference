@@ -443,21 +443,29 @@ curl 127.0.0.1:8080/rerank \
 
 ### Qwen3 prefix KV cache prototype
 
-Set `TEI_QWEN3_PREFIX_CACHE_TOKENS=1024` to opt in on Hopper with a causal,
-dense Qwen3 model (FP16/BF16; dynamic FP8 is not supported). The first nonzero
-inference sequence seeds an immutable token/position-matched prefix, capped at
-that many tokens. Startup zero-ID probes are skipped. Restart the model to reset it.
+Set `TEI_QWEN3_PREFIX_CACHE_TOKENS=2048` to opt in on Hopper with a causal,
+dense Qwen3 model (FP16/BF16; dynamic FP8 is not supported). This is the total
+resident token budget per layer. New requests admit prefixes automatically;
+older entries are evicted when needed. Matches require identical token IDs and
+positions. Startup zero-ID probes are skipped.
 
-Subsequent batches compute only unmatched suffixes, retaining RadixMLP deduplication.
-Per-layer prefix K/V and final prefix states persist; shared contiguous K/V scratch
-grows to the largest observed batch and is reused. Scratch still copies the prefix
-for each sequence. Returned outputs do not alias the scratch buffers. Exact hits
-recompute the last token. Other activation allocations remain unchanged.
+`TEI_QWEN3_PREFIX_CACHE_MAX_PREFIX_TOKENS` limits each admitted prefix (default
+2048, bounded by the total budget and model context length).
+`TEI_QWEN3_PREFIX_CACHE_MODE` selects:
 
-Cached attention uses FA4 when enabled, with independent query/KV boundaries.
-It does not cache bidirectional ModernBERT/Laya or multimodal inputs.
-Cache misses use the ordinary forward path.
-Short prompts can be slower because caching adds packing work; benchmark your workload.
+- `sequence` (default): caches contiguous sequences and packs matching KV rows
+  into reusable attention scratch storage.
+- `paged`: shares complete 64-token prefix pages and reads them directly through
+  FA4 page tables. Requires the `prefix-cache-paged` build feature on Hopper.
+  Matches round down to complete pages; the token budget rounds down to 64.
+
+Both modes compute unmatched suffixes and retain RadixMLP deduplication. Per-layer
+KV and final prefix states persist. Scratch storage grows to the largest observed
+batch; its memory is additional to the resident token budget. Returned outputs
+remain valid across subsequent calls. At least the final token is recomputed.
+
+Bidirectional ModernBERT/Laya and multimodal inputs are not cached. Short prefixes
+may not offset cache lookup and copying costs; benchmark your workload.
 
 ### Using Sequence Classification models
 
