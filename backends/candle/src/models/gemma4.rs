@@ -795,11 +795,19 @@ impl Gemma4Model {
             .any(|media| !media.images.is_empty());
         if has_images
             && batch.compact_input_ids.is_some()
-            && !text_embeddings_backend_core::MultimodalEncoding::allows_radix(
-                &batch.multimodal,
-                &batch.input_ids,
-                &batch.cumulative_seq_lengths,
-            )
+            && !batch
+                .scatter_unfold
+                .as_ref()
+                .zip(batch.fold_gather.as_ref())
+                .is_some_and(|(scatter, fold)| {
+                    text_embeddings_backend_core::MultimodalEncoding::allows_radix_fold(
+                        &batch.multimodal,
+                        &batch.input_ids,
+                        &batch.cumulative_seq_lengths,
+                        scatter,
+                        fold,
+                    )
+                })
         {
             candle::bail!("Radix image folding requires identical images and image prefixes");
         }

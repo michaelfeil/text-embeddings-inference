@@ -352,39 +352,38 @@ fn queue_blocking_task(
 
                 // Compute RadixMLP compact representation with BOTH mappings
                 let (compact_input_ids, compact_position_ids, scatter_unfold, fold_gather) =
-                    if radix_mlp_threshold > 1e-6
-                        && !input_ids.is_empty()
-                        && text_embeddings_backend::MultimodalEncoding::allows_radix(
-                            &multimodal,
-                            &input_ids,
-                            &cu_seq_lengths,
-                        )
-                    {
-                        let (compact_ids, compact_pos, scatter, fold) =
-                            radix_mlp::compute_fold_and_scatter(
+                    if radix_mlp_threshold > 1e-6 && !input_ids.is_empty() {
+                        if let Some((compact_ids, compact_pos, scatter, fold)) =
+                            crate::radix::compute(
                                 &input_ids,
                                 &position_ids,
                                 &cu_seq_lengths,
+                                &multimodal,
                                 radix_mlp_pad,
-                            );
-
-                        // Only use if we achieved meaningful compression
-                        let compression_ratio = compact_ids.len() as f32 / input_ids.len() as f32;
-                        tracing::info!(
-                            "RadixMLP compression ratio: {:.2} ({} -> {})",
-                            compression_ratio,
-                            input_ids.len(),
-                            compact_ids.len()
-                        );
-                        metrics::histogram!("te_radix_mlp_compression_ratio")
-                            .record(compression_ratio as f64);
-                        if radix_mlp_threshold >= 1.0 || compression_ratio < radix_mlp_threshold {
-                            (
-                                Some(compact_ids),
-                                Some(compact_pos),
-                                Some(scatter),
-                                Some(fold),
                             )
+                        {
+                            // Only use if we achieved meaningful compression
+                            let compression_ratio =
+                                compact_ids.len() as f32 / input_ids.len() as f32;
+                            tracing::info!(
+                                "RadixMLP compression ratio: {:.2} ({} -> {})",
+                                compression_ratio,
+                                input_ids.len(),
+                                compact_ids.len()
+                            );
+                            metrics::histogram!("te_radix_mlp_compression_ratio")
+                                .record(compression_ratio as f64);
+                            if radix_mlp_threshold >= 1.0 || compression_ratio < radix_mlp_threshold
+                            {
+                                (
+                                    Some(compact_ids),
+                                    Some(compact_pos),
+                                    Some(scatter),
+                                    Some(fold),
+                                )
+                            } else {
+                                (None, None, None, None)
+                            }
                         } else {
                             (None, None, None, None)
                         }

@@ -48,6 +48,98 @@ pub struct MultimodalEncoding {
 }
 
 impl MultimodalEncoding {
+    /// End of the final image block, checked before using it as a prefix bound.
+    pub fn radix_prefix_len(&self) -> Option<usize> {
+        self.images.iter().try_fold(0usize, |end, (start, image)| {
+            let patches = image
+                .grid_thw
+                .iter()
+                .try_fold(1usize, |n, d| n.checked_mul(*d))?;
+            let merge = image.merge_size.checked_mul(image.merge_size)?;
+            if merge == 0 || patches == 0 || patches % merge != 0 {
+                return None;
+            }
+            Some(end.max(start.checked_add(patches / merge)?))
+        })
+    }
+
+    /// Token-prefix folding may share rows only within the same image context.
+    pub fn same_radix_context(
+        a: Option<&Self>,
+        b: Option<&Self>,
+        a_ids: &[u32],
+        b_ids: &[u32],
+    ) -> bool {
+        let a = a.filter(|m| !m.images.is_empty());
+        let b = b.filter(|m| !m.images.is_empty());
+        let (a, b) = match (a, b) {
+            (None, None) => return true,
+            (Some(a), Some(b)) => (a, b),
+            _ => return false,
+        };
+        let Some(end) = a.radix_prefix_len() else {
+            return false;
+        };
+        if a_ids.get(..end).is_none()
+            || a_ids.get(..end) != b_ids.get(..end)
+            || (0..3).any(|axis| {
+                a.position_ids[axis].get(..end).is_none()
+                    || a.position_ids[axis].get(..end) != b.position_ids[axis].get(..end)
+            })
+        {
+            return false;
+        }
+        a.images.len() == b.images.len()
+            && a.images
+                .iter()
+                .zip(&b.images)
+                .all(|((x, a), (y, b))| x == y && (Arc::ptr_eq(a, b) || a.same_content(b)))
+    }
+
+    /// Check the actual shared-row mapping rather than requiring one image
+    /// context for the entire batch. Unused compact padding rows are ignored.
+    pub fn allows_radix_fold(
+        media: &[Option<Arc<Self>>],
+        ids: &[u32],
+        cumulative: &[u32],
+        scatter: &[u32],
+        fold: &[u32],
+    ) -> bool {
+        if cumulative.len() != media.len() + 1
+            || cumulative.first() != Some(&0)
+            || cumulative.last().map(|n| *n as usize) != Some(ids.len())
+            || cumulative.windows(2).any(|w| w[0] > w[1])
+            || scatter.len() != ids.len()
+        {
+            return false;
+        }
+        let mut row_for_token = vec![0usize; ids.len()];
+        for (row, span) in cumulative.windows(2).enumerate() {
+            row_for_token[span[0] as usize..span[1] as usize].fill(row);
+        }
+        let mut checked = std::collections::HashSet::new();
+        for (i, compact) in scatter.iter().enumerate() {
+            let Some(rep) = fold.get(*compact as usize).map(|v| *v as usize) else {
+                return false;
+            };
+            let Some(b) = row_for_token.get(rep).copied() else {
+                return false;
+            };
+            let a = row_for_token[i];
+            if checked.insert((a, b))
+                && !Self::same_radix_context(
+                    media[a].as_deref(),
+                    media[b].as_deref(),
+                    &ids[cumulative[a] as usize..cumulative[a + 1] as usize],
+                    &ids[cumulative[b] as usize..cumulative[b + 1] as usize],
+                )
+            {
+                return false;
+            }
+        }
+        true
+    }
+
     /// Token-only folding is safe for images only when every sequence has the
     /// same prepared pixel bits/layout and context through the final image block.
     /// Equal placeholder IDs alone are insufficient.
