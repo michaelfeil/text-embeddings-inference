@@ -113,7 +113,7 @@ struct Args {
 
     /// Maximum number of questions in one /v1/systemone request.
     /// Independent of max-client-batch-size; model option budgets still apply.
-    #[clap(default_value = "256", long, env)]
+    #[clap(default_value = "512", long, env)]
     max_decision_questions: std::num::NonZeroUsize,
 
     /// Automatically truncate inputs that are longer than the maximum supported size
