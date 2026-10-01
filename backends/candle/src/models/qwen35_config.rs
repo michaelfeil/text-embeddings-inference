@@ -34,7 +34,7 @@ impl Qwen35Config {
             }
         ) {
             candle::bail!(
-                "Qwen3.5-MoE supports causal text embeddings without an output projection only"
+                "Qwen3.5 supports causal text embeddings without an output projection only"
             )
         }
         if matches!(
@@ -44,7 +44,7 @@ impl Qwen35Config {
                 ..
             }
         ) {
-            candle::bail!("Quantized Qwen3.5-MoE checkpoints are unsupported")
+            candle::bail!("Quantized Qwen3.5 checkpoints are unsupported")
         };
         self.text().validate()
     }
@@ -67,11 +67,17 @@ pub struct Qwen35TextConfig {
     pub rms_norm_eps: f64,
     pub layer_types: Vec<String>,
     pub rope_parameters: Rope,
+    #[serde(default)]
     pub num_experts: usize,
+    #[serde(default)]
     pub num_experts_per_tok: usize,
     #[serde(default = "default_norm_topk_prob")]
     pub norm_topk_prob: bool,
+    #[serde(default)]
     pub moe_intermediate_size: usize,
+    #[serde(default)]
+    pub intermediate_size: usize,
+    #[serde(default)]
     pub shared_expert_intermediate_size: usize,
     pub linear_num_key_heads: usize,
     pub linear_num_value_heads: usize,
@@ -125,7 +131,7 @@ impl Qwen35TextConfig {
     pub fn validate(&self) -> Result<()> {
         if self.use_bidirectional_attention || self.use_linear_output_projection {
             candle::bail!(
-                "Qwen3.5-MoE supports causal text embeddings without an output projection only"
+                "Qwen3.5 supports causal text embeddings without an output projection only"
             )
         }
         if !self.mlp_only_layers.is_empty()
@@ -134,7 +140,7 @@ impl Qwen35TextConfig {
             || self.hidden_act != "silu"
             || self.rope_parameters.rope_type != "default"
         {
-            candle::bail!("Unsupported Qwen3.5-MoE quantization, attention bias, activation or RoPE configuration")
+            candle::bail!("Unsupported Qwen3.5 quantization, attention bias, activation or RoPE configuration")
         }
         if self.max_position_embeddings == 0
             || !self.rms_norm_eps.is_finite()
@@ -168,12 +174,16 @@ impl Qwen35TextConfig {
                 .is_multiple_of(self.linear_num_key_heads)
             || self.linear_conv_kernel_dim == 0
             || self.linear_conv_kernel_dim > 16
-            || self.num_experts != 256
-            || self.num_experts_per_tok != 8
-            || self.moe_intermediate_size == 0
-            || self.shared_expert_intermediate_size == 0
+            || if self.num_experts == 0 {
+                self.intermediate_size == 0 || self.num_experts_per_tok != 0
+            } else {
+                self.num_experts != 256
+                    || self.num_experts_per_tok != 8
+                    || self.moe_intermediate_size == 0
+                    || self.shared_expert_intermediate_size == 0
+            }
         {
-            candle::bail!("Unsupported Qwen3.5-MoE architecture dimensions")
+            candle::bail!("Unsupported Qwen3.5 architecture dimensions")
         }
         Ok(())
     }
@@ -193,6 +203,44 @@ mod tests {
             "linear_num_key_heads":16,"linear_num_value_heads":32,"linear_key_head_dim":128,"linear_value_head_dim":128,"linear_conv_kernel_dim":4,"hidden_act":"silu"
         })
     }
+    #[test]
+    fn dense_configs_and_invalid_expert_mix() -> Result<()> {
+        for (hidden, intermediate, heads, kv, values, layers) in
+            [(1024, 3584, 8, 2, 16, 24), (4096, 12288, 16, 4, 32, 32)]
+        {
+            let mut v = value();
+            for key in [
+                "num_experts",
+                "num_experts_per_tok",
+                "moe_intermediate_size",
+                "shared_expert_intermediate_size",
+            ] {
+                v.as_object_mut().unwrap().remove(key);
+            }
+            v["hidden_size"] = hidden.into();
+            v["intermediate_size"] = intermediate.into();
+            v["num_attention_heads"] = heads.into();
+            v["num_key_value_heads"] = kv.into();
+            v["linear_num_value_heads"] = values.into();
+            v["num_hidden_layers"] = layers.into();
+            v["layer_types"] = serde_json::json!((0..layers)
+                .map(|i| if i % 4 == 3 {
+                    "full_attention"
+                } else {
+                    "linear_attention"
+                })
+                .collect::<Vec<_>>());
+            let c: Qwen35Config =
+                serde_json::from_value(serde_json::json!({"text_config":v.clone()})).unwrap();
+            c.validate()?;
+            assert_eq!(c.text().num_experts, 0);
+            v["num_experts_per_tok"] = 8.into();
+            let c: Qwen35Config = serde_json::from_value(v).unwrap();
+            assert!(c.validate().is_err());
+        }
+        Ok(())
+    }
+
     #[test]
     fn wrapped_and_text_configs() -> Result<()> {
         for config in [

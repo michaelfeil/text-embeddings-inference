@@ -125,7 +125,12 @@ enum Config {
     #[allow(dead_code)]
     #[serde(rename = "qwen3_vl")]
     Qwen3Vl(serde_json::Value),
-    #[serde(rename = "qwen3_5_moe", alias = "qwen3_5_moe_text")]
+    #[serde(
+        rename = "qwen3_5_moe",
+        alias = "qwen3_5_moe_text",
+        alias = "qwen3_5",
+        alias = "qwen3_5_text"
+    )]
     Qwen35(models::Qwen35Config),
     Roberta(BertConfig),
     XlmRoberta(BertConfig),

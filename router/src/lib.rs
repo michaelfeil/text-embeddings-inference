@@ -716,7 +716,7 @@ impl ModelConfig {
     fn resolve_text_config(&mut self) -> anyhow::Result<()> {
         if matches!(
             self.model_type.as_str(),
-            "gemma4" | "gemma4_unified" | "qwen3_5_moe" | "qwen3_vl"
+            "gemma4" | "gemma4_unified" | "qwen3_5_moe" | "qwen3_5" | "qwen3_vl"
         ) {
             if self.max_position_embeddings == 0 {
                 self.max_position_embeddings = self
@@ -725,7 +725,7 @@ impl ModelConfig {
                     .context("Model text_config.max_position_embeddings is missing")?
                     .max_position_embeddings;
             }
-            if self.model_type == "qwen3_5_moe"
+            if matches!(self.model_type.as_str(), "qwen3_5_moe" | "qwen3_5")
                 && self.dtype.is_none()
                 && self.torch_dtype.is_none()
             {
