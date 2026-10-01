@@ -441,6 +441,24 @@ curl 127.0.0.1:8080/rerank \
     -H 'Content-Type: application/json'
 ```
 
+### Qwen3 prefix KV cache prototype
+
+Set `TEI_QWEN3_PREFIX_CACHE_TOKENS=1024` to opt in on Hopper with a causal,
+dense Qwen3 model (FP16/BF16; dynamic FP8 is not supported). The first nonzero
+inference sequence seeds an immutable token/position-matched prefix, capped at
+that many tokens. Startup zero-ID probes are skipped. Restart the model to reset it.
+
+Subsequent batches compute only unmatched suffixes, retaining RadixMLP deduplication.
+Per-layer prefix K/V and final prefix states persist; shared contiguous K/V scratch
+grows to the largest observed batch and is reused. Scratch still copies the prefix
+for each sequence. Returned outputs do not alias the scratch buffers. Exact hits
+recompute the last token. Other activation allocations remain unchanged.
+
+Cached attention uses FA4 when enabled, with independent query/KV boundaries.
+It does not cache bidirectional ModernBERT/Laya or multimodal inputs.
+Cache misses use the ordinary forward path.
+Short prompts can be slower because caching adds packing work; benchmark your workload.
+
 ### Using Sequence Classification models
 
 You can also use classic Sequence Classification models like `SamLowe/roberta-base-go_emotions`:
