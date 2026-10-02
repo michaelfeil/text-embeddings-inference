@@ -310,6 +310,7 @@ pub struct Qwen35Model {
     norm: Norm,
     linear_output_projection: Option<Linear>,
     decision_head: Option<Tensor>,
+    readout: Option<Linear>,
     clef: Option<super::clef::JointSchemaHead>,
     cos_cache: Tensor,
     sin_cache: Tensor,
@@ -319,7 +320,12 @@ pub struct Qwen35Model {
     span: tracing::Span,
 }
 impl Qwen35Model {
-    pub fn load(vb: VarBuilder, config: &Qwen35Config, model_type: ModelType) -> Result<Self> {
+    pub fn load(
+        vb: VarBuilder,
+        config: &Qwen35Config,
+        model_type: ModelType,
+        external_readout: bool,
+    ) -> Result<Self> {
         config.validate()?;
         let c = config.text();
         if !matches!(vb.device(), Device::Cuda(_)) || vb.dtype() != DType::BF16 {
@@ -335,6 +341,8 @@ impl Qwen35Model {
             vb.pp("model.language_model")
         } else if vb.contains_tensor("model.embed_tokens.weight") {
             vb.pp("model")
+        } else if vb.contains_tensor("language_model.embed_tokens.weight") {
+            vb.pp("language_model")
         } else {
             vb.clone()
         };
@@ -344,7 +352,7 @@ impl Qwen35Model {
                 .get((c.vocab_size, c.hidden_size), "weight")?,
             c.hidden_size,
         );
-        let decision_head = if decision {
+        let decision_head = if decision && !external_readout {
             Some(if config.tie_word_embeddings() {
                 embeddings.embeddings().clone()
             } else {
@@ -373,6 +381,7 @@ impl Qwen35Model {
             norm,
             linear_output_projection: None,
             decision_head,
+            readout: None,
             clef: None,
             cos_cache,
             sin_cache,
@@ -382,6 +391,22 @@ impl Qwen35Model {
             span: tracing::span!(tracing::Level::TRACE, "qwen35"),
         })
     }
+    pub fn with_readout(mut self, path: &std::path::Path, config: &Qwen35Config) -> Result<Self> {
+        let vb = unsafe {
+            VarBuilder::from_mmaped_safetensors(
+                &[path.join("readout.safetensors")],
+                DType::BF16,
+                &self.device,
+            )?
+        };
+        self.readout = Some(Linear::new(
+            vb.get((255, config.text().hidden_size), "weight")?,
+            None,
+            None,
+        ));
+        Ok(self)
+    }
+
     pub fn with_clef(mut self, path: &std::path::Path, config: &Qwen35Config) -> Result<Self> {
         self.clef = Some(super::clef::JointSchemaHead::load(
             path,
@@ -530,13 +555,52 @@ impl Qwen35Model {
 
 impl Model for Qwen35Model {
     fn decide(&self, batch: Batch, inputs: Vec<DecisionInput>) -> Result<Vec<DecisionOutput>> {
+        if inputs.len() != batch.len() {
+            candle::bail!("Decision metadata count does not match batch")
+        }
+        if let Some(readout) = &self.readout {
+            let (states, compact) = self.forward_hidden(&batch)?;
+            let states = compact.scatter_unfold(&states)?;
+            let indices = Tensor::new(
+                batch
+                    .cumulative_seq_lengths
+                    .iter()
+                    .skip(1)
+                    .map(|end| end - 1)
+                    .collect::<Vec<_>>(),
+                &self.device,
+            )?;
+            // Match upstream's BF16 readout, then promote logits for calibration.
+            let logits = readout
+                .forward(&index_select(&states, &indices, 0)?)?
+                .to_dtype(DType::F32)?
+                .to_vec2::<f32>()?;
+            return inputs
+                .into_iter()
+                .zip(logits)
+                .map(|(input, logits)| {
+                    let count = match input {
+                        DecisionInput::OptionTokens { token_ids }
+                            if !token_ids.is_empty()
+                                && token_ids.iter().copied().eq(0..token_ids.len() as u32)
+                                && token_ids.len() <= 255 =>
+                        {
+                            token_ids.len()
+                        }
+                        DecisionInput::Warmup => 1,
+                        _ => candle::bail!("Pplx requires contiguous readout-row metadata"),
+                    };
+                    Ok(DecisionOutput {
+                        logits: logits[..count].to_vec(),
+                        action_probability: 1.0,
+                    })
+                })
+                .collect();
+        }
         let weights = self
             .decision_head
             .as_ref()
             .ok_or_else(|| candle::Error::Msg("Qwen3.5 was not loaded for decisions".into()))?;
-        if inputs.len() != batch.len() {
-            candle::bail!("Decision metadata count does not match batch")
-        }
         if let Some(head) = &self.clef {
             let (hidden, compact) = self.forward_hidden(&batch)?;
             let hidden = if let Some(scatter) = &compact.scatter_unfold {
@@ -704,7 +768,12 @@ mod radix_tests {
         })).map_err(candle::Error::wrap)?;
         let vars = candle_nn::VarMap::new();
         let vb = VarBuilder::from_varmap(&vars, DType::BF16, &device);
-        Qwen35Model::load(vb.clone(), &config, ModelType::Embedding(Pool::LastToken))?;
+        Qwen35Model::load(
+            vb.clone(),
+            &config,
+            ModelType::Embedding(Pool::LastToken),
+            false,
+        )?;
         for (name, var) in vars.data().lock().unwrap().iter() {
             let offset: usize = name.bytes().map(usize::from).sum();
             let values: Vec<f32> = (0..var.elem_count())
@@ -715,7 +784,7 @@ mod radix_tests {
         let a: &[u32] = &[3, 4, 5, 6, 7, 8];
         let b: &[u32] = &[3, 4, 5, 6, 9, 10, 11];
         for pool in [Pool::LastToken, Pool::Mean] {
-            let model = Qwen35Model::load(vb.clone(), &config, ModelType::Embedding(pool))?;
+            let model = Qwen35Model::load(vb.clone(), &config, ModelType::Embedding(pool), false)?;
             assert!(model.supports_radix_mlp());
             for sequences in [[a, b, a], [b, a, b]] {
                 let expected = model.forward(batch(&sequences, false))?;

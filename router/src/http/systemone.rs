@@ -39,6 +39,7 @@ struct Config {
 
 mod clef;
 mod onejev;
+mod pplx;
 mod rune;
 
 pub enum SystemOne {
@@ -46,6 +47,7 @@ pub enum SystemOne {
     Rune(rune::Rune),
     Onejev(onejev::Onejev),
     Clef(clef::Clef),
+    Pplx(pplx::Pplx),
 }
 
 impl SystemOne {
@@ -60,6 +62,12 @@ impl SystemOne {
             Ok(Self::Laya(Laya::load(path, tokenizer, max_input_length)?))
         } else if matches!(protocol, Some(crate::DecisionProtocol::Onejev)) {
             Ok(Self::Onejev(onejev::Onejev::load(
+                path,
+                tokenizer,
+                max_input_length,
+            )?))
+        } else if matches!(protocol, Some(crate::DecisionProtocol::Pplx)) {
+            Ok(Self::Pplx(pplx::Pplx::load(
                 path,
                 tokenizer,
                 max_input_length,
@@ -80,6 +88,7 @@ impl SystemOne {
             Self::Rune(model) => model.prepare(request),
             Self::Onejev(model) => model.prepare(request),
             Self::Clef(model) => model.prepare(request),
+            Self::Pplx(model) => model.prepare(request),
         }
     }
 
@@ -89,6 +98,7 @@ impl SystemOne {
             Self::Rune(_) => rune::answer(question, output),
             Self::Onejev(_) => onejev::answer(question, output),
             Self::Clef(_) => clef::answer(question, output),
+            Self::Pplx(model) => model.answer(question, output),
         }
     }
 }
@@ -616,7 +626,10 @@ pub async fn systemone(
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();
     let input_tokens: usize = questions.iter().map(|q| q.encoding.input_ids.len()).sum();
     let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(questions.len()));
-    let output_tokens = if matches!(service.as_ref(), SystemOne::Rune(_) | SystemOne::Onejev(_)) {
+    let output_tokens = if matches!(
+        service.as_ref(),
+        SystemOne::Rune(_) | SystemOne::Onejev(_) | SystemOne::Pplx(_)
+    ) {
         questions.len()
     } else {
         0
