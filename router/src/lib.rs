@@ -45,6 +45,7 @@ pub enum DecisionProtocol {
     Rune,
     Onejev,
     Clef,
+    Pplx,
 }
 
 /// Create entrypoint
@@ -120,7 +121,17 @@ pub async fn run(
     let clef = matches!(decision_protocol, Some(DecisionProtocol::Clef));
     let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
     let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
-    let decoder_decision = rune || onejev || clef;
+    let pplx = matches!(decision_protocol, Some(DecisionProtocol::Pplx));
+    let decoder_decision = rune || onejev || clef || pplx;
+    let readout = model_root.join("decision_config.json").exists();
+    anyhow::ensure!(
+        !pplx || (readout && model_root.join("readout.safetensors").exists()),
+        "Pplx requires decision_config.json and readout.safetensors"
+    );
+    anyhow::ensure!(
+        !readout || pplx,
+        "This checkpoint requires --decision-protocol pplx"
+    );
     let joint_head = model_root.join("joint_head_config.json").exists();
     anyhow::ensure!(
         !clef || (joint_head && model_root.join("joint_head.safetensors").exists()),
@@ -168,8 +179,8 @@ pub async fn run(
     );
 
     anyhow::ensure!(
-        !clef || matches!(config.model_type.as_str(), "qwen3_5" | "qwen3_5_text"),
-        "Clef requires a dense Qwen3.5 model"
+        !(clef || pplx) || matches!(config.model_type.as_str(), "qwen3_5" | "qwen3_5_text"),
+        "Clef and Pplx require a dense Qwen3.5 model"
     );
     anyhow::ensure!(
         config.model_type != "qwen3_vl"

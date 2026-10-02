@@ -858,3 +858,14 @@ For text inputs, launch with `--model-id Cloudflare/clef-flash
 --decision-protocol clef --dtype bfloat16`. Standard sharded safetensors and
 `joint_head.safetensors` are loaded directly. Images/video are not supported yet;
 over-budget prompts return 422 rather than silently truncating the state.
+
+### Perplexity typed decisions
+
+For text decisions, launch `perplexity-ai/pplx-decider-v1-27b` with
+`--decision-protocol pplx --dtype bfloat16` and use `/v1/systemone`.
+The Qwen3.5 Candle backbone loads the checkpoint's `readout.safetensors` and
+applies its saved calibration temperature. Choice, noul and score questions use
+the upstream prompt and answer formulas, with up to 255 options per question.
+Each question has a separate branch in the shared batch; causal RadixMLP remains
+available. Prompts exceeding 8192 tokens (or a smaller `max_len`) return 422.
+Image/video inputs are not supported by this protocol yet.

@@ -517,9 +517,18 @@ impl CandleBackend {
                 {
                     Ok(Box::new({
                         let decision = model_type == ModelType::Decision;
-                        let model =
-                            models::Qwen35Model::load(vb.clone(), &config, model_type).s()?;
-                        if decision && model_path.join("joint_head_config.json").exists() {
+                        let external_readout =
+                            decision && model_path.join("decision_config.json").exists();
+                        let model = models::Qwen35Model::load(
+                            vb.clone(),
+                            &config,
+                            model_type,
+                            external_readout,
+                        )
+                        .s()?;
+                        if external_readout {
+                            model.with_readout(model_path, &config).s()?
+                        } else if decision && model_path.join("joint_head_config.json").exists() {
                             model.with_clef(model_path, &config).s()?
                         } else {
                             model
