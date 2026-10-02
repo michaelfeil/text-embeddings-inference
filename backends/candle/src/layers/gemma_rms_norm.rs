@@ -89,8 +89,11 @@ impl CustomOp2 for Norm {
             .slice(sl.start_offset()..sl.start_offset() + width as usize);
         // The grid writes every output element exactly once.
         let mut out = unsafe { device.alloc::<half::bf16>(n)? };
+        let compact_reduction = self.reference && width > 256 && n / width as usize >= 2048;
         let kernel = device.get_or_load_custom_func(
-            if self.reference {
+            if compact_reduction {
+                "gemma_rms_norm_compact_bf16"
+            } else if self.reference {
                 "gemma_rms_norm_reference_bf16"
             } else {
                 "gemma_rms_norm_bf16"
@@ -112,7 +115,9 @@ impl CustomOp2 for Norm {
                 grid_dim: ((n / width as usize) as u32, 1, 1),
                 block_dim: (
                     if self.reference {
-                        width.min(1024).next_power_of_two()
+                        width
+                            .min(if compact_reduction { 256 } else { 1024 })
+                            .next_power_of_two()
                     } else if width <= 128 {
                         32
                     } else {
@@ -456,7 +461,7 @@ mod tests {
     #[ignore = "requires CUDA"]
     fn strided_matches_contiguous() -> Result<()> {
         let device = Device::new_cuda(0)?;
-        for tokens in [1, 7, 511] {
+        for tokens in [1, 7, 511, 683, 1024] {
             for (heads, width) in [(1, 32), (3, 256), (4, 768)] {
                 let packed = Tensor::randn(0f32, 2f32, (tokens, (heads + 2) * width), &device)?
                     .to_dtype(DType::BF16)?;
@@ -487,8 +492,8 @@ mod tests {
     #[ignore = "requires CUDA"]
     fn reference_math_matches_unfused_bitwise() -> Result<()> {
         let device = Device::new_cuda(0)?;
-        for tokens in [1, 7, 511] {
-            for width in [128, 256, 512, 1024, 2816] {
+        for tokens in [1, 7, 511, 683, 1024] {
+            for width in [33, 72, 128, 256, 257, 512, 513, 1024, 2816, 8192] {
                 let packed = Tensor::randn(0f32, 2f32, (tokens, 5, width), &device)?
                     .to_dtype(DType::BF16)?;
                 let x = packed.narrow(1, 1, 3)?;
