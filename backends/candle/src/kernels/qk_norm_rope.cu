@@ -104,3 +104,22 @@ extern "C" __global__ void qk_norm_rope_bf16(const __nv_bfloat16 *q, const __nv_
 }
 
 #endif
+
+// Copy three independently laid-out projections in one launch, preserving all bits.
+extern "C" __global__ void qkv_unfold_u16(
+    const uint4* q, const uint4* k, const uint4* v, const uint32_t* ids,
+    uint4* out, uint32_t tokens, uint32_t qwidth, uint32_t kvwidth,
+    uint64_t vstride) {
+    const uint64_t qsize = uint64_t(tokens) * qwidth;
+    const uint64_t kvsize = uint64_t(tokens) * kvwidth;
+    for (uint64_t i = uint64_t(blockIdx.x) * blockDim.x + threadIdx.x;
+         i < qsize + 2 * kvsize; i += uint64_t(gridDim.x) * blockDim.x) {
+        const bool isq = i < qsize;
+        const bool isk = !isq && i < qsize + kvsize;
+        const uint64_t j = isq ? i : (isk ? i - qsize : i - qsize - kvsize);
+        const uint32_t width = isq ? qwidth : kvwidth;
+        const uint64_t row = ids[j / width];
+        const uint4* src = isq ? q : (isk ? k : v);
+        out[i] = src[row * (isq ? qwidth : (isk ? kvwidth : vstride)) + j % width];
+    }
+}
