@@ -18,6 +18,7 @@ tracing = { workspace = true }
 rand = { workspace = true }
 
 [features]
+prefix-cache-paged = ["fa4", "text-embeddings-backend-candle?/prefix-cache-paged"]
 experimental-fp8 = ["candle", "text-embeddings-backend-candle/experimental-fp8"]
 experimental-fa4 = ["fa4"]
 fa4 = ["text-embeddings-backend-candle?/fa4"]
