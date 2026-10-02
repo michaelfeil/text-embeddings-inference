@@ -29,4 +29,6 @@
 - sections:
   - local: cli_arguments
     title: CLI arguments
+  - local: attention_backends
+    title: Choosing an attention backend
   title: Reference
