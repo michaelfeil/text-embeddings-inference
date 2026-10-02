@@ -213,7 +213,12 @@ impl Clef {
             kind: "joint".into(),
             labels: vec![],
             criteria: Value::Array(descriptors),
-            compute_chars: state.chars().count(),
+            compute_chars: self
+                .tokenizer
+                .decode(&ids, false)
+                .map_err(|e| e.to_string())?
+                .chars()
+                .count(),
             encoding: ValidEncoding {
                 input_ids: ids,
                 token_type_ids: vec![0; n],
@@ -322,6 +327,10 @@ mod tests {
             let mut prepared = service.prepare(request).unwrap();
             assert_eq!(prepared.len(), 1);
             let q = prepared.pop().unwrap();
+            assert_eq!(
+                q.compute_chars,
+                case["compute_chars"].as_u64().unwrap() as usize
+            );
             assert_eq!(
                 q.encoding.input_ids,
                 serde_json::from_value::<Vec<u32>>(case["input_ids"].clone()).unwrap()
