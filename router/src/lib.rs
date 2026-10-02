@@ -43,6 +43,7 @@ pub use logging::init_logging;
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum DecisionProtocol {
     Rune,
+    Onejev,
 }
 
 /// Create entrypoint
@@ -116,12 +117,17 @@ pub async fn run(
     // Load config
     let laya = model_root.join("rl_agent_config.json").exists();
     let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
+    let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
+    let decoder_decision = rune || onejev;
     anyhow::ensure!(
-        !(laya && rune),
-        "Rune protocol cannot serve a Laya checkpoint"
+        !(laya && decoder_decision),
+        "Decoder decision protocols cannot serve a Laya checkpoint"
     );
     #[cfg(feature = "grpc")]
-    anyhow::ensure!(!laya && !rune, "Typed decisions require an HTTP build");
+    anyhow::ensure!(
+        !laya && !decoder_decision,
+        "Typed decisions require an HTTP build"
+    );
     let config_path = model_root.join(if laya {
         "encoder/config.json"
     } else {
@@ -141,6 +147,14 @@ pub async fn run(
         !rune || config.model_type == "gemma4",
         "Rune protocol requires a Gemma4 model"
     );
+    anyhow::ensure!(
+        !onejev
+            || matches!(
+                config.model_type.as_str(),
+                "qwen3_5" | "qwen3_5_moe" | "qwen3_5_text" | "qwen3_5_moe_text"
+            ),
+        "OneJev protocol requires a Qwen3.5 model"
+    );
 
     anyhow::ensure!(
         config.model_type != "qwen3_vl"
@@ -149,7 +163,7 @@ pub async fn run(
     );
 
     // Set model type from config
-    let backend_model_type = if laya || rune {
+    let backend_model_type = if laya || decoder_decision {
         anyhow::ensure!(
             pooling.is_none(),
             "Typed decisions do not use embedding pooling"
@@ -268,7 +282,7 @@ pub async fn run(
             "Invalid Laya max_len"
         );
         length
-    } else if rune {
+    } else if decoder_decision {
         // Decision prompts cannot be truncated: reject over-budget requests in
         // the formatter, with the queue capacity as the configured input limit.
         config.max_position_embeddings.min(max_batch_tokens)
@@ -333,12 +347,13 @@ pub async fn run(
     };
 
     #[cfg(feature = "http")]
-    let systemone = if laya || rune {
+    let systemone = if laya || decoder_decision {
         Some(std::sync::Arc::new(http::systemone::SystemOne::load(
             &model_root,
             tokenizer.clone(),
             max_input_length,
             multimodal_config.clone(),
+            decision_protocol,
         )?))
     } else {
         None
