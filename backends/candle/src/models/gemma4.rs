@@ -139,6 +139,23 @@ impl Gemma4RmsNorm {
         })
     }
 
+    fn forward_residual(&self, hidden_states: &Tensor, residual: &Tensor) -> Result<Tensor> {
+        #[cfg(feature = "cuda")]
+        if hidden_states.dtype() == DType::BF16
+            && hidden_states.device().is_cuda()
+            && hidden_states.rank() == 2
+            && hidden_states.dim(1)? <= 8192
+        {
+            return crate::layers::gemma_rms_norm::residual_reference(
+                hidden_states,
+                &self.weight,
+                residual,
+                self.epsilon as f32,
+            );
+        }
+        residual + self.forward(hidden_states)?
+    }
+
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
         #[cfg(feature = "cuda")]
@@ -641,7 +658,9 @@ impl Gemma4Layer {
             shared_kv,
             image_spans,
         )?;
-        let states = (residual + self.post_attention_layernorm.forward(&attention)?)?;
+        let states = self
+            .post_attention_layernorm
+            .forward_residual(&attention, residual)?;
         let residual = &states;
         let normalized = self.pre_feedforward_layernorm.forward(&states)?;
         let mlp = self.mlp.forward(&normalized)?;
@@ -649,7 +668,9 @@ impl Gemma4Layer {
             Some(moe) => moe.forward(residual, &mlp, Some(compact))?,
             None => mlp,
         };
-        let mut states = (residual + self.post_feedforward_layernorm.forward(&mlp)?)?;
+        let mut states = self
+            .post_feedforward_layernorm
+            .forward_residual(&mlp, residual)?;
         if let (Some(ple), Some(per_layer_input)) = (&self.ple, per_layer_input) {
             let contribution = ple.input_gate.forward(&states)?;
             let contribution = ple.activation.forward(&contribution)?;

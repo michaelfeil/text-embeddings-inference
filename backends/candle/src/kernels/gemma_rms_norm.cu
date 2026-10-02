@@ -34,11 +34,12 @@ extern "C" __global__ void gemma_rms_norm_bf16(
 }
 
 // Preserve the reduction tree and FP32 operations of Candle's unfused path.
-template<bool VIRTUAL_LANES, bool PAIRED = false>
+template<bool VIRTUAL_LANES, bool PAIRED = false, bool ADD_RESIDUAL = false>
 __device__ __forceinline__ void gemma_rms_norm_reference_impl(
     const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
     unsigned int width, unsigned int heads, unsigned long long token_stride, float eps,
-    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {}) {
+    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {},
+    const __nv_bfloat16* residual = nullptr, unsigned long long residual_stride = 0) {
     const size_t base = static_cast<size_t>(blockIdx.x / heads) * token_stride
         + static_cast<size_t>(blockIdx.x % heads) * width;
     const size_t out_base = static_cast<size_t>(blockIdx.x) * width;
@@ -90,7 +91,12 @@ __device__ __forceinline__ void gemma_rms_norm_reference_impl(
     __syncthreads();
     for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
         float normalized = __bfloat162float(x[base + col]) / sums[0];
-        out[out_base + col] = __float2bfloat16_rn(normalized * scale[col]);
+        __nv_bfloat16 value = __float2bfloat16_rn(normalized * scale[col]);
+        if constexpr (ADD_RESIDUAL) {
+            size_t residual_base = static_cast<size_t>(blockIdx.x) * residual_stride;
+            value = residual[residual_base + col] + value;
+        }
+        out[out_base + col] = value;
         if constexpr (PAIRED) {
             __nv_bfloat16 router = __float2bfloat16_rn(normalized * 1.f);
             router = router * root + __float2bfloat16_rn(0.f);
@@ -106,22 +112,6 @@ extern "C" __global__ void gemma_rms_norm_reference_bf16(
     gemma_rms_norm_reference_impl<false>(x, scale, out, width, heads, token_stride, eps);
 }
 
-
-extern "C" __global__ void gemma_rms_norm_pair_bf16(
-    const __nv_bfloat16* x, const float* expert_scale,
-    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
-    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
-    gemma_rms_norm_reference_impl<false, true>(
-        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
-}
-
-extern "C" __global__ void gemma_rms_norm_pair_compact_bf16(
-    const __nv_bfloat16* x, const float* expert_scale,
-    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
-    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
-    gemma_rms_norm_reference_impl<true, true>(
-        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
-}
 
 // NeoX rotary embedding with BF16 rounding after each product, as in Candle's
 // composed expression. Write packed [tokens, heads, width] directly.
@@ -145,4 +135,35 @@ extern "C" __global__ void gemma_rope_reference_bf16(
     float first = __bfloat162float(__float2bfloat16_rn(__fmul_rn(a, __bfloat162float(cos[freq]))));
     float second = __bfloat162float(__float2bfloat16_rn(__fmul_rn(b, __bfloat162float(sin[freq]))));
     out[i] = __float2bfloat16_rn(__fadd_rn(first, second));
+}
+
+extern "C" __global__ void gemma_rms_norm_pair_bf16(
+    const __nv_bfloat16* x, const float* expert_scale,
+    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
+    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
+    gemma_rms_norm_reference_impl<false, true>(
+        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
+}
+
+extern "C" __global__ void gemma_rms_norm_pair_compact_bf16(
+    const __nv_bfloat16* x, const float* expert_scale,
+    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
+    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
+    gemma_rms_norm_reference_impl<true, true>(
+        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
+}
+
+extern "C" __global__ void gemma_rms_norm_residual_bf16(
+    const __nv_bfloat16* x, const float* scale, const __nv_bfloat16* residual,
+    __nv_bfloat16* out, unsigned int width, unsigned long long token_stride,
+    unsigned long long residual_stride, float eps) {
+    gemma_rms_norm_reference_impl<false, false, true>(
+        x, scale, out, width, 1, token_stride, eps, nullptr, {}, residual, residual_stride);
+}
+extern "C" __global__ void gemma_rms_norm_residual_compact_bf16(
+    const __nv_bfloat16* x, const float* scale, const __nv_bfloat16* residual,
+    __nv_bfloat16* out, unsigned int width, unsigned long long token_stride,
+    unsigned long long residual_stride, float eps) {
+    gemma_rms_norm_reference_impl<true, false, true>(
+        x, scale, out, width, 1, token_stride, eps, nullptr, {}, residual, residual_stride);
 }
