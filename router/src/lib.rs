@@ -121,6 +121,15 @@ pub async fn run(
     let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
     let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
     let decoder_decision = rune || onejev || clef;
+    let joint_head = model_root.join("joint_head_config.json").exists();
+    anyhow::ensure!(
+        !clef || (joint_head && model_root.join("joint_head.safetensors").exists()),
+        "Clef requires joint_head_config.json and joint_head.safetensors"
+    );
+    anyhow::ensure!(
+        !onejev || !joint_head,
+        "A Clef checkpoint requires --decision-protocol clef"
+    );
     anyhow::ensure!(
         !(laya && decoder_decision),
         "Decoder decision protocols cannot serve a Laya checkpoint"

@@ -519,8 +519,8 @@ impl CandleBackend {
                         let decision = model_type == ModelType::Decision;
                         let model =
                             models::Qwen35Model::load(vb.clone(), &config, model_type).s()?;
-                        if decision {
-                            model.with_clef(model_path, vb, &config).s()?
+                        if decision && model_path.join("joint_head_config.json").exists() {
+                            model.with_clef(model_path, &config).s()?
                         } else {
                             model
                         }
