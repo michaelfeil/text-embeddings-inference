@@ -271,7 +271,7 @@ impl JointSchemaHead {
             scorer2: linear(vb.pp("residual_scorer.3"), c.width, 1, true)?,
             prior_scale: scale("prior_logit_scale")?,
             joint_scale: scale("joint_logit_scale")?,
-            gate: gate,
+            gate,
         })
     }
     pub fn forward(
