@@ -4,7 +4,7 @@ use crate::layers::{get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTenso
 use crate::models::{Model, Qwen3Config};
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use text_embeddings_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
 
 struct Norm {
     weight: Tensor,
@@ -309,6 +309,7 @@ pub struct Qwen35Model {
     layers: Vec<Layer>,
     norm: Norm,
     linear_output_projection: Option<Linear>,
+    decision_head: Option<Tensor>,
     cos_cache: Tensor,
     sin_cache: Tensor,
     pool: Pool,
@@ -323,9 +324,11 @@ impl Qwen35Model {
         if !matches!(vb.device(), Device::Cuda(_)) || vb.dtype() != DType::BF16 {
             candle::bail!("Qwen3.5-MoE currently requires BF16 CUDA")
         }
+        let decision = model_type == ModelType::Decision;
         let pool = match model_type {
             ModelType::Embedding(p) => p,
-            _ => candle::bail!("Qwen3.5-MoE requires embedding mode"),
+            ModelType::Decision => Pool::LastToken,
+            _ => candle::bail!("Qwen3.5 requires embedding or decision mode"),
         };
         let model = if vb.contains_tensor("model.language_model.embed_tokens.weight") {
             vb.pp("model.language_model")
@@ -340,6 +343,16 @@ impl Qwen35Model {
                 .get((c.vocab_size, c.hidden_size), "weight")?,
             c.hidden_size,
         );
+        let decision_head = if decision {
+            Some(if config.tie_word_embeddings() {
+                embeddings.embeddings().clone()
+            } else {
+                vb.pp("lm_head")
+                    .get((c.vocab_size, c.hidden_size), "weight")?
+            })
+        } else {
+            None
+        };
         let moe_config = c.moe_config()?;
         let layers = (0..c.num_hidden_layers)
             .map(|i| Layer::load(model.pp(format!("layers.{i}")), c, i, &moe_config))
@@ -358,6 +371,7 @@ impl Qwen35Model {
             layers,
             norm,
             linear_output_projection: None,
+            decision_head,
             cos_cache,
             sin_cache,
             pool,
@@ -504,6 +518,57 @@ impl Qwen35Model {
 }
 
 impl Model for Qwen35Model {
+    fn decide(&self, batch: Batch, inputs: Vec<DecisionInput>) -> Result<Vec<DecisionOutput>> {
+        let weights = self
+            .decision_head
+            .as_ref()
+            .ok_or_else(|| candle::Error::Msg("Qwen3.5 was not loaded for decisions".into()))?;
+        if inputs.len() != batch.len() {
+            candle::bail!("Decision metadata count does not match batch")
+        }
+        let vocabulary = weights.dim(0)?;
+        let tokens = inputs
+            .into_iter()
+            .map(|input| match input {
+                DecisionInput::OptionTokens { token_ids }
+                    if !token_ids.is_empty()
+                        && token_ids.iter().all(|&id| (id as usize) < vocabulary) =>
+                {
+                    Ok(token_ids)
+                }
+                DecisionInput::Warmup => Ok(vec![0]),
+                _ => candle::bail!("Qwen3.5 requires valid option-token metadata"),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let (states, compact) = self.forward_hidden(&batch)?;
+        let states = compact.scatter_unfold(&states)?;
+        let indices = Tensor::from_vec(
+            batch
+                .cumulative_seq_lengths
+                .iter()
+                .skip(1)
+                .map(|&end| end - 1)
+                .collect::<Vec<_>>(),
+            batch.len(),
+            &self.device,
+        )?;
+        let last = index_select(&states, &indices, 0)?.to_dtype(DType::F32)?;
+        tokens
+            .into_iter()
+            .enumerate()
+            .map(|(i, ids)| {
+                let selected = weights
+                    .index_select(&Tensor::new(ids.as_slice(), &self.device)?, 0)?
+                    .to_dtype(DType::F32)?;
+                let logits = last.i(i)?.unsqueeze(0)?.matmul(&selected.t()?)?;
+                Ok(DecisionOutput {
+                    logits: logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
+                    action_probability: 1.0,
+                })
+            })
+            .collect()
+    }
+
     fn supports_radix_mlp(&self) -> bool {
         !self.use_bidirectional_attention
     }

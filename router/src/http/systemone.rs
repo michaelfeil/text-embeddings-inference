@@ -37,11 +37,13 @@ struct Config {
     temperature_by_options: HashMap<String, f32>,
 }
 
+mod onejev;
 mod rune;
 
 pub enum SystemOne {
     Laya(Laya),
     Rune(rune::Rune),
+    Onejev(onejev::Onejev),
 }
 
 impl SystemOne {
@@ -50,9 +52,16 @@ impl SystemOne {
         tokenizer: Tokenizer,
         max_input_length: usize,
         multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
+        protocol: Option<crate::DecisionProtocol>,
     ) -> anyhow::Result<Self> {
         if path.join("rl_agent_config.json").exists() {
             Ok(Self::Laya(Laya::load(path, tokenizer, max_input_length)?))
+        } else if matches!(protocol, Some(crate::DecisionProtocol::Onejev)) {
+            Ok(Self::Onejev(onejev::Onejev::load(
+                path,
+                tokenizer,
+                max_input_length,
+            )?))
         } else {
             Ok(Self::Rune(
                 rune::Rune::load(tokenizer, max_input_length)?
@@ -65,6 +74,7 @@ impl SystemOne {
         match self {
             Self::Laya(model) => model.prepare(request),
             Self::Rune(model) => model.prepare(request),
+            Self::Onejev(model) => model.prepare(request),
         }
     }
 
@@ -72,6 +82,7 @@ impl SystemOne {
         match self {
             Self::Laya(model) => model.answer(question, output),
             Self::Rune(_) => rune::answer(question, output),
+            Self::Onejev(_) => onejev::answer(question, output),
         }
     }
 }
@@ -599,12 +610,12 @@ pub async fn systemone(
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();
     let input_tokens: usize = questions.iter().map(|q| q.encoding.input_ids.len()).sum();
     let batch_counter = Arc::new(std::sync::atomic::AtomicUsize::new(questions.len()));
-    let output_tokens = if matches!(service.as_ref(), SystemOne::Rune(_)) {
+    let output_tokens = if matches!(service.as_ref(), SystemOne::Rune(_) | SystemOne::Onejev(_)) {
         questions.len()
     } else {
         0
     };
-    let response_model = if matches!(service.as_ref(), SystemOne::Rune(_)) {
+    let response_model = if matches!(service.as_ref(), SystemOne::Rune(_) | SystemOne::Onejev(_)) {
         info.model_id.as_str()
     } else {
         "laya-rl-agent"

@@ -7,6 +7,8 @@ pub enum Qwen35Config {
     Multimodal {
         text_config: Qwen35TextConfig,
         #[serde(default)]
+        tie_word_embeddings: bool,
+        #[serde(default)]
         use_bidirectional_attention: bool,
         #[serde(default)]
         use_linear_output_projection: bool,
@@ -21,6 +23,16 @@ impl Qwen35Config {
             Self::Multimodal { text_config, .. } => text_config,
             Self::Text(c) => c,
         }
+    }
+    pub fn tie_word_embeddings(&self) -> bool {
+        self.text().tie_word_embeddings
+            || matches!(
+                self,
+                Self::Multimodal {
+                    tie_word_embeddings: true,
+                    ..
+                }
+            )
     }
     pub fn validate(&self) -> Result<()> {
         if matches!(
@@ -57,6 +69,8 @@ pub struct Rope {
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct Qwen35TextConfig {
+    #[serde(default)]
+    pub tie_word_embeddings: bool,
     pub hidden_size: usize,
     pub vocab_size: usize,
     pub num_hidden_layers: usize,

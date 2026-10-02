@@ -82,6 +82,34 @@ impl ChatProcessor {
         messages: &[Message],
         add_generation_prompt: bool,
     ) -> Result<String, String> {
+        self.render_with_context(messages, add_generation_prompt, Map::new())
+    }
+
+    /// Render a trained decision prompt with reasoning disabled.
+    pub fn render_decision(&self, system: &str, user: &str) -> Result<String, String> {
+        let messages = [
+            Message {
+                role: MessageRole::System,
+                content: MessageContent::Text(system.into()),
+            },
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text(user.into()),
+            },
+        ];
+        self.render_with_context(
+            &messages,
+            true,
+            Map::from_iter([("enable_thinking".into(), Value::Bool(false))]),
+        )
+    }
+
+    fn render_with_context(
+        &self,
+        messages: &[Message],
+        add_generation_prompt: bool,
+        extra_context: Map<String, Value>,
+    ) -> Result<String, String> {
         let rendered = self
             .renderer
             .render_value(
@@ -89,6 +117,7 @@ impl ChatProcessor {
                 ChatTemplateOptions {
                     add_generation_prompt,
                     special_tokens: self.special_tokens.clone(),
+                    extra_context,
                     ..Default::default()
                 },
             )

@@ -621,6 +621,16 @@ images currently target the 26B-A4B vision configuration with no per-layer input
 BF16 decision probabilities can vary with batch shape, particularly for ambiguous
 questions; Radix on/off equivalence is checked separately in the reference script.
 
+### OneJev text decisions
+
+Qwen3.5-based OneJev checkpoints use the same `/v1/systemone` request and response
+format. Start with `--model-id OmniJev/OneJev-0.8B --decision-protocol onejev
+--dtype bfloat16`. The checkpoint's native chat template renders the trained
+`qev-labels-v2` prompt with thinking disabled. RadixMLP remains enabled.
+Choice, noul, and score are supported; images, audio, and video are rejected.
+Prompts exceeding the token limit return 422 without truncation. Limits: 255
+choice options, 10 score levels, and 512 total options per request.
+
 ### Using SPLADE pooling
 
 You can choose to activate SPLADE pooling for Bert and Distilbert MaskedLM architectures:
