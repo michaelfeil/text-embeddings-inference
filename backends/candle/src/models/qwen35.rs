@@ -310,6 +310,7 @@ pub struct Qwen35Model {
     norm: Norm,
     linear_output_projection: Option<Linear>,
     decision_head: Option<Tensor>,
+    clef: Option<super::clef::JointSchemaHead>,
     cos_cache: Tensor,
     sin_cache: Tensor,
     pool: Pool,
@@ -372,6 +373,7 @@ impl Qwen35Model {
             norm,
             linear_output_projection: None,
             decision_head,
+            clef: None,
             cos_cache,
             sin_cache,
             pool,
@@ -379,6 +381,15 @@ impl Qwen35Model {
             use_bidirectional_attention: false,
             span: tracing::span!(tracing::Level::TRACE, "qwen35"),
         })
+    }
+    pub fn with_clef(mut self, path: &std::path::Path, config: &Qwen35Config) -> Result<Self> {
+        self.clef = Some(super::clef::JointSchemaHead::load(
+            path,
+            config.text().hidden_size,
+            self.embeddings.embeddings().dtype(),
+            &self.device,
+        )?);
+        Ok(self)
     }
     fn forward_hidden(&self, batch: &Batch) -> Result<(Tensor, CompactUnfoldTensors)> {
         let (ids, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
@@ -525,6 +536,41 @@ impl Model for Qwen35Model {
             .ok_or_else(|| candle::Error::Msg("Qwen3.5 was not loaded for decisions".into()))?;
         if inputs.len() != batch.len() {
             candle::bail!("Decision metadata count does not match batch")
+        }
+        if let Some(head) = &self.clef {
+            let (hidden, compact) = self.forward_hidden(&batch)?;
+            let hidden = if let Some(scatter) = &compact.scatter_unfold {
+                index_select(&hidden, scatter, 0)?
+            } else {
+                hidden
+            };
+            return inputs
+                .into_iter()
+                .enumerate()
+                .map(|(i, input)| {
+                    let start = batch.cumulative_seq_lengths[i] as usize;
+                    let end = batch.cumulative_seq_lengths[i + 1] as usize;
+                    let fields = match input {
+                        DecisionInput::Clef { fields } => fields,
+                        DecisionInput::Warmup => vec![text_embeddings_backend_core::ClefField {
+                            kind: 0,
+                            question: (0, 1),
+                            options: vec![(0, 1)],
+                        }],
+                        _ => candle::bail!("Expected Clef span metadata"),
+                    };
+                    let logits = head.forward(
+                        &hidden.narrow(0, start, end - start)?,
+                        &batch.input_ids[start..end],
+                        &fields,
+                        weights,
+                    )?;
+                    Ok(DecisionOutput {
+                        logits,
+                        action_probability: 1.0,
+                    })
+                })
+                .collect();
         }
         let vocabulary = weights.dim(0)?;
         let tokens = inputs

@@ -86,6 +86,9 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
             download_file(api, "processor_config.json").await?;
         }
     }
+    if download_file(api, "joint_head_config.json").await.is_ok() {
+        download_file(api, "joint_head.safetensors").await?;
+    }
     let path = download_file(api, "tokenizer.json").await?;
     // Optional native conversation artifacts, using the same pinned repository revision.
     for name in ["tokenizer_config.json", "chat_template.jinja"] {

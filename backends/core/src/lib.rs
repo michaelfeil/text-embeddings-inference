@@ -54,8 +54,18 @@ pub enum DecisionInput {
     OptionTokens {
         token_ids: Vec<u32>,
     },
+    Clef {
+        fields: Vec<ClefField>,
+    },
     /// Model-owned metadata for startup warmup and health probes.
     Warmup,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClefField {
+    pub kind: usize,
+    pub question: (usize, usize),
+    pub options: Vec<(usize, usize)>,
 }
 
 #[derive(Debug, Clone)]

@@ -44,6 +44,7 @@ pub use logging::init_logging;
 pub enum DecisionProtocol {
     Rune,
     Onejev,
+    Clef,
 }
 
 /// Create entrypoint
@@ -116,9 +117,19 @@ pub async fn run(
 
     // Load config
     let laya = model_root.join("rl_agent_config.json").exists();
+    let clef = matches!(decision_protocol, Some(DecisionProtocol::Clef));
     let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
     let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
-    let decoder_decision = rune || onejev;
+    let decoder_decision = rune || onejev || clef;
+    let joint_head = model_root.join("joint_head_config.json").exists();
+    anyhow::ensure!(
+        !clef || (joint_head && model_root.join("joint_head.safetensors").exists()),
+        "Clef requires joint_head_config.json and joint_head.safetensors"
+    );
+    anyhow::ensure!(
+        !onejev || !joint_head,
+        "A Clef checkpoint requires --decision-protocol clef"
+    );
     anyhow::ensure!(
         !(laya && decoder_decision),
         "Decoder decision protocols cannot serve a Laya checkpoint"
@@ -156,6 +167,10 @@ pub async fn run(
         "OneJev protocol requires a Qwen3.5 model"
     );
 
+    anyhow::ensure!(
+        !clef || matches!(config.model_type.as_str(), "qwen3_5" | "qwen3_5_text"),
+        "Clef requires a dense Qwen3.5 model"
+    );
     anyhow::ensure!(
         config.model_type != "qwen3_vl"
             || (default_prompt.is_none() && default_prompt_name.is_none()),
@@ -733,7 +748,13 @@ impl ModelConfig {
     fn resolve_text_config(&mut self) -> anyhow::Result<()> {
         if matches!(
             self.model_type.as_str(),
-            "gemma4" | "gemma4_unified" | "qwen3_5_moe" | "qwen3_5" | "qwen3_vl"
+            "gemma4"
+                | "gemma4_unified"
+                | "qwen3_5_moe"
+                | "qwen3_5_moe_text"
+                | "qwen3_5"
+                | "qwen3_5_text"
+                | "qwen3_vl"
         ) {
             if self.max_position_embeddings == 0 {
                 self.max_position_embeddings = self
@@ -742,8 +763,10 @@ impl ModelConfig {
                     .context("Model text_config.max_position_embeddings is missing")?
                     .max_position_embeddings;
             }
-            if matches!(self.model_type.as_str(), "qwen3_5_moe" | "qwen3_5")
-                && self.dtype.is_none()
+            if matches!(
+                self.model_type.as_str(),
+                "qwen3_5_moe" | "qwen3_5_moe_text" | "qwen3_5" | "qwen3_5_text"
+            ) && self.dtype.is_none()
                 && self.torch_dtype.is_none()
             {
                 if let Some(text) = &self.text_config {
@@ -1086,12 +1109,16 @@ mod auto_dtype_tests {
 
     #[test]
     fn qwen35_nested_context_and_dtype() {
-        let mut config: ModelConfig = serde_json::from_str(
-            r#"{"model_type":"qwen3_5_moe","text_config":{"max_position_embeddings":262144,"dtype":"bfloat16"}}"#,
-        ).unwrap();
-        config.resolve_text_config().unwrap();
-        assert_eq!(config.max_position_embeddings, 262144);
-        assert_eq!(config.dtype.as_deref(), Some("bfloat16"));
+        for model_type in ["qwen3_5", "qwen3_5_text", "qwen3_5_moe", "qwen3_5_moe_text"] {
+            let mut config: ModelConfig = serde_json::from_value(serde_json::json!({
+                "model_type": model_type,
+                "text_config": {"max_position_embeddings":262144,"dtype":"bfloat16"}
+            }))
+            .unwrap();
+            config.resolve_text_config().unwrap();
+            assert_eq!(config.max_position_embeddings, 262144);
+            assert_eq!(config.dtype.as_deref(), Some("bfloat16"));
+        }
     }
 
     #[test]
