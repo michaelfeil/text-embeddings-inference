@@ -37,6 +37,7 @@ struct Config {
     temperature_by_options: HashMap<String, f32>,
 }
 
+mod clef;
 mod onejev;
 mod rune;
 
@@ -44,6 +45,7 @@ pub enum SystemOne {
     Laya(Laya),
     Rune(rune::Rune),
     Onejev(onejev::Onejev),
+    Clef(clef::Clef),
 }
 
 impl SystemOne {
@@ -62,6 +64,8 @@ impl SystemOne {
                 tokenizer,
                 max_input_length,
             )?))
+        } else if matches!(protocol, Some(crate::DecisionProtocol::Clef)) {
+            Ok(Self::Clef(clef::Clef::load(tokenizer, max_input_length)?))
         } else {
             Ok(Self::Rune(
                 rune::Rune::load(tokenizer, max_input_length)?
@@ -75,6 +79,7 @@ impl SystemOne {
             Self::Laya(model) => model.prepare(request),
             Self::Rune(model) => model.prepare(request),
             Self::Onejev(model) => model.prepare(request),
+            Self::Clef(model) => model.prepare(request),
         }
     }
 
@@ -83,6 +88,7 @@ impl SystemOne {
             Self::Laya(model) => model.answer(question, output),
             Self::Rune(_) => rune::answer(question, output),
             Self::Onejev(_) => onejev::answer(question, output),
+            Self::Clef(_) => clef::answer(question, output),
         }
     }
 }
@@ -615,7 +621,7 @@ pub async fn systemone(
     } else {
         0
     };
-    let response_model = if matches!(service.as_ref(), SystemOne::Rune(_) | SystemOne::Onejev(_)) {
+    let response_model = if !matches!(service.as_ref(), SystemOne::Laya(_)) {
         info.model_id.as_str()
     } else {
         "laya-rl-agent"
@@ -669,10 +675,25 @@ pub async fn systemone(
     );
     metadata.record_metrics();
     metrics::counter!("te_request_success", "method" => "systemone").increment(1);
+    let answers = if matches!(service.as_ref(), SystemOne::Clef(_)) {
+        answers
+            .into_iter()
+            .next()
+            .unwrap()
+            .1
+            .as_object()
+            .cloned()
+            .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid joint answers"))?
+    } else {
+        answers
+            .into_iter()
+            .map(|(id, answer, _)| (id, answer))
+            .collect::<Map<_, _>>()
+    };
     Ok((
         metadata.into(),
         Json(
-            json!({"model":response_model, "answers": answers.into_iter().map(|(id, answer, _)| (id, answer)).collect::<Map<_,_>>(), "usage":{"input_tokens":input_tokens,"output_tokens":output_tokens}}),
+            json!({"model":response_model, "answers": answers, "usage":{"input_tokens":input_tokens,"output_tokens":output_tokens}}),
         ),
     ))
 }

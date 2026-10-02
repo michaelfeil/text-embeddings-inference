@@ -44,6 +44,7 @@ pub use logging::init_logging;
 pub enum DecisionProtocol {
     Rune,
     Onejev,
+    Clef,
 }
 
 /// Create entrypoint
@@ -116,9 +117,10 @@ pub async fn run(
 
     // Load config
     let laya = model_root.join("rl_agent_config.json").exists();
+    let clef = matches!(decision_protocol, Some(DecisionProtocol::Clef));
     let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
     let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
-    let decoder_decision = rune || onejev;
+    let decoder_decision = rune || onejev || clef;
     anyhow::ensure!(
         !(laya && decoder_decision),
         "Decoder decision protocols cannot serve a Laya checkpoint"
@@ -156,6 +158,10 @@ pub async fn run(
         "OneJev protocol requires a Qwen3.5 model"
     );
 
+    anyhow::ensure!(
+        !clef || matches!(config.model_type.as_str(), "qwen3_5" | "qwen3_5_text"),
+        "Clef requires a dense Qwen3.5 model"
+    );
     anyhow::ensure!(
         config.model_type != "qwen3_vl"
             || (default_prompt.is_none() && default_prompt_name.is_none()),

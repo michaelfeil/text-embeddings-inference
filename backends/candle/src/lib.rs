@@ -515,9 +515,16 @@ impl CandleBackend {
             Config::Qwen35(config) => {
                 #[cfg(all(feature = "cuda", feature = "flash-attn"))]
                 {
-                    Ok(Box::new(
-                        models::Qwen35Model::load(vb, &config, model_type).s()?,
-                    ))
+                    Ok(Box::new({
+                        let decision = model_type == ModelType::Decision;
+                        let model =
+                            models::Qwen35Model::load(vb.clone(), &config, model_type).s()?;
+                        if decision {
+                            model.with_clef(model_path, vb, &config).s()?
+                        } else {
+                            model
+                        }
+                    }))
                 }
                 #[cfg(not(all(feature = "cuda", feature = "flash-attn")))]
                 {

@@ -849,3 +849,12 @@ STS-B, SciFact and NFCorpus score differences disappear. The causal tile change
 also removes the tested Qwen3-8B long-input differences in both precisions.
 Auto selects only qualified shapes and dtypes;
 these checks do not establish equivalence for every model, shape or architecture.
+
+### Cloudflare Clef typed decisions
+
+Clef and Clef-flash use the dense Qwen3.5 Candle backend and their joint schema
+head on `/v1/systemone`. All questions in a request share one backbone pass.
+For text inputs, launch with `--model-id Cloudflare/clef-flash
+--decision-protocol clef --dtype bfloat16`. Standard sharded safetensors and
+`joint_head.safetensors` are loaded directly. Images/video are not supported yet;
+over-budget prompts return 422 rather than silently truncating the state.

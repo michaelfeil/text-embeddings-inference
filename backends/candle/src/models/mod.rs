@@ -10,6 +10,7 @@ use candle::{Result, Tensor};
 use text_embeddings_backend_core::Batch;
 
 mod bert;
+mod clef;
 mod dense;
 mod distilbert;
 mod gemma3;
