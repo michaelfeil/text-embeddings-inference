@@ -731,6 +731,7 @@ impl ModelConfig {
                 "LlamaForSequenceClassification"
                     | "Qwen2ForSequenceClassification"
                     | "Qwen3ForSequenceClassification"
+                    | "Gemma4ForSequenceClassification"
             )
         }) {
             return Ok(());
@@ -1062,16 +1063,21 @@ mod auto_dtype_tests {
 
     #[test]
     fn decoder_classifiers_resolve_hf_default_and_explicit_labels() {
-        for arch in [
-            "LlamaForSequenceClassification",
-            "Qwen2ForSequenceClassification",
-            "Qwen3ForSequenceClassification",
+        for (arch, model_type) in [
+            ("LlamaForSequenceClassification", "llama"),
+            ("Qwen2ForSequenceClassification", "qwen2"),
+            ("Qwen3ForSequenceClassification", "qwen3"),
+            ("Gemma4ForSequenceClassification", "gemma4"),
         ] {
             let mut config: ModelConfig = serde_json::from_value(serde_json::json!({
-                "architectures":[arch], "model_type":"qwen3", "max_position_embeddings":128
+                "architectures":[arch], "model_type":model_type, "max_position_embeddings":128
             }))
             .unwrap();
             config.resolve_decoder_classifier_labels().unwrap();
+            assert!(matches!(
+                get_backend_model_type(&config, Path::new("."), None).unwrap(),
+                text_embeddings_backend::ModelType::Classifier
+            ));
             assert_eq!(config.id2label.as_ref().unwrap()["1"], "LABEL_1");
             assert_eq!(config.label2id.as_ref().unwrap()["LABEL_1"], 1);
             config.id2label = Some(HashMap::from([("0".into(), "relevance".into())]));
