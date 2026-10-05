@@ -17,7 +17,7 @@ pub enum ModelInput {
     Messages(MessageInput),
 }
 
-/// Embedding request input: one text, independent texts, or one conversation.
+/// Embedding input: text, final token IDs, batches of either, or one conversation.
 /// A message list always describes one input, regardless of the number of turns.
 /// An empty array is parsed as an empty text batch and rejected by the request handler.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -26,6 +26,8 @@ pub enum ModelInput {
 pub enum EmbeddingInput {
     Text(String),
     TextBatch(Vec<String>),
+    TokenIds(Vec<u32>),
+    TokenIdsBatch(Vec<Vec<u32>>),
     Messages(Vec<Message>),
 }
 
@@ -131,6 +133,8 @@ mod tests {
             json!("hello"),
             json!(["first", "second"]),
             json!([]),
+            json!([1, 2]),
+            json!([[1, 2], [3]]),
             json!([
                 {"role": "user", "content": [
                     {"type": "text", "text": "Describe"},
@@ -145,8 +149,10 @@ mod tests {
         for invalid in [
             json!(null),
             json!(42),
-            json!([1, 2]),
-            json!([[1, 2]]),
+            json!([-1]),
+            json!([4294967296_u64]),
+            json!([1.5]),
+            json!([1, "mixed"]),
             json!(["text", {"role": "user", "content": "mixed"}]),
             json!([[{"role": "user", "content": "nested"}]]),
             json!({"messages": [{"role": "user", "content": "wrapped"}]}),

@@ -421,6 +421,12 @@ impl Infer {
                 let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
+                // Failed inputs must finish their part of client-batch preparation too.
+                if let Some(counter) = &batch_counter {
+                    if counter.fetch_sub(1, Ordering::SeqCst) == 1 {
+                        self.notify_batching_task.notify_one();
+                    }
+                }
                 err
             })?;
 

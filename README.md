@@ -537,6 +537,21 @@ checkpoint's `choice:11+` temperature is outside this range; confidence for that
 bucket is not verified as calibrated. ModernBERT uses approximate (tanh) GELU;
 the custom head retains ReLU and exact scorer/action GELU.
 
+### Pretokenized embeddings
+
+`/v1/embeddings` accepts one final token-ID sequence as `input: [101, 42, 102]`,
+or independent sequences as `input: [[101, 42, 102], [101, 43, 102]]`.
+Use `inputs` for `/embed`. Strings, string batches and native messages remain supported.
+
+IDs must come from the deployed model's tokenizer and include its required special
+tokens and instructions. They are passed directly to inference without decoding,
+retokenizing or applying the server's default prompt. `prompt_name` is rejected.
+Empty sequences and IDs outside the model's embedding vocabulary are rejected.
+Length limits and explicit truncation behave as for text; position IDs use the
+model's offset and segment IDs are zero. Character usage is zero because the
+original text is unavailable; token usage counts the tokens actually processed.
+Pretokenized Qwen3-VL inputs are unsupported because IDs alone lack media metadata.
+
 ### Qwen3-VL image embeddings
 
 With a Candle CUDA/FlashAttention build, serve `Qwen/Qwen3-VL-Embedding-2B`:

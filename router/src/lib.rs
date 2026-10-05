@@ -418,6 +418,13 @@ pub async fn run(
         default_prompt,
         prompts,
         chat,
+    )
+    .with_token_input_vocab_size(
+        config
+            .text_config
+            .as_ref()
+            .and_then(|text| text.vocab_size)
+            .or(config.vocab_size),
     );
 
     let tokenization = match multimodal {
@@ -714,6 +721,7 @@ pub struct ModelConfig {
     #[serde(default, alias = "n_positions")]
     pub max_position_embeddings: usize,
     pub text_config: Option<TextPositionConfig>,
+    pub vocab_size: Option<usize>,
     #[serde(default)]
     pub pad_token_id: usize,
     pub num_labels: Option<usize>,
@@ -792,6 +800,7 @@ impl ModelConfig {
 
 #[derive(Debug, Deserialize)]
 pub struct TextPositionConfig {
+    pub vocab_size: Option<usize>,
     pub max_position_embeddings: usize,
     pub dtype: Option<String>,
     pub torch_dtype: Option<String>,
