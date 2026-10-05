@@ -80,25 +80,12 @@ query/document prompt. Unconverted `Qwen3ForCausalLM` weights do not automatical
 become a classifier. Explicit `id2label` mappings are preserved; omitted mappings use Hugging Face
 `LABEL_0`, `LABEL_1`, … defaults from `num_labels` (two when omitted).
 
-### Qwen3-MoE embeddings and rerankers
+Qwen3-MoE also supports Voyage-style embeddings with
+`use_bidirectional_attention: true`, a root `linear.weight` projection, and the
+checkpoint's trained pooling mode. Bidirectional models disable RadixMLP.
+Single-output MoE classifier heads use `/rerank`; multiple-output heads use
+`/predict`.
 
-Checkpoints with `model_type: qwen3_moe` reuse Qwen3 attention and pooling with
-routed expert layers. Voyage-style embedding checkpoints can set
-`use_bidirectional_attention: true` and provide a root `linear.weight` projection
-whose output size is `num_labels`. Use the checkpoint's trained pooling mode
-(for example, `--pooling mean`) and input formatting. The checkpoint must have
-been trained for embeddings; changing a causal model's configuration alone does
-not produce a trained embedding model.
-
-For reranking, use `Qwen3MoeForSequenceClassification` with a single-output
-`score.weight` head and the existing `/rerank` API. Multiple-output heads use
-`/predict`. The head reads the final non-padding token, including for a
-bidirectional classifier. Models trained with another pooling or scoring head
-require an adapter.
-
-Causal Qwen3-MoE models support RadixMLP. Bidirectional models disable prefix
-reuse because token states depend on the full input. Quantized expert weights,
-dynamic FP8 experts, and scaled RoPE are not currently supported.
 
 
 Below are some examples of the currently supported models:
