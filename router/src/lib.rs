@@ -731,6 +731,7 @@ impl ModelConfig {
                 "LlamaForSequenceClassification"
                     | "Qwen2ForSequenceClassification"
                     | "Qwen3ForSequenceClassification"
+                    | "Qwen3MoeForSequenceClassification"
             )
         }) {
             return Ok(());
@@ -1066,6 +1067,7 @@ mod auto_dtype_tests {
             "LlamaForSequenceClassification",
             "Qwen2ForSequenceClassification",
             "Qwen3ForSequenceClassification",
+            "Qwen3MoeForSequenceClassification",
         ] {
             let mut config: ModelConfig = serde_json::from_value(serde_json::json!({
                 "architectures":[arch], "model_type":"qwen3", "max_position_embeddings":128
