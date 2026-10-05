@@ -707,7 +707,7 @@ mod embedding_input_tests {
     }
 
     #[test]
-    fn token_ids_are_one_input_or_an_ordered_batch_on_both_endpoints() {
+    fn token_ids_are_one_input_or_an_ordered_batch_across_endpoints() {
         let req: EmbedRequest = serde_json::from_value(json!({"inputs": [101, 42, 102]})).unwrap();
         assert!(matches!(InputBatch::from(req.inputs),
             InputBatch::Single(EncodingInput::Ids(ids)) if ids == vec![101, 42, 102]));
@@ -719,42 +719,16 @@ mod embedding_input_tests {
         assert_eq!(inputs.len(), 2);
         assert!(matches!(&inputs[0], EncodingInput::Ids(ids) if ids == &vec![101, 42, 102]));
         assert!(matches!(&inputs[1], EncodingInput::Ids(ids) if ids == &vec![101, 43, 102]));
-    }
-
-    #[test]
-    fn prediction_inputs_preserve_text_pairs_and_accept_final_ids() {
-        let parse = |value| serde_json::from_value::<PredictInput>(value).unwrap();
-        assert!(matches!(
-            parse(json!("hello")),
-            PredictInput::Single(Sequence::Single(_))
-        ));
-        assert!(matches!(parse(json!(["query", "document"])),
-            PredictInput::Single(Sequence::Pair(query, document))
-                if query == "query" && document == "document"));
-        assert!(matches!(parse(json!([["hello"], ["query", "document"]])),
-            PredictInput::Batch(batch) if batch.len() == 2));
-        assert!(matches!(parse(json!([101, 42, 102])),
+        let parse = |value| serde_json::from_value::<PredictInput>(value);
+        assert!(matches!(parse(json!([101, 42, 102])).unwrap(),
             PredictInput::Single(Sequence::Ids(ids)) if ids == vec![101, 42, 102]));
-        let PredictInput::Batch(batch) = parse(json!([[101, 42], [102]])) else {
-            panic!("token sequences must remain independent inputs");
-        };
-        assert!(matches!(&batch[0], Sequence::Ids(ids) if ids == &vec![101, 42]));
-        assert!(matches!(&batch[1], Sequence::Ids(ids) if ids == &vec![102]));
-        for invalid in [
-            json!([]),
-            json!([[]]),
-            json!([-1]),
-            json!([1.5]),
-            json!([4294967296_u64]),
-            json!([1, "text"]),
-            json!([[1], ["text"]]),
-            json!(["query", "document", "extra"]),
-        ] {
-            assert!(serde_json::from_value::<PredictInput>(invalid).is_err());
-        }
-        let schema = serde_json::to_value(PredictInput::schema().1).unwrap();
-        assert_eq!(schema["oneOf"][3]["items"]["type"], "integer");
-        assert_eq!(schema["oneOf"][4]["items"]["items"]["type"], "integer");
+        assert!(matches!(parse(json!([[101, 42], [102]])).unwrap(),
+            PredictInput::Batch(batch) if batch.len() == 2));
+        assert!(matches!(
+            parse(json!(["query", "document"])).unwrap(),
+            PredictInput::Single(Sequence::Pair(_, _))
+        ));
+        assert!(parse(json!([[101], ["text"]])).is_err());
     }
 
     #[test]

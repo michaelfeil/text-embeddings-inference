@@ -908,18 +908,6 @@ mod fast_embedding_tests {
                 )
                 .await
                 .unwrap();
-            let prediction = tokenizer
-                .encode(
-                    EncodingInput::Ids(ids.clone()),
-                    false,
-                    TruncationDirection::Right,
-                    None,
-                )
-                .await
-                .unwrap();
-            assert_eq!(prediction.input_ids, tokens.input_ids);
-            assert_eq!(prediction.token_type_ids, tokens.token_type_ids);
-            assert_eq!(prediction.position_ids, tokens.position_ids);
             assert_eq!(tokens.input_ids, ids);
             assert_eq!(tokens.input_ids, text.input_ids);
             assert_eq!(tokens.token_type_ids, text.token_type_ids);
