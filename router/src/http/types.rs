@@ -17,6 +17,7 @@ use crate::http::ner::AggregationStrategy;
 pub(crate) enum Sequence {
     Single(String),
     Pair(String, String),
+    Ids(Vec<u32>),
 }
 
 impl Sequence {
@@ -24,6 +25,7 @@ impl Sequence {
         match self {
             Sequence::Single(s) => s.chars().count(),
             Sequence::Pair(s1, s2) => s1.chars().count() + s2.chars().count(),
+            Sequence::Ids(_) => 0,
         }
     }
 }
@@ -33,6 +35,7 @@ impl From<Sequence> for EncodingInput {
         match value {
             Sequence::Single(s) => Self::Single(s),
             Sequence::Pair(s1, s2) => Self::Dual(s1, s2),
+            Sequence::Ids(ids) => Self::Ids(ids),
         }
     }
 }
@@ -53,6 +56,8 @@ impl<'de> Deserialize<'de> for PredictInput {
         enum Internal {
             Single(String),
             Multiple(Vec<String>),
+            Id(u32),
+            Ids(Vec<u32>),
         }
 
         struct PredictInputVisitor;
@@ -64,7 +69,8 @@ impl<'de> Deserialize<'de> for PredictInput {
                 formatter.write_str(
                     "a string, \
                     a pair of strings [string, string] \
-                    or a batch of mixed strings and pairs [[string], [string, string], ...]",
+                    a batch of mixed strings and pairs [[string], [string, string], ...], \
+                    a final token-ID sequence [integer, ...] or a batch [[integer, ...], ...]",
                 )
             }
 
@@ -122,6 +128,20 @@ impl<'de> Deserialize<'de> for PredictInput {
                     }
                     // Input is a batch
                     Internal::Multiple(value) => sequence_from_vec(value),
+                    Internal::Id(id) => {
+                        let mut ids = vec![id];
+                        while let Some(id) = seq.next_element::<u32>()? {
+                            ids.push(id);
+                        }
+                        return Ok(PredictInput::Single(Sequence::Ids(ids)));
+                    }
+                    Internal::Ids(ids) => {
+                        let mut batch = vec![Sequence::Ids(ids)];
+                        while let Some(ids) = seq.next_element::<Vec<u32>>()? {
+                            batch.push(Sequence::Ids(ids));
+                        }
+                        return Ok(PredictInput::Batch(batch));
+                    }
                 }?;
 
                 let mut batch = Vec::with_capacity(32);
@@ -145,6 +165,18 @@ impl<'de> Deserialize<'de> for PredictInput {
 
 impl<'__s> ToSchema<'__s> for PredictInput {
     fn schema() -> (&'__s str, RefOr<Schema>) {
+        let token_ids = utoipa::openapi::ArrayBuilder::new()
+            .items(
+                utoipa::openapi::ObjectBuilder::new()
+                    .schema_type(utoipa::openapi::SchemaType::Integer)
+                    .minimum(Some(0.0))
+                    .maximum(Some(u32::MAX as f64)),
+            )
+            .min_items(Some(1))
+            .description(Some(
+                "A final, unpadded token-ID sequence; segment IDs are zero",
+            ))
+            .build();
         (
             "PredictInput",
             utoipa::openapi::OneOfBuilder::new()
@@ -164,34 +196,42 @@ impl<'__s> ToSchema<'__s> for PredictInput {
                         .max_items(Some(2)),
                 )
                 .item(
-                    utoipa::openapi::ArrayBuilder::new().items(
-                        utoipa::openapi::OneOfBuilder::new()
-                            .item(
-                                utoipa::openapi::ArrayBuilder::new()
-                                    .items(
-                                        utoipa::openapi::ObjectBuilder::new()
-                                            .schema_type(utoipa::openapi::SchemaType::String),
-                                    )
-                                    .description(Some("A single string"))
-                                    .min_items(Some(1))
-                                    .max_items(Some(1)),
-                            )
-                            .item(
-                                utoipa::openapi::ArrayBuilder::new()
-                                    .items(
-                                        utoipa::openapi::ObjectBuilder::new()
-                                            .schema_type(utoipa::openapi::SchemaType::String),
-                                    )
-                                    .description(Some("A pair of strings"))
-                                    .min_items(Some(2))
-                                    .max_items(Some(2)),
-                            )
-                    ).description(Some("A batch")),
+                    utoipa::openapi::ArrayBuilder::new()
+                        .items(
+                            utoipa::openapi::OneOfBuilder::new()
+                                .item(
+                                    utoipa::openapi::ArrayBuilder::new()
+                                        .items(
+                                            utoipa::openapi::ObjectBuilder::new()
+                                                .schema_type(utoipa::openapi::SchemaType::String),
+                                        )
+                                        .description(Some("A single string"))
+                                        .min_items(Some(1))
+                                        .max_items(Some(1)),
+                                )
+                                .item(
+                                    utoipa::openapi::ArrayBuilder::new()
+                                        .items(
+                                            utoipa::openapi::ObjectBuilder::new()
+                                                .schema_type(utoipa::openapi::SchemaType::String),
+                                        )
+                                        .description(Some("A pair of strings"))
+                                        .min_items(Some(2))
+                                        .max_items(Some(2)),
+                                ),
+                        )
+                        .description(Some("A batch")),
+                )
+                .item(token_ids.clone())
+                .item(
+                    utoipa::openapi::ArrayBuilder::new()
+                        .items(token_ids)
+                        .min_items(Some(1))
+                        .description(Some("A batch of independent final token-ID sequences")),
                 )
                 .description(Some(
-                    "Model input. \
-                Can be either a single string, a pair of strings or a batch of mixed single and pairs \
-                of strings.",
+                    "Model input: a string, a string pair, a batch of single strings and pairs, \
+                    or final token IDs and batches of final token IDs.",
                 ))
                 .example(Some(json!("What is Deep Learning?")))
                 .into(),
@@ -667,7 +707,7 @@ mod embedding_input_tests {
     }
 
     #[test]
-    fn token_ids_are_one_input_or_an_ordered_batch_on_both_endpoints() {
+    fn token_ids_are_one_input_or_an_ordered_batch_across_endpoints() {
         let req: EmbedRequest = serde_json::from_value(json!({"inputs": [101, 42, 102]})).unwrap();
         assert!(matches!(InputBatch::from(req.inputs),
             InputBatch::Single(EncodingInput::Ids(ids)) if ids == vec![101, 42, 102]));
@@ -679,6 +719,16 @@ mod embedding_input_tests {
         assert_eq!(inputs.len(), 2);
         assert!(matches!(&inputs[0], EncodingInput::Ids(ids) if ids == &vec![101, 42, 102]));
         assert!(matches!(&inputs[1], EncodingInput::Ids(ids) if ids == &vec![101, 43, 102]));
+        let parse = |value| serde_json::from_value::<PredictInput>(value);
+        assert!(matches!(parse(json!([101, 42, 102])).unwrap(),
+            PredictInput::Single(Sequence::Ids(ids)) if ids == vec![101, 42, 102]));
+        assert!(matches!(parse(json!([[101, 42], [102]])).unwrap(),
+            PredictInput::Batch(batch) if batch.len() == 2));
+        assert!(matches!(
+            parse(json!(["query", "document"])).unwrap(),
+            PredictInput::Single(Sequence::Pair(_, _))
+        ));
+        assert!(parse(json!([[101], ["text"]])).is_err());
     }
 
     #[test]

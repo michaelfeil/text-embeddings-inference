@@ -133,6 +133,18 @@ impl Tokenization {
                 offsets: vec![],
             });
         }
+        self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
+            .await
+    }
+
+    async fn encode_request(
+        &self,
+        inputs: EncodingInput,
+        truncate: bool,
+        truncation_direction: TruncationDirection,
+        prompt_name: Option<String>,
+        embedding: bool,
+    ) -> Result<ValidEncoding, TextEmbeddingsError> {
         if let EncodingInput::Ids(mut ids) = inputs {
             if ids.is_empty() {
                 return Err(TextEmbeddingsError::Empty(
@@ -182,18 +194,6 @@ impl Tokenization {
                 offsets: vec![],
             });
         }
-        self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
-            .await
-    }
-
-    async fn encode_request(
-        &self,
-        inputs: EncodingInput,
-        truncate: bool,
-        truncation_direction: TruncationDirection,
-        prompt_name: Option<String>,
-        embedding: bool,
-    ) -> Result<ValidEncoding, TextEmbeddingsError> {
         // Check if inputs is empty
         if inputs.is_empty() {
             return Err(TextEmbeddingsError::Empty(

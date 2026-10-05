@@ -155,15 +155,10 @@ impl ClassificationHead for BertClassificationHead {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
 
-        let mut hidden_states = hidden_states.unsqueeze(1)?;
-        if let Some(pooler) = self.pooler.as_ref() {
-            hidden_states = pooler.forward(&hidden_states)?;
-            hidden_states = hidden_states.tanh()?;
+        match &self.pooler {
+            Some(pooler) => self.output.forward(&pooler.forward(hidden_states)?.tanh()?),
+            None => self.output.forward(hidden_states),
         }
-
-        let hidden_states = self.output.forward(&hidden_states)?;
-        let hidden_states = hidden_states.squeeze(1)?;
-        Ok(hidden_states)
     }
 
     fn forward_tokens(&self, hidden_states: &Tensor) -> Result<Tensor> {
@@ -336,5 +331,37 @@ impl BertSpladeHead {
         let hidden_states = self.transform_layer_norm.forward(&hidden_states, None)?;
         let hidden_states = self.decoder.forward(&hidden_states)?;
         (1.0 + hidden_states)?.log()
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    #[test]
+    fn classification_head_batch_matches_independent_rows() -> Result<()> {
+        let device = Device::Cpu;
+        let head = BertClassificationHead {
+            pooler: Some(Linear::new(
+                Tensor::new(&[[1_f32, 2.], [3., 4.]], &device)?,
+                None,
+                None,
+            )),
+            output: Linear::new(
+                Tensor::new(&[[0.4_f32, -0.3], [0.2, 0.7]], &device)?,
+                None,
+                None,
+            ),
+            span: tracing::Span::none(),
+        };
+        let input = Tensor::new(&[[0.5_f32, -1.], [1., 0.2]], &device)?;
+        let batch = head.forward(&input)?.to_vec2::<f32>()?;
+        for (i, row) in batch.iter().enumerate() {
+            let single = head.forward(&input.narrow(0, i, 1)?)?.to_vec2::<f32>()?;
+            for (&actual, &expected) in row.iter().zip(&single[0]) {
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+        Ok(())
     }
 }
