@@ -155,14 +155,10 @@ impl ClassificationHead for BertClassificationHead {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
 
-        let mut hidden_states = hidden_states.clone();
-        if let Some(pooler) = self.pooler.as_ref() {
-            hidden_states = pooler.forward(&hidden_states)?;
-            hidden_states = hidden_states.tanh()?;
+        match &self.pooler {
+            Some(pooler) => self.output.forward(&pooler.forward(hidden_states)?.tanh()?),
+            None => self.output.forward(hidden_states),
         }
-
-        let hidden_states = self.output.forward(&hidden_states)?;
-        Ok(hidden_states)
     }
 
     fn forward_tokens(&self, hidden_states: &Tensor) -> Result<Tensor> {
