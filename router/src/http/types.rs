@@ -313,6 +313,10 @@ impl From<EmbeddingInput> for InputBatch {
                 Self::Batch(texts.into_iter().map(EncodingInput::Single).collect())
             }
             EmbeddingInput::Messages(messages) => Self::Single(EncodingInput::Messages(messages)),
+            EmbeddingInput::TokenIds(ids) => Self::Single(EncodingInput::Ids(ids)),
+            EmbeddingInput::TokenIdsBatch(batch) => {
+                Self::Batch(batch.into_iter().map(EncodingInput::Ids).collect())
+            }
         }
     }
 }
@@ -660,6 +664,21 @@ mod embedding_input_tests {
         assert_eq!(inputs.len(), 2);
         assert!(matches!(&inputs[0], EncodingInput::Single(text) if text == "hello"));
         assert!(matches!(&inputs[1], EncodingInput::Single(text) if text == "world"));
+    }
+
+    #[test]
+    fn token_ids_are_one_input_or_an_ordered_batch_on_both_endpoints() {
+        let req: EmbedRequest = serde_json::from_value(json!({"inputs": [101, 42, 102]})).unwrap();
+        assert!(matches!(InputBatch::from(req.inputs),
+            InputBatch::Single(EncodingInput::Ids(ids)) if ids == vec![101, 42, 102]));
+        let req: OpenAICompatRequest =
+            serde_json::from_value(json!({"input": [[101, 42, 102], [101, 43, 102]]})).unwrap();
+        let InputBatch::Batch(inputs) = InputBatch::from(req.input) else {
+            panic!("token sequences must remain independent inputs");
+        };
+        assert_eq!(inputs.len(), 2);
+        assert!(matches!(&inputs[0], EncodingInput::Ids(ids) if ids == &vec![101, 42, 102]));
+        assert!(matches!(&inputs[1], EncodingInput::Ids(ids) if ids == &vec![101, 43, 102]));
     }
 
     #[test]
