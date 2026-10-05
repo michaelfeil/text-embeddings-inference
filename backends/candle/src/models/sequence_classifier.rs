@@ -29,6 +29,7 @@ impl SequenceClassifier {
         Ok(
             matches!(config.architectures.as_slice(), [architecture] if matches!(architecture.as_str(),
                 "LlamaForSequenceClassification" | "Qwen2ForSequenceClassification" | "Qwen3ForSequenceClassification"
+                    | "Qwen3MoeForSequenceClassification"
             )),
         )
     }
@@ -115,7 +116,7 @@ mod tests {
 
     #[test]
     fn only_sequence_classification_architectures_are_supported() -> Result<()> {
-        for family in ["Llama", "Qwen2", "Qwen3"] {
+        for family in ["Llama", "Qwen2", "Qwen3", "Qwen3Moe"] {
             for (suffix, supported) in [
                 ("ForSequenceClassification", true),
                 ("ForTokenClassification", false),

@@ -52,8 +52,9 @@ To explore the list of best performing text embeddings models, visit the
 ## Supported re-rankers and sequence classification models
 
 Text Embeddings Inference supports encoder classification models and native
-`LlamaForSequenceClassification`, `Qwen2ForSequenceClassification`, and
-`Qwen3ForSequenceClassification` checkpoints with a `score.weight` head.
+`LlamaForSequenceClassification`, `Qwen2ForSequenceClassification`,
+`Qwen3ForSequenceClassification` and `Qwen3MoeForSequenceClassification`
+checkpoints with a `score.weight` head.
 Decoder classification selects the final non-padding token and reuses the
 existing batching and Radix execution paths.
 
@@ -79,6 +80,11 @@ query/document prompt. Unconverted `Qwen3ForCausalLM` weights do not automatical
 become a classifier. Explicit `id2label` mappings are preserved; omitted mappings use Hugging Face
 `LABEL_0`, `LABEL_1`, … defaults from `num_labels` (two when omitted).
 
+Qwen3-MoE also supports Voyage-style embeddings with
+`use_bidirectional_attention: true`, a root `linear.weight` projection, and the
+checkpoint's trained pooling mode. Bidirectional models disable RadixMLP.
+Single-output MoE classifier heads use `/rerank`; multiple-output heads use
+`/predict`.
 
 Below are some examples of the currently supported models:
 
