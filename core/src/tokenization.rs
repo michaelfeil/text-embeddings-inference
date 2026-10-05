@@ -133,6 +133,18 @@ impl Tokenization {
                 offsets: vec![],
             });
         }
+        self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
+            .await
+    }
+
+    async fn encode_request(
+        &self,
+        inputs: EncodingInput,
+        truncate: bool,
+        truncation_direction: TruncationDirection,
+        prompt_name: Option<String>,
+        embedding: bool,
+    ) -> Result<ValidEncoding, TextEmbeddingsError> {
         if let EncodingInput::Ids(mut ids) = inputs {
             if ids.is_empty() {
                 return Err(TextEmbeddingsError::Empty(
@@ -182,18 +194,6 @@ impl Tokenization {
                 offsets: vec![],
             });
         }
-        self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
-            .await
-    }
-
-    async fn encode_request(
-        &self,
-        inputs: EncodingInput,
-        truncate: bool,
-        truncation_direction: TruncationDirection,
-        prompt_name: Option<String>,
-        embedding: bool,
-    ) -> Result<ValidEncoding, TextEmbeddingsError> {
         // Check if inputs is empty
         if inputs.is_empty() {
             return Err(TextEmbeddingsError::Empty(
@@ -908,6 +908,18 @@ mod fast_embedding_tests {
                 )
                 .await
                 .unwrap();
+            let prediction = tokenizer
+                .encode(
+                    EncodingInput::Ids(ids.clone()),
+                    false,
+                    TruncationDirection::Right,
+                    None,
+                )
+                .await
+                .unwrap();
+            assert_eq!(prediction.input_ids, tokens.input_ids);
+            assert_eq!(prediction.token_type_ids, tokens.token_type_ids);
+            assert_eq!(prediction.position_ids, tokens.position_ids);
             assert_eq!(tokens.input_ids, ids);
             assert_eq!(tokens.input_ids, text.input_ids);
             assert_eq!(tokens.token_type_ids, text.token_type_ids);

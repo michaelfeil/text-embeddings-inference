@@ -552,6 +552,12 @@ model's offset and segment IDs are zero. Character usage is zero because the
 original text is unavailable; token usage counts the tokens actually processed.
 Pretokenized Qwen3-VL inputs are unsupported because IDs alone lack media metadata.
 
+`/predict` also accepts `inputs: [101, 42, 102]` and token-ID batches, with the
+same validation and direct-inference behavior. Its existing string/pair formats,
+prediction response arrays and token-usage headers are preserved. Numeric batches
+contain independent complete sequences; segment IDs are zero, so models requiring
+nonzero segment IDs for prepared pairs need a future structured input format.
+
 ### Qwen3-VL image embeddings
 
 With a Candle CUDA/FlashAttention build, serve `Qwen/Qwen3-VL-Embedding-2B`:
