@@ -112,6 +112,7 @@ enum Config {
     #[allow(dead_code)]
     MPNet(MPNetConfig),
     #[allow(dead_code)]
+    #[serde(alias = "ministral3")]
     Mistral(MistralConfig),
     #[serde(rename(deserialize = "modernbert"))]
     ModernBert(ModernBertConfig),
@@ -443,6 +444,9 @@ impl CandleBackend {
                     return Err(BackendError::Start("Packed Llama requires bias-free projections and head_dim = hidden_size / num_attention_heads".into()));
                 }
                 let cfg_mistral = MistralConfig {
+                    head_dim: config.head_dim,
+                    is_causal: None,
+                    rope_parameters: None,
                     vocab_size: config.vocab_size,
                     hidden_size: config.hidden_size,
                     intermediate_size: config.intermediate_size,

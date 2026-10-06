@@ -29,18 +29,21 @@ impl MistralAttention {
     pub fn load(vb: VarBuilder, config: &MistralConfig) -> Result<Self> {
         // HF's causal window counts the current token; the attention kernel
         // takes the inclusive distance to the leftmost visible token.
-        let window_size_left = if config.use_bidirectional_attention {
+        let window_size_left = if config.bidirectional() {
             config.sliding_window
         } else {
             config.sliding_window.map(|window| window.saturating_sub(1))
         };
-        let use_bidirectional_attention = config.use_bidirectional_attention;
+        let use_bidirectional_attention = config.bidirectional();
         let num_attention_heads = config.num_attention_heads;
-        let attention_head_size = config.hidden_size / config.num_attention_heads;
+        let attention_head_size = config.head_dim();
         let num_key_value_heads = config.num_key_value_heads;
         let hidden_size = config.hidden_size;
 
-        let query_weight = vb.pp("q_proj").get((hidden_size, hidden_size), "weight")?;
+        let query_weight = vb.pp("q_proj").get(
+            (num_attention_heads * attention_head_size, hidden_size),
+            "weight",
+        )?;
 
         let key_weight = vb.pp("k_proj").get(
             (num_key_value_heads * attention_head_size, hidden_size),
@@ -55,7 +58,10 @@ impl MistralAttention {
         let qkv_weight = Tensor::cat(&[&query_weight, &key_weight, &value_weight], 0)?;
         let qkv_linear = Linear::new(qkv_weight, None, None);
 
-        let o_proj_weight = vb.pp("o_proj").get((hidden_size, hidden_size), "weight")?;
+        let o_proj_weight = vb.pp("o_proj").get(
+            (hidden_size, num_attention_heads * attention_head_size),
+            "weight",
+        )?;
 
         let o_proj = Linear::new(o_proj_weight, None, None);
 
@@ -74,12 +80,14 @@ impl MistralAttention {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn forward(
         &self,
         hidden_states: &Tensor,
         cu_seqlens: &Tensor,
         cos: &Tensor,
         sin: &Tensor,
+        query_scale: Option<&Tensor>,
         max_s: usize,
         compact_tensors: &CompactUnfoldTensors,
     ) -> Result<Tensor> {
@@ -105,6 +113,10 @@ impl MistralAttention {
         )?;
 
         let (q, k) = apply_packed_rotary(&q, &k, cos, sin)?;
+        let q = match query_scale {
+            Some(scale) => q.broadcast_mul(scale)?,
+            None => q,
+        };
 
         let q = compact_tensors.scatter_unfold(&q)?;
         let k = compact_tensors.scatter_unfold(&k)?;
@@ -220,6 +232,7 @@ impl MistralLayer {
         cu_seqlens: &Tensor,
         cos: &Tensor,
         sin: &Tensor,
+        query_scale: Option<&Tensor>,
         max_s: usize,
         compact_tensors: &CompactUnfoldTensors,
     ) -> Result<(Tensor, Tensor)> {
@@ -231,6 +244,7 @@ impl MistralLayer {
             cu_seqlens,
             cos,
             sin,
+            query_scale,
             max_s,
             compact_tensors,
         )?;
@@ -249,6 +263,7 @@ pub struct FlashMistralModel {
     norm: RMSNorm,
     cos_cache: Tensor,
     sin_cache: Tensor,
+    query_scale_cache: Option<Tensor>,
     pool: Pool,
     pub device: Device,
     use_bidirectional_attention: bool,
@@ -295,18 +310,45 @@ impl FlashMistralModel {
 
         let norm = RMSNorm::load(vb.pp("norm"), config.hidden_size, config.rms_norm_eps)?;
 
-        let inv_freqs = get_inv_freqs(
-            layers[0].attention.attention_head_size,
-            config.rope_theta,
-            vb.device(),
-            config.rope_scaling.as_ref(),
-        )?;
-        let (cos_cache, sin_cache) = get_cos_sin(
-            config.max_position_embeddings,
-            &inv_freqs,
-            vb.dtype(),
-            false,
-        )?;
+        let (cos_cache, sin_cache, query_scale_cache) = if let Some(rope) = &config.rope_parameters
+        {
+            let (inv, attention_scale) = rope.frequencies(config.head_dim())?;
+            let inv = Tensor::from_vec(inv, (1, config.head_dim() / 2), vb.device())?;
+            let (cos, sin) = get_cos_sin(
+                config.max_position_embeddings,
+                &inv,
+                candle::DType::F32,
+                false,
+            )?;
+            let scale: Vec<f32> = (0..config.max_position_embeddings)
+                .map(|pos| {
+                    1.0 + rope.llama_4_scaling_beta
+                        * (1.0 + (pos / rope.original_max_position_embeddings) as f32).ln()
+                })
+                .collect();
+            let scale =
+                Tensor::from_vec(scale, (config.max_position_embeddings, 1, 1), vb.device())?
+                    .to_dtype(vb.dtype())?;
+            (
+                (cos * attention_scale)?.to_dtype(vb.dtype())?,
+                (sin * attention_scale)?.to_dtype(vb.dtype())?,
+                Some(scale),
+            )
+        } else {
+            let inv_freqs = get_inv_freqs(
+                config.head_dim(),
+                config.rope_theta,
+                vb.device(),
+                config.rope_scaling.as_ref(),
+            )?;
+            let (cos, sin) = get_cos_sin(
+                config.max_position_embeddings,
+                &inv_freqs,
+                vb.dtype(),
+                false,
+            )?;
+            (cos, sin, None)
+        };
 
         Ok(Self {
             embeddings,
@@ -314,9 +356,10 @@ impl FlashMistralModel {
             norm,
             cos_cache,
             sin_cache,
+            query_scale_cache,
             pool,
             device: vb.device().clone(),
-            use_bidirectional_attention: config.use_bidirectional_attention,
+            use_bidirectional_attention: config.bidirectional(),
             span: tracing::span!(tracing::Level::TRACE, "model"),
         })
     }
@@ -343,6 +386,11 @@ impl FlashMistralModel {
         let cos = index_select(&self.cos_cache, &compact_tensors.position_ids_compact, 0)?;
         let sin = index_select(&self.sin_cache, &compact_tensors.position_ids_compact, 0)?;
 
+        let query_scale = self
+            .query_scale_cache
+            .as_ref()
+            .map(|scale| index_select(scale, &compact_tensors.position_ids_compact, 0))
+            .transpose()?;
         let mut residual = None;
         for layer in &self.layers {
             let (h, r) = layer.forward(
@@ -351,6 +399,7 @@ impl FlashMistralModel {
                 &cu_seqlens,
                 &cos,
                 &sin,
+                query_scale.as_ref(),
                 batch.max_length as usize,
                 &compact_tensors,
             )?;
