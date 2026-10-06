@@ -1,8 +1,9 @@
-//! OneJev's qev-labels-v2 text protocol, using the shared decision queue.
+//! OneJev's qev-labels-v2 text/image protocol, using the shared decision queue.
 use super::*;
 use text_embeddings_core::{
     chat::ChatProcessor,
-    input::{ContentPart, MessageContent, MessageRole},
+    input::{ContentPart, ImageDetail, MessageContent, MessageRole},
+    multimodal::{image_positions, PreparedQwenImages, Qwen3VlProcessor},
 };
 
 const SYSTEM: &str = "Apply the question to the state. Choose exactly one of the listed options. Respond with only its uppercase letter, with no explanation or reasoning.";
@@ -17,6 +18,7 @@ pub struct Onejev {
     codes: Vec<String>,
     token_ids: Vec<u32>,
     max_input_length: usize,
+    images: Option<Qwen3VlProcessor>,
 }
 
 impl Onejev {
@@ -79,10 +81,147 @@ impl Onejev {
             codes,
             token_ids,
             max_input_length,
+            images: None,
         })
     }
 
+    pub(super) fn with_images(
+        mut self,
+        path: &Path,
+        config: text_embeddings_core::multimodal::MultimodalConfig,
+    ) -> anyhow::Result<Self> {
+        let model: Value = serde_json::from_slice(&std::fs::read(path.join("config.json"))?)?;
+        if model["vision_config"].is_object()
+            && (path.join("processor_config.json").exists()
+                || path.join("preprocessor_config.json").exists())
+        {
+            self.images = Some(
+                Qwen3VlProcessor::load(path, self.tokenizer.clone(), self.max_input_length, config)
+                    .map_err(|e| anyhow::anyhow!(e.to_string()))?,
+            );
+        }
+        Ok(self)
+    }
+
+    pub(super) fn image_sources(request: &mut SystemOneRequest) -> Result<Vec<String>, String> {
+        let check_text = |text: &str| {
+            if text.contains("<image:") || text.contains("<video:") {
+                Err("State text must not contain reserved media placeholders".to_string())
+            } else {
+                Ok(())
+            }
+        };
+        let ModelInput::Messages(state) = &mut request.state else {
+            if let ModelInput::Text(text) = &request.state {
+                check_text(text)?;
+            }
+            return Ok(vec![]);
+        };
+        let mut sources = Vec::new();
+        for message in &mut state.messages {
+            match &mut message.content {
+                MessageContent::Text(text) => check_text(text)?,
+                MessageContent::Parts(parts) => {
+                    for part in parts {
+                        match part {
+                            ContentPart::Text { text } => check_text(text)?,
+                            ContentPart::ImageUrl { image_url }
+                                if matches!(message.role, MessageRole::User) =>
+                            {
+                                if !matches!(image_url.detail, None | Some(ImageDetail::Auto)) {
+                                    return Err(
+                                        "OneJev image detail must be auto or omitted".into()
+                                    );
+                                }
+                                if sources.len() >= 4 {
+                                    return Err(
+                                        "OneJev supports at most four images per request".into()
+                                    );
+                                }
+                                let placeholder = format!("<image:{}>", sources.len() + 1);
+                                sources.push(std::mem::replace(&mut image_url.url, placeholder));
+                            }
+                            _ => return Err("OneJev supports user images and text only".into()),
+                        }
+                    }
+                }
+            }
+        }
+        Ok(sources)
+    }
+
+    pub(super) async fn prepare_images(
+        &self,
+        sources: Vec<String>,
+    ) -> Result<PreparedQwenImages, text_embeddings_core::TextEmbeddingsError> {
+        self.images
+            .as_ref()
+            .ok_or_else(|| {
+                text_embeddings_core::TextEmbeddingsError::Validation(
+                    "OneJev image processor unavailable".into(),
+                )
+            })?
+            .prepare_images(sources, 1024)
+            .await
+    }
+
+    pub(super) fn attach_images(
+        &self,
+        questions: &mut [Question],
+        images: PreparedQwenImages,
+        max_len: Option<usize>,
+    ) -> Result<(), String> {
+        let image_id = self
+            .tokenizer
+            .token_to_id("<|image_pad|>")
+            .ok_or("Missing image token")?;
+        let limit = max_len
+            .unwrap_or(self.max_input_length)
+            .min(self.max_input_length);
+        for question in questions {
+            let encoding = &mut question.encoding;
+            let mut ids = Vec::new();
+            let mut spans = Vec::new();
+            let mut patches = images.images.iter();
+            for &id in &encoding.input_ids {
+                if id == image_id {
+                    let image = patches.next().ok_or("Too many image markers")?;
+                    spans.push((ids.len(), image.clone()));
+                    ids.resize(ids.len() + image.token_count(), image_id);
+                } else {
+                    ids.push(id);
+                }
+            }
+            if patches.next().is_some() {
+                return Err("Image marker count mismatch".into());
+            }
+            if ids.len() > limit {
+                return Err(
+                    "OneJev image prompt exceeds token limit; image spans cannot be truncated"
+                        .into(),
+                );
+            }
+            let positions = image_positions(
+                ids.len(),
+                &spans
+                    .iter()
+                    .map(|(start, image)| (*start, image.as_ref()))
+                    .collect::<Vec<_>>(),
+            )?;
+            encoding.token_type_ids = vec![0; ids.len()];
+            encoding.position_ids = positions[0].clone();
+            encoding.input_ids = ids;
+            encoding.multimodal = Some(Arc::new(text_embeddings_backend::MultimodalEncoding {
+                images: spans,
+                position_ids: positions,
+                memory: Some(images.memory.clone()),
+            }));
+        }
+        Ok(())
+    }
+
     pub(super) fn prepare(&self, request: SystemOneRequest) -> Result<Vec<Question>, String> {
+        let mut image_count = 0;
         let state = match request.state {
             ModelInput::Text(text) => text,
             ModelInput::Messages(messages) => {
@@ -94,8 +233,21 @@ impl Onejev {
                         return Err("OneJev state accepts user and assistant roles".into());
                     }
                     if let MessageContent::Parts(parts) = &message.content {
-                        if parts.iter().any(|p| !matches!(p, ContentPart::Text { .. })) {
-                            return Err("OneJev currently supports text only".into());
+                        for part in parts {
+                            match part {
+                                ContentPart::Text { .. } => {}
+                                ContentPart::ImageUrl { image_url }
+                                    if image_url.url == format!("<image:{}>", image_count + 1) =>
+                                {
+                                    image_count += 1;
+                                }
+                                _ => {
+                                    return Err(
+                                        "OneJev image sources must be validated before prompting"
+                                            .into(),
+                                    )
+                                }
+                            }
                         }
                     }
                 }
@@ -158,7 +310,11 @@ impl Onejev {
             let word = if n <= 26 { "letter" } else { "label" };
             let user = format!("<state>\n{state}\n</state>\n\n{header} {instructions}\n\nOptions:\n{options}\n\nAnswer with one {word}: {}.", self.codes[..n].join(", "));
             if ["<|im_start|>", "<|im_end|>", "<|vision_start|>", "<|vision_end|>", "<|image_pad|>", "<|video_pad|>"].iter().any(|token| user.contains(token)) { return Err("State and questions must not contain reserved chat or media tokens".into()); }
-            let prompt = self.chat.render_decision(SYSTEM, &user)?;
+            if instructions.contains("<image:") || options.contains("<image:") || user.contains("<video:") { return Err("Questions must not contain media placeholders".into()); }
+            let mut prompt = self.chat.render_decision(SYSTEM, &user)?;
+            for i in 1..=image_count {
+                prompt = prompt.replace(&format!("<image:{i}>"), "<|vision_start|><|image_pad|><|vision_end|>");
+            }
             let ids = self.tokenizer.encode(prompt.as_str(), false).map_err(|e| e.to_string())?.get_ids().to_vec();
             if ids.is_empty() || ids.len() > limit { return Err(format!("OneJev prompt has {} tokens, exceeding max_len {limit}; prompts are never truncated", ids.len())); }
             let length = ids.len();
@@ -193,6 +349,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn native_images_are_ordered_and_unsupported_parts_are_rejected() {
+        let value = json!({"state":{"messages":[{"role":"user","content":[
+            {"type":"text","text":"Compare."},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,first"}},
+            {"type":"image_url","image_url":{"url":"data:image/png;base64,second"}}
+        ]}]},"questions":{"q":{"type":"noul"}}});
+        let mut request = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(
+            Onejev::image_sources(&mut request).unwrap(),
+            [
+                "data:image/png;base64,first",
+                "data:image/png;base64,second"
+            ]
+        );
+        assert!(serde_json::to_string(&request.state)
+            .unwrap()
+            .contains("<image:2>"));
+        for case in 0..3 {
+            let mut invalid = value.clone();
+            match case {
+                0 => invalid["state"]["messages"][0]["role"] = json!("assistant"),
+                1 => invalid["state"]["messages"][0]["content"][0]["text"] = json!("<image:1>"),
+                _ => {
+                    invalid["state"]["messages"][0]["content"][1]["image_url"]["detail"] =
+                        json!("high")
+                }
+            }
+            assert!(Onejev::image_sources(&mut serde_json::from_value(invalid).unwrap()).is_err());
+        }
+    }
+
+    #[test]
     #[ignore = "requires OneJev checkpoint and upstream prompt fixtures"]
     fn checkpoint_matches_upstream_prompts() -> anyhow::Result<()> {
         let path = std::env::var("ONEJEV_CHECKPOINT_DIR")?;
@@ -200,10 +388,19 @@ mod tests {
             serde_json::from_slice(&std::fs::read(std::env::var("ONEJEV_REFERENCE_FILE")?)?)?;
         let tokenizer = Tokenizer::from_file(Path::new(&path).join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
-        let model = Onejev::load(Path::new(&path), tokenizer, 32768)?;
+        let model = Onejev::load(Path::new(&path), tokenizer, 32768)?
+            .with_images(Path::new(&path), Default::default())?;
+        let runtime = tokio::runtime::Runtime::new()?;
         for case in fixtures {
-            let request: SystemOneRequest = serde_json::from_value(case["request"].clone())?;
-            let questions = model.prepare(request).map_err(anyhow::Error::msg)?;
+            let mut request: SystemOneRequest = serde_json::from_value(case["request"].clone())?;
+            let sources = Onejev::image_sources(&mut request).map_err(anyhow::Error::msg)?;
+            let mut questions = model.prepare(request).map_err(anyhow::Error::msg)?;
+            if !sources.is_empty() {
+                let images = runtime.block_on(model.prepare_images(sources))?;
+                model
+                    .attach_images(&mut questions, images, None)
+                    .map_err(anyhow::Error::msg)?;
+            }
             for reference in case["fixtures"].as_array().unwrap() {
                 let question = questions
                     .iter()
@@ -211,6 +408,12 @@ mod tests {
                     .unwrap();
                 let expected: Vec<u32> = serde_json::from_value(reference["input_ids"].clone())?;
                 assert_eq!(question.encoding.input_ids, expected, "{}", question.id);
+                if let Some(expected) = reference.get("position_ids") {
+                    assert_eq!(
+                        question.encoding.multimodal.as_ref().unwrap().position_ids,
+                        serde_json::from_value::<[Vec<u32>; 3]>(expected.clone())?
+                    );
+                }
                 let DecisionInput::OptionTokens { token_ids } = &question.input else {
                     panic!("expected option tokens");
                 };
@@ -241,7 +444,7 @@ mod tests {
             .prepare(serde_json::from_value(media)?)
             .err()
             .unwrap()
-            .contains("text only"));
+            .contains("validated before prompting"));
         let oversized =
             json!({"state":"Invoice is paid.","max_len":1,"questions":{"q":{"type":"noul"}}});
         assert!(model

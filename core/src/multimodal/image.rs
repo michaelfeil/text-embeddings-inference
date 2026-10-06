@@ -34,10 +34,32 @@ pub(crate) struct ImagePlan {
 
 impl QwenImageProcessor {
     pub fn load(root: &Path) -> Result<Self, String> {
-        let config: Self = serde_json::from_slice(
-            &std::fs::read(root.join("preprocessor_config.json")).map_err(|e| e.to_string())?,
-        )
-        .map_err(|e| e.to_string())?;
+        let mut value: serde_json::Value =
+            match std::fs::read(root.join("preprocessor_config.json")) {
+                Ok(bytes) => serde_json::from_slice(&bytes).map_err(|e| e.to_string())?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    let bytes = std::fs::read(root.join("processor_config.json"))
+                        .map_err(|e| e.to_string())?;
+                    serde_json::from_slice::<serde_json::Value>(&bytes)
+                        .map_err(|e| e.to_string())?
+                        .get("image_processor")
+                        .cloned()
+                        .ok_or("Missing image_processor")?
+                }
+                Err(e) => return Err(e.to_string()),
+            };
+        if !value.is_object() {
+            return Err("Image processor configuration must be an object".into());
+        }
+        for (name, edge) in [
+            ("min_pixels", "shortest_edge"),
+            ("max_pixels", "longest_edge"),
+        ] {
+            if value.get(name).is_none() {
+                value[name] = value["size"][edge].clone();
+            }
+        }
+        let config: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
         config.validate()?;
         Ok(config)
     }

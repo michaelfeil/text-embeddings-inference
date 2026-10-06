@@ -124,6 +124,8 @@ pub use qwen35_config::Qwen35Config;
 #[cfg(all(feature = "cuda", feature = "flash-attn"))]
 mod qwen35;
 #[cfg(all(feature = "cuda", feature = "flash-attn"))]
+mod qwen35_vision;
+#[cfg(all(feature = "cuda", feature = "flash-attn"))]
 pub use qwen35::Qwen35Model;
 
 #[cfg(all(feature = "cuda", feature = "flash-attn"))]
