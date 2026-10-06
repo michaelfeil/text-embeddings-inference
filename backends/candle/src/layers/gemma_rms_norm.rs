@@ -340,10 +340,143 @@ impl candle::CustomOp3 for Rotary {
     }
 }
 
+/// Preserve the normalization's BF16 store before adding the residual.
+pub(crate) fn residual_reference(
+    x: &Tensor,
+    scale: &Tensor,
+    residual: &Tensor,
+    epsilon: f32,
+) -> Result<Tensor> {
+    let (rows, width) = x.dims2()?;
+    if width == 0
+        || width > 8192
+        || rows > i32::MAX as usize
+        || x.dtype() != DType::BF16
+        || scale.dtype() != DType::F32
+        || residual.dtype() != DType::BF16
+        || !x.device().is_cuda()
+        || x.dims() != residual.dims()
+        || !supported_layout(x.layout())
+        || !supported_layout(residual.layout())
+        || !scale.is_contiguous()
+        || scale.dims() != [width]
+        || ![scale, residual]
+            .iter()
+            .all(|t| t.device().same_device(x.device()))
+    {
+        candle::bail!("Residual Gemma RMS requires matching CUDA BF16 rows and FP32 scale");
+    }
+    if rows == 0 {
+        return Ok(x.clone());
+    }
+    x.apply_op3_no_bwd(scale, residual, &ResidualNorm { epsilon })
+}
+struct ResidualNorm {
+    epsilon: f32,
+}
+impl candle::CustomOp3 for ResidualNorm {
+    fn name(&self) -> &'static str {
+        "gemma-residual-rms"
+    }
+    fn cpu_fwd(
+        &self,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+        _: &CpuStorage,
+        _: &Layout,
+    ) -> Result<(CpuStorage, Shape)> {
+        candle::bail!("Residual Gemma RMS requires CUDA")
+    }
+    fn cuda_fwd(
+        &self,
+        x: &CudaStorage,
+        xl: &Layout,
+        scale: &CudaStorage,
+        sl: &Layout,
+        residual: &CudaStorage,
+        rl: &Layout,
+    ) -> Result<(CudaStorage, Shape)> {
+        let (rows, width) = xl.shape().dims2()?;
+        let device = x.device();
+        let xs = x.as_cuda_slice::<half::bf16>()?.slice(xl.start_offset()..);
+        let ss = scale
+            .as_cuda_slice::<f32>()?
+            .slice(sl.start_offset()..sl.start_offset() + width);
+        let rs = residual
+            .as_cuda_slice::<half::bf16>()?
+            .slice(rl.start_offset()..);
+        let mut out = unsafe { device.alloc::<half::bf16>(rows * width)? };
+        let kernel = device.get_or_load_custom_func(
+            "gemma_rms_norm_residual_bf16",
+            "tei-gemma-rms-norm",
+            ptx::GEMMA_RMS_NORM,
+        )?;
+        let width32 = width as u32;
+        let stride = xl.stride()[0] as u64;
+        let residual_stride = rl.stride()[0] as u64;
+        let mut launch = kernel.builder();
+        launch
+            .arg(&xs)
+            .arg(&ss)
+            .arg(&rs)
+            .arg(&mut out)
+            .arg(&width32)
+            .arg(&stride)
+            .arg(&residual_stride)
+            .arg(&self.epsilon);
+        unsafe {
+            launch.launch(LaunchConfig {
+                grid_dim: (rows as u32, 1, 1),
+                block_dim: (width32.min(1024).next_power_of_two(), 1, 1),
+                shared_mem_bytes: 0,
+            })
+        }
+        .map_err(candle::Error::wrap)?;
+        Ok((
+            CudaStorage::wrap_cuda_slice(out, device.clone()),
+            xl.shape().clone(),
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use candle::{Device, D};
+    #[test]
+    #[ignore = "requires CUDA"]
+    fn residual_matches_separate_candle_operations_bitwise() -> Result<()> {
+        let device = Device::new_cuda(0)?;
+        for rows in [1, 17, 1152, 2048, 4507] {
+            for width in [72, 2816] {
+                let backing = Tensor::randn(0f32, 2f32, (rows + 2, width + 8), &device)?
+                    .to_dtype(DType::BF16)?;
+                let x = backing.narrow(0, 1, rows)?.narrow(1, 3, width)?;
+                let residual = Tensor::randn(0f32, 2f32, (rows + 2, width + 16), &device)?
+                    .to_dtype(DType::BF16)?
+                    .narrow(0, 1, rows)?
+                    .narrow(1, 5, width)?;
+                let scale = Tensor::randn(1f32, 0.2f32, width + 2, &device)?.narrow(0, 1, width)?;
+                let expected = (&residual + forward_reference(&x, &scale, 1e-6)?)?;
+                let actual = residual_reference(&x, &scale, &residual, 1e-6)?;
+                let bits = |t: &Tensor| -> Result<Vec<u16>> {
+                    Ok(t.flatten_all()?
+                        .to_vec1::<half::bf16>()?
+                        .into_iter()
+                        .map(|v| v.to_bits())
+                        .collect())
+                };
+                assert_eq!(
+                    bits(&actual)?,
+                    bits(&expected)?,
+                    "rows={rows},width={width}"
+                );
+            }
+        }
+        Ok(())
+    }
     #[test]
     #[ignore = "requires CUDA"]
     fn paired_moe_matches_separate_candle_operations_bitwise() -> Result<()> {
