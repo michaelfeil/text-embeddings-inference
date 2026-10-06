@@ -61,11 +61,10 @@ impl SystemOne {
         if path.join("rl_agent_config.json").exists() {
             Ok(Self::Laya(Laya::load(path, tokenizer, max_input_length)?))
         } else if matches!(protocol, Some(crate::DecisionProtocol::Onejev)) {
-            Ok(Self::Onejev(onejev::Onejev::load(
-                path,
-                tokenizer,
-                max_input_length,
-            )?))
+            Ok(Self::Onejev(
+                onejev::Onejev::load(path, tokenizer, max_input_length)?
+                    .with_images(path, multimodal_config)?,
+            ))
         } else if matches!(protocol, Some(crate::DecisionProtocol::Pplx)) {
             Ok(Self::Pplx(pplx::Pplx::load(
                 path,
@@ -595,10 +594,10 @@ pub async fn systemone(
     // Validate and tokenize questions before fetching media, off the async executor.
     let worker = service.clone();
     let (mut questions, sources, max_len) = tokio::task::spawn_blocking(move || {
-        let sources = if matches!(worker.as_ref(), SystemOne::Rune(_)) {
-            rune::Rune::image_sources(&mut request)?
-        } else {
-            vec![]
+        let sources = match worker.as_ref() {
+            SystemOne::Rune(_) => rune::Rune::image_sources(&mut request)?,
+            SystemOne::Onejev(_) => onejev::Onejev::image_sources(&mut request)?,
+            _ => vec![],
         };
         let max_len = request.max_len;
         Ok::<_, String>((worker.prepare(request)?, sources, max_len))
@@ -606,21 +605,27 @@ pub async fn systemone(
     .await
     .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
     .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-    if let SystemOne::Rune(model) = service.as_ref() {
-        if !sources.is_empty() {
-            let images = model.prepare_images(sources).await.map_err(|e| {
-                let status =
-                    if matches!(e, text_embeddings_core::TextEmbeddingsError::Overloaded(_)) {
-                        StatusCode::TOO_MANY_REQUESTS
-                    } else {
-                        StatusCode::UNPROCESSABLE_ENTITY
-                    };
-                error(status, e)
-            })?;
-            model
-                .attach_images(&mut questions, images, max_len)
-                .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
-        }
+    if !sources.is_empty() {
+        let media_error = |e: text_embeddings_core::TextEmbeddingsError| {
+            let status = if matches!(e, text_embeddings_core::TextEmbeddingsError::Overloaded(_)) {
+                StatusCode::TOO_MANY_REQUESTS
+            } else {
+                StatusCode::UNPROCESSABLE_ENTITY
+            };
+            error(status, e)
+        };
+        let attached = match service.as_ref() {
+            SystemOne::Rune(model) => {
+                let images = model.prepare_images(sources).await.map_err(media_error)?;
+                model.attach_images(&mut questions, images, max_len)
+            }
+            SystemOne::Onejev(model) => {
+                let images = model.prepare_images(sources).await.map_err(media_error)?;
+                model.attach_images(&mut questions, images, max_len)
+            }
+            _ => unreachable!("image sources require a multimodal decision model"),
+        };
+        attached.map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     }
     let tokenization = start.elapsed();
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();

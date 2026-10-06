@@ -11,7 +11,7 @@ use crate::{
     TextEmbeddingsError,
 };
 use std::{path::Path, sync::Arc, time::Duration};
-use text_embeddings_backend::MultimodalEncoding;
+use text_embeddings_backend::{ImagePatches, MultimodalEncoding};
 use tokenizers::{Tokenizer, TruncationDirection};
 use tokio::sync::{oneshot, Semaphore};
 
@@ -45,6 +45,11 @@ impl Default for MultimodalConfig {
             timeout: Duration::from_secs(30),
         }
     }
+}
+
+pub struct PreparedQwenImages {
+    pub images: Vec<Arc<ImagePatches>>,
+    pub memory: Arc<tokio::sync::OwnedSemaphorePermit>,
 }
 
 pub struct PreparedMultimodal {
@@ -100,8 +105,11 @@ impl Qwen3VlProcessor {
             &std::fs::read(root.join("config.json")).map_err(|e| invalid(e.to_string()))?,
         )
         .map_err(|e| invalid(e.to_string()))?;
-        if model["model_type"] != "qwen3_vl" {
-            return Err(invalid("Image processor requires a Qwen3-VL checkpoint"));
+        if !matches!(
+            model["model_type"].as_str(),
+            Some("qwen3_vl" | "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" | "qwen3_5_moe_text")
+        ) {
+            return Err(invalid("Image processor requires a Qwen vision checkpoint"));
         }
         let token = |name: &str, config_name: &str| -> Result<u32> {
             let id = tokenizer
@@ -171,6 +179,76 @@ impl Qwen3VlProcessor {
         )
         .await
         .map_err(|_| invalid("Multimodal preprocessing timed out"))?
+    }
+
+    /// Prepare shared image patches independently of a task's prompt template.
+    pub async fn prepare_images(
+        &self,
+        sources: Vec<String>,
+        max_image_tokens: usize,
+    ) -> Result<PreparedQwenImages> {
+        if sources.is_empty()
+            || sources.len() > self.state.config.max_images
+            || max_image_tokens == 0
+        {
+            return Err(invalid("Invalid number of images"));
+        }
+        tokio::time::timeout(self.state.config.timeout, async {
+            let mut resolved = Vec::with_capacity(sources.len());
+            for source in sources {
+                resolved.push(self.resolver.resolve(source).await?);
+            }
+            let worker = self
+                .workers
+                .clone()
+                .acquire_owned()
+                .await
+                .map_err(|_| invalid("Image processing workers closed"))?;
+            let state = self.state.clone();
+            let (tx, rx) = oneshot::channel();
+            tokio::task::spawn_blocking(move || {
+                let _worker = worker;
+                let result = (|| {
+                    let mut plans = Vec::with_capacity(resolved.len());
+                    let mut bytes = 0usize;
+                    for image in &resolved {
+                        if tx.is_closed() {
+                            return Err(invalid("Image preprocessing canceled"));
+                        }
+                        let plan = state
+                            .images
+                            .inspect(&image.bytes, state.config.max_decoded_pixels)
+                            .map_err(invalid)?;
+                        if plan.token_count > max_image_tokens {
+                            return Err(invalid("Image exceeds vision token limit"));
+                        }
+                        bytes = bytes
+                            .checked_add(plan.memory_bytes)
+                            .ok_or_else(|| invalid("Image allocation is too large"))?;
+                        plans.push(plan);
+                    }
+                    let memory = Arc::new(state.budget.reserve(bytes)?);
+                    let mut images = Vec::with_capacity(plans.len());
+                    for (image, plan) in resolved.into_iter().zip(plans) {
+                        if tx.is_closed() {
+                            return Err(invalid("Image preprocessing canceled"));
+                        }
+                        images.push(Arc::new(
+                            state
+                                .images
+                                .prepare(&image.bytes, &plan, state.config.max_decoded_pixels)
+                                .map_err(invalid)?,
+                        ));
+                    }
+                    Ok(PreparedQwenImages { images, memory })
+                })();
+                let _ = tx.send(result);
+            });
+            rx.await
+                .map_err(|_| invalid("Image processing worker failed"))?
+        })
+        .await
+        .map_err(|_| invalid("Image preprocessing timed out"))?
     }
 
     async fn prepare_inner(

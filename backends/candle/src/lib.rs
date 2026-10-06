@@ -530,6 +530,8 @@ impl CandleBackend {
                             model.with_readout(model_path, &config).s()?
                         } else if decision && model_path.join("joint_head_config.json").exists() {
                             model.with_clef(model_path, &config).s()?
+                        } else if decision {
+                            model.with_vision(vb, &config).s()?
                         } else {
                             model
                         }

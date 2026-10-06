@@ -642,13 +642,21 @@ images currently target the 26B-A4B vision configuration with no per-layer input
 BF16 decision probabilities can vary with batch shape, particularly for ambiguous
 questions; Radix on/off equivalence is checked separately in the reference script.
 
-### OneJev text decisions
+### OneJev decisions
 
 Qwen3.5-based OneJev checkpoints use the same `/v1/systemone` request and response
 format. Start with `--model-id OmniJev/OneJev-0.8B --decision-protocol onejev
 --dtype bfloat16`. The checkpoint's native chat template renders the trained
 `qev-labels-v2` prompt with thinking disabled. RadixMLP remains enabled.
-Choice, noul, and score are supported; images, audio, and video are rejected.
+Choice, noul, and score are supported. Native `state.messages` accepts user
+`image_url` parts using the same format, host allowlist and limits as Rune above.
+Images are processed once per request and their GPU features are shared across
+batched questions. The current vision tower allows up to 1024 image tokens per
+image (4096 patches); larger images return 422 to bound dense vision attention.
+With BF16 text, the Qwen3-VL vision tower uses FP16 projections for accuracy.
+Explicit FP32 loading is preserved. The tower feeds Qwen3.5's multimodal
+positions and hybrid attention backbone; image prefixes can use RadixMLP when their content
+and positions match. Audio and video are unsupported.
 Prompts exceeding the token limit return 422 without truncation. Limits: 255
 choice options, 10 score levels, and 512 total options per request.
 

@@ -312,6 +312,7 @@ pub struct Qwen35Model {
     decision_head: Option<Tensor>,
     readout: Option<Linear>,
     clef: Option<super::clef::JointSchemaHead>,
+    vision: Option<super::qwen35_vision::Qwen35Vision>,
     cos_cache: Tensor,
     sin_cache: Tensor,
     pool: Pool,
@@ -383,6 +384,7 @@ impl Qwen35Model {
             decision_head,
             readout: None,
             clef: None,
+            vision: None,
             cos_cache,
             sin_cache,
             pool,
@@ -416,14 +418,62 @@ impl Qwen35Model {
         )?);
         Ok(self)
     }
+    pub fn with_vision(mut self, vb: VarBuilder, config: &Qwen35Config) -> Result<Self> {
+        if let Some(vision) = config.vision() {
+            self.vision = Some(super::qwen35_vision::Qwen35Vision::load(
+                vb,
+                vision,
+                config.text(),
+            )?);
+        }
+        Ok(self)
+    }
     fn forward_hidden(&self, batch: &Batch) -> Result<(Tensor, CompactUnfoldTensors)> {
         let (ids, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
         let mut hidden = self.embeddings.forward(&ids)?.contiguous()?;
         let cu = Tensor::new(batch.cumulative_seq_lengths.as_slice(), &self.device)?;
         #[cfg(feature = "fa4")]
         let _fa4_batch = crate::fa4_native::prepare_batch(&cu, &batch.cumulative_seq_lengths)?;
-        let cos = index_select(&self.cos_cache, &compact.position_ids_compact, 0)?;
-        let sin = index_select(&self.sin_cache, &compact.position_ids_compact, 0)?;
+        let has_images = batch
+            .multimodal
+            .iter()
+            .flatten()
+            .any(|media| !media.images.is_empty());
+        let (cos, sin) = if has_images {
+            if batch.compact_input_ids.is_some()
+                && !batch
+                    .scatter_unfold
+                    .as_ref()
+                    .zip(batch.fold_gather.as_ref())
+                    .is_some_and(|(scatter, fold)| {
+                        text_embeddings_backend_core::MultimodalEncoding::allows_radix_fold(
+                            &batch.multimodal,
+                            &batch.input_ids,
+                            &batch.cumulative_seq_lengths,
+                            scatter,
+                            fold,
+                        )
+                    })
+            {
+                candle::bail!("Radix image folding requires identical images and image prefixes");
+            }
+            let vision = self
+                .vision
+                .as_ref()
+                .ok_or_else(|| candle::Error::Msg("Qwen3.5 vision weights unavailable".into()))?;
+            let mut full_hidden = self
+                .embeddings
+                .forward(&Tensor::new(batch.input_ids.as_slice(), &self.device)?)?;
+            vision.inject(batch, &mut full_hidden)?;
+            hidden = compact.fold_gather(&full_hidden)?;
+            let (cos, sin) = vision.rope(batch, &self.cos_cache, &self.sin_cache)?;
+            (compact.fold_gather(&cos)?, compact.fold_gather(&sin)?)
+        } else {
+            (
+                index_select(&self.cos_cache, &compact.position_ids_compact, 0)?,
+                index_select(&self.sin_cache, &compact.position_ids_compact, 0)?,
+            )
+        };
         for layer in &self.layers {
             hidden = layer.forward(&hidden, &cu, &cos, &sin, batch, &compact)?;
         }

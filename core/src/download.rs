@@ -84,6 +84,14 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
             config["model_type"] == "gemma4" && config["vision_config"].is_object()
         }) {
             download_file(api, "processor_config.json").await?;
+        } else if serde_json::from_slice::<serde_json::Value>(&bytes).is_ok_and(|config| {
+            matches!(
+                config["model_type"].as_str(),
+                Some("qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" | "qwen3_5_moe_text")
+            ) && config["vision_config"].is_object()
+        }) {
+            // Text-only Qwen3.5 exports may omit their optional media processor.
+            let _ = download_file(api, "processor_config.json").await;
         }
     }
     if download_file(api, "joint_head_config.json").await.is_ok() {

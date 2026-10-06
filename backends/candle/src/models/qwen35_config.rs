@@ -7,6 +7,8 @@ pub enum Qwen35Config {
     Multimodal {
         text_config: Qwen35TextConfig,
         #[serde(default)]
+        vision_config: Option<serde_json::Value>,
+        #[serde(default)]
         tie_word_embeddings: bool,
         #[serde(default)]
         use_bidirectional_attention: bool,
@@ -22,6 +24,12 @@ impl Qwen35Config {
         match self {
             Self::Multimodal { text_config, .. } => text_config,
             Self::Text(c) => c,
+        }
+    }
+    pub fn vision(&self) -> Option<&serde_json::Value> {
+        match self {
+            Self::Multimodal { vision_config, .. } => vision_config.as_ref(),
+            Self::Text(_) => None,
         }
     }
     pub fn tie_word_embeddings(&self) -> bool {
@@ -66,6 +74,10 @@ pub struct Rope {
     pub rope_type: String,
     pub rope_theta: f32,
     pub partial_rotary_factor: f64,
+    #[serde(default)]
+    pub mrope_section: Option<[usize; 3]>,
+    #[serde(default)]
+    pub mrope_interleaved: bool,
 }
 #[derive(Debug, Clone, Deserialize)]
 pub struct Qwen35TextConfig {
