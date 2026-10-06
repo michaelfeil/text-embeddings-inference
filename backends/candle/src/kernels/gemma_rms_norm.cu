@@ -106,21 +106,10 @@ extern "C" __global__ void gemma_rms_norm_reference_bf16(
     gemma_rms_norm_reference_impl<false>(x, scale, out, width, heads, token_stride, eps);
 }
 
-
-extern "C" __global__ void gemma_rms_norm_pair_bf16(
-    const __nv_bfloat16* x, const float* expert_scale,
-    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
-    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
-    gemma_rms_norm_reference_impl<false, true>(
-        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
-}
-
-extern "C" __global__ void gemma_rms_norm_pair_compact_bf16(
-    const __nv_bfloat16* x, const float* expert_scale,
-    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
-    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
-    gemma_rms_norm_reference_impl<true, true>(
-        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
+extern "C" __global__ void gemma_rms_norm_compact_bf16(
+    const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps) {
+    gemma_rms_norm_reference_impl<true>(x, scale, out, width, heads, token_stride, eps);
 }
 
 // NeoX rotary embedding with BF16 rounding after each product, as in Candle's
@@ -145,4 +134,20 @@ extern "C" __global__ void gemma_rope_reference_bf16(
     float first = __bfloat162float(__float2bfloat16_rn(__fmul_rn(a, __bfloat162float(cos[freq]))));
     float second = __bfloat162float(__float2bfloat16_rn(__fmul_rn(b, __bfloat162float(sin[freq]))));
     out[i] = __float2bfloat16_rn(__fadd_rn(first, second));
+}
+
+extern "C" __global__ void gemma_rms_norm_pair_bf16(
+    const __nv_bfloat16* x, const float* expert_scale,
+    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
+    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
+    gemma_rms_norm_reference_impl<false, true>(
+        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
+}
+
+extern "C" __global__ void gemma_rms_norm_pair_compact_bf16(
+    const __nv_bfloat16* x, const float* expert_scale,
+    const __nv_bfloat16* router_scale, __nv_bfloat16* out,
+    unsigned int width, unsigned long long token_stride, float eps, __nv_bfloat16 root) {
+    gemma_rms_norm_reference_impl<true, true>(
+        x, expert_scale, out, width, 1, token_stride, eps, router_scale, root);
 }
