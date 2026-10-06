@@ -89,8 +89,15 @@ impl CustomOp2 for Norm {
             .slice(sl.start_offset()..sl.start_offset() + width as usize);
         // The grid writes every output element exactly once.
         let mut out = unsafe { device.alloc::<half::bf16>(n)? };
+        let rows = (n / width as usize) as u32;
+        let warp = self.reference && width == 256 && rows >= 4096;
+        let compact = self.reference && width > 256 && rows >= 2048;
         let kernel = device.get_or_load_custom_func(
-            if self.reference {
+            if warp {
+                "gemma_rms_norm_warp_bf16"
+            } else if compact {
+                "gemma_rms_norm_compact_bf16"
+            } else if self.reference {
                 "gemma_rms_norm_reference_bf16"
             } else {
                 "gemma_rms_norm_bf16"
@@ -107,11 +114,16 @@ impl CustomOp2 for Norm {
             .arg(&heads)
             .arg(&token_stride)
             .arg(&self.epsilon);
+        if warp {
+            launch.arg(&rows);
+        }
         unsafe {
             launch.launch(LaunchConfig {
-                grid_dim: ((n / width as usize) as u32, 1, 1),
+                grid_dim: (if warp { rows.div_ceil(8) } else { rows }, 1, 1),
                 block_dim: (
-                    if self.reference {
+                    if warp || compact {
+                        256
+                    } else if self.reference {
                         width.min(1024).next_power_of_two()
                     } else if width <= 128 {
                         32
