@@ -653,8 +653,9 @@ Choice, noul, and score are supported. Native `state.messages` accepts user
 Images are processed once per request and their GPU features are shared across
 batched questions. The current vision tower allows up to 1024 image tokens per
 image (4096 patches); larger images return 422 to bound dense vision attention.
-The Qwen3-VL vision tower uses FP16 projections for accuracy and feeds Qwen3.5's
-multimodal positions and hybrid attention backbone; image prefixes can use RadixMLP when their content
+With BF16 text, the Qwen3-VL vision tower uses FP16 projections for accuracy.
+Explicit FP32 loading is preserved. The tower feeds Qwen3.5's multimodal
+positions and hybrid attention backbone; image prefixes can use RadixMLP when their content
 and positions match. Audio and video are unsupported.
 Prompts exceeding the token limit return 422 without truncation. Limits: 255
 choice options, 10 score levels, and 512 total options per request.

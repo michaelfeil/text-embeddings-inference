@@ -7,6 +7,7 @@ use text_embeddings_backend_core::Batch;
 
 pub(super) struct Qwen35Vision {
     tower: Qwen3VLVisionModel,
+    dtype: DType,
     sections: [usize; 3],
     patch_dim: usize,
     merge_size: usize,
@@ -39,10 +40,16 @@ impl Qwen35Vision {
         {
             candle::bail!("Unsupported Qwen3.5 vision configuration");
         }
+        let vision_dtype = if vb.dtype() == DType::BF16 {
+            DType::F16
+        } else {
+            vb.dtype()
+        };
         Ok(Self {
             // FP16 retains more mantissa precision in the vision tower than BF16
             // while keeping its projections on 16-bit tensor cores.
-            tower: Qwen3VLVisionModel::new(&config, vb.to_dtype(DType::F16).pp("model.visual"))?,
+            tower: Qwen3VLVisionModel::new(&config, vb.to_dtype(vision_dtype).pp("model.visual"))?,
+            dtype: vision_dtype,
             sections,
             patch_dim: config.in_chans
                 * config.temporal_patch_size
@@ -90,7 +97,8 @@ impl Qwen35Vision {
                         &image.pixels,
                         (h * w, self.patch_dim),
                         embeddings.device(),
-                    )?;
+                    )?
+                    .to_dtype(self.dtype)?;
                     let grid = Tensor::new(&[[t as u32, h as u32, w as u32]], embeddings.device())?;
                     let (features, _) = self.tower.forward(&pixels, &grid)?;
                     let features = features.to_dtype(embeddings.dtype())?;
