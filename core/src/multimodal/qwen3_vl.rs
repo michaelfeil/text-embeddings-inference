@@ -105,7 +105,10 @@ impl Qwen3VlProcessor {
             &std::fs::read(root.join("config.json")).map_err(|e| invalid(e.to_string()))?,
         )
         .map_err(|e| invalid(e.to_string()))?;
-        if !matches!(model["model_type"].as_str(), Some("qwen3_vl" | "qwen3_5")) {
+        if !matches!(
+            model["model_type"].as_str(),
+            Some("qwen3_vl" | "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" | "qwen3_5_moe_text")
+        ) {
             return Err(invalid("Image processor requires a Qwen vision checkpoint"));
         }
         let token = |name: &str, config_name: &str| -> Result<u32> {
