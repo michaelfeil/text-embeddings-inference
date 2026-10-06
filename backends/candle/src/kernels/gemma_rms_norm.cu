@@ -146,3 +146,46 @@ extern "C" __global__ void gemma_rope_reference_bf16(
     float second = __bfloat162float(__float2bfloat16_rn(__fmul_rn(b, __bfloat162float(sin[freq]))));
     out[i] = __float2bfloat16_rn(__fadd_rn(first, second));
 }
+
+template<int LOGICAL>
+__device__ __forceinline__ void warp_reference(const __nv_bfloat16* x, const float* scale,
+    __nv_bfloat16* out, unsigned width, unsigned heads, unsigned long long token_stride,
+    float eps, unsigned rows) {
+    unsigned lane = threadIdx.x % 32;
+    unsigned row = blockIdx.x * (blockDim.x / 32) + threadIdx.x / 32;
+    if (row >= rows) return;
+    size_t base = size_t(row / heads) * token_stride + size_t(row % heads) * width;
+    float partial[LOGICAL / 32] = {};
+    #pragma unroll
+    for (int i = 0; i < LOGICAL / 32; ++i) {
+        for (unsigned col = lane + i * 32; col < width; col += LOGICAL) {
+            float v = __bfloat162float(x[base + col]);
+            partial[i] += v * v;
+        }
+    }
+    #pragma unroll
+    for (int stride = LOGICAL / 64; stride; stride >>= 1) {
+        #pragma unroll
+        for (int i = 0; i < stride; ++i) partial[i] += partial[i + stride];
+    }
+    float sum = partial[0];
+    #pragma unroll
+    for (int stride = 16; stride; stride >>= 1) {
+        float other = __shfl_down_sync(0xffffffff, sum, stride);
+        if (lane < stride) sum += other;
+    }
+    float denominator = 0.f;
+    if (!lane) denominator = sqrtf(sum * float(1.0 / double(width)) + eps);
+    denominator = __shfl_sync(0xffffffff, denominator, 0);
+    for (unsigned col = lane; col < width; col += 32) {
+        float value = __bfloat162float(x[base + col]) / denominator;
+        out[size_t(row) * width + col] = __float2bfloat16_rn(value * scale[col]);
+    }
+}
+extern "C" __global__ void gemma_rms_norm_compact_bf16(const __nv_bfloat16* x,const float* scale,__nv_bfloat16* out,unsigned width,unsigned heads,unsigned long long stride,float eps) {
+ gemma_rms_norm_reference_impl<true>(x,scale,out,width,heads,stride,eps);
+}
+extern "C" __global__ void gemma_rms_norm_warp_bf16(const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned width, unsigned heads, unsigned long long stride, float eps, unsigned rows) {
+    warp_reference<256>(x, scale, out, width, heads, stride, eps, rows);
+}

@@ -22,6 +22,36 @@ fn packed_rotary(x: &Tensor, cos: &Tensor, sin: &Tensor, width: usize) -> Result
         .contiguous()
 }
 
+// Each sequence owns a contiguous suffix. FlashAttention aligns that suffix
+// with the end of its full K/V sequence using the causal bottom-right mask.
+fn compact_query_lengths(batch: &Batch) -> Option<(Vec<u32>, usize)> {
+    let gather = batch.fold_gather.as_ref()?;
+    if gather.len() >= batch.input_ids.len() {
+        return None;
+    }
+    let mut offsets = vec![0u32];
+    let mut cursor = 0;
+    let mut max_length = 0;
+    for range in batch.cumulative_seq_lengths.windows(2) {
+        let start = cursor;
+        while cursor < gather.len() && gather[cursor] < range[1] {
+            cursor += 1;
+        }
+        let count = cursor - start;
+        if count > (range[1] - range[0]) as usize
+            || !gather[start..cursor]
+                .iter()
+                .copied()
+                .eq(range[1] - count as u32..range[1])
+        {
+            return None;
+        }
+        offsets.push(cursor as u32);
+        max_length = max_length.max(count);
+    }
+    (cursor == gather.len()).then_some((offsets, max_length))
+}
+
 fn default_head_dim() -> usize {
     256
 }
@@ -219,6 +249,7 @@ impl Gemma4Attention {
         compact: &CompactUnfoldTensors,
         shared_kv: &mut SharedKv,
         image_spans: &[(usize, usize, usize)],
+        compact_queries: Option<&(Tensor, usize)>,
     ) -> Result<Tensor> {
         use crate::flash_attn::flash_attn_varlen;
         let compact_len = states.dim(0)?;
@@ -238,7 +269,11 @@ impl Gemma4Attention {
         ))?;
         let q = self.q_norm.forward(&q)?.transpose(1, 2)?;
         let q = packed_rotary(&q, cos, sin, self.head_dim)?;
-        let q = unfold_heads(q, self.num_attention_heads)?;
+        let q = if compact_queries.is_some() {
+            q
+        } else {
+            unfold_heads(q, self.num_attention_heads)?
+        };
 
         let (k, v) = if self.is_kv_shared {
             shared_kv
@@ -292,14 +327,17 @@ impl Gemma4Attention {
         } else {
             (None, None)
         };
+        let (cu_queries, max_queries) = compact_queries
+            .map(|(cu, len)| (cu, *len))
+            .unwrap_or((cu_seqlens, max_length));
         let mut output = flash_attn_varlen(
             &q,
             &k,
             &v,
             None,
+            cu_queries,
             cu_seqlens,
-            cu_seqlens,
-            max_length,
+            max_queries,
             max_length,
             1.0,
             causal,
@@ -336,7 +374,12 @@ impl Gemma4Attention {
                 output = output.slice_scatter0(&image_output, start)?;
             }
         }
-        self.o_proj.forward(&compact.fold_gather(&output)?)
+        let output = if compact_queries.is_some() {
+            output
+        } else {
+            compact.fold_gather(&output)?
+        };
+        self.o_proj.forward(&output)
     }
 
     fn load(vb: VarBuilder, config: &Gemma4TextConfig, layer_idx: usize) -> Result<Self> {
@@ -627,6 +670,7 @@ impl Gemma4Layer {
         compact: &CompactUnfoldTensors,
         shared_kv: &mut SharedKv,
         image_spans: &[(usize, usize, usize)],
+        compact_queries: Option<&(Tensor, usize)>,
     ) -> Result<Tensor> {
         let residual = states;
         let normalized = self.input_layernorm.forward(states)?;
@@ -640,6 +684,7 @@ impl Gemma4Layer {
             compact,
             shared_kv,
             image_spans,
+            compact_queries,
         )?;
         let states = (residual + self.post_attention_layernorm.forward(&attention)?)?;
         let residual = &states;
@@ -852,6 +897,13 @@ impl Gemma4Model {
         #[cfg(feature = "fa4")]
         let _fa4_batch =
             crate::fa4_native::prepare_batch(&cu_seqlens, &batch.cumulative_seq_lengths)?;
+        let compact_queries = if causal && !has_images {
+            compact_query_lengths(batch)
+                .map(|(cu, len)| Ok::<_, candle::Error>((Tensor::new(cu, &self.device)?, len)))
+                .transpose()?
+        } else {
+            None
+        };
         let positions = &compact.position_ids_compact;
         let rope = |cache: &(Tensor, Tensor)| -> Result<(Tensor, Tensor)> {
             Ok((
@@ -887,6 +939,7 @@ impl Gemma4Model {
                 &compact,
                 &mut shared_kv,
                 &image_spans,
+                compact_queries.as_ref(),
             )?;
         }
         Ok((self.norm.forward(&states)?, compact))
@@ -1179,6 +1232,33 @@ impl Model for Gemma4Model {
 #[cfg(test)]
 mod moe_tests {
     use super::*;
+    #[test]
+    fn compact_queries_require_contiguous_owned_suffixes() {
+        let mut batch = Batch {
+            input_ids: vec![0; 12],
+            cumulative_seq_lengths: vec![0, 4, 9, 12],
+            fold_gather: Some(vec![0, 1, 2, 3, 7, 8]),
+            multimodal: vec![],
+            token_type_ids: vec![],
+            position_ids: vec![],
+            max_length: 5,
+            pooled_indices: vec![],
+            raw_indices: vec![],
+            compact_input_ids: None,
+            compact_position_ids: None,
+            scatter_unfold: None,
+            tokens: vec![],
+            offsets: vec![],
+        };
+        assert_eq!(compact_query_lengths(&batch), Some((vec![0, 4, 6, 6], 4)));
+        batch.fold_gather = Some(vec![0, 1, 2, 3, 6, 8]);
+        assert!(compact_query_lengths(&batch).is_none());
+        batch.fold_gather = Some(vec![0, 1, 2, 3, 7, 8, 0]);
+        assert!(compact_query_lengths(&batch).is_none());
+        batch.fold_gather = Some((0..12).collect());
+        assert!(compact_query_lengths(&batch).is_none());
+    }
+
     #[test]
     fn dense_and_moe_config_fields() -> anyhow::Result<()> {
         let mut value = serde_json::json!({
