@@ -107,6 +107,7 @@ Below are some examples of the currently supported models:
 | 58        | 137M                   | NomicBERT      | [nomic-ai/nomic-embed-text-v1](https://hf.co/nomic-ai/nomic-embed-text-v1)                       |
 | 79        | 137M                   | NomicBERT      | [nomic-ai/nomic-embed-text-v1.5](https://hf.co/nomic-ai/nomic-embed-text-v1.5)                   |
 | N/A       | 1B                     | Ministral3     | [nvidia/Nemotron-3-Embed-1B-BF16](https://hf.co/nvidia/Nemotron-3-Embed-1B-BF16)                 |
+| N/A       | 8B                     | Ministral3     | [nvidia/Nemotron-3-Embed-8B-BF16](https://hf.co/nvidia/Nemotron-3-Embed-8B-BF16)                 |
 | N/A       | 475M-A305M             | NomicBERT      | [nomic-ai/nomic-embed-text-v2-moe](https://hf.co/nomic-ai/nomic-embed-text-v2-moe)               |
 | N/A       | 434M                   | Alibaba GTE    | [Alibaba-NLP/gte-large-en-v1.5](https://hf.co/Alibaba-NLP/gte-large-en-v1.5)                     |
 | N/A       | 396M                   | ModernBERT     | [answerdotai/ModernBERT-large](https://hf.co/answerdotai/ModernBERT-large)                       |
