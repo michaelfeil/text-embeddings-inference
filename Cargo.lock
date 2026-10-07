@@ -539,7 +539,7 @@ source = "git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d
 dependencies = [
  "accelerate-src",
  "byteorder",
- "candle-kernels 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-kernels",
  "candle-metal-kernels",
  "cudarc",
  "float8",
@@ -566,40 +566,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "candle-core"
-version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=babd1c655ab53f9fcfe40c2877ee4ef6ce4870fb#babd1c655ab53f9fcfe40c2877ee4ef6ce4870fb"
-dependencies = [
- "byteorder",
- "candle-kernels 0.11.0 (git+https://github.com/michaelfeil/candle?rev=babd1c655ab53f9fcfe40c2877ee4ef6ce4870fb)",
- "cudarc",
- "float8",
- "gemm",
- "half",
- "libc",
- "libm",
- "memmap2",
- "num-traits",
- "num_cpus",
- "parking_lot",
- "rand 0.9.0",
- "rand_distr",
- "rayon",
- "safetensors",
- "thiserror 2.0.21",
- "tokenizers 0.23.2",
- "yoke 0.8.3",
- "zerocopy 0.8.24",
- "zip 8.6.0",
-]
-
-[[package]]
 name = "candle-cublaslt"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-nn",
  "cudarc",
  "float8",
@@ -614,7 +586,7 @@ version = "0.11.0"
 source = "git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44#036f39e44015e78ba18d716d73dfdc2e78730c44"
 dependencies = [
  "anyhow",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "cudaforge",
  "half",
 ]
@@ -625,7 +597,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-nn",
  "cudaforge",
  "half",
@@ -636,9 +608,9 @@ dependencies = [
 [[package]]
 name = "candle-flash-attn-v4"
 version = "0.1.0-alpha.1"
-source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=fe8cbfea7288f8a2d36df1d04b7eca980b5ba063#fe8cbfea7288f8a2d36df1d04b7eca980b5ba063"
+source = "git+https://github.com/michaelfeil/candle-flash-attn-v4?rev=0f6c65849ad3b28b085940d5b31d325ed1df4902#0f6c65849ad3b28b085940d5b31d325ed1df4902"
 dependencies = [
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=babd1c655ab53f9fcfe40c2877ee4ef6ce4870fb)",
+ "candle-core",
  "half",
 ]
 
@@ -648,7 +620,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-nn",
  "half",
  "num_cpus",
@@ -664,20 +636,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "candle-kernels"
-version = "0.11.0"
-source = "git+https://github.com/michaelfeil/candle?rev=babd1c655ab53f9fcfe40c2877ee4ef6ce4870fb#babd1c655ab53f9fcfe40c2877ee4ef6ce4870fb"
-dependencies = [
- "cudaforge",
-]
-
-[[package]]
 name = "candle-layer-norm"
 version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-nn",
  "half",
  "num_cpus",
@@ -705,7 +669,7 @@ version = "0.11.0"
 source = "git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44#036f39e44015e78ba18d716d73dfdc2e78730c44"
 dependencies = [
  "accelerate-src",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-metal-kernels",
  "half",
  "libc",
@@ -723,7 +687,7 @@ version = "0.0.1"
 dependencies = [
  "anyhow",
  "bindgen_cuda",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-nn",
  "half",
  "num_cpus",
@@ -736,7 +700,7 @@ version = "0.11.0"
 source = "git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44#036f39e44015e78ba18d716d73dfdc2e78730c44"
 dependencies = [
  "byteorder",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-flash-attn",
  "candle-nn",
  "fancy-regex 0.19.2",
@@ -1357,7 +1321,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "976dd42dc7e85965fe702eb8164f21f450704bdde31faefd6471dba214cb594e"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2535,7 +2499,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.2",
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -2642,7 +2606,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fc2f4eb4bc735547cfed7c0a4922cbd04a4655978c09b54f1f7b228750664c34"
 dependencies = [
  "cfg-if",
- "windows-targets 0.52.6",
+ "windows-targets 0.48.5",
 ]
 
 [[package]]
@@ -3945,7 +3909,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4302,7 +4266,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4315,7 +4279,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.9.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4895,7 +4859,7 @@ dependencies = [
  "getrandom 0.3.2",
  "once_cell",
  "rustix 1.0.5",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -4921,7 +4885,7 @@ dependencies = [
  "accelerate-src",
  "anyhow",
  "bytemuck",
- "candle-core 0.11.0 (git+https://github.com/michaelfeil/candle?rev=036f39e44015e78ba18d716d73dfdc2e78730c44)",
+ "candle-core",
  "candle-cublaslt",
  "candle-flash-attn",
  "candle-flash-attn-v1",
@@ -6103,7 +6067,7 @@ version = "0.1.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cf221c93e13a30d793f7645a0e7762c55d169dbb0a49671918a2319d289b10bb"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.48.0",
 ]
 
 [[package]]
