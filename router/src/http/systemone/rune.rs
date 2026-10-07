@@ -209,7 +209,6 @@ impl Rune {
             encoding.position_ids = (0..length as u32).collect();
             encoding.multimodal = Some(Arc::new(MultimodalEncoding {
                 audios: vec![],
-                reservations: vec![],
                 images: spans,
                 position_ids: std::array::from_fn(|_| encoding.position_ids.clone()),
                 memory: Some(images.memory.clone()),

@@ -77,7 +77,6 @@ fn rune_text_and_image_logits_are_identical_to_branch_head() -> anyhow::Result<(
             Some(Arc::new(MultimodalEncoding {
                 images: vec![(start + 1, patches)],
                 audios: vec![],
-                reservations: vec![],
                 position_ids: std::array::from_fn(|_| (0..image.len() as u32).collect()),
                 memory: None,
             })),

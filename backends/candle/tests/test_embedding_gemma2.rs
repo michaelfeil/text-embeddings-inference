@@ -150,7 +150,6 @@ fn released_checkpoint_matches_transformers_for_every_modality() -> Result<()> {
             batch.multimodal.push(Some(Arc::new(MultimodalEncoding {
                 images,
                 audios,
-                reservations: vec![],
                 position_ids: std::array::from_fn(|_| (0..sequence.len() as u32).collect()),
                 memory: None,
             })));

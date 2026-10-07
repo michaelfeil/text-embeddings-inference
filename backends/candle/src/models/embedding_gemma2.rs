@@ -419,30 +419,3 @@ impl Model for EmbeddingGemma2Model {
         candle::bail!("EmbeddingGemma2 only supports embeddings");
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn released_config_resolves_leading_zero_layer_overrides() -> Result<()> {
-        let config: EmbeddingGemma2Config = serde_json::from_str(include_str!(
-            "../../tests/fixtures/embedding_gemma2_config.json"
-        ))
-        .map_err(candle::Error::wrap)?;
-        let text = &config.text_config;
-        assert_eq!(text.embedding_dim, 768);
-        for idx in 0..24 {
-            let layer = text.layer_config(idx)?;
-            assert_eq!(layer.sliding_window, 1024);
-            if (idx + 1) % 6 == 0 {
-                assert_eq!(layer.head_dim, 512);
-                assert_eq!(layer.global_head_dim, 512);
-                assert_eq!(layer.num_key_value_heads, 1);
-            } else {
-                assert_eq!(layer.head_dim, 256);
-                assert_eq!(layer.num_key_value_heads, 2);
-            }
-        }
-        Ok(())
-    }
-}

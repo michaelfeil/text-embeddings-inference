@@ -213,7 +213,6 @@ impl Onejev {
             encoding.input_ids = ids;
             encoding.multimodal = Some(Arc::new(text_embeddings_backend::MultimodalEncoding {
                 audios: vec![],
-                reservations: vec![],
                 images: spans,
                 position_ids: positions,
                 memory: Some(images.memory.clone()),

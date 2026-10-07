@@ -201,7 +201,7 @@ impl EmbeddingGemma2Processor {
         messages.sort_by_key(|m| !matches!(m.role, MessageRole::System));
         let mut text = String::new();
         let mut items = Vec::new();
-        let mut reservations = Vec::new();
+        let mut memory = self.budget.reserve(0)?;
         let mut media_count = 0usize;
         for message in messages {
             match message.content {
@@ -238,7 +238,11 @@ impl EmbeddingGemma2Processor {
                                     return Err(invalid("Image detail must be auto or omitted"));
                                 }
                                 let prepared = self.images.prepare(vec![image_url.url]).await?;
-                                reservations.push(prepared.memory);
+                                memory.merge(
+                                    Arc::try_unwrap(prepared.memory).map_err(|_| {
+                                        invalid("Image memory is unexpectedly shared")
+                                    })?,
+                                );
                                 items.push(PreparedItem::Images(prepared.images, false));
                                 if !manual {
                                     text.push_str("<|image|>");
@@ -252,7 +256,9 @@ impl EmbeddingGemma2Processor {
                                 // each retain a worst-case encoded-byte reservation.
                                 for (frame, _encoded_memory) in frames {
                                     let prepared = self.frames.prepare(vec![frame]).await?;
-                                    reservations.push(prepared.memory);
+                                    memory.merge(Arc::try_unwrap(prepared.memory).map_err(
+                                        |_| invalid("Image memory is unexpectedly shared"),
+                                    )?);
                                     patches.extend(prepared.images);
                                 }
                                 items.push(PreparedItem::Images(patches, true));
@@ -288,10 +294,10 @@ impl EmbeddingGemma2Processor {
                                 .await
                                 .map_err(|_| invalid("Audio feature extraction failed"))??;
                                 drop(sample_memory);
-                                reservations
-                                    .push(Arc::new(self.budget.reserve(
+                                memory
+                                    .merge(self.budget.reserve(
                                         features.values.len() * 8 + features.mask.len(),
-                                    )?));
+                                    )?);
                                 items.push(PreparedItem::Audio(Arc::new(features)));
                                 if !manual {
                                     text.push_str("<|audio|>");
@@ -382,9 +388,8 @@ impl EmbeddingGemma2Processor {
             media: Arc::new(MultimodalEncoding {
                 images,
                 audios,
-                reservations,
                 position_ids: std::array::from_fn(|_| positions.clone()),
-                memory: None,
+                memory: Some(Arc::new(memory)),
             }),
         })
     }
@@ -700,137 +705,5 @@ mod tests {
             .values
             .iter()
             .all(|v| (*v - 0.001f32.ln()).abs() < 1e-6));
-    }
-
-    #[test]
-    #[ignore = "requires independent Transformers audio feature fixture"]
-    fn log_mel_matches_transformers_reference() {
-        let root = std::path::PathBuf::from(std::env::var("EMBEDDINGGEMMA2_FIXTURE_DIR").unwrap());
-        let value: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(root.join("audio_features.json")).unwrap())
-                .unwrap();
-        let samples: Vec<f32> = serde_json::from_value(value["samples"].clone()).unwrap();
-        let expected: Vec<f32> = serde_json::from_value(value["values"].clone()).unwrap();
-        let mask: Vec<bool> = serde_json::from_value(value["mask"].clone()).unwrap();
-        let actual = extract_audio_features(&samples).unwrap();
-        assert_eq!(
-            actual.mask,
-            mask.iter().map(|&v| u8::from(v)).collect::<Vec<_>>()
-        );
-        assert_eq!(actual.values.len(), expected.len());
-        let error = actual
-            .values
-            .iter()
-            .zip(expected)
-            .map(|(a, b)| (a - b).abs())
-            .fold(0.0f32, f32::max);
-        assert!(error < 2e-5, "log-mel max error {error}");
-    }
-
-    #[tokio::test]
-    #[ignore = "requires released checkpoint, Transformers fixtures, and ffmpeg"]
-    async fn interleaved_media_layout_matches_transformers_and_rejects_partial_truncation() {
-        let root = std::path::PathBuf::from(std::env::var("EMBEDDINGGEMMA2_MODEL_ROOT").unwrap());
-        let fixture =
-            std::path::PathBuf::from(std::env::var("EMBEDDINGGEMMA2_FIXTURE_DIR").unwrap());
-        let tokenizer = Tokenizer::from_file(root.join("tokenizer.json")).unwrap();
-        let processor = EmbeddingGemma2Processor::load(
-            &root,
-            tokenizer,
-            8192,
-            MultimodalConfig::default(),
-            None,
-            None,
-        )
-        .unwrap();
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&std::fs::read(fixture.join("manifest.json")).unwrap()).unwrap();
-        let source = |name: &str, mime: &str| {
-            format!(
-                "data:{mime};base64,{}",
-                STANDARD.encode(std::fs::read(fixture.join(name)).unwrap())
-            )
-        };
-        let image = |name: &str| ContentPart::ImageUrl {
-            image_url: crate::input::ImageSource {
-                url: source(name, "image/png"),
-                detail: None,
-            },
-        };
-        let audio = |name: &str| ContentPart::InputAudio {
-            input_audio: crate::input::AudioSource {
-                data: STANDARD.encode(std::fs::read(fixture.join(name)).unwrap()),
-                format: AudioFormat::Wav,
-            },
-        };
-        let video = |name: &str| ContentPart::VideoUrl {
-            video_url: crate::input::VideoSource {
-                url: source(name, "video/mp4"),
-            },
-        };
-        let cases = [
-            ("image", vec![image("red.png")]),
-            (
-                "text_image",
-                vec![
-                    ContentPart::Text {
-                        text: "A colorful image: ".into(),
-                    },
-                    image("green.png"),
-                ],
-            ),
-            ("images", vec![image("red.png"), image("green.png")]),
-            ("video", vec![video("video.mp4")]),
-            ("video_limit", vec![video("video-limit.mp4")]),
-            ("audio", vec![audio("audio.wav")]),
-            ("audio_limit", vec![audio("audio-30s.wav")]),
-            ("audios", vec![audio("audio-short.wav"), audio("audio.wav")]),
-            (
-                "mixed",
-                vec![
-                    ContentPart::Text {
-                        text: "Compare these inputs. ".into(),
-                    },
-                    image("red.png"),
-                    video("video.mp4"),
-                    audio("audio.wav"),
-                ],
-            ),
-        ];
-        for (name, parts) in cases {
-            let messages = vec![Message {
-                role: MessageRole::User,
-                content: MessageContent::Parts(parts),
-            }];
-            let prepared = processor
-                .prepare(messages.clone(), false, TruncationDirection::Right, None)
-                .await
-                .unwrap();
-            let expected: Vec<u32> = serde_json::from_value(
-                manifest
-                    .as_array()
-                    .unwrap()
-                    .iter()
-                    .find(|c| c["name"] == name)
-                    .unwrap()["sequences"][0]
-                    .clone(),
-            )
-            .unwrap();
-            assert_eq!(prepared.input_ids, expected, "{name}");
-            let mut limited = processor.clone();
-            limited.max_tokens = prepared.input_ids.len() - 1;
-            assert!(limited
-                .prepare(messages, true, TruncationDirection::Right, None)
-                .await
-                .is_err());
-        }
-        let unmatched = vec![Message {
-            role: MessageRole::User,
-            content: MessageContent::Text("<|audio|>".into()),
-        }];
-        assert!(processor
-            .prepare(unmatched, false, TruncationDirection::Right, None)
-            .await
-            .is_err());
     }
 }

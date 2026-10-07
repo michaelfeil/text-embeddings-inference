@@ -60,7 +60,6 @@ pub struct MultimodalEncoding {
     /// (First image token, patches), in message/content order.
     pub images: Vec<(usize, Arc<ImagePatches>)>,
     pub audios: Vec<(usize, Arc<AudioFeatures>)>,
-    pub reservations: Vec<Arc<OwnedSemaphorePermit>>,
     pub position_ids: [Vec<u32>; 3],
     /// Keeps the processor's memory reservation alive until the last batch consumer drops it.
     pub memory: Option<Arc<OwnedSemaphorePermit>>,
@@ -233,7 +232,6 @@ mod tests {
         let media = |image| {
             Some(Arc::new(MultimodalEncoding {
                 audios: vec![],
-                reservations: vec![],
                 images: vec![(1, image)],
                 position_ids: std::array::from_fn(|_| (0..6).collect()),
                 memory: None,

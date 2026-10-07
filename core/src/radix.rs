@@ -130,7 +130,6 @@ mod tests {
     fn image(value: f32) -> Arc<MultimodalEncoding> {
         Arc::new(MultimodalEncoding {
             audios: vec![],
-            reservations: vec![],
             images: vec![(
                 1,
                 Arc::new(ImagePatches {
@@ -207,7 +206,6 @@ mod tests {
         assert_reconstruct(&ids, &pos, &result);
         let mut changed = MultimodalEncoding {
             audios: vec![],
-            reservations: vec![],
             images: a.images.clone(),
             position_ids: a.position_ids.clone(),
             memory: None,
@@ -228,7 +226,6 @@ mod tests {
         let context = |second: Arc<ImagePatches>| {
             Some(Arc::new(MultimodalEncoding {
                 audios: vec![],
-                reservations: vec![],
                 images: vec![(1, first.clone()), (3, second)],
                 position_ids: std::array::from_fn(|_| (0..6).collect()),
                 memory: None,
