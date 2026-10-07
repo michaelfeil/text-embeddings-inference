@@ -87,7 +87,7 @@ Embedding text inputs automatically use `fastokens-b10` when the tokenizer confi
 #### Text Embeddings
 
 Text Embeddings Inference currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
-model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, and dense Gemma4 text models.
+model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, dense Gemma4 text models, and multimodal EmbeddingGemma 2.
 
 Below are some examples of the currently supported models:
 
@@ -99,6 +99,7 @@ Below are some examples of the currently supported models:
 | 6         | 7.61B (Very Expensive) | Qwen2          | [Alibaba-NLP/gte-Qwen2-7B-instruct](https://hf.co/Alibaba-NLP/gte-Qwen2-7B-instruct)             |
 | 7         | 560M                   | XLM-RoBERTa    | [intfloat/multilingual-e5-large-instruct](https://hf.co/intfloat/multilingual-e5-large-instruct) |
 | 8         | 308M                   | Gemma3         | [google/embeddinggemma-300m](https://hf.co/google/embeddinggemma-300m) (gated)                   |
+| N/A       | 744M                   | EmbeddingGemma2 | [google/embeddinggemma-2](https://hf.co/google/embeddinggemma-2)                              |
 | 15        | 1.78B (Expensive)      | Qwen2          | [Alibaba-NLP/gte-Qwen2-1.5B-instruct](https://hf.co/Alibaba-NLP/gte-Qwen2-1.5B-instruct)         |
 | 18        | 7.11B (Very Expensive) | Mistral        | [Salesforce/SFR-Embedding-2_R](https://hf.co/Salesforce/SFR-Embedding-2_R)                       |
 | 35        | 568M                   | XLM-RoBERTa    | [Snowflake/snowflake-arctic-embed-l-v2.0](https://hf.co/Snowflake/snowflake-arctic-embed-l-v2.0) |
@@ -448,6 +449,60 @@ curl 127.0.0.1:8080/rerank \
     -d '{"query": "What is Deep Learning?", "texts": ["Deep Learning is not...", "Deep learning is..."]}' \
     -H 'Content-Type: application/json'
 ```
+
+### EmbeddingGemma 2: text, images, video, and audio
+
+Serve [google/embeddinggemma-2](https://huggingface.co/google/embeddinggemma-2)
+with a CUDA Candle build supporting FlashAttention v2:
+
+```bash
+text-embeddings-router --model-id google/embeddinggemma-2 --dtype bfloat16
+```
+
+The checkpoint's mean pooling, output projection, and task prompts load automatically.
+Outputs have 768 dimensions; `dimensions` can select the leading 512, 256, or 128
+components. Use `normalize: true` when comparing embeddings with cosine similarity.
+
+| Input | Supported form |
+|-------|----------------|
+| Text | Strings, string batches, final token IDs, or messages; `prompt_name` supports the checkpoint's task prefixes |
+| Images | Ordered `image_url` parts; PNG, JPEG, WebP; 280 soft-token budget per image |
+| Video | Ordered `video_url` parts; MP4/WebM data URLs or allowed HTTPS hosts; sampled at 1 fps, uniformly capped at 32 frames with a 140-token budget per frame |
+| Audio | Ordered `input_audio` parts with base64 WAV or MP3; decoded to mono 16 kHz, up to 30 seconds per clip |
+| Mixed inputs | Text, images, video, and audio interleaved in one message content list |
+| Pooled / token outputs | `/embed`, `/v1/embeddings`, and `/embed_all`; existing batching and replica routing apply |
+| Execution | CUDA BF16 with FlashAttention v2; FA4 builds use the existing FA2 fallback for this text encoder's head geometries |
+
+For example, embed text with an image using the shared message input contract:
+
+```json
+{
+  "inputs": [{"role": "user", "content": [
+    {"type": "text", "text": "Describe these colors. "},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,..."}}
+  ]}],
+  "normalize": true
+}
+```
+
+Send that body to `/embed`. Video parts use
+`{"type":"video_url","video_url":{"url":"data:video/mp4;base64,..."}}`;
+audio parts use
+`{"type":"input_audio","input_audio":{"format":"wav","data":"..."}}`.
+Media-only messages are supported. Text parts can include explicit `<|image|>`,
+`<|video|>`, and `<|audio|>` placeholders in media order; otherwise placeholders
+are inserted where the corresponding parts occur.
+
+All modalities share an 8,192-token request budget. Requests exceeding it are
+rejected when media is present, including when truncation is requested, to
+preserve complete media spans. The existing image limits also bound media
+retrieval: four media items, 20 MiB per encoded item, 16 megapixels per decoded
+frame, and a 512 MiB processing budget by default. Videos are limited to 10
+minutes. Increase `--payload-limit` for large base64 request bodies and use
+`--image-allowed-hosts` to allow exact HTTPS hostnames. Audio/video decoding needs
+`ffmpeg` and `ffprobe`, included in the CUDA Docker runtime images. RadixMLP is
+disabled for this bidirectional encoder. Rune retains its existing text/image
+protocol and causal attention behavior.
 
 ### Using Sequence Classification models
 

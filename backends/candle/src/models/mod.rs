@@ -13,6 +13,8 @@ mod bert;
 mod clef;
 mod dense;
 mod distilbert;
+#[cfg_attr(not(feature = "flash-attn"), allow(dead_code, unused_imports))]
+mod embedding_gemma2;
 mod gemma3;
 #[cfg_attr(not(feature = "flash-attn"), allow(dead_code, unused_imports))]
 mod gemma4;
@@ -51,6 +53,9 @@ mod flash_qwen3;
 pub use bert::{BertConfig, PositionEmbeddingType};
 pub use dense::{Dense, DenseConfig, DenseLayer};
 pub use distilbert::DistilBertConfig;
+pub use embedding_gemma2::EmbeddingGemma2Config;
+#[cfg(feature = "flash-attn")]
+pub use embedding_gemma2::EmbeddingGemma2Model;
 pub use gemma3::Gemma3Config;
 #[cfg(feature = "flash-attn")]
 pub use gemma3::Gemma3Model;
@@ -135,3 +140,6 @@ pub use qwen3_vl::Qwen3VlModel;
 
 #[cfg(feature = "flash-attn")]
 mod gemma4_vision;
+
+#[cfg(feature = "flash-attn")]
+mod gemma4_audio;

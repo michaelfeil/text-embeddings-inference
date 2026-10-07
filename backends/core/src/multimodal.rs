@@ -39,9 +39,28 @@ impl fmt::Debug for ImagePatches {
 }
 
 #[derive(Debug)]
+pub struct AudioFeatures {
+    pub values: Vec<f32>,
+    pub mask: Vec<u8>,
+    pub feature_size: usize,
+}
+
+impl AudioFeatures {
+    pub fn token_count(&self) -> usize {
+        self.mask
+            .iter()
+            .step_by(4)
+            .filter(|&&valid| valid != 0)
+            .count()
+    }
+}
+
+#[derive(Debug)]
 pub struct MultimodalEncoding {
     /// (First image token, patches), in message/content order.
     pub images: Vec<(usize, Arc<ImagePatches>)>,
+    pub audios: Vec<(usize, Arc<AudioFeatures>)>,
+    pub reservations: Vec<Arc<OwnedSemaphorePermit>>,
     pub position_ids: [Vec<u32>; 3],
     /// Keeps the processor's memory reservation alive until the last batch consumer drops it.
     pub memory: Option<Arc<OwnedSemaphorePermit>>,
@@ -70,6 +89,9 @@ impl MultimodalEncoding {
         a_ids: &[u32],
         b_ids: &[u32],
     ) -> bool {
+        if a.is_some_and(|m| !m.audios.is_empty()) || b.is_some_and(|m| !m.audios.is_empty()) {
+            return false;
+        }
         let a = a.filter(|m| !m.images.is_empty());
         let b = b.filter(|m| !m.images.is_empty());
         let (a, b) = match (a, b) {
@@ -144,6 +166,9 @@ impl MultimodalEncoding {
     /// same prepared pixel bits/layout and context through the final image block.
     /// Equal placeholder IDs alone are insufficient.
     pub fn allows_radix(media: &[Option<Arc<Self>>], ids: &[u32], cumulative: &[u32]) -> bool {
+        if media.iter().flatten().any(|m| !m.audios.is_empty()) {
+            return false;
+        }
         let Some(first) = media.iter().flatten().find(|m| !m.images.is_empty()) else {
             return true;
         };
@@ -207,6 +232,8 @@ mod tests {
         });
         let media = |image| {
             Some(Arc::new(MultimodalEncoding {
+                audios: vec![],
+                reservations: vec![],
                 images: vec![(1, image)],
                 position_ids: std::array::from_fn(|_| (0..6).collect()),
                 memory: None,

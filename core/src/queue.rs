@@ -535,6 +535,8 @@ mod tests {
         let permits = Arc::new(tokio::sync::Semaphore::new(2));
         let make_media = |value| {
             Arc::new(text_embeddings_backend::MultimodalEncoding {
+                audios: vec![],
+                reservations: vec![],
                 images: vec![(
                     0,
                     Arc::new(text_embeddings_backend::ImagePatches {

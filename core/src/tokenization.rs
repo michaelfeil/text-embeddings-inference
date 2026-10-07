@@ -14,6 +14,7 @@ static MAX_CHAR_MULTIPLIER: usize = 250;
 #[derive(Debug, Clone)]
 pub struct Tokenization {
     multimodal: Option<crate::multimodal::Qwen3VlProcessor>,
+    embedding_gemma2: Option<crate::multimodal::EmbeddingGemma2Processor>,
     token_input_vocab_size: Option<usize>,
     max_input_length: usize,
     position_offset: usize,
@@ -76,6 +77,7 @@ impl Tokenization {
         Self {
             sender,
             multimodal: None,
+            embedding_gemma2: None,
             token_input_vocab_size: None,
             max_input_length,
             position_offset,
@@ -105,6 +107,14 @@ impl Tokenization {
             .await
     }
 
+    pub fn with_embedding_gemma2(
+        mut self,
+        processor: crate::multimodal::EmbeddingGemma2Processor,
+    ) -> Self {
+        self.embedding_gemma2 = Some(processor);
+        self
+    }
+
     /// Encode embedding inputs without requesting token text or source offsets.
     #[instrument(skip_all)]
     pub async fn encode_embedding(
@@ -114,6 +124,27 @@ impl Tokenization {
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
+        if let (Some(processor), EncodingInput::Messages(messages)) =
+            (&self.embedding_gemma2, &inputs)
+        {
+            let prepared = processor
+                .prepare(
+                    messages.clone(),
+                    truncate,
+                    truncation_direction,
+                    prompt_name,
+                )
+                .await?;
+            let length = prepared.input_ids.len();
+            return Ok(ValidEncoding {
+                multimodal: Some(prepared.media),
+                input_ids: prepared.input_ids,
+                token_type_ids: vec![0; length],
+                position_ids: (0..length as u32).collect(),
+                tokens: vec![],
+                offsets: vec![],
+            });
+        }
         if let Some(processor) = &self.multimodal {
             if inputs.is_empty() {
                 return Err(TextEmbeddingsError::Empty(

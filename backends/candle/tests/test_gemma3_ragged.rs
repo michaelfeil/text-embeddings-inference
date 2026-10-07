@@ -42,6 +42,7 @@ fn batch(sequences: &[Vec<u32>], raw: bool) -> Batch {
         fold_gather: None,
         tokens: vec![],
         offsets: vec![],
+        multimodal: vec![None; sequences.len()],
     }
 }
 

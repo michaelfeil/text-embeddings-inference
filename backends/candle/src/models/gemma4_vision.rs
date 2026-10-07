@@ -72,6 +72,15 @@ impl Gemma4Vision {
         config: &serde_json::Value,
         hidden_size: usize,
     ) -> Result<Self> {
+        Self::load_at(vb, config, hidden_size, "model")
+    }
+
+    pub(super) fn load_at(
+        vb: VarBuilder,
+        config: &serde_json::Value,
+        hidden_size: usize,
+        prefix: &str,
+    ) -> Result<Self> {
         if config["use_clipped_linears"].as_bool().unwrap_or(false) {
             candle::bail!("Clipped Gemma4 vision projections are unsupported");
         }
@@ -80,9 +89,15 @@ impl Gemma4Vision {
         if config.patch_size != 16 || config.pooling_kernel_size != 3 {
             candle::bail!("Unsupported Gemma4 vision patch layout");
         }
+        let prefix = if prefix.is_empty() {
+            String::new()
+        } else {
+            format!("{prefix}.")
+        };
         // Transformers wraps even unclipped vision projections in `linear`.
-        let vision_vb = vb.clone().rename_f(|name| {
-            if name.starts_with("model.vision_tower.encoder.") && name.ends_with("_proj.weight") {
+        let encoder_prefix = format!("{prefix}vision_tower.encoder.");
+        let vision_vb = vb.clone().rename_f(move |name| {
+            if name.starts_with(&encoder_prefix) && name.ends_with("_proj.weight") {
                 format!("{}.linear.weight", name.trim_end_matches(".weight"))
             } else {
                 name.to_owned()
@@ -90,12 +105,12 @@ impl Gemma4Vision {
         });
         Ok(Self {
             features: Mutex::new(FeatureCache::default()),
-            tower: VisionTower::new(&config, vision_vb.pp("model.vision_tower"))?,
+            tower: VisionTower::new(&config, vision_vb.pp(format!("{prefix}vision_tower")))?,
             projection: MultimodalEmbedder::new(
                 config.hidden_size,
                 hidden_size,
                 config.rms_norm_eps,
-                vb.pp("model.embed_vision"),
+                vb.pp(format!("{prefix}embed_vision")),
             )?,
         })
     }

@@ -18,8 +18,8 @@ use serde::Deserialize;
 
 pub use crate::dtype::DType;
 pub use text_embeddings_backend_core::{
-    BackendError, Batch, ClefField, DecisionInput, DecisionOutput, Embedding, Embeddings,
-    ImagePatches, ModelType, MultimodalEncoding, Pool, Predictions, TokenPredictions,
+    AudioFeatures, BackendError, Batch, ClefField, DecisionInput, DecisionOutput, Embedding,
+    Embeddings, ImagePatches, ModelType, MultimodalEncoding, Pool, Predictions, TokenPredictions,
 };
 
 #[cfg(feature = "candle")]
@@ -770,11 +770,20 @@ async fn download_safetensors(api: Arc<ApiRepo>) -> Result<Vec<PathBuf>, ApiErro
 enum ModuleType {
     #[serde(rename = "sentence_transformers.models.Dense")]
     Dense,
-    #[serde(rename = "sentence_transformers.models.Normalize")]
+    #[serde(
+        rename = "sentence_transformers.models.Normalize",
+        alias = "sentence_transformers.base.modules.normalize.Normalize"
+    )]
     Normalize,
-    #[serde(rename = "sentence_transformers.models.Pooling")]
+    #[serde(
+        rename = "sentence_transformers.models.Pooling",
+        alias = "sentence_transformers.sentence_transformer.modules.pooling.Pooling"
+    )]
     Pooling,
-    #[serde(rename = "sentence_transformers.models.Transformer")]
+    #[serde(
+        rename = "sentence_transformers.models.Transformer",
+        alias = "sentence_transformers.base.modules.transformer.Transformer"
+    )]
     Transformer,
 }
 
@@ -788,6 +797,42 @@ struct ModuleConfig {
     path: String,
     #[serde(rename = "type")]
     module_type: ModuleType,
+}
+
+#[cfg(all(test, feature = "candle"))]
+mod module_format_tests {
+    use super::*;
+
+    #[test]
+    fn released_embeddinggemma2_modules_and_legacy_exports_parse() {
+        let released: Vec<ModuleConfig> = serde_json::from_str(include_str!(
+            "../tests/fixtures/embedding_gemma2_modules.json"
+        ))
+        .unwrap();
+        assert_eq!(
+            released
+                .iter()
+                .map(|m| m.module_type.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                ModuleType::Transformer,
+                ModuleType::Pooling,
+                ModuleType::Normalize
+            ]
+        );
+        for module in released {
+            let legacy_type = match module.module_type {
+                ModuleType::Transformer => "sentence_transformers.models.Transformer",
+                ModuleType::Pooling => "sentence_transformers.models.Pooling",
+                ModuleType::Normalize => "sentence_transformers.models.Normalize",
+                ModuleType::Dense => unreachable!(),
+            };
+            assert_eq!(
+                serde_json::from_value::<ModuleType>(legacy_type.into()).unwrap(),
+                module.module_type
+            );
+        }
+    }
 }
 
 #[cfg(feature = "candle")]

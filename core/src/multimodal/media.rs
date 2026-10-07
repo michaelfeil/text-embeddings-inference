@@ -213,7 +213,13 @@ fn decode_data_url(source: &str, max_bytes: usize) -> Result<Vec<u8>> {
         .ok_or_else(|| invalid("Expected a base64 image data URL"))?;
     if !matches!(
         header,
-        "data:image/png;base64" | "data:image/jpeg;base64" | "data:image/webp;base64"
+        "data:image/png;base64"
+            | "data:image/jpeg;base64"
+            | "data:image/webp;base64"
+            | "data:video/mp4;base64"
+            | "data:video/webm;base64"
+            | "data:audio/wav;base64"
+            | "data:audio/mpeg;base64"
     ) {
         return Err(invalid(
             "Inline images must be base64 PNG, JPEG, or WebP data URLs",

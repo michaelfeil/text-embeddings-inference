@@ -1,7 +1,7 @@
 mod multimodal;
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
-pub use multimodal::{ImagePatches, MultimodalEncoding};
+pub use multimodal::{AudioFeatures, ImagePatches, MultimodalEncoding};
 use nohash_hasher::IntMap;
 use serde::Deserialize;
 use std::fmt;

@@ -285,8 +285,8 @@ pub async fn run(
     // Try to load ST Config
     let mut st_config: Option<STConfig> = None;
     for name in ST_CONFIG_NAMES {
-        // Qwen3-VL uses the multimodal ST format, not legacy max_seq_length.
-        if config.model_type == "qwen3_vl" {
+        // New multimodal ST files describe modalities rather than max_seq_length.
+        if matches!(config.model_type.as_str(), "qwen3_vl" | "embedding_gemma2") {
             break;
         }
         let config_path = model_root.join(name);
@@ -308,6 +308,10 @@ pub async fn run(
             "Invalid Laya max_len"
         );
         length
+    } else if config.model_type == "embedding_gemma2" {
+        // The checkpoint advertises a larger RoPE range but was trained with
+        // an 8192-token shared text/media context.
+        config.max_position_embeddings.min(8192)
     } else if decoder_decision {
         // Decision prompts cannot be truncated: reject over-budget requests in
         // the formatter, with the queue capacity as the configured input limit.
@@ -403,7 +407,22 @@ pub async fn run(
                 &model_root,
                 tokenizer.clone(),
                 max_input_length,
-                multimodal_config,
+                multimodal_config.clone(),
+            )
+            .map_err(|error| anyhow!(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    let embedding_gemma2 = if config.model_type == "embedding_gemma2" {
+        Some(
+            text_embeddings_core::multimodal::EmbeddingGemma2Processor::load(
+                &model_root,
+                tokenizer.clone(),
+                max_input_length,
+                multimodal_config.clone(),
+                prompts.clone(),
+                default_prompt.clone(),
             )
             .map_err(|error| anyhow!(error.to_string()))?,
         )
@@ -429,6 +448,11 @@ pub async fn run(
 
     let tokenization = match multimodal {
         Some(processor) => tokenization.with_multimodal(processor),
+        None => tokenization,
+    };
+
+    let tokenization = match embedding_gemma2 {
+        Some(processor) => tokenization.with_embedding_gemma2(processor),
         None => tokenization,
     };
 
@@ -509,11 +533,13 @@ pub async fn run(
         || config.model_type == "distilbert"
         || config.model_type == "modernbert"
         || config.use_bidirectional_attention.unwrap_or(false)
-        || (matches!(config.model_type.as_str(), "gemma4" | "gemma4_unified")
-            && matches!(
-                &backend.model_type,
-                text_embeddings_backend::ModelType::Embedding(_)
-            ))
+        || (matches!(
+            config.model_type.as_str(),
+            "gemma4" | "gemma4_unified" | "embedding_gemma2"
+        ) && matches!(
+            &backend.model_type,
+            text_embeddings_backend::ModelType::Embedding(_)
+        ))
         || !backend.radix_mlp_supported
     {
         if radix_mlp_threshold > 0.0 {
@@ -687,7 +713,7 @@ fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type
     match requested {
         None | Some(DType::Auto) => {
             // EmbeddingGemma activations require BF16; FP16 is not supported.
-            if model_type == "gemma3_text" {
+            if matches!(model_type, "gemma3_text" | "embedding_gemma2") {
                 return DType::Bfloat16;
             }
             #[cfg(all(
@@ -770,6 +796,7 @@ impl ModelConfig {
             self.model_type.as_str(),
             "gemma4"
                 | "gemma4_unified"
+                | "embedding_gemma2"
                 | "qwen3_5_moe"
                 | "qwen3_5_moe_text"
                 | "qwen3_5"
@@ -809,16 +836,28 @@ pub struct TextPositionConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct PoolConfig {
+    #[serde(default)]
     pooling_mode_cls_token: bool,
+    #[serde(default)]
     pooling_mode_mean_tokens: bool,
     #[serde(default)]
     pooling_mode_lasttoken: bool,
+    #[serde(default)]
+    pooling_mode: Option<String>,
 }
 
 impl TryFrom<PoolConfig> for Pool {
     type Error = anyhow::Error;
 
     fn try_from(config: PoolConfig) -> std::result::Result<Self, Self::Error> {
+        if let Some(mode) = &config.pooling_mode {
+            return match mode.as_str() {
+                "cls" => Ok(Pool::Cls),
+                "mean" => Ok(Pool::Mean),
+                "lasttoken" => Ok(Pool::LastToken),
+                _ => Err(anyhow!("Pooling mode {mode:?} is not supported")),
+            };
+        }
         if config.pooling_mode_cls_token {
             return Ok(Pool::Cls);
         }
@@ -1127,6 +1166,34 @@ mod auto_dtype_tests {
             resolve_dtype(Some(DType::Float32), None, "gemma3_text"),
             DType::Float32
         );
+    }
+
+    #[test]
+    fn embedding_gemma2_config_and_pooling_formats() {
+        let mut config: ModelConfig = serde_json::from_value(serde_json::json!({
+            "architectures": ["EmbeddingGemma2Model"], "model_type": "embedding_gemma2",
+            "dtype": "bfloat16", "text_config": {"max_position_embeddings":262144, "vocab_size":262144}
+        })).unwrap();
+        config.resolve_text_config().unwrap();
+        assert_eq!(config.max_position_embeddings, 262144);
+        assert_eq!(
+            resolve_dtype(None, None, "embedding_gemma2"),
+            DType::Bfloat16
+        );
+        for value in [
+            serde_json::json!({"embedding_dimension":768,"pooling_mode":"mean","include_prompt":true}),
+            serde_json::json!({"pooling_mode_cls_token":false,"pooling_mode_mean_tokens":true}),
+        ] {
+            assert_eq!(
+                Pool::try_from(serde_json::from_value::<PoolConfig>(value).unwrap()).unwrap(),
+                Pool::Mean
+            );
+        }
+        assert!(Pool::try_from(
+            serde_json::from_value::<PoolConfig>(serde_json::json!({"pooling_mode":"unsupported"}))
+                .unwrap()
+        )
+        .is_err());
     }
 
     #[test]
