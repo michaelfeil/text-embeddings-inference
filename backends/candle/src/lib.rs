@@ -26,9 +26,9 @@ use crate::compute_cap::{
     compatible_compute_cap, get_compile_compute_cap, get_runtime_compute_cap,
 };
 use crate::models::{
-    BertConfig, Dense, DenseConfig, DenseLayer, DistilBertConfig, GTEConfig, Gemma3Config,
-    Gemma4Config, LLamaConfig, MPNetConfig, MistralConfig, Model, ModernBertConfig, NomicConfig,
-    Qwen2Config, Qwen3Config,
+    BertConfig, Dense, DenseConfig, DenseLayer, DistilBertConfig, EmbeddingGemma2Config, GTEConfig,
+    Gemma3Config, Gemma4Config, LLamaConfig, MPNetConfig, MistralConfig, Model, ModernBertConfig,
+    NomicConfig, Qwen2Config, Qwen3Config,
 };
 use crate::models::{
     FlashBertModel, FlashDistilBertModel, FlashGTEModel, FlashJinaBertModel,
@@ -104,6 +104,8 @@ enum Config {
     // Parsed on CPU builds so unsupported Gemma3 execution gets an explicit error.
     #[cfg_attr(not(feature = "flash-attn"), allow(dead_code))]
     Gemma3(Gemma3Config),
+    #[serde(rename = "embedding_gemma2")]
+    EmbeddingGemma2(EmbeddingGemma2Config),
     #[serde(rename = "gemma4", alias = "gemma4_unified")]
     Gemma4(Gemma4Config),
     #[serde(alias = "new")]
@@ -483,6 +485,21 @@ impl CandleBackend {
                     let _ = config;
                     Err(BackendError::Start(
                         "Gemma3 requires CUDA BF16 with FlashAttention v2".into(),
+                    ))
+                }
+            }
+            Config::EmbeddingGemma2(config) => {
+                #[cfg(feature = "flash-attn")]
+                {
+                    Ok(Box::new(
+                        models::EmbeddingGemma2Model::load(vb, &config, model_type).s()?,
+                    ))
+                }
+                #[cfg(not(feature = "flash-attn"))]
+                {
+                    let _ = config;
+                    Err(BackendError::Start(
+                        "EmbeddingGemma2 requires CUDA BF16 with FlashAttention v2".into(),
                     ))
                 }
             }

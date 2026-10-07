@@ -51,6 +51,20 @@ Below are some examples of the currently supported models:
 To explore the list of best performing text embeddings models, visit the
 [Massive Text Embedding Benchmark (MTEB) Leaderboard](https://huggingface.co/spaces/mteb/leaderboard).
 
+## EmbeddingGemma 2 multimodal embeddings
+
+`google/embeddinggemma-2` supports text, images, video, audio, and interleaved
+messages on CUDA with BF16 and FlashAttention v2. The model loads its 768-dimensional
+output projection and mean pooling automatically. The shared 8,192-token context
+covers text and media together. Images reuse Gemma4 preprocessing and vision
+encoding; video samples up to 32 frames at 1 fps; WAV/MP3 audio uses mono 16 kHz
+log-mel features and the Gemma4 conformer encoder. Audio/video require FFmpeg.
+
+Use string inputs for text and ordered message content parts (`text`, `image_url`,
+`video_url`, `input_audio`) for media. `/embed`, `/v1/embeddings`, and `/embed_all`
+share this input path. CUDA runtime images include the required media decoders.
+CPU, Metal, FP16, and classification execution are unsupported for this model.
+
 ## Supported re-rankers and sequence classification models
 
 Text Embeddings Inference supports encoder classification models and native

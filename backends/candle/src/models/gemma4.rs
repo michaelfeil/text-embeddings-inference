@@ -148,13 +148,13 @@ pub struct Gemma4Config {
 }
 
 #[derive(Debug)]
-struct Gemma4RmsNorm {
+pub(super) struct Gemma4RmsNorm {
     weight: Tensor,
     epsilon: f64,
 }
 
 impl Gemma4RmsNorm {
-    fn load(vb: VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
+    pub(super) fn load(vb: VarBuilder, hidden_size: usize, epsilon: f64) -> Result<Self> {
         Ok(Self {
             // Normalization applies the scale in FP32; convert it once at load time.
             weight: vb.get(hidden_size, "weight")?.to_dtype(DType::F32)?,
@@ -169,7 +169,7 @@ impl Gemma4RmsNorm {
         })
     }
 
-    fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
+    pub(super) fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let dtype = hidden_states.dtype();
         #[cfg(feature = "cuda")]
         if dtype == DType::BF16
@@ -481,7 +481,7 @@ impl Gemma4Attention {
 }
 
 #[derive(Default)]
-struct SharedKv {
+pub(super) struct SharedKv {
     full: Option<(Tensor, Tensor)>,
     sliding: Option<(Tensor, Tensor)>,
 }
@@ -643,7 +643,7 @@ impl Gemma4Moe {
     }
 }
 
-struct Gemma4Layer {
+pub(super) struct Gemma4Layer {
     attention: Gemma4Attention,
     mlp: Gemma4Mlp,
     moe: Option<Gemma4Moe>,
@@ -658,7 +658,7 @@ struct Gemma4Layer {
 impl Gemma4Layer {
     #[cfg(feature = "flash-attn")]
     #[allow(clippy::too_many_arguments)]
-    fn forward_varlen(
+    pub(super) fn forward_varlen(
         &self,
         states: &Tensor,
         per_layer_input: Option<&Tensor>,
@@ -707,12 +707,21 @@ impl Gemma4Layer {
     }
 
     fn load(vb: VarBuilder, config: &Gemma4TextConfig, layer_idx: usize) -> Result<Self> {
+        Self::load_with_ple(vb.clone(), vb, config, layer_idx)
+    }
+
+    pub(super) fn load_with_ple(
+        vb: VarBuilder,
+        ple_vb: VarBuilder,
+        config: &Gemma4TextConfig,
+        layer_idx: usize,
+    ) -> Result<Self> {
         let norm =
             |name: &str| Gemma4RmsNorm::load(vb.pp(name), config.hidden_size, config.rms_norm_eps);
         let ple = if config.hidden_size_per_layer_input > 0 {
             Some(Gemma4PleLayer {
                 input_gate: Linear::new(
-                    vb.pp("per_layer_input_gate").get(
+                    ple_vb.pp("per_layer_input_gate").get(
                         (config.hidden_size_per_layer_input, config.hidden_size),
                         "weight",
                     )?,
@@ -720,14 +729,18 @@ impl Gemma4Layer {
                     None,
                 ),
                 projection: Linear::new(
-                    vb.pp("per_layer_projection").get(
+                    ple_vb.pp("per_layer_projection").get(
                         (config.hidden_size, config.hidden_size_per_layer_input),
                         "weight",
                     )?,
                     None,
                     None,
                 ),
-                norm: norm("post_per_layer_input_norm")?,
+                norm: Gemma4RmsNorm::load(
+                    ple_vb.pp("post_per_layer_input_norm"),
+                    config.hidden_size,
+                    config.rms_norm_eps,
+                )?,
                 activation: config.hidden_activation.clone(),
             })
         } else {

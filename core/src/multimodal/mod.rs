@@ -11,3 +11,6 @@ mod gemma4;
 pub use gemma4::{Gemma4ImageProcessor, PreparedGemmaImages};
 
 pub use positions::image_positions;
+
+mod embedding_gemma2;
+pub use embedding_gemma2::EmbeddingGemma2Processor;

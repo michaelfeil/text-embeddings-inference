@@ -36,7 +36,19 @@ impl Gemma4ImageProcessor {
                 .map_err(|e| invalid(e.to_string()))?,
         )
         .map_err(|e| invalid(e.to_string()))?;
-        let image = &value["image_processor"];
+        Self::from_config(&value["image_processor"], config)
+    }
+
+    pub(crate) fn from_config(image: &serde_json::Value, config: MultimodalConfig) -> Result<Self> {
+        let budget = MediaBudget::new(config.memory_budget_bytes)?;
+        Self::from_config_with_budget(image, config, budget)
+    }
+
+    pub(crate) fn from_config_with_budget(
+        image: &serde_json::Value,
+        config: MultimodalConfig,
+        budget: MediaBudget,
+    ) -> Result<Self> {
         let max_soft_tokens = image["max_soft_tokens"].as_u64().unwrap_or(0) as usize;
         if image["patch_size"] != 16
             || image["pooling_kernel_size"] != 3
@@ -56,7 +68,6 @@ impl Gemma4ImageProcessor {
         {
             return Err(invalid("Unsupported Gemma4 image processor configuration"));
         }
-        let budget = MediaBudget::new(config.memory_budget_bytes)?;
         let resolver = MediaResolver::new(
             config.allowed_image_hosts.clone(),
             budget.clone(),

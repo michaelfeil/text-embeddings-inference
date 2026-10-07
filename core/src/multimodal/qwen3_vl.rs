@@ -481,6 +481,7 @@ impl ProcessorState {
         Ok(PreparedMultimodal {
             input_ids,
             media: Arc::new(MultimodalEncoding {
+                audios: vec![],
                 images: spans,
                 position_ids,
                 memory: Some(Arc::new(memory)),

@@ -87,7 +87,7 @@ Embedding text inputs automatically use `fastokens-b10` when the tokenizer confi
 #### Text Embeddings
 
 Text Embeddings Inference currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
-model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, and dense Gemma4 text models.
+model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, dense Gemma4 text models, and multimodal EmbeddingGemma 2.
 
 Below are some examples of the currently supported models:
 
@@ -99,6 +99,7 @@ Below are some examples of the currently supported models:
 | 6         | 7.61B (Very Expensive) | Qwen2          | [Alibaba-NLP/gte-Qwen2-7B-instruct](https://hf.co/Alibaba-NLP/gte-Qwen2-7B-instruct)             |
 | 7         | 560M                   | XLM-RoBERTa    | [intfloat/multilingual-e5-large-instruct](https://hf.co/intfloat/multilingual-e5-large-instruct) |
 | 8         | 308M                   | Gemma3         | [google/embeddinggemma-300m](https://hf.co/google/embeddinggemma-300m) (gated)                   |
+| N/A       | 744M                   | EmbeddingGemma2 | [google/embeddinggemma-2](https://hf.co/google/embeddinggemma-2)                              |
 | 15        | 1.78B (Expensive)      | Qwen2          | [Alibaba-NLP/gte-Qwen2-1.5B-instruct](https://hf.co/Alibaba-NLP/gte-Qwen2-1.5B-instruct)         |
 | 18        | 7.11B (Very Expensive) | Mistral        | [Salesforce/SFR-Embedding-2_R](https://hf.co/Salesforce/SFR-Embedding-2_R)                       |
 | 35        | 568M                   | XLM-RoBERTa    | [Snowflake/snowflake-arctic-embed-l-v2.0](https://hf.co/Snowflake/snowflake-arctic-embed-l-v2.0) |
