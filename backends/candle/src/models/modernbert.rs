@@ -145,9 +145,8 @@ impl ModernBertMLP {
 
         let gated = match self.activation {
             ModernBertActivation::Gelu | ModernBertActivation::GeluApprox => {
-                // Reuse the existing approximation kernel for eligible rank-two
-                // Flash Attention projections. Dense rank-three inputs retain
-                // the helper's activation-plus-multiply fallback.
+                // Reuse the approximation kernel for eligible packed Flash
+                // Attention and dense projections; other layouts fall back.
                 crate::layers::gated_activation(&hidden_states, Some(&HiddenAct::Gelu))?
             }
             _ => {

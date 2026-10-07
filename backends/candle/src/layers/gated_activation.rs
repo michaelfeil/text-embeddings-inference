@@ -15,16 +15,22 @@ pub fn gated_activation(xs: &Tensor, activation: Option<&HiddenAct>) -> Result<T
     if matches!(activation, Some(HiddenAct::Gelu | HiddenAct::Silu))
         && matches!(xs.device(), Device::Cuda(_))
         && matches!(xs.dtype(), DType::F16 | DType::BF16)
-        && xs.rank() == 2
+        && matches!(xs.rank(), 2 | 3)
         && xs.is_contiguous()
         && packed_width > 0
-        && xs.dim(0)? > 0
-        && xs.dim(0)? <= i32::MAX as usize
+        && xs.elem_count() / packed_width > 0
+        && xs.elem_count() / packed_width <= i32::MAX as usize
         && packed_width / 2 <= u32::MAX as usize
     {
-        return xs.apply_op1_no_bwd(&cuda::PackedGlu {
+        // Contiguous leading axes fold into rows without copying storage.
+        let rows = xs.elem_count() / packed_width;
+        let packed = xs.reshape((rows, packed_width))?;
+        let output = packed.apply_op1_no_bwd(&cuda::PackedGlu {
             gelu: matches!(activation, Some(HiddenAct::Gelu)),
-        });
+        })?;
+        let mut shape = xs.dims().to_vec();
+        *shape.last_mut().unwrap() = packed_width / 2;
+        return output.reshape(shape);
     }
 
     let width = packed_width / 2;
@@ -141,7 +147,7 @@ mod cuda {
 mod tests {
     use super::*;
 
-    fn compare_one(input: &Tensor, gelu: bool) -> Result<()> {
+    pub(super) fn compare_one(input: &Tensor, gelu: bool) -> Result<()> {
         let reference = if gelu {
             let chunks = input.chunk(2, candle::D::Minus1)?;
             chunks[0].gelu()?.mul(&chunks[1])?
@@ -157,7 +163,9 @@ mod tests {
         } else {
             HiddenAct::Silu
         };
-        let actual = gated_activation(input, Some(&activation))?
+        let actual = gated_activation(input, Some(&activation))?;
+        assert_eq!(actual.dims(), reference.dims());
+        let actual = actual
             .to_dtype(DType::F32)?
             .flatten_all()?
             .to_vec1::<f32>()?;
@@ -196,8 +204,12 @@ mod tests {
             .collect();
         let f16: Vec<_> = bits.iter().copied().map(half::f16::from_bits).collect();
         let bf16: Vec<_> = bits.iter().copied().map(half::bf16::from_bits).collect();
-        compare(&Tensor::from_vec(f16, (512, 256), &device)?)?;
-        compare(&Tensor::from_vec(bf16, (512, 256), &device)?)?;
+        let f16 = Tensor::from_vec(f16, (512, 256), &device)?;
+        let bf16 = Tensor::from_vec(bf16, (512, 256), &device)?;
+        compare(&f16)?;
+        compare(&bf16)?;
+        compare(&f16.reshape((8, 64, 256))?)?;
+        compare(&bf16.reshape((8, 64, 256))?)?;
         Ok(())
     }
 
@@ -211,18 +223,27 @@ mod tests {
                     .collect();
                 let input = Tensor::from_vec(data, (5, 2 * width), &device)?.to_dtype(dtype)?;
                 compare(&input)?;
+                compare(&input.reshape((1, 5, 2 * width))?)?;
                 // Contiguous view with nonzero storage offset.
                 compare(&input.narrow(0, 1, 3)?)?;
+                compare(&input.narrow(0, 1, 3)?.reshape((1, 3, 2 * width))?)?;
                 // A packed tensor can be contiguous without 8-byte alignment.
                 let padded = Tensor::zeros(17, dtype, &device)?;
                 let flat = Tensor::cat(&[&padded, &input.flatten_all()?], 0)?;
-                compare(&flat.narrow(0, 17, 10 * width)?.reshape((5, 2 * width))?)?;
+                let unaligned = flat.narrow(0, 17, 10 * width)?;
+                compare(&unaligned.reshape((5, 2 * width))?)?;
+                compare(&unaligned.reshape((1, 5, 2 * width))?)?;
                 if width > 1 {
                     // Non-contiguous inputs use the original implementation.
                     compare(&input.narrow(1, 0, 2 * (width - 1))?)?;
+                    compare(&input.narrow(1, 0, 2 * (width - 1))?.unsqueeze(0)?)?;
                 }
             }
         }
         Ok(())
     }
 }
+
+#[cfg(all(test, feature = "cuda"))]
+#[path = "gated_activation_benchmark.rs"]
+mod benchmark;
