@@ -60,7 +60,7 @@ pub struct EmbeddingGemma2Model {
     #[cfg(feature = "flash-attn")]
     vision: Option<super::gemma4_vision::Gemma4Vision>,
     #[cfg(feature = "flash-attn")]
-    audio: Option<super::gemma4_audio::AudioModel>,
+    audio: Option<candle_transformers::models::gemma4::AudioModel>,
     #[cfg(feature = "flash-attn")]
     audio_projection:
         Option<candle_transformers::models::gemma4::multimodal_embedding::MultimodalEmbedder>,
@@ -134,7 +134,7 @@ impl EmbeddingGemma2Model {
                     modality_vb.pp("embed_audio"),
                 )?;
                 (
-                    Some(super::gemma4_audio::AudioModel::new(
+                    Some(candle_transformers::models::gemma4::AudioModel::new(
                         &cfg,
                         modality_vb.pp("audio_tower"),
                     )?),

@@ -140,6 +140,3 @@ pub use qwen3_vl::Qwen3VlModel;
 
 #[cfg(feature = "flash-attn")]
 mod gemma4_vision;
-
-#[cfg(feature = "flash-attn")]
-mod gemma4_audio;
