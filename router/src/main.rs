@@ -30,6 +30,7 @@ struct Args {
     /// Alternatively, the specified ID can also be a path to a local directory containing the
     /// necessary model files saved by the `save_pretrained(...)` methods of either Transformers or
     /// Sentence Transformers.
+    /// The alias `pplx-decider-v1.1-27b` selects Perplexity Decider 1.1 and its decision protocol.
     #[clap(long, env)]
     #[redact(partial)]
     model_id: String,
@@ -58,7 +59,7 @@ struct Args {
     #[clap(long, env, value_enum)]
     pooling: Option<text_embeddings_backend::Pool>,
 
-    /// Serve a causal model with its trained decision prompt on /v1/systemone.
+    /// Serve a decision model with its trained prompt on /v1/systemone.
     #[clap(long, env, conflicts_with = "pooling")]
     decision_protocol: Option<text_embeddings_router::DecisionProtocol>,
 
