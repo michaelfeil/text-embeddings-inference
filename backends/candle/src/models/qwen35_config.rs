@@ -1,6 +1,34 @@
 #![cfg_attr(not(all(feature = "cuda", feature = "flash-attn")), allow(dead_code))]
 use candle::Result;
 use serde::Deserialize;
+
+/// Saved in decision_config.json, independently of the backbone configuration.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(super) enum DecisionAttentionMode {
+    #[default]
+    Causal,
+    NoncausalFullAttention,
+}
+
+#[derive(Debug, Deserialize)]
+pub(super) struct ReadoutConfig {
+    // Original v1 checkpoints omit both fields and use causal, last-token inference.
+    #[serde(default)]
+    pub attention_mode: DecisionAttentionMode,
+    #[serde(default)]
+    pooling: Option<String>,
+}
+
+impl ReadoutConfig {
+    pub fn from_slice(bytes: &[u8]) -> Result<Self> {
+        let config: Self = serde_json::from_slice(bytes).map_err(candle::Error::wrap)?;
+        if config.pooling.as_deref().is_some_and(|pool| pool != "last") {
+            candle::bail!("Pplx requires last-token pooling")
+        }
+        Ok(config)
+    }
+}
 #[derive(Debug, Clone, Deserialize)]
 #[serde(untagged)]
 pub enum Qwen35Config {
@@ -218,6 +246,30 @@ impl Qwen35TextConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn readout_attention_modes() -> Result<()> {
+        for bytes in [b"{}".as_slice(), br#"{"attention_mode":"causal"}"#] {
+            assert_eq!(
+                ReadoutConfig::from_slice(bytes)?.attention_mode,
+                DecisionAttentionMode::Causal
+            );
+        }
+        let config = ReadoutConfig::from_slice(
+            br#"{"format_version":1,"attention_mode":"noncausal_full_attention","pooling":"last","temperature":1.0087417621345625}"#,
+        )?;
+        assert_eq!(
+            config.attention_mode,
+            DecisionAttentionMode::NoncausalFullAttention
+        );
+        for bytes in [
+            br#"{"attention_mode":"bidirectional"}"#.as_slice(),
+            br#"{"attention_mode":null}"#,
+            br#"{"pooling":"mean"}"#,
+        ] {
+            assert!(ReadoutConfig::from_slice(bytes).is_err());
+        }
+        Ok(())
+    }
     fn value() -> serde_json::Value {
         serde_json::json!({
             "hidden_size":2048,"vocab_size":248320,"num_hidden_layers":4,

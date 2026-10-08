@@ -1,4 +1,4 @@
-use super::qwen35_config::{Qwen35Config, Qwen35TextConfig};
+use super::qwen35_config::{DecisionAttentionMode, Qwen35Config, Qwen35TextConfig, ReadoutConfig};
 use crate::flash_attn::flash_attn_varlen;
 use crate::layers::{get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTensors, Linear};
 use crate::models::{Model, Qwen3Config};
@@ -62,6 +62,7 @@ impl Dense {
     }
 }
 struct FullAttention {
+    causal: bool,
     q: Linear,
     k: Linear,
     v: Linear,
@@ -82,6 +83,7 @@ impl FullAttention {
             c.head_dim,
         );
         Ok(Self {
+            causal: true,
             q: linear(vb.pp("q_proj"), h, 2 * n * d)?,
             k: linear(vb.pp("k_proj"), h, k * d)?,
             v: linear(vb.pp("v_proj"), h, k * d)?,
@@ -138,7 +140,7 @@ impl FullAttention {
             max_s,
             max_s,
             (self.dim as f32).sqrt().recip(),
-            true,
+            self.causal,
             None,
             None,
         )?
@@ -394,6 +396,10 @@ impl Qwen35Model {
         })
     }
     pub fn with_readout(mut self, path: &std::path::Path, config: &Qwen35Config) -> Result<Self> {
+        let readout_config = ReadoutConfig::from_slice(
+            &std::fs::read(path.join("decision_config.json")).map_err(candle::Error::wrap)?,
+        )?;
+        self.set_readout_attention_mode(readout_config.attention_mode);
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[path.join("readout.safetensors")],
@@ -407,6 +413,16 @@ impl Qwen35Model {
             None,
         ));
         Ok(self)
+    }
+
+    fn set_readout_attention_mode(&mut self, mode: DecisionAttentionMode) {
+        self.use_bidirectional_attention = mode == DecisionAttentionMode::NoncausalFullAttention;
+        for layer in &mut self.layers {
+            if let Attention::Full(attention) = &mut layer.attn {
+                attention.causal = !self.use_bidirectional_attention;
+            }
+        }
+        // Linear attention retains its native causal convolution and recurrence.
     }
 
     pub fn with_clef(mut self, path: &std::path::Path, config: &Qwen35Config) -> Result<Self> {
@@ -429,6 +445,16 @@ impl Qwen35Model {
         Ok(self)
     }
     fn forward_hidden(&self, batch: &Batch) -> Result<(Tensor, CompactUnfoldTensors)> {
+        // Prefix states depend on each sequence's suffix after noncausal attention.
+        // Reject folded batches even if a caller bypasses supports_radix_mlp().
+        if self.use_bidirectional_attention
+            && (batch.compact_input_ids.is_some()
+                || batch.compact_position_ids.is_some()
+                || batch.scatter_unfold.is_some()
+                || batch.fold_gather.is_some())
+        {
+            candle::bail!("Noncausal Qwen3.5 attention does not support RadixMLP prefix folding")
+        }
         let (ids, compact) = CompactUnfoldTensors::from_batch(batch, &self.device)?;
         let mut hidden = self.embeddings.forward(&ids)?.contiguous()?;
         let cu = Tensor::new(batch.cumulative_seq_lengths.as_slice(), &self.device)?;
@@ -802,6 +828,66 @@ mod radix_tests {
     }
 
     #[test]
+    fn full_attention_respects_causality_and_sequence_boundaries() -> Result<()> {
+        let device = Device::Cpu;
+        let config: Qwen35TextConfig = serde_json::from_value(serde_json::json!({
+            "hidden_size":16,"vocab_size":32,"num_hidden_layers":1,
+            "num_attention_heads":2,"num_key_value_heads":1,"head_dim":128,
+            "max_position_embeddings":32,"rms_norm_eps":1e-6,
+            "layer_types":["full_attention"],"intermediate_size":32,
+            "rope_parameters":{"rope_type":"default","rope_theta":10000.,"partial_rotary_factor":0.5},
+            "linear_num_key_heads":1,"linear_num_value_heads":2,
+            "linear_key_head_dim":128,"linear_value_head_dim":128,
+            "linear_conv_kernel_dim":4,"hidden_act":"silu"
+        })).map_err(candle::Error::wrap)?;
+        let vars = candle_nn::VarMap::new();
+        let vb = VarBuilder::from_varmap(&vars, DType::F32, &device);
+        FullAttention::load(vb.clone(), &config)?;
+        for (name, var) in vars.data().lock().unwrap().iter() {
+            let offset: usize = name.bytes().map(usize::from).sum();
+            let values: Vec<f32> = (0..var.elem_count())
+                .map(|i| ((i + offset) as f32 * 0.13).sin() * 0.1)
+                .collect();
+            var.set(&Tensor::from_vec(values, var.shape(), &device)?)?;
+        }
+        let mut attention = FullAttention::load(vb, &config)?;
+        let a: &[u32] = &[3, 4, 5, 6];
+        let b: &[u32] = &[3, 4, 9, 10, 11];
+        let forward = |attention: &FullAttention, sequences: &[&[u32]]| -> Result<Tensor> {
+            let batch = batch(sequences, false);
+            let (_, compact) = CompactUnfoldTensors::from_batch(&batch, &device)?;
+            let values: Vec<f32> = batch
+                .input_ids
+                .iter()
+                .flat_map(|&id| (0..16).map(move |i| ((id as usize * 16 + i) as f32 * 0.17).sin()))
+                .collect();
+            let count = batch.input_ids.len();
+            attention.forward(
+                &Tensor::from_vec(values, (count, 16), &device)?,
+                &Tensor::new(batch.cumulative_seq_lengths, &device)?,
+                &Tensor::ones((count, config.rotary_dim()), DType::F32, &device)?,
+                &Tensor::zeros((count, config.rotary_dim()), DType::F32, &device)?,
+                batch.max_length as usize,
+                &compact,
+            )
+        };
+        let error = |a: &Tensor, b: &Tensor| -> Result<f32> {
+            (a - b)?.abs()?.max_all()?.to_scalar::<f32>()
+        };
+        let causal_a = forward(&attention, &[a])?;
+        let causal_b = forward(&attention, &[b])?;
+        assert!(error(&causal_a.narrow(0, 0, 2)?, &causal_b.narrow(0, 0, 2)?)? < 1e-6);
+        attention.causal = false;
+        let single_a = forward(&attention, &[a])?;
+        let single_b = forward(&attention, &[b])?;
+        assert!(error(&single_a.narrow(0, 0, 2)?, &single_b.narrow(0, 0, 2)?)? > 1e-5);
+        let packed = forward(&attention, &[a, b])?;
+        assert!(error(&packed.narrow(0, 0, a.len())?, &single_a)? < 1e-6);
+        assert!(error(&packed.narrow(0, a.len(), b.len())?, &single_b)? < 1e-6);
+        Ok(())
+    }
+
+    #[test]
     #[ignore = "requires CUDA BF16 and FlashAttention"]
     fn hybrid_moe_preserves_prefix_folding_and_request_isolation() -> Result<()> {
         let device = Device::new_cuda(0)?;
@@ -862,6 +948,31 @@ mod radix_tests {
                 }
             }
         }
+        let mut model =
+            Qwen35Model::load(vb, &config, ModelType::Embedding(Pool::LastToken), false)?;
+        let causal_a = model.forward(batch(&[a], false))?.1.unwrap();
+        let causal_b = model.forward(batch(&[b], false))?.1.unwrap();
+        close(&causal_a.narrow(0, 0, 4)?, &causal_b.narrow(0, 0, 4)?)?;
+        let saved = ReadoutConfig::from_slice(
+            br#"{"attention_mode":"noncausal_full_attention","pooling":"last"}"#,
+        )?;
+        model.set_readout_attention_mode(saved.attention_mode);
+        assert!(!model.supports_radix_mlp());
+        assert!(model.forward(batch(&[a, b], true)).is_err());
+        let packed = model.forward(batch(&[a, b], false))?.1.unwrap();
+        let single_a = model.forward(batch(&[a], false))?.1.unwrap();
+        let single_b = model.forward(batch(&[b], false))?.1.unwrap();
+        close(&packed.narrow(0, 0, a.len())?, &single_a)?;
+        close(&packed.narrow(0, a.len(), b.len())?, &single_b)?;
+        let prefix_change = (single_a.narrow(0, 0, 4)?.to_dtype(DType::F32)?
+            - single_b.narrow(0, 0, 4)?.to_dtype(DType::F32)?)?
+        .abs()?
+        .max_all()?
+        .to_scalar::<f32>()?;
+        assert!(
+            prefix_change > 1e-4,
+            "noncausal prefix ignored its suffix: {prefix_change}"
+        );
         Ok(())
     }
 }

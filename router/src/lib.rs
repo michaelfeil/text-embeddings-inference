@@ -40,6 +40,8 @@ use tracing::Span;
 
 pub use logging::init_logging;
 
+mod model_aliases;
+
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum DecisionProtocol {
     Rune,
@@ -83,6 +85,8 @@ pub async fn run(
     backend_device_ids: Option<String>,
     multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
 ) -> Result<()> {
+    let (model_id, decision_protocol) =
+        model_aliases::resolve(model_id, decision_protocol, pooling.as_ref())?;
     let model_id_path = Path::new(&model_id);
     let (model_root, api_repo) = if model_id_path.exists() && model_id_path.is_dir() {
         // Using a local model

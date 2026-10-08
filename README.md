@@ -891,11 +891,23 @@ over-budget prompts return 422 rather than silently truncating the state.
 
 ### Perplexity typed decisions
 
-For text decisions, launch `perplexity-ai/pplx-decider-v1-27b` with
+For text decisions, launch `perplexity-ai/pplx-decider-v1-27b` or
+`perplexity-ai/pplx-decider-v1.1-27b` with
 `--decision-protocol pplx --dtype bfloat16` and use `/v1/systemone`.
+The shorthand alias selects the v1.1 checkpoint and Pplx protocol automatically:
+
+```bash
+text-embeddings-router --model-id pplx-decider-v1.1-27b --dtype bfloat16
+```
+
 The Qwen3.5 Candle backbone loads the checkpoint's `readout.safetensors` and
 applies its saved calibration temperature. Choice, noul and score questions use
 the upstream prompt and answer formulas, with up to 255 options per question.
-Each question has a separate branch in the shared batch; causal RadixMLP remains
-available. Prompts exceeding 8192 tokens (or a smaller `max_len`) return 422.
+Each question has a separate branch in the shared batch. The saved
+`decision_config.json` attention mode is respected: v1.1 uses noncausal full
+attention while linear-attention layers retain their native behavior. RadixMLP
+prefix folding is disabled for this mode; it remains available for causal v1
+checkpoints, which omit the attention-mode field. Unknown attention modes and
+pooling modes other than `last` are rejected.
+Prompts exceeding 8192 tokens (or a smaller `max_len`) return 422.
 Image/video inputs are not supported by this protocol yet.
