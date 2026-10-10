@@ -465,7 +465,7 @@
         "tags": [
           "Text Embeddings Inference"
         ],
-        "summary": "Get Predictions. Returns a 424 status code if the model is not a Sequence Classification model",
+        "summary": "Deprecated: use /v1/classify. This route retains the legacy label/score response.",
         "operationId": "predict",
         "requestBody": {
           "content": {
@@ -558,7 +558,8 @@
               }
             }
           }
-        }
+        },
+        "deprecated": true
       }
     },
     "/rerank": {
@@ -931,6 +932,86 @@
                 "example": {
                   "message": "Model is overloaded",
                   "type": "overloaded"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/classify": {
+      "post": {
+        "tags": [
+          "Text Embeddings Inference"
+        ],
+        "operationId": "classify",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ClassifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Classification probabilities and token usage",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid classification input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Batch or token limit exceeded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyErrorResponse"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid JSON or tokenization",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyErrorResponse"
+                }
+              }
+            }
+          },
+          "424": {
+            "description": "Classification backend failure",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Model is overloaded",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClassifyErrorResponse"
                 }
               }
             }
@@ -2177,6 +2258,241 @@
           }
         },
         "additionalProperties": false
+      },
+      "ClassifyRequest": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "SGLang-compatible classification, with native messages and truncation extensions.\nProvide exactly one of input or messages. String arrays are independent inputs.",
+            "properties": {
+              "input": {
+                "$ref": "#/components/schemas/EmbeddingInput"
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                },
+                "minItems": 1
+              },
+              "model": {
+                "type": "string",
+                "description": "Advisory model name; this server serves one deployed model.",
+                "nullable": true
+              },
+              "priority": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Only absent or zero priority is supported.",
+                "nullable": true
+              },
+              "rid": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ClassifyRequestId"
+                  }
+                ],
+                "nullable": true
+              },
+              "truncate": {
+                "type": "boolean",
+                "nullable": true
+              },
+              "truncation_direction": {
+                "$ref": "#/components/schemas/TruncationDirection"
+              },
+              "user": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "input"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "SGLang-compatible classification, with native messages and truncation extensions.\nProvide exactly one of input or messages. String arrays are independent inputs.",
+            "properties": {
+              "input": {
+                "$ref": "#/components/schemas/EmbeddingInput"
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                },
+                "minItems": 1
+              },
+              "model": {
+                "type": "string",
+                "description": "Advisory model name; this server serves one deployed model.",
+                "nullable": true
+              },
+              "priority": {
+                "type": "integer",
+                "format": "int32",
+                "description": "Only absent or zero priority is supported.",
+                "nullable": true
+              },
+              "rid": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/ClassifyRequestId"
+                  }
+                ],
+                "nullable": true
+              },
+              "truncate": {
+                "type": "boolean",
+                "nullable": true
+              },
+              "truncation_direction": {
+                "$ref": "#/components/schemas/TruncationDirection"
+              },
+              "user": {
+                "type": "string",
+                "nullable": true
+              }
+            },
+            "required": [
+              "messages"
+            ]
+          }
+        ],
+        "description": "Provide exactly one of input or messages; a message list is one conversation."
+      },
+      "ClassifyRequestId": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "ClassifyResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "created",
+          "model",
+          "data",
+          "usage"
+        ],
+        "properties": {
+          "created": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ClassifyData"
+            }
+          },
+          "id": {
+            "type": "string"
+          },
+          "model": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "usage": {
+            "$ref": "#/components/schemas/ClassifyUsage"
+          }
+        }
+      },
+      "ClassifyData": {
+        "type": "object",
+        "required": [
+          "index",
+          "label",
+          "probs",
+          "num_classes"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "label": {
+            "type": "string"
+          },
+          "num_classes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "probs": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          }
+        }
+      },
+      "ClassifyUsage": {
+        "type": "object",
+        "required": [
+          "prompt_tokens",
+          "completion_tokens",
+          "total_tokens"
+        ],
+        "properties": {
+          "completion_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prompt_tokens": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "prompt_tokens_details": {
+            "nullable": true
+          },
+          "total_tokens": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "ClassifyErrorResponse": {
+        "type": "object",
+        "required": [
+          "object",
+          "message",
+          "type",
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          },
+          "param": {
+            "type": "string",
+            "nullable": true
+          },
+          "type": {
+            "type": "string"
+          }
+        }
       }
     }
   },
