@@ -1,8 +1,9 @@
 use crate::ErrorType;
-use serde::de::{SeqAccess, Visitor};
+use serde::de::{value::MapAccessDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use std::fmt::Formatter;
+use text_embeddings_core::input::{Message, MessageInput};
 use text_embeddings_core::tokenization::EncodingInput;
 use utoipa::openapi::{RefOr, Schema};
 use utoipa::ToSchema;
@@ -18,6 +19,7 @@ pub(crate) enum Sequence {
     Single(String),
     Pair(String, String),
     Ids(Vec<u32>),
+    Messages(MessageInput),
 }
 
 impl Sequence {
@@ -26,6 +28,23 @@ impl Sequence {
             Sequence::Single(s) => s.chars().count(),
             Sequence::Pair(s1, s2) => s1.chars().count() + s2.chars().count(),
             Sequence::Ids(_) => 0,
+            Sequence::Messages(input) => input
+                .messages
+                .iter()
+                .map(|message| {
+                    use text_embeddings_core::input::{ContentPart, MessageContent};
+                    match &message.content {
+                        MessageContent::Text(text) => text.chars().count(),
+                        MessageContent::Parts(parts) => parts
+                            .iter()
+                            .map(|part| match part {
+                                ContentPart::Text { text } => text.chars().count(),
+                                _ => 0,
+                            })
+                            .sum(),
+                    }
+                })
+                .sum(),
         }
     }
 }
@@ -36,6 +55,7 @@ impl From<Sequence> for EncodingInput {
             Sequence::Single(s) => Self::Single(s),
             Sequence::Pair(s1, s2) => Self::Dual(s1, s2),
             Sequence::Ids(ids) => Self::Ids(ids),
+            Sequence::Messages(input) => Self::Messages(input.messages),
         }
     }
 }
@@ -58,6 +78,7 @@ impl<'de> Deserialize<'de> for PredictInput {
             Multiple(Vec<String>),
             Id(u32),
             Ids(Vec<u32>),
+            Messages(MessageInput),
         }
 
         struct PredictInputVisitor;
@@ -70,7 +91,8 @@ impl<'de> Deserialize<'de> for PredictInput {
                     "a string, \
                     a pair of strings [string, string] \
                     a batch of mixed strings and pairs [[string], [string, string], ...], \
-                    a final token-ID sequence [integer, ...] or a batch [[integer, ...], ...]",
+                    a final token-ID sequence [integer, ...] or a batch [[integer, ...], ...], \
+                    a conversation {messages: [...]} or a batch of conversations",
                 )
             }
 
@@ -79,6 +101,14 @@ impl<'de> Deserialize<'de> for PredictInput {
                 E: de::Error,
             {
                 Ok(PredictInput::Single(Sequence::Single(v.to_string())))
+            }
+
+            fn visit_map<A>(self, map: A) -> Result<Self::Value, A::Error>
+            where
+                A: MapAccess<'de>,
+            {
+                let input = MessageInput::deserialize(MapAccessDeserializer::new(map))?;
+                Ok(PredictInput::Single(Sequence::Messages(input)))
             }
 
             fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
@@ -134,6 +164,13 @@ impl<'de> Deserialize<'de> for PredictInput {
                             ids.push(id);
                         }
                         return Ok(PredictInput::Single(Sequence::Ids(ids)));
+                    }
+                    Internal::Messages(input) => {
+                        let mut batch = vec![Sequence::Messages(input)];
+                        while let Some(input) = seq.next_element::<MessageInput>()? {
+                            batch.push(Sequence::Messages(input));
+                        }
+                        return Ok(PredictInput::Batch(batch));
                     }
                     Internal::Ids(ids) => {
                         let mut batch = vec![Sequence::Ids(ids)];
@@ -222,6 +259,13 @@ impl<'__s> ToSchema<'__s> for PredictInput {
                         )
                         .description(Some("A batch")),
                 )
+                .item(utoipa::openapi::Ref::from_schema_name("MessageInput"))
+                .item(
+                    utoipa::openapi::ArrayBuilder::new()
+                        .items(utoipa::openapi::Ref::from_schema_name("MessageInput"))
+                        .min_items(Some(1))
+                        .description(Some("A batch of independent conversations")),
+                )
                 .item(token_ids.clone())
                 .item(
                     utoipa::openapi::ArrayBuilder::new()
@@ -231,7 +275,7 @@ impl<'__s> ToSchema<'__s> for PredictInput {
                 )
                 .description(Some(
                     "Model input: a string, a string pair, a batch of single strings and pairs, \
-                    or final token IDs and batches of final token IDs.",
+                    conversations, or final token IDs and batches of final token IDs.",
                 ))
                 .example(Some(json!("What is Deep Learning?")))
                 .into(),
@@ -369,9 +413,26 @@ pub(crate) enum EncodingFormat {
     Base64,
 }
 
-#[derive(Deserialize, ToSchema)]
+#[derive(Deserialize)]
+#[serde(try_from = "OpenAICompatRequestBody")]
 pub(crate) struct OpenAICompatRequest {
     pub input: EmbeddingInput,
+    #[allow(dead_code)]
+    pub model: Option<String>,
+    #[allow(dead_code)]
+    pub user: Option<String>,
+    pub encoding_format: EncodingFormat,
+    pub dimensions: Option<usize>,
+}
+
+#[derive(Deserialize, ToSchema)]
+struct OpenAICompatRequestBody {
+    /// Provide exactly one of `input` or `messages`.
+    #[serde(default, deserialize_with = "present_input")]
+    pub input: Option<EmbeddingInput>,
+    #[serde(default, deserialize_with = "present_input")]
+    #[schema(min_items = 1)]
+    pub messages: Option<Vec<Message>>,
     #[allow(dead_code)]
     #[schema(nullable = true, example = "null")]
     pub model: Option<String>,
@@ -383,6 +444,67 @@ pub(crate) struct OpenAICompatRequest {
     pub encoding_format: EncodingFormat,
     #[schema(default = "null", example = "null", nullable = true)]
     pub dimensions: Option<usize>,
+}
+
+// Explicit null is invalid; absent fields remain None via serde(default).
+fn present_input<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+impl TryFrom<OpenAICompatRequestBody> for OpenAICompatRequest {
+    type Error = &'static str;
+
+    fn try_from(body: OpenAICompatRequestBody) -> Result<Self, Self::Error> {
+        let input = match (body.input, body.messages) {
+            (Some(input), None) => input,
+            (None, Some(messages)) => EmbeddingInput::Messages(messages),
+            _ => return Err("Provide exactly one of `input` or `messages`"),
+        };
+        Ok(Self {
+            input,
+            model: body.model,
+            user: body.user,
+            encoding_format: body.encoding_format,
+            dimensions: body.dimensions,
+        })
+    }
+}
+
+impl<'s> ToSchema<'s> for OpenAICompatRequest {
+    fn schema() -> (&'s str, RefOr<Schema>) {
+        let RefOr::T(Schema::Object(mut completion)) = OpenAICompatRequestBody::schema().1 else {
+            unreachable!("request body is an object");
+        };
+        completion.properties.insert(
+            "input".into(),
+            utoipa::openapi::Ref::from_schema_name("EmbeddingInput").into(),
+        );
+        completion.properties.insert(
+            "messages".into(),
+            utoipa::openapi::ArrayBuilder::new()
+                .items(utoipa::openapi::Ref::from_schema_name("Message"))
+                .min_items(Some(1))
+                .build()
+                .into(),
+        );
+        let mut chat = completion.clone();
+        completion.required.push("input".into());
+        chat.required.push("messages".into());
+        (
+            "OpenAICompatRequest",
+            utoipa::openapi::OneOfBuilder::new()
+                .item(completion)
+                .item(chat)
+                .description(Some(
+                    "Provide exactly one of input or messages; a message list is one conversation.",
+                ))
+                .into(),
+        )
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -732,12 +854,127 @@ mod embedding_input_tests {
     }
 
     #[test]
+    fn openai_messages_are_exclusive_and_preserve_embedding_options() {
+        let messages = json!([
+            {"role": "system", "content": "Represent this conversation"},
+            {"role": "user", "content": "hello"}
+        ]);
+        let req: OpenAICompatRequest = serde_json::from_value(json!({
+            "messages": messages, "encoding_format": "base64", "dimensions": 32,
+            "model": "example", "user": "client"
+        }))
+        .unwrap();
+        assert!(matches!(req.encoding_format, EncodingFormat::Base64));
+        assert_eq!(req.dimensions, Some(32));
+        let InputBatch::Single(EncodingInput::Messages(actual)) = InputBatch::from(req.input)
+        else {
+            panic!("messages must describe one input");
+        };
+        assert_eq!(serde_json::to_value(actual).unwrap(), messages);
+        for value in [
+            json!({}),
+            json!({"input": "text", "messages": messages}),
+            json!({"input": null, "messages": messages}),
+            json!({"input": "text", "messages": null}),
+            json!({"messages": "text"}),
+            json!({"messages": [101, 42]}),
+            json!({"messages": [{"role": "tool", "content": "unsupported"}]}),
+        ] {
+            assert!(
+                serde_json::from_value::<OpenAICompatRequest>(value.clone()).is_err(),
+                "{value}"
+            );
+        }
+        // Existing input-based conversations remain supported.
+        let req: OpenAICompatRequest = serde_json::from_value(json!({"input": messages})).unwrap();
+        assert!(matches!(req.input, EmbeddingInput::Messages(_)));
+    }
+
+    #[test]
+    fn classification_conversations_are_single_or_independent_batches() {
+        let conversation = json!({"messages": [
+            {"role": "system", "content": "label"},
+            {"role": "user", "content": [{"type": "text", "text": "café"}]}
+        ]});
+        let req: PredictRequest = serde_json::from_value(json!({"inputs": conversation})).unwrap();
+        let PredictInput::Single(input) = req.inputs else {
+            panic!("one conversation");
+        };
+        assert_eq!(input.count_chars(), 9);
+        assert!(
+            matches!(EncodingInput::from(input), EncodingInput::Messages(messages) if messages.len() == 2)
+        );
+        let req: PredictRequest = serde_json::from_value(json!({
+            "inputs": [conversation, conversation], "raw_scores": true, "truncate": true
+        }))
+        .unwrap();
+        assert!(req.raw_scores);
+        assert_eq!(req.truncate, Some(true));
+        let PredictInput::Batch(batch) = req.inputs else {
+            panic!("independent conversations");
+        };
+        assert_eq!(batch.len(), 2);
+        assert!(batch
+            .into_iter()
+            .all(|input| matches!(input, Sequence::Messages(_))));
+        for inputs in [
+            json!({"messages": [], "extra": true}),
+            json!([conversation, ["text"]]),
+            json!([["text"], conversation]),
+            json!({"messages": [{"role": "user", "content": "text", "extra": true}]}),
+        ] {
+            assert!(serde_json::from_value::<PredictRequest>(json!({"inputs": inputs})).is_err());
+        }
+    }
+
+    #[test]
+    fn openai_schema_describes_both_exclusive_input_shapes() {
+        let schema = serde_json::to_value(OpenAICompatRequest::schema().1).unwrap();
+        let branches = schema["oneOf"].as_array().unwrap();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0]["required"], json!(["input"]));
+        assert_eq!(
+            branches[0]["properties"]["input"]["$ref"],
+            "#/components/schemas/EmbeddingInput"
+        );
+        assert_eq!(branches[0]["properties"], branches[1]["properties"]);
+        assert_eq!(branches[1]["required"], json!(["messages"]));
+        assert_eq!(
+            branches[1]["properties"]["messages"]["items"]["$ref"],
+            "#/components/schemas/Message"
+        );
+
+        let schema = serde_json::to_value(PredictInput::schema().1).unwrap();
+        assert!(schema["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| item["$ref"] == "#/components/schemas/MessageInput"));
+    }
+
+    #[test]
+    fn pooling_schemas_match_checked_in_documentation() {
+        let documentation: serde_json::Value =
+            serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap();
+        for (name, schema) in [
+            OpenAICompatRequest::schema(),
+            PredictInput::schema(),
+            MessageInput::schema(),
+        ] {
+            assert_eq!(
+                documentation["components"]["schemas"][name],
+                serde_json::to_value(schema).unwrap(),
+                "{name}"
+            );
+        }
+    }
+
+    #[test]
     fn embedding_schemas_reference_the_shared_contract() {
         for (schema, field) in [
             (EmbedRequest::schema().1, "inputs"),
             (EmbedAllRequest::schema().1, "inputs"),
             (EmbedSparseRequest::schema().1, "inputs"),
-            (OpenAICompatRequest::schema().1, "input"),
         ] {
             let value = serde_json::to_value(schema).unwrap();
             assert_eq!(
