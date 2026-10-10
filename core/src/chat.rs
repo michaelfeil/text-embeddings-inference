@@ -1,6 +1,6 @@
 //! Native text conversation rendering, independent of tokenizer implementation.
 use crate::input::{ContentPart, Message, MessageContent, MessageRole};
-use fastokens::chat_template::{minijinja, ChatTemplateOptions, ChatTemplateRenderer};
+use basetenkenizer::chat_template::{minijinja, ChatTemplateOptions, ChatTemplateRenderer};
 use serde_json::{Map, Value};
 use std::{fs, path::Path};
 
