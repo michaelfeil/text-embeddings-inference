@@ -33,20 +33,10 @@ struct Inner {
     backends: Vec<Backend>,
     state: Mutex<State>,
     changed: watch::Sender<()>,
-    health: watch::Sender<bool>,
 }
 
 impl Inner {
     fn signal(&self, state: &State) {
-        self.health.send_if_modified(|health| {
-            let next = !state.closed && state.healthy() == state.replicas.len();
-            if *health == next {
-                false
-            } else {
-                *health = next;
-                true
-            }
-        });
         metrics::gauge!("te_backend_replicas_healthy").set(state.healthy() as f64);
         metrics::gauge!("te_backend_replicas_total").set(state.replicas.len() as f64);
         metrics::gauge!("te_backend_replicas_running")
@@ -94,7 +84,6 @@ impl BackendPool {
                 }),
                 backends,
                 changed: watch::channel(()).0,
-                health: watch::channel(true).0,
             }),
         };
         result.inner.signal(&result.inner.state.lock().unwrap());
@@ -106,13 +95,6 @@ impl BackendPool {
     }
     pub fn is_empty(&self) -> bool {
         self.inner.backends.is_empty()
-    }
-    pub fn health_watcher(&self) -> watch::Receiver<bool> {
-        let mut receiver = self.inner.health.subscribe();
-        // gRPC consumes health through changed(); publish the already-warmed
-        // initial state even when no later transition has occurred.
-        receiver.mark_changed();
-        receiver
     }
     pub fn is_available(&self) -> bool {
         let state = self.inner.state.lock().unwrap();

@@ -9,12 +9,6 @@ mod http;
 #[cfg(feature = "http")]
 use ::http::HeaderMap;
 
-#[cfg(feature = "grpc")]
-mod grpc;
-
-#[cfg(feature = "grpc")]
-use tonic::codegen::http::HeaderMap;
-
 mod shutdown;
 
 use anyhow::{anyhow, Context, Result};
@@ -73,12 +67,9 @@ pub async fn run(
     hf_token: Option<String>,
     hostname: Option<String>,
     port: u16,
-    uds_path: Option<String>,
     huggingface_hub_cache: Option<String>,
     payload_limit: usize,
     api_key: Option<String>,
-    otlp_endpoint: Option<String>,
-    otlp_service_name: String,
     prometheus_port: u16,
     cors_allow_origin: Option<Vec<String>>,
     device_id: Option<usize>,
@@ -148,11 +139,6 @@ pub async fn run(
     anyhow::ensure!(
         !(laya && decoder_decision),
         "Decoder decision protocols cannot serve a Laya checkpoint"
-    );
-    #[cfg(feature = "grpc")]
-    anyhow::ensure!(
-        !laya && !decoder_decision,
-        "Typed decisions require an HTTP build"
     );
     let config_path = model_root.join(if laya {
         "encoder/config.json"
@@ -476,9 +462,6 @@ pub async fn run(
         let dtype = dtype.clone();
         let backend_model_type = backend_model_type.clone();
         let dense_path = dense_path.clone();
-        let uds_path = uds_path.clone();
-        let otlp_endpoint = otlp_endpoint.clone();
-        let otlp_service_name = otlp_service_name.clone();
         async move {
             let started = std::time::Instant::now();
             tracing::info!(
@@ -492,10 +475,6 @@ pub async fn run(
                 dtype,
                 backend_model_type,
                 dense_path,
-                uds_path
-                    .unwrap_or("/tmp/text-embeddings-inference-server".to_string()),
-                otlp_endpoint,
-                otlp_service_name,
                 device,
                 enable_fp8_dynamic,
             )
@@ -617,14 +596,8 @@ pub async fn run(
 
     let prom_builder = prometheus::prometheus_builer(addr, prometheus_port, info.max_input_length)?;
 
-    #[cfg(all(feature = "grpc", feature = "http"))]
-    compile_error!("Features `http` and `grpc` cannot be enabled at the same time.");
-
-    #[cfg(all(feature = "grpc", feature = "google"))]
-    compile_error!("Features `http` and `google` cannot be enabled at the same time.");
-
-    #[cfg(not(any(feature = "http", feature = "grpc")))]
-    compile_error!("Either feature `http` or `grpc` must be enabled.");
+    #[cfg(not(feature = "http"))]
+    compile_error!("Feature `http` must be enabled.");
 
     #[cfg(feature = "http")]
     {
@@ -639,14 +612,6 @@ pub async fn run(
             systemone,
         )
         .await
-    }
-
-    #[cfg(feature = "grpc")]
-    {
-        // cors_allow_origin and payload_limit are not used for gRPC servers
-        let _ = cors_allow_origin;
-        let _ = payload_limit;
-        grpc::server::run(infer, info, addr, prom_builder, api_key).await
     }
 }
 
@@ -720,17 +685,11 @@ fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type
             if matches!(model_type, "gemma3_text" | "embedding_gemma2") {
                 return DType::Bfloat16;
             }
-            #[cfg(all(
-                any(feature = "candle", feature = "python"),
-                not(any(feature = "mkl", feature = "accelerate"))
-            ))]
+            #[cfg(all(feature = "candle", not(any(feature = "mkl", feature = "accelerate"))))]
             if model_type == "qwen3_vl" {
                 return DType::Float16;
             }
-            #[cfg(all(
-                any(feature = "candle", feature = "python"),
-                not(any(feature = "mkl", feature = "accelerate"))
-            ))]
+            #[cfg(all(feature = "candle", not(any(feature = "mkl", feature = "accelerate"))))]
             if model_dtype == Some("bfloat16") {
                 return DType::Bfloat16;
             }
@@ -1108,7 +1067,7 @@ impl From<ResponseMetadata> for HeaderMap {
 #[cfg(all(
     test,
     feature = "candle",
-    not(any(feature = "mkl", feature = "accelerate", feature = "python"))
+    not(any(feature = "mkl", feature = "accelerate"))
 ))]
 mod auto_dtype_tests {
     use super::*;

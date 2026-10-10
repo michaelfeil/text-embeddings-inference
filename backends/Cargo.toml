@@ -11,18 +11,15 @@ hf-hub = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 text-embeddings-backend-core = { path = "core" }
-text-embeddings-backend-python = { path = "python", optional = true }
 text-embeddings-backend-candle = { path = "candle", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
-rand = { workspace = true }
 
 [features]
 experimental-fp8 = ["candle", "text-embeddings-backend-candle/experimental-fp8"]
 experimental-fa4 = ["fa4"]
 fa4 = ["text-embeddings-backend-candle?/fa4"]
 clap = ["dep:clap", "text-embeddings-backend-core/clap"]
-python = ["dep:text-embeddings-backend-python"]
 candle = ["dep:text-embeddings-backend-candle"]
 cuda = ["text-embeddings-backend-candle?/cuda"]
 cuda-static-linking = ["text-embeddings-backend-candle?/cuda-static-linking"]

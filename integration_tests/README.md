@@ -1,17 +1,11 @@
-# Integration Tests
+# Reference fixtures
 
-This directory contains integration tests for the project. This starts the TEI server and run an /embed request to it while checking the output is as expected.
+This directory contains Python scripts that generate independent Transformers
+reference fixtures for the Candle backend's integration tests:
 
-## Running the tests for HPU
+- `embeddinggemma_reference.py`
+- `deberta_reference.py`
 
-First you have to build the docker image.
-```bash
-platform="hpu"
-
-docker build . -f Dockerfile-intel --build-arg PLATFORM=$platform -t tei_hpu
-```
-
-Then you can run the tests.
-```bash
-uv run pytest --durations=0 -sv .
-```
+See the corresponding Rust tests under `backends/candle/tests` for the required
+checkpoints, fixture paths, and feature flags. Python is used to generate
+reference data; inference serving uses Candle.

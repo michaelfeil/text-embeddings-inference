@@ -24,7 +24,6 @@
               with pkgs;
               [
                 rustup
-                protobuf
               ]
               ++ pkgs.lib.optionals pkgs.stdenv.isDarwin [
                 apple-sdk_15

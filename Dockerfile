@@ -59,20 +59,6 @@ RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
     cargo build --release --bin text-embeddings-router --features candle,mkl,static-linking,http --no-default-features && sccache -s
 
-FROM builder AS grpc-builder
-
-RUN PROTOC_ZIP=protoc-21.12-linux-x86_64.zip && \
-    curl -OL https://github.com/protocolbuffers/protobuf/releases/download/v21.12/$PROTOC_ZIP && \
-    unzip -o $PROTOC_ZIP -d /usr/local bin/protoc && \
-    unzip -o $PROTOC_ZIP -d /usr/local 'include/*' && \
-    rm -f $PROTOC_ZIP
-
-COPY proto proto
-
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    cargo build --release --bin text-embeddings-router --features candle,mkl,static-linking,grpc --no-default-features && sccache -s
-
 FROM debian:bookworm-slim AS base
 
 ENV HUGGINGFACE_HUB_CACHE=/data \
@@ -100,13 +86,6 @@ COPY --from=builder /opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_vml_avx512.s
 COPY --from=builder /opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_avx2.so.2 /usr/local/lib/libmkl_avx2.so.2
 COPY --from=builder /opt/intel/oneapi/mkl/latest/lib/intel64/libmkl_avx512.so.2 /usr/local/lib/libmkl_avx512.so.2
 COPY --from=builder /usr/src/libfakeintel.so /usr/local/libfakeintel.so
-
-FROM base AS grpc
-
-COPY --from=grpc-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
-
-ENTRYPOINT ["text-embeddings-router"]
-CMD ["--json-output"]
 
 FROM base AS http
 
