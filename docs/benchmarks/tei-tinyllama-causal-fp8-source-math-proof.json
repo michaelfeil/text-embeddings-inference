@@ -1,0 +1,451 @@
+{
+  "status": "source-proven causalBF16registered2048 production correction; FP8graphsBOTH200qualified, eagerone latencygap retained",
+  "scope": "Original actual Candle run_ln and run_mha static-library entrypoints compared on identical learned live TinyLlama operands",
+  "dtype": "bfloat16",
+  "physical_gpu": 5,
+  "input_RMS": {
+    "shape": [
+      1024,
+      2048
+    ],
+    "default_difference_values": 1,
+    "adapter_difference_values": 0
+  },
+  "post_attention_RMS": {
+    "shape": [
+      1024,
+      2048
+    ],
+    "default_difference_values": 17,
+    "adapter_difference_values": 0
+  },
+  "packed_causal_attention": {
+    "q": [
+      1024,
+      32,
+      64
+    ],
+    "kv": [
+      1024,
+      4,
+      64
+    ],
+    "actual_tokens": 1024,
+    "batch": 8,
+    "max_sequence": 128,
+    "Candle_raw_window_args": [
+      128,
+      0
+    ],
+    "softmax_scale": 0.125,
+    "default_difference_values": 87,
+    "private_Torch_difference_values": 0
+  },
+  "token_padding": false,
+  "FP8_GEMM_first_live_MLP": "independent original cuBLASLt recipe bitwise native for M1/128/1024 including activation/down",
+  "whole_model_isolated_candidate": "all5 FP8 raw/full/fold/lastpool unchangedstrictgates bitwise; pilot20eager singlepair only",
+  "files": {
+    "same-operand-attention.cpp": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/same-operand-attention.cpp",
+      "sha256": "8b16b77cbf61390f3b2ffcbbaf95e8d2c5a1a6a33272a664294f423e0c62e46c"
+    },
+    "same-operand-attention": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/same-operand-attention",
+      "sha256": "8bc07c0941a9a0daddccd678c6983ce5b5ed78264d34a51c30d42eb9e8d30c43"
+    },
+    "same-operand-attention.log": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/same-operand-attention.log",
+      "sha256": "730f98c65af08bdab984916efc6fc4a1585933456161d7b70055ea838c48ab6a"
+    },
+    "same-operand-norm.cpp": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/same-operand-norm.cpp",
+      "sha256": "f421ff519de902f459d44a1bbf66db624deb8fa598ae128d531d01157b6fb287"
+    },
+    "same-operand-norm": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/same-operand-norm",
+      "sha256": "04b54cdc61742370fbbe1ff8d0d1d05e1d03d0bdc8d7191f6bed92e7635e073c"
+    },
+    "same-operand-norm.log": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/same-operand-norm.log",
+      "sha256": "bee831223baf695169beed714145ac577200050bc17589b3b42b50226f32db81"
+    },
+    "first-attention.q.bin": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/first-attention.q.bin",
+      "sha256": "3a829fb649f795015d59ba5fedccc3e676697372f69712691d8baf1b4a8e0119"
+    },
+    "first-attention.k.bin": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/first-attention.k.bin",
+      "sha256": "fa8527012f0d9d71f343e041010798db64ac81c9660fb2d7e03946add627408c"
+    },
+    "first-attention.v.bin": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/first-attention.v.bin",
+      "sha256": "7b187343137c6b7747b639fa3d281f7d9eda78c4bb62a2759b15d3c1aba46b95"
+    },
+    "first-input-norm.weight.bin": {
+      "path": "/tmp/tei-tinyllama-fp8-trace/first-input-norm.weight.bin",
+      "sha256": "e7595117a037269c89af6a9259b37916693007060f9088b69272a3a1b262c4f5"
+    }
+  },
+  "reference_libraries": {
+    "/root/text-embeddings-inference/target/release/build/candle-flash-attn-df7a7c5b820bc340/out/libflashattention.a": "5fd5e51aabba55032c4272e5a5002bd7f1d2b3e5f812992e05ba8e8b92ac41ea",
+    "/root/text-embeddings-inference/target/release/build/candle-layer-norm-894f881369c2aaa4/out/liblayernorm.a": "72a8c9073ae949f33b80e532791605896b2328bcd0106219c78a98cfc9cae839"
+  },
+  "accepted_native": {
+    "path": "/tmp/tei-gemma-q35-tiny-integrated-runtime/libtei_torch.so",
+    "sha256": "a4bc7eef65360225a25930f0cd7367566f2cad3d520e4b79bf8be2a60bf85175",
+    "native_tests_passed": 28,
+    "Rust_CPU_tests_passed": 8
+  },
+  "production_selector": {
+    "architecture": "llama",
+    "dtype": "bfloat16",
+    "registered_hidden_width": 2048,
+    "attention_modes": [
+      "causal",
+      "bidirectional"
+    ],
+    "registered_original_RMS_geometry": [
+      4,
+      1
+    ],
+    "constraint_reason": "Actual original Candle registered kernel geometry; no checkpoint-specific layer/intermediate/vocabulary signature",
+    "other_architecture_dtype_width_behavior": "unchanged",
+    "private_Torch_attention_selected_only_when_supported": true
+  },
+  "historical_failed_accuracy_report": "tei-tinyllama-causal-trained-fp8-pilot-failure.json",
+  "quantization_boundary_diagnostic": {
+    "scope": "CPU independent quantization of actual live native baseline versus exact-original-contract native stages; no actual Candle stage captured yet",
+    "stages": {
+      "mlp-input": {
+        "input_value_differences": 299,
+        "scale_row_differences": 0,
+        "quantized_byte_differences": 41,
+        "rows_with_byte_difference": 28
+      },
+      "activated": {
+        "input_value_differences": 51764,
+        "scale_row_differences": 0,
+        "quantized_byte_differences": 9619,
+        "rows_with_byte_difference": 25
+      }
+    }
+  },
+  "production_reports": [
+    "tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-6-7.json",
+    "tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-7-6.json",
+    "tei-tinyllama-causal-trained-fp8-graphs-radix-200-4096-6-7.json",
+    "tei-tinyllama-causal-trained-fp8-graphs-radix-200-4096-7-6.json",
+    "tei-tinyllama-causal-trained-default-eager-radix-200-4096-6-7.json",
+    "tei-tinyllama-causal-trained-default-eager-radix-200-4096-7-6.json"
+  ],
+  "actual_whole_Candle_stage_trace": {
+    "status": "PASS: all35 captured stages bytewise identical including every22layer state",
+    "physical_torch_gpu": 6,
+    "physical_candle_gpu": 7,
+    "actual_tokens": 1024,
+    "batch": 8,
+    "max_sequence": 128,
+    "shared_prefix": 96,
+    "dtype": "bfloat16",
+    "dynamic_FP8": true,
+    "graphs": false,
+    "diagnostic_only_not_performance_qualification": true,
+    "native_math_unchanged_in_trace_factory": true,
+    "original_Candle_math_unchanged_in_hooks": true,
+    "Candle_hooks_byte_for_byte_restored_by_owner": true,
+    "stage_comparison": {
+      "directory": "/tmp/tei-tinyllama-fp8-trace/actual-candle-live",
+      "scope": "actual first8x128prefix96 live diagnostic; no trained accuracy gate changed",
+      "stages": {
+        "embedding": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "49b493a6e873dd18763cbf6483357176170bde1a6ee67cb227ed0394318c3152",
+          "candle_sha256": "49b493a6e873dd18763cbf6483357176170bde1a6ee67cb227ed0394318c3152"
+        },
+        "input-norm": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "45221ad627cde7c51d0c50c05a0be6613d7e61677c7a4bfc8b772825ba54d816",
+          "candle_sha256": "45221ad627cde7c51d0c50c05a0be6613d7e61677c7a4bfc8b772825ba54d816"
+        },
+        "qkv-linear": {
+          "differing_values": 0,
+          "total_values": 2621440,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "2bbe69352eaeb5d0353c1d664788ab7a1e28d22478d2f757b822345bfe2a18a4",
+          "candle_sha256": "2bbe69352eaeb5d0353c1d664788ab7a1e28d22478d2f757b822345bfe2a18a4"
+        },
+        "q-rope": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "48a09b0882597a69fb0c03e9db891a89698922f9475bc960779e2aeeb97ae55a",
+          "candle_sha256": "48a09b0882597a69fb0c03e9db891a89698922f9475bc960779e2aeeb97ae55a"
+        },
+        "k-rope": {
+          "differing_values": 0,
+          "total_values": 262144,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "baad222d471efbb9f5e3fe8f5bd38a2efb0b220d6959c5dd78ba01837ba32dbe",
+          "candle_sha256": "baad222d471efbb9f5e3fe8f5bd38a2efb0b220d6959c5dd78ba01837ba32dbe"
+        },
+        "v": {
+          "differing_values": 0,
+          "total_values": 262144,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b979bd3e54ac2f730f822424bc41055df8281d1e58d5e5b7bce25217967cbf47",
+          "candle_sha256": "b979bd3e54ac2f730f822424bc41055df8281d1e58d5e5b7bce25217967cbf47"
+        },
+        "attention": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "6a03ab56d79e54d5fc93ab64379ad529595ba0105e405dfc0606bf46cba4ec03",
+          "candle_sha256": "6a03ab56d79e54d5fc93ab64379ad529595ba0105e405dfc0606bf46cba4ec03"
+        },
+        "attention-projected": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "fc2a8cacbd6afa77a6863bbb8ece45e60aa64ef38f1cc560fed110ad56b6dcf4",
+          "candle_sha256": "fc2a8cacbd6afa77a6863bbb8ece45e60aa64ef38f1cc560fed110ad56b6dcf4"
+        },
+        "post-attention-residual": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "1f85731a9780b477615d140e7b8d5359c2f7904a13bbc1d88d6f684ee043c541",
+          "candle_sha256": "1f85731a9780b477615d140e7b8d5359c2f7904a13bbc1d88d6f684ee043c541"
+        },
+        "mlp-input": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "bcfd319f21c161a42e66a4f4fe69676f759fe115cb81683e33330bcb981efe98",
+          "candle_sha256": "bcfd319f21c161a42e66a4f4fe69676f759fe115cb81683e33330bcb981efe98"
+        },
+        "gate-up": {
+          "differing_values": 0,
+          "total_values": 11534336,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b951d0e931a276379a07bbf33351eb1192c0d63cdf22e487b1eb3490530f9ca8",
+          "candle_sha256": "b951d0e931a276379a07bbf33351eb1192c0d63cdf22e487b1eb3490530f9ca8"
+        },
+        "activated": {
+          "differing_values": 0,
+          "total_values": 5767168,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "9c47d525a4be2a73a200d9627861567135864d290e5d93d9ff767755a1d2f585",
+          "candle_sha256": "9c47d525a4be2a73a200d9627861567135864d290e5d93d9ff767755a1d2f585"
+        },
+        "down": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "a9f54d96a81a3cb51dfa5c522492a3a14bece41fa1751b6cb27f1be18f08fc21",
+          "candle_sha256": "a9f54d96a81a3cb51dfa5c522492a3a14bece41fa1751b6cb27f1be18f08fc21"
+        },
+        "layer-0": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "2eef5ae9611796cc4bdee8360a0b81478331594491a4923b9eba103e0321ea5e",
+          "candle_sha256": "2eef5ae9611796cc4bdee8360a0b81478331594491a4923b9eba103e0321ea5e"
+        },
+        "layer-1": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b5cbb7587a9789a8e0b15008ba23fe8b922ed2dff639e4c22c8402b43a37714a",
+          "candle_sha256": "b5cbb7587a9789a8e0b15008ba23fe8b922ed2dff639e4c22c8402b43a37714a"
+        },
+        "layer-2": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b722247aa46281141a645bf8a3e18bcf3d2338eb60801d99cc8b6f818acb9d73",
+          "candle_sha256": "b722247aa46281141a645bf8a3e18bcf3d2338eb60801d99cc8b6f818acb9d73"
+        },
+        "layer-3": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "70b176c87df361acb8742227e60247a48a30e65fd5ab0e51f86e6b60d50aa6d9",
+          "candle_sha256": "70b176c87df361acb8742227e60247a48a30e65fd5ab0e51f86e6b60d50aa6d9"
+        },
+        "layer-4": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b4dc46625ea70f01b6c4ab08a58c19cca2303fafb865512954c25c30bb561ee2",
+          "candle_sha256": "b4dc46625ea70f01b6c4ab08a58c19cca2303fafb865512954c25c30bb561ee2"
+        },
+        "layer-5": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "ea95c8fb4da6a591a4e746c859ea305858a23dcf629748542d035b7192364c94",
+          "candle_sha256": "ea95c8fb4da6a591a4e746c859ea305858a23dcf629748542d035b7192364c94"
+        },
+        "layer-6": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "9cbd46f30d0b29e56c5fda0e16ed6a17a57d0bbceabb97c9f2cd52f2161995ad",
+          "candle_sha256": "9cbd46f30d0b29e56c5fda0e16ed6a17a57d0bbceabb97c9f2cd52f2161995ad"
+        },
+        "layer-7": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "0d84df6f91bc28423590f10cb5eaf6b685ee10ec6c6f46ffd2172bebb7f1bf9c",
+          "candle_sha256": "0d84df6f91bc28423590f10cb5eaf6b685ee10ec6c6f46ffd2172bebb7f1bf9c"
+        },
+        "layer-8": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "5584f9c987d65ea0e9e832d5eb344a6b68758dbbe58710471e2cd62b747e2ccb",
+          "candle_sha256": "5584f9c987d65ea0e9e832d5eb344a6b68758dbbe58710471e2cd62b747e2ccb"
+        },
+        "layer-9": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "a2a15df98301a371352139db572b934786f84cb55db58ca9a105dcfe7143655b",
+          "candle_sha256": "a2a15df98301a371352139db572b934786f84cb55db58ca9a105dcfe7143655b"
+        },
+        "layer-10": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "96e65b81623d7f5d3a5f94487b9f96819a7ab33e68708369a4e309911b926569",
+          "candle_sha256": "96e65b81623d7f5d3a5f94487b9f96819a7ab33e68708369a4e309911b926569"
+        },
+        "layer-11": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "74dffaa52b4fbb17c919920b35224bbf31740b8db0a06bd92f4a8003333a7beb",
+          "candle_sha256": "74dffaa52b4fbb17c919920b35224bbf31740b8db0a06bd92f4a8003333a7beb"
+        },
+        "layer-12": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "6b3924bdc7620dbda2a31dca7f8b56972efb76808adcf5174fbf438523c67d3f",
+          "candle_sha256": "6b3924bdc7620dbda2a31dca7f8b56972efb76808adcf5174fbf438523c67d3f"
+        },
+        "layer-13": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "50120ed887a390669fe7103069b7ece06bbfe50b30e70151cb3af1ced512ae18",
+          "candle_sha256": "50120ed887a390669fe7103069b7ece06bbfe50b30e70151cb3af1ced512ae18"
+        },
+        "layer-14": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "d206996d1c60a5e8dea13f833bbcbed39f649f20d32ab8fe241347a06c735e6c",
+          "candle_sha256": "d206996d1c60a5e8dea13f833bbcbed39f649f20d32ab8fe241347a06c735e6c"
+        },
+        "layer-15": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "63e81db96cc600420043f4224f2ec810f3b01b65e1f832c4081eeab3c25e3f27",
+          "candle_sha256": "63e81db96cc600420043f4224f2ec810f3b01b65e1f832c4081eeab3c25e3f27"
+        },
+        "layer-16": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "1b6b16e47ad42348e4d68ac0a86c5f92ecd703f5613f2bce08aec56a71da91dd",
+          "candle_sha256": "1b6b16e47ad42348e4d68ac0a86c5f92ecd703f5613f2bce08aec56a71da91dd"
+        },
+        "layer-17": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "382b037249243a54dd7794df76e5ac5aa82e7332945521e79b851330eb1b6665",
+          "candle_sha256": "382b037249243a54dd7794df76e5ac5aa82e7332945521e79b851330eb1b6665"
+        },
+        "layer-18": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "31ab9981ff314ea96d27cc5adfae080652fb9da8493c82049e9fbe842805134a",
+          "candle_sha256": "31ab9981ff314ea96d27cc5adfae080652fb9da8493c82049e9fbe842805134a"
+        },
+        "layer-19": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b42429a2df6cb346ff4c61ad75b8fd7430971ff460cf013ce875b4abc63915ab",
+          "candle_sha256": "b42429a2df6cb346ff4c61ad75b8fd7430971ff460cf013ce875b4abc63915ab"
+        },
+        "layer-20": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "71b76b5b3eb55f0e691a3da8d807579edd3e51cb89fa102ecfa6bb3126ca1865",
+          "candle_sha256": "71b76b5b3eb55f0e691a3da8d807579edd3e51cb89fa102ecfa6bb3126ca1865"
+        },
+        "layer-21": {
+          "differing_values": 0,
+          "total_values": 2097152,
+          "maxabs": 0.0,
+          "min_row_cosine": 0.9999999999999998,
+          "torch_sha256": "b4f2ab34f017e44073e9b8d3fc7a683be7544021a8c31baf6d612981a375be1b",
+          "candle_sha256": "b4f2ab34f017e44073e9b8d3fc7a683be7544021a8c31baf6d612981a375be1b"
+        }
+      }
+    },
+    "files": {
+      "/tmp/tei-tinyllama-fp8-trace/production-trace-factory.cpp": "a39d482f5201a277679a6b65909d6dc036b2b7ff3bede59e3902204d8f6cc173",
+      "/tmp/tei-tinyllama-fp8-trace/production-trace-factory.so": "75940cac420e7c42e01ae9dcb230b6f3a1a683e95d8c7a7c678a5db44e340de6",
+      "/tmp/tei-tinyllama-fp8-trace/actual-candle-trace-run.py": "efb62235c5b9fa3395915620d824963a7e8573430593123fe2a0e020e068e6f5",
+      "/tmp/tei-tinyllama-fp8-trace/actual-candle-trace-run.log": "b754a72eae3ef978cacefa0bf0bb80987a4bf369924e6426b486fcd0545ceb38",
+      "/tmp/tei-combined-vision-tiny-trace/compare_radix": "2100f254b23ea67b42658cc1c96e3927ed80a7ef55c72624205f56191411917f",
+      "/tmp/tei-combined-vision-tiny-trace/manifest.json": "8b9a52d1d00d0ecdd41472494a97763bda538b8ba03097202914eb94094785c9"
+    }
+  }
+}

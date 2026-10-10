@@ -1,0 +1,10 @@
+{
+  "model_id": "BAAI/bge-base-en-v1.5",
+  "model_revision": "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a",
+  "qualification_status": "failed_accuracy_gate",
+  "observed_min_cosine": 0.9932272583077899,
+  "unchanged_cosine_gate": 0.999,
+  "cause": "Private Flash correction alone retains original rounded-statistics norm divergence",
+  "raw_log": "/tmp/tei-bert-fp8-live-norm-probe.log",
+  "raw_log_sha256": "ad09228aa6b16b7d57aac5658eeb884842c48f700d19e2688ac802d6eac1c8bc"
+}

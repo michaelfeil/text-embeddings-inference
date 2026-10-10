@@ -1,0 +1,616 @@
+{
+  "bos_token_id": 1,
+  "candle_gpu": 1,
+  "candle_load_seconds": 2.004715689,
+  "checkpoint_revision": "fe8a4ea1ffedaf415f4da2f062534de366a451e6",
+  "dtype": "bfloat16",
+  "dynamic_fp8_recipe": {
+    "activations": "per-actual-token E4M3; absmax floor1e-12 divided by448; model-dtype gated activation before quantization",
+    "checkpoint_supplied_quantization_scales": false,
+    "comparison": "both backends use dynamic FP8; all existing raw/full/fold/replay/isolation gates are unchanged",
+    "gemm": "FP32 accumulation, model-dtype output; original recipe fast-accumulation where supported, full-accumulation fallback",
+    "token_padding": false,
+    "unchanged_precision": "attention, normalization, residuals, embeddings and output heads",
+    "weights": "MLP-only E4M3, per-output-channel FP32 scales, quantized once"
+  },
+  "dynamic_fp8_requested": true,
+  "eos_token_id": 2,
+  "input_pattern": "synthetic valid vocabulary IDs with configured BOS/EOS; real shared prefixes and distinct suffixes; no padding",
+  "iterations_per_backend": 200,
+  "measurement_mode": "parallel separate GPUs; both backends radix-folded; pooled timings; raw parity outside timings",
+  "model_path": "/tmp/tei-tinyllama-causal-benchmark-model",
+  "pad_token_id": null,
+  "pooling": "last_token",
+  "torch_cuda_graph_count": 0,
+  "torch_cuda_graph_max_tokens": "4096",
+  "torch_cuda_graphs_requested": false,
+  "torch_cudnn_varlen_requested": true,
+  "torch_gpu": 0,
+  "torch_load_seconds": 2.349178888,
+  "vocab_size": 32000,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 3.491516,
+        "p50_ms": 3.515587,
+        "p95_ms": 3.5717779999999997,
+        "tokens_per_second_at_p50": 291274.25946221786
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 352,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 8
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 8
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 8
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 1024
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 1024
+      },
+      "raw_full_cross_backend_diagnostic": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 1024
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 1024
+      },
+      "shared_prefix_tokens": 96,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 2.936266,
+        "p50_ms": 3.035491,
+        "p95_ms": 3.145896,
+        "tokens_per_second_at_p50": 337342.45958891
+      },
+      "torch_speedup": 1.158160903787888,
+      "workload": "8x128 prefix96"
+    },
+    {
+      "candle": {
+        "min_ms": 9.15097,
+        "p50_ms": 9.223768,
+        "p95_ms": 9.276273999999999,
+        "tokens_per_second_at_p50": 444070.1457365363
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 2112,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "raw_full_cross_backend_diagnostic": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "shared_prefix_tokens": 64,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 8.940652,
+        "p50_ms": 9.08705,
+        "p95_ms": 12.512281999999999,
+        "tokens_per_second_at_p50": 450751.34394550486
+      },
+      "torch_speedup": 1.015045366758189,
+      "workload": "32x128 prefix64"
+    },
+    {
+      "candle": {
+        "min_ms": 16.395905999999997,
+        "p50_ms": 16.485522999999997,
+        "p95_ms": 16.561881,
+        "tokens_per_second_at_p50": 298928.9451114169
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 3936,
+      "lengths": [
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4928
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4928
+      },
+      "raw_full_cross_backend_diagnostic": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4928
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4928
+      },
+      "shared_prefix_tokens": 32,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 4928,
+      "torch": {
+        "min_ms": 13.903912,
+        "p50_ms": 14.053791,
+        "p95_ms": 14.32328,
+        "tokens_per_second_at_p50": 350652.7171209533
+      },
+      "torch_speedup": 1.1730303232771853,
+      "workload": "32 ragged64..256 prefix32"
+    },
+    {
+      "candle": {
+        "min_ms": 9.966061,
+        "p50_ms": 10.035459999999999,
+        "p95_ms": 10.111059000000001,
+        "tokens_per_second_at_p50": 408152.69055927685
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 1408,
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 8
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 8
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 8
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "raw_full_cross_backend_diagnostic": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 4096
+      },
+      "shared_prefix_tokens": 384,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 7.111248,
+        "p50_ms": 7.1438630000000005,
+        "p95_ms": 7.183232,
+        "tokens_per_second_at_p50": 573359.2595490703
+      },
+      "torch_speedup": 1.4047665807700958,
+      "workload": "8x512 prefix384"
+    },
+    {
+      "candle": {
+        "min_ms": 43.924722,
+        "p50_ms": 44.085795999999995,
+        "p95_ms": 44.210027,
+        "tokens_per_second_at_p50": 371638.97414940636
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 8448,
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 32
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 16384
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 16384
+      },
+      "raw_full_cross_backend_diagnostic": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 16384
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "min_sequence_index": 0,
+        "min_token_index_within_sequence": 0,
+        "vectors": 16384
+      },
+      "shared_prefix_tokens": 256,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 30.729222,
+        "p50_ms": 31.248466,
+        "p95_ms": 34.517875000000004,
+        "tokens_per_second_at_p50": 524313.7375127471
+      },
+      "torch_speedup": 1.4108147260732733,
+      "workload": "32x512 prefix256"
+    }
+  ],
+  "model_repository": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "benchmark_binary": "/tmp/tei-fp8-comparison-runtime/compare_radix",
+  "benchmark_binary_sha256": "4b3305cda87c34e864c9b92164af03a039b2e51a3016af41f4d350e7797d3562",
+  "native_library": "/tmp/tei-gemma-q35-tiny-integrated-runtime/libtei_torch.so",
+  "native_library_sha256": "a4bc7eef65360225a25930f0cd7367566f2cad3d520e4b79bf8be2a60bf85175",
+  "physical_torch_gpu": 6,
+  "physical_candle_gpu": 7,
+  "benchmark_environment": {
+    "TEI_BENCHMARK_FP8": "true",
+    "CUDA_VISIBLE_DEVICES": "6,7",
+    "TEI_TORCH_CUDA_GRAPHS": "false",
+    "TEI_TORCH_CUDA_GRAPH_MAX_TOKENS": "4096",
+    "TORCH_BLAS_PREFER_CUBLASLT": "1",
+    "CUBLASLT_WORKSPACE_SIZE": "32768",
+    "TEI_TORCH_CUDNN_VARLEN": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "LD_PRELOAD": ""
+  },
+  "physical_gpu_inventory": [
+    "0, GPU-645e5cda-4be1-6f19-fc17-e8ee733fc774, NVIDIA H100 80GB HBM3",
+    "1, GPU-8c8d9a1f-96c3-c5c5-e1b5-e870f5c686f9, NVIDIA H100 80GB HBM3",
+    "2, GPU-088b0aa3-6b33-1f73-4304-40356f5b49e1, NVIDIA H100 80GB HBM3",
+    "3, GPU-65d0d635-8cf6-3564-f2a3-1e872fd23ee3, NVIDIA H100 80GB HBM3",
+    "4, GPU-de0975e3-3c0e-35d1-f140-a8ae6043eb72, NVIDIA H100 80GB HBM3",
+    "5, GPU-352cd1ec-0cc4-f828-5cd5-a00cc900c6a2, NVIDIA H100 80GB HBM3",
+    "6, GPU-36d3e725-b5d5-7791-9798-e1a97cf53af0, NVIDIA H100 80GB HBM3",
+    "7, GPU-f28d1fcc-cb6e-7e13-3852-96df8226ce4d, NVIDIA H100 80GB HBM3"
+  ],
+  "command": [
+    "/tmp/tei-fp8-comparison-runtime/compare_radix",
+    "/tmp/tei-tinyllama-causal-benchmark-model",
+    "200",
+    "0",
+    "1",
+    "bfloat16",
+    "last_token"
+  ],
+  "exit_code": 0,
+  "loaded_native_libraries": [
+    {
+      "path": "/tmp/tei-gemma-q35-tiny-integrated-runtime/libtei_torch.so",
+      "sha256": "a4bc7eef65360225a25930f0cd7367566f2cad3d520e4b79bf8be2a60bf85175"
+    }
+  ],
+  "loaded_native_identity_verified": true,
+  "token_padding": false,
+  "python_model_runtime": false,
+  "cuda_graphs": false,
+  "wall_seconds": 28.570932865142822,
+  "log_path": "/tmp/tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-6-7.log",
+  "worst_p50_slowdown_percent": -1.482235893183781,
+  "all_workloads_within_5_percent": true,
+  "python_runtime": false,
+  "raw_log_sha256": "6c6fb3b2860aaf50378da6256c834eb873d910c3016bfafcfaa75afe0222124b",
+  "raw_log_text": "8x128 prefix96: full native/Candle raw diagnostic {\"max_absolute_difference\":0.0,\"min_cosine\":1.0,\"min_sequence_index\":0,\"min_token_index_within_sequence\":0,\"vectors\":1024}\n8x128 prefix96: torch 3.035ms, candle 3.516ms, torch speedup 1.16x, cosine 1.000000\n32x128 prefix64: full native/Candle raw diagnostic {\"max_absolute_difference\":0.0,\"min_cosine\":1.0,\"min_sequence_index\":0,\"min_token_index_within_sequence\":0,\"vectors\":4096}\n32x128 prefix64: torch 9.087ms, candle 9.224ms, torch speedup 1.02x, cosine 1.000000\n32 ragged64..256 prefix32: full native/Candle raw diagnostic {\"max_absolute_difference\":0.0,\"min_cosine\":1.0,\"min_sequence_index\":0,\"min_token_index_within_sequence\":0,\"vectors\":4928}\n32 ragged64..256 prefix32: torch 14.054ms, candle 16.486ms, torch speedup 1.17x, cosine 1.000000\n8x512 prefix384: full native/Candle raw diagnostic {\"max_absolute_difference\":0.0,\"min_cosine\":1.0,\"min_sequence_index\":0,\"min_token_index_within_sequence\":0,\"vectors\":4096}\n8x512 prefix384: torch 7.144ms, candle 10.035ms, torch speedup 1.40x, cosine 1.000000\n32x512 prefix256: full native/Candle raw diagnostic {\"max_absolute_difference\":0.0,\"min_cosine\":1.0,\"min_sequence_index\":0,\"min_token_index_within_sequence\":0,\"vectors\":16384}\n32x512 prefix256: torch 31.248ms, candle 44.086ms, torch speedup 1.41x, cosine 1.000000\n",
+  "checkpoint_verification_manifest": "tei-tinyllama-causal-checkpoint-verification.json",
+  "checkpoint_original_unmodified": true,
+  "production_math_changed": true,
+  "source_math_proof": "tei-tinyllama-causal-fp8-source-math-proof.json",
+  "qualification": "PASS: strict raw/full/fold/last-token pooled/replay/isolation accuracy and all5 P50 latency cases within+5%",
+  "strict_accuracy_scope": {
+    "minimum_cosine_required": 0.999,
+    "actual_minimum_raw_cross_cosine": 1.0,
+    "actual_maximum_raw_cross_absolute_difference": 0.0,
+    "native_vs_candle_bitwise_equal": true,
+    "full_vs_fold_bitwise_equal": true,
+    "all_full_raw_tokens_compared": true,
+    "all_folded_raw_tokens_compared": true,
+    "selected_pooling": "last_token",
+    "all_pooling_modes_latency_qualified": false,
+    "shared_causal_prefixes": true,
+    "distinct_sequence_suffixes": true,
+    "input_domain": "synthetic valid token IDs, original checkpoint BOS1/EOS2, authentic trained text-backbone weights",
+    "changed_compact_order_and_maps_checked": true,
+    "changed_token_ids_checked": true,
+    "changed_compact_token_count_checked": true,
+    "actual_CUDA_graph_replay_qualified": false,
+    "suffix_isolation_unchanged_other_sequences": true,
+    "semantic_task_quality_evaluated": false,
+    "text_generation_and_LM_readout_qualified": false,
+    "A10_qualified": false
+  },
+  "runtime_identity_verification": {
+    "immutable_native_sha256_verified": true,
+    "immutable_binary_sha256_verified": true,
+    "native_directory_first_in_ld_library_path": true,
+    "actual_process_loaded_native_libraries": [
+      {
+        "path": "/tmp/tei-gemma-q35-tiny-integrated-runtime/libtei_torch.so",
+        "sha256": "a4bc7eef65360225a25930f0cd7367566f2cad3d520e4b79bf8be2a60bf85175"
+      }
+    ],
+    "actual_loaded_native_identity_verified": true,
+    "production_LD_PRELOAD": ""
+  },
+  "physical_gpu_metadata": {
+    "torch": {
+      "name": "NVIDIA H100 80GB HBM3",
+      "uuid": "GPU-36d3e725-b5d5-7791-9798-e1a97cf53af0"
+    },
+    "candle": {
+      "name": "NVIDIA H100 80GB HBM3",
+      "uuid": "GPU-f28d1fcc-cb6e-7e13-3852-96df8226ce4d"
+    }
+  }
+}

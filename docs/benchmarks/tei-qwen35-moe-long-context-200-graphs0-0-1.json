@@ -1,0 +1,160 @@
+{
+  "bos_token_id": null,
+  "candle_gpu": 1,
+  "candle_load_seconds": 12.065756001,
+  "checkpoint_max_position_embeddings": 262144,
+  "checkpoint_revision": null,
+  "dtype": "bfloat16",
+  "eos_token_id": 248044,
+  "input_pattern": "synthetic valid vocabulary IDs with configured BOS/EOS; no padding",
+  "iterations_per_backend": 200,
+  "long_context_mode": "only",
+  "measurement_mode": "parallel separate GPUs",
+  "model_path": "/tmp/tei-qwen35-moe-benchmark-model",
+  "pad_token_id": null,
+  "pooling": "last_token",
+  "torch_cuda_graph_count": 0,
+  "torch_cuda_graph_max_tokens": "16384",
+  "torch_cuda_graphs_requested": false,
+  "torch_cudnn_varlen_requested": true,
+  "torch_gpu": 0,
+  "torch_load_seconds": 100.314069894,
+  "vocab_size": 248320,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 74.946247,
+        "p50_ms": 75.059163,
+        "p95_ms": 75.138509,
+        "tokens_per_second_at_p50": 13642.57152720981
+      },
+      "lengths": [
+        1024
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 59.313366,
+        "p50_ms": 59.906937,
+        "p95_ms": 60.015128000000004,
+        "tokens_per_second_at_p50": 17093.17904201979
+      },
+      "torch_speedup": 1.2529294061554173,
+      "workload": "1x1024"
+    },
+    {
+      "candle": {
+        "min_ms": 126.340492,
+        "p50_ms": 126.49740800000001,
+        "p95_ms": 126.62522000000001,
+        "tokens_per_second_at_p50": 16190.055056305975
+      },
+      "lengths": [
+        2048
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 2048,
+      "torch": {
+        "min_ms": 99.65620799999999,
+        "p50_ms": 99.83770899999999,
+        "p95_ms": 99.949767,
+        "tokens_per_second_at_p50": 20513.29122546272
+      },
+      "torch_speedup": 1.2670303562354384,
+      "workload": "1x2048"
+    },
+    {
+      "candle": {
+        "min_ms": 404.44667699999997,
+        "p50_ms": 404.77014,
+        "p95_ms": 404.927312,
+        "tokens_per_second_at_p50": 20238.64705039754
+      },
+      "lengths": [
+        1024,
+        1024,
+        1024,
+        1024,
+        1024,
+        1024,
+        1024,
+        1024
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 8192,
+      "torch": {
+        "min_ms": 298.107234,
+        "p50_ms": 299.65443000000005,
+        "p95_ms": 299.91015,
+        "tokens_per_second_at_p50": 27338.157490279715
+      },
+      "torch_speedup": 1.3507897747415247,
+      "workload": "8x1024"
+    },
+    {
+      "candle": {
+        "min_ms": 790.523453,
+        "p50_ms": 791.008037,
+        "p95_ms": 791.4420680000001,
+        "tokens_per_second_at_p50": 20712.811038100743
+      },
+      "lengths": [
+        2048,
+        2048,
+        2048,
+        2048,
+        2048,
+        2048,
+        2048,
+        2048
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 582.042019,
+        "p50_ms": 585.064168,
+        "p95_ms": 585.3175299999999,
+        "tokens_per_second_at_p50": 28003.765904870797
+      },
+      "torch_speedup": 1.3520021909801865,
+      "workload": "8x2048"
+    },
+    {
+      "candle": {
+        "min_ms": 315.420254,
+        "p50_ms": 316.23006,
+        "p95_ms": 316.899951,
+        "tokens_per_second_at_p50": 18619.355794322655
+      },
+      "lengths": [
+        1024,
+        1536,
+        2048,
+        1280
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 5888,
+      "torch": {
+        "min_ms": 238.410738,
+        "p50_ms": 239.541485,
+        "p95_ms": 240.16984599999998,
+        "tokens_per_second_at_p50": 24580.293471921992
+      },
+      "torch_speedup": 1.3201473640359205,
+      "workload": "ragged 1024/1536/2048/1280"
+    }
+  ],
+  "native_sha256": "d62642be98c165b4397b0bedf10103210ea71a1b101f4f0e1fa8515b9664b362",
+  "comparison_binary_sha256": "c22f2b166cfcebddba09e925169d2d7200676eaf9076ef83646a9da042a0df76",
+  "config_sha256": "5e4d7f74fec2f360eb9cfbfcd6ec0c4c76e684d3a11caaed259d9fd9bfbc7944",
+  "qualification_scope": "BF16 pooled outputs on actual 1024/2048-token sequences and ragged inputs; unchanged checkpoint configuration; warmed parallel separate H100s; no padding; excludes HTTP/tokenization/startup",
+  "all_workloads_meet_5_percent_p50": true,
+  "model_repository": "Qwen/Qwen3.5-35B-A3B",
+  "model_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754"
+}

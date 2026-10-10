@@ -1,0 +1,17 @@
+{
+  "status": "PASS",
+  "scope": "CUDA CMake installation; installed retained license/notice/authors/provenance contents checked byte-for-byte against source",
+  "project_license_installation": "LICENSE and NOTICE installed unconditionally, including CPU builds; dependency bundles installed with their CUDA kernels",
+  "files": {
+    "LICENSE": "28216184827860ae83a60244c8868de4cf84e16357d16cdb975a46afe3afa9db",
+    "LICENSE.cutlass": "ad1513ca983da737a6843364ad19e8424a56d860736c2da773b8c5be527e1475",
+    "NOTICE": "c1c5b772b0185f245769fccbfee961183ff975a5546f96b6a6bfa7e04ad258f2",
+    "candle-cublaslt/LICENSE-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "candle-kernels/LICENSE.candle-MIT": "23f18e03dc49df91622fe2a76176497404e46ced8a715d9d2b67a7446571cca3",
+    "candle-layer-norm/LICENSE": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+    "torch_flash_attention/AUTHORS": "f3bf4144826a62841b7f9aebc5057f75da2d32a652a573edc67250ec94a377a7",
+    "torch_flash_attention/LICENSE": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+    "torch_flash_attention/provenance.json": "aeaaac984832edee353584427f0611fd9c7c8197e41426ca4f3966d4a2f964e7"
+  },
+  "codex_review": "https://github.com/michaelfeil/text-embeddings-inference/pull/117#discussion_r4239553098"
+}

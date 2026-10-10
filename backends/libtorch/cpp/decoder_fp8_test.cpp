@@ -9,6 +9,7 @@
 #include "fp8_linear.h"
 #include "fp8_reference_test.h"
 #include <cmath>
+#include <cstdlib>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
@@ -173,6 +174,10 @@ void rejects(tei::Options options,c10::Device device,at::ScalarType dtype) {
 }
 }
 int main(int argc,char** argv) {
+  // Match the independent original recipe without relying on the test runner.
+  setenv("CUBLASLT_WORKSPACE_SIZE","32768",1);
+  at::globalContext().setBlasPreferredBackend(at::BlasBackend::Cublaslt);
+  at::globalContext().setAllowTF32CuBLAS(false);
   c10::InferenceMode inference;
   auto device=c10::Device(argc>1?argv[1]:"cuda:0");
   rejects(config("llama"),c10::Device("cpu"),at::kFloat);

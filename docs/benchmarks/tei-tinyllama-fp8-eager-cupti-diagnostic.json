@@ -1,0 +1,246 @@
+{
+  "scope": "Diagnostic CUPTI activity trace; not latency qualification",
+  "checkpoint_repository": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "checkpoint_revision": "fe8a4ea1ffedaf415f4da2f062534de366a451e6",
+  "physical_native_gpu": 2,
+  "physical_candle_gpu": 3,
+  "native_library": "/tmp/tei-gemma-q35-tiny-integrated-runtime/libtei_torch.so",
+  "native_library_sha256": "a4bc7eef65360225a25930f0cd7367566f2cad3d520e4b79bf8be2a60bf85175",
+  "benchmark_binary": "/tmp/tei-fp8-comparison-runtime/compare_radix",
+  "benchmark_binary_sha256": "4b3305cda87c34e864c9b92164af03a039b2e51a3016af41f4d350e7797d3562",
+  "workload": "8x128 prefix96; folded last-token pooled outputs",
+  "actual_unfolded_tokens": 1024,
+  "actual_compact_tokens": 352,
+  "token_padding": false,
+  "dtype": "bfloat16",
+  "dynamic_fp8": true,
+  "cuda_graphs": false,
+  "cublaslt_workspace_kib": 32768,
+  "captured_native_calls": [
+    {
+      "compact_tokens": 352,
+      "call": 25,
+      "batch": 8,
+      "max_sequence": 128,
+      "wall_ms": 6.144893,
+      "kernel_sum_ms": 2.370238,
+      "memcpy_ms": 0.011681,
+      "activity_span_ms": 6.018057,
+      "copies": 10,
+      "names": 11,
+      "kernels": [
+        {
+          "count": 22,
+          "total_ms": 0.403117,
+          "name": "nvjet_sm90_qqtst_128x128_128x6_2x1_v_bz_ovscale_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.375725,
+          "name": "nvjet_sm90_qqtst_128x128_128x6_4x1_v_bz_ovscale_TNT"
+        },
+        {
+          "count": 45,
+          "total_ms": 0.336074,
+          "name": "_ZN22tei_decoder_exact_norm13ln_fwd_kernelINS_13Kernel_traitsI13__nv_bfloat16S2_S2_S2_fiLj2048ELj1ELj4ELj1ELj16ENS_18Kernel_traits_baseILj2048ES2_S2_S2_S2_fiLj128EEEEELb0ELb0ELb0ELb1EEEvNS_9FwdParamsE"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.253858,
+          "name": "nvjet_sm90_tst_128x64_64x8_4x2_h_bz_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.22762,
+          "name": "_ZN15tei_torch_flash16flash_fwd_kernelI23Flash_fwd_kernel_traitsILi64ELi128ELi128ELi4ELb0ELb0EN7cutlass10bfloat16_tE19Flash_kernel_traitsILi64ELi128ELi128ELi4ES3_EELb0ELb1ELb0ELb0ELb0ELb1ELb0ELb0EEEvNS_16Flash_fwd_paramsE"
+        },
+        {
+          "count": 92,
+          "total_ms": 0.208581,
+          "name": "_ZN2at6native24vectorized_gather_kernelILi16ElEEvPcS2_PT0_illllb"
+        },
+        {
+          "count": 44,
+          "total_ms": 0.189154,
+          "name": "_ZN3tei45_GLOBAL__N__bb0686b6_12_fp8_quant_cu_918c7c2212quant_kernelI13__nv_bfloat16EEvPKT_P13__nv_fp8_e4m3Pfi"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.176102,
+          "name": "nvjet_sm90_tst_64x88_64x11_2x1_v_bz_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.12666,
+          "name": "_ZN3tei48_GLOBAL__N__b4610aea_15_fast_kernels_cu_ee275f3919gated_vector_kernelI13__nv_bfloat16jLi8EEEvPKT_PS3_T0_S7_ib"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.071971,
+          "name": "_ZN3tei48_GLOBAL__N__b4610aea_15_fast_kernels_cu_ee275f3920paired_rotary_kernelI13__nv_bfloat16EEvPKT_S5_S5_S5_PS3_jjjjjjjb"
+        },
+        {
+          "count": 1,
+          "total_ms": 0.001376,
+          "name": "_ZN2at6native40_GLOBAL__N__f1f992fe_8_Shape_cu_49f7391c30CatArrayBatchedCopy_vectorizedINS1_10OpaqueTypeILj2EEEjLi1ELi128ELi1ELi16ELi8EEEvPcNS1_25CatArrInputTensorMetadataIT_T0_XT2_EXT3_EEENS1_16TensorSizeStrideIS8_Lj4EEEiS8_"
+        }
+      ],
+      "kernel_launch_count": 336
+    },
+    {
+      "compact_tokens": 352,
+      "call": 30,
+      "batch": 8,
+      "max_sequence": 128,
+      "wall_ms": 5.93045,
+      "kernel_sum_ms": 2.373864,
+      "memcpy_ms": 0.011648,
+      "activity_span_ms": 5.880742,
+      "copies": 10,
+      "names": 11,
+      "kernels": [
+        {
+          "count": 22,
+          "total_ms": 0.405297,
+          "name": "nvjet_sm90_qqtst_128x128_128x6_2x1_v_bz_ovscale_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.374865,
+          "name": "nvjet_sm90_qqtst_128x128_128x6_4x1_v_bz_ovscale_TNT"
+        },
+        {
+          "count": 45,
+          "total_ms": 0.336834,
+          "name": "_ZN22tei_decoder_exact_norm13ln_fwd_kernelINS_13Kernel_traitsI13__nv_bfloat16S2_S2_S2_fiLj2048ELj1ELj4ELj1ELj16ENS_18Kernel_traits_baseILj2048ES2_S2_S2_S2_fiLj128EEEEELb0ELb0ELb0ELb1EEEvNS_9FwdParamsE"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.255364,
+          "name": "nvjet_sm90_tst_128x64_64x8_4x2_h_bz_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.227269,
+          "name": "_ZN15tei_torch_flash16flash_fwd_kernelI23Flash_fwd_kernel_traitsILi64ELi128ELi128ELi4ELb0ELb0EN7cutlass10bfloat16_tE19Flash_kernel_traitsILi64ELi128ELi128ELi4ES3_EELb0ELb1ELb0ELb0ELb0ELb1ELb0ELb0EEEvNS_16Flash_fwd_paramsE"
+        },
+        {
+          "count": 92,
+          "total_ms": 0.20916,
+          "name": "_ZN2at6native24vectorized_gather_kernelILi16ElEEvPcS2_PT0_illllb"
+        },
+        {
+          "count": 44,
+          "total_ms": 0.190402,
+          "name": "_ZN3tei45_GLOBAL__N__bb0686b6_12_fp8_quant_cu_918c7c2212quant_kernelI13__nv_bfloat16EEvPKT_P13__nv_fp8_e4m3Pfi"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.174955,
+          "name": "nvjet_sm90_tst_64x88_64x11_2x1_v_bz_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.127299,
+          "name": "_ZN3tei48_GLOBAL__N__b4610aea_15_fast_kernels_cu_ee275f3919gated_vector_kernelI13__nv_bfloat16jLi8EEEvPKT_PS3_T0_S7_ib"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.071107,
+          "name": "_ZN3tei48_GLOBAL__N__b4610aea_15_fast_kernels_cu_ee275f3920paired_rotary_kernelI13__nv_bfloat16EEvPKT_S5_S5_S5_PS3_jjjjjjjb"
+        },
+        {
+          "count": 1,
+          "total_ms": 0.001312,
+          "name": "_ZN2at6native40_GLOBAL__N__f1f992fe_8_Shape_cu_49f7391c30CatArrayBatchedCopy_vectorizedINS1_10OpaqueTypeILj2EEEjLi1ELi128ELi1ELi16ELi8EEEvPcNS1_25CatArrInputTensorMetadataIT_T0_XT2_EXT3_EEENS1_16TensorSizeStrideIS8_Lj4EEEiS8_"
+        }
+      ],
+      "kernel_launch_count": 336
+    },
+    {
+      "compact_tokens": 352,
+      "call": 35,
+      "batch": 8,
+      "max_sequence": 128,
+      "wall_ms": 3.941084,
+      "kernel_sum_ms": 2.3737,
+      "memcpy_ms": 0.011521,
+      "activity_span_ms": 3.891694,
+      "copies": 10,
+      "names": 11,
+      "kernels": [
+        {
+          "count": 22,
+          "total_ms": 0.405291,
+          "name": "nvjet_sm90_qqtst_128x128_128x6_2x1_v_bz_ovscale_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.375848,
+          "name": "nvjet_sm90_qqtst_128x128_128x6_4x1_v_bz_ovscale_TNT"
+        },
+        {
+          "count": 45,
+          "total_ms": 0.335719,
+          "name": "_ZN22tei_decoder_exact_norm13ln_fwd_kernelINS_13Kernel_traitsI13__nv_bfloat16S2_S2_S2_fiLj2048ELj1ELj4ELj1ELj16ENS_18Kernel_traits_baseILj2048ES2_S2_S2_S2_fiLj128EEEEELb0ELb0ELb0ELb1EEEvNS_9FwdParamsE"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.254026,
+          "name": "nvjet_sm90_tst_128x64_64x8_4x2_h_bz_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.227236,
+          "name": "_ZN15tei_torch_flash16flash_fwd_kernelI23Flash_fwd_kernel_traitsILi64ELi128ELi128ELi4ELb0ELb0EN7cutlass10bfloat16_tE19Flash_kernel_traitsILi64ELi128ELi128ELi4ES3_EELb0ELb1ELb0ELb0ELb0ELb1ELb0ELb0EEEvNS_16Flash_fwd_paramsE"
+        },
+        {
+          "count": 92,
+          "total_ms": 0.209352,
+          "name": "_ZN2at6native24vectorized_gather_kernelILi16ElEEvPcS2_PT0_illllb"
+        },
+        {
+          "count": 44,
+          "total_ms": 0.189834,
+          "name": "_ZN3tei45_GLOBAL__N__bb0686b6_12_fp8_quant_cu_918c7c2212quant_kernelI13__nv_bfloat16EEvPKT_P13__nv_fp8_e4m3Pfi"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.176199,
+          "name": "nvjet_sm90_tst_64x88_64x11_2x1_v_bz_TNT"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.127521,
+          "name": "_ZN3tei48_GLOBAL__N__b4610aea_15_fast_kernels_cu_ee275f3919gated_vector_kernelI13__nv_bfloat16jLi8EEEvPKT_PS3_T0_S7_ib"
+        },
+        {
+          "count": 22,
+          "total_ms": 0.071362,
+          "name": "_ZN3tei48_GLOBAL__N__b4610aea_15_fast_kernels_cu_ee275f3920paired_rotary_kernelI13__nv_bfloat16EEvPKT_S5_S5_S5_PS3_jjjjjjjb"
+        },
+        {
+          "count": 1,
+          "total_ms": 0.001312,
+          "name": "_ZN2at6native40_GLOBAL__N__f1f992fe_8_Shape_cu_49f7391c30CatArrayBatchedCopy_vectorizedINS1_10OpaqueTypeILj2EEEjLi1ELi128ELi1ELi16ELi8EEEvPcNS1_25CatArrInputTensorMetadataIT_T0_XT2_EXT3_EEENS1_16TensorSizeStrideIS8_Lj4EEEiS8_"
+        }
+      ],
+      "kernel_launch_count": 336
+    }
+  ],
+  "raw_log": "/tmp/tei-tinyllama-fp8-eager-cupti.log",
+  "raw_log_sha256": "60751dd421d378022a021d0128d13691dddec30eb142c087a56d83770ac5b499",
+  "interceptor_source": "/tmp/tei-tinyllama-fp8-eager-cupti.cpp",
+  "interceptor_source_sha256": "b129ccaafa4a8cd122c112c49729817e2aee827ee442aa5c509cb5050eee00df",
+  "limitations": [
+    "CUPTI initialization and activity collection perturb host launch scheduling; traced wall/device spans are not uninstrumented latency measurements.",
+    "Candle runs on a separate GPU; only local CUDA device0 activity is recorded.",
+    "This diagnostic does not supersede the failed eager FP8 swapped 200-iteration qualification or prove its exact scheduling cause."
+  ],
+  "observations": [
+    "336 native GPU kernel launches and 10 copies per folded request.",
+    "GPU kernel work remains stable at about2.37ms across all three captured requests; copies about0.012ms.",
+    "Qualified CUDA-graph latency2.509\u20132.629ms approaches this GPU kernel floor, while eager200 median3.035\u20133.897ms is larger.",
+    "Evidence favors launch/scheduling overhead over a changed GPU numerical operation; no production performance change is justified by this trace alone."
+  ]
+}

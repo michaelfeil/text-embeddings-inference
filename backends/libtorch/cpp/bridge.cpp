@@ -6,6 +6,7 @@
 #include "fast_kernels.h"
 #include "encoder_norm.h"
 #include "encoder_activation.h"
+#include "torch_flash_fma.h"
 #include "packed_pool.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/detail/CUDAHooksInterface.h>
@@ -70,6 +71,7 @@ struct Bert : tei::Model {
   std::unordered_map<std::string,tei::Fp8Linear> fp8_mlp;
   bool roberta = false;
   bool cudnn_varlen = false;
+  bool private_flash_embedding = false;
   Bert(TeiConfig cfg, c10::Device dev, at::ScalarType type): config(cfg), device(dev), dtype(type) {}
   const at::Tensor& w(const std::string& name) const {
     auto entry = weights.find(prefix + name);
@@ -127,6 +129,14 @@ struct Bert : tei::Model {
     for (const auto* stem : {"bert.", "roberta.", "xlm-roberta.", "camembert.", ""}) {
       if (weights.count(std::string(stem) + "embeddings.word_embeddings.weight")) { prefix = stem; break; }
     }
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // Qualified H100 FP16 BERT embedding geometry. Keep classifier/SPLADE and
+    // RoBERTa paths unchanged; their trained heads have separate qualification.
+    private_flash_embedding = device.is_cuda() && dtype == at::kHalf && !roberta
+      && config.hidden == 768 && config.heads == 12 && (config.activation == 0 || config.activation == 1)
+      && at::cuda::getDeviceProperties(device.index())->major == 9
+      && classification_width() == 0 && options.string("_pooling") != "splade";
+#endif
     check("embeddings.word_embeddings.weight", {config.vocab, config.hidden});
     check("embeddings.position_embeddings.weight", {config.positions, config.hidden});
     check("embeddings.token_type_embeddings.weight", {config.types, config.hidden});
@@ -230,6 +240,15 @@ struct Bert : tei::Model {
         // Cumulative INT32 offsets are on-device. No padded batch or mask exists.
         // cuDNN helps long sequences; FlashAttention is faster on the measured
         // ragged batches with maximum length 256, despite a similar token total.
+#ifdef TEI_TORCH_CUDA_KERNELS
+        // Native Torch packed Flash avoids cuDNN setup overhead for moderate
+        // token totals. Larger totals retain the measured cuDNN advantage.
+        if (private_flash_embedding && tokens <= 4096
+            && tei::torch_flash_fma_supported(q, k, v)) {
+          attended = tei::torch_flash_fma(q, k, v, cumulative, max_sequence,
+            1.0 / std::sqrt(static_cast<double>(head)), false);
+        } else
+#endif
         if (cudnn_varlen && max_sequence >= 512) {
           attended = std::get<0>(at::_cudnn_attention_forward(q, k, v, std::nullopt,
             cumulative, cumulative, max_sequence, max_sequence, false, 0.0, false, false));

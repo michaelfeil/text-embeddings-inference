@@ -1,0 +1,22 @@
+{
+  "scope": "Native C++ BGE8x512 FP16 CLS, five instrumented forwards, actual4096 packed tokens; Python profiler orchestration only, no Python model inference",
+  "native_sha256": "41dbdbe796c6c735ec9ee648796195a9f447083073fe202ca16846631740da76",
+  "device": "H100 physical GPU2",
+  "controlled_environment": {
+    "TORCH_BLAS_PREFER_CUBLASLT": "1",
+    "CUBLASLT_WORKSPACE_SIZE": "32768"
+  },
+  "profile_artifacts": {
+    "/tmp/tei-profile-bert-eager-native.py": "082ca5a30a54e854fd61e5b1c4cfd34533b146bfd9ee152e4acfb7b4e9409c1c",
+    "/tmp/tei-profile-bert-eager-cudnnon.log": "73fc4f3fadd538900eaf139682c3c7d97f2eb66832cadb426a232c8038a5f52e",
+    "/tmp/tei-profile-bert-eager-cudnnoff.log": "440f9c595ebfe99a978aafd6f3f5c5e797e9d041b56d06ad849c3a92086df3b8"
+  },
+  "instrumented_operator_times_per_forward_us": {
+    "cudnn_attention_cuda_total": 419.2,
+    "cudnn_attention_cpu_total": 1706.4,
+    "flash_attention_cuda_total": 447.8,
+    "flash_attention_cpu_total": 406.4,
+    "residual_and_embedding_layernorm_cuda": 294.0
+  },
+  "limitations": "Profiler instrumentation changes CPU overhead and aggregate operator timing; these are attribution measurements, not paired P50 latency evidence. CUDA operator totals include setup kernels and can overlap host work. No production attention selector changed."
+}

@@ -55,7 +55,10 @@ Single-file and sharded safetensors, CLS/mean/last-token pooling and raw token
 embeddings remain supported. BERT supports tanh GELU, ReLU and SiLU; other
 BERT activation names fail at startup instead of silently selecting GELU.
 Classification and SPLADE heads are being checked
-against their Candle counterparts. FP32, FP16 and BF16 are accepted; CUDA Flash
+against their Candle counterparts. FP32, FP16 and BF16 are accepted. Omitted
+dtype or `--dtype auto` selects BF16 on CUDA for BF16 checkpoints and models
+requiring it, FP16 for other CUDA checkpoints, and FP32 on CPU. Explicit dtype
+choices take precedence. CUDA Flash
 requires FP16/BF16. Gemma width-512 global attention uses a restricted native
 Torch Flash specialization for BF16 on SM90 with 128 KiB opt-in shared memory;
 other configurations use native packed efficient attention. The installed Torch Flash build disables ALiBi, so Jina uses native
@@ -101,8 +104,13 @@ uses native rowwise E4M3 for dense BERT/RoBERTa/ModernBERT and
 Llama/Mistral/Qwen2/Qwen3 MLP projections only. It requires a supported CUDA
 device, FP16/BF16 and an unquantized checkpoint; unsupported matrix dimensions
 are rejected without padding. Attention, normalization and heads retain their
-original dtype. Component tests pass; trained accuracy and latency remain
-unqualified. Both comparison tools accept `TEI_BENCHMARK_FP8=1` when built
+original dtype. Trained causal TinyLlama BF16 FP8 inference passes strict
+raw/full/folded/last-token pooled accuracy bitwise and the P50 latency target
+in both H100 assignments with CUDA graphs enabled. Eager accuracy is bitwise,
+but one swapped workload remains +8.88% slower. Trained encoder and other
+FP8 checkpoint qualifications remain open;
+[scope and evidence](libtorch-model-coverage.md) include the retained failures.
+Both comparison tools accept `TEI_BENCHMARK_FP8=1` when built
 with `benchmark-fp8`, enabling the same requested mode in both backends. Other custom
 modules are rejected explicitly. Image and
 audio towers have native implementations. EmbeddingGemma2 text, image and audio
@@ -121,6 +129,13 @@ path, raw-token output, other precisions or A10.
 [3/2 evidence](benchmarks/tei-qwen35-moe-integrated-eager-3-2.json).
 BERT uses tanh GELU to match Candle's inference kernels. CUDA fuses bias and
 GELU into the intermediate projection; CPU uses the matching approximation.
+On Hopper, FP16 BERT embedding models with hidden width 768 and 12 attention
+heads use the pinned native Torch packed Flash adapter for at most 4096 actual
+tokens; larger batches retain the existing attention path. Classifier and
+SPLADE heads retain their existing attention paths. The measured BGE FP16 CLS
+checkpoint passes all seven shapes in both H100 assignments with 200 iterations
+per backend: worst P50 slowdown +4.896% eager and +1.865% with graphs, minimum
+cosine 0.99999499. See the [qualification scope and reports](libtorch-model-coverage.md).
 
 ## Build and run
 
@@ -156,8 +171,13 @@ when starting the server. Existing Candle builds do not require LibTorch.
 CMake handles LibTorch's compiler/ABI flags. The bridge is a small shared library;
 the server's build rpath points to its Cargo output directory. When moving the
 server to another machine, ship `libtei_torch.so` from that build alongside the
-executable and provide LibTorch's shared libraries via `LD_LIBRARY_PATH` (retain
-their licenses/notices). The executable and bridge also search their own directory
+executable **and the complete `share/licenses/tei_torch` directory from the same
+Cargo build output**. Keep that license directory in the deployed package.
+It contains this project's license and notices. CUDA builds also include the
+retained Flash Attention authors/license/provenance, CUTLASS, Candle kernel,
+cuBLASLt and layer-norm notices incorporated into the bridge.
+Provide LibTorch's shared libraries via `LD_LIBRARY_PATH` and retain their
+licenses/notices as well. The executable and bridge also search their own directory
 on Linux. No `libtorch_python` library is linked by the bridge.
 
 ## Validation and performance

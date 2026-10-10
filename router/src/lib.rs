@@ -454,16 +454,12 @@ pub async fn run(
         torch_device
     };
     let dtype = if backend_kind == text_embeddings_backend::BackendKind::Libtorch {
-        match dtype {
-            None | Some(DType::Auto) => {
-                if torch_device == text_embeddings_backend::TorchDevice::Cpu {
-                    DType::Float32
-                } else {
-                    DType::Float16
-                }
-            }
-            Some(value) => value,
-        }
+        resolve_libtorch_dtype(
+            dtype,
+            config.dtype.as_deref().or(config.torch_dtype.as_deref()),
+            &config.model_type,
+            torch_device == text_embeddings_backend::TorchDevice::Cpu,
+        )
     } else {
         resolve_dtype(
             dtype,
@@ -705,6 +701,27 @@ fn get_backend_model_type(
 }
 
 // Resolve Auto before passing a concrete dtype to the backend or reporting /info.
+fn resolve_libtorch_dtype(
+    requested: Option<DType>,
+    model_dtype: Option<&str>,
+    model_type: &str,
+    cpu: bool,
+) -> DType {
+    match requested {
+        None | Some(DType::Auto) if cpu => DType::Float32,
+        None | Some(DType::Auto) => {
+            if model_dtype == Some("bfloat16")
+                || matches!(model_type, "gemma3_text" | "embedding_gemma2")
+            {
+                DType::Bfloat16
+            } else {
+                DType::Float16
+            }
+        }
+        Some(dtype) => dtype,
+    }
+}
+
 fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type: &str) -> DType {
     match requested {
         None | Some(DType::Auto) => {
@@ -1088,6 +1105,77 @@ impl From<ResponseMetadata> for HeaderMap {
                 .unwrap(),
         );
         headers
+    }
+}
+
+#[cfg(test)]
+mod libtorch_auto_dtype_tests {
+    use super::*;
+
+    #[test]
+    fn bf16_checkpoint_auto_dtype_survives_root_and_nested_configs() {
+        for field in ["dtype", "torch_dtype"] {
+            for nested in [false, true] {
+                let mut value = serde_json::json!({
+                    "model_type": "qwen3_5_moe",
+                    "max_position_embeddings": 2048,
+                    "text_config": {"max_position_embeddings": 2048}
+                });
+                if nested {
+                    value["text_config"][field] = "bfloat16".into();
+                } else {
+                    value[field] = "bfloat16".into();
+                }
+                let mut config: ModelConfig = serde_json::from_value(value).unwrap();
+                config.resolve_text_config().unwrap();
+                let declared = config.dtype.as_deref().or(config.torch_dtype.as_deref());
+                for requested in [None, Some(DType::Auto)] {
+                    assert_eq!(
+                        resolve_libtorch_dtype(requested, declared, &config.model_type, false),
+                        DType::Bfloat16
+                    );
+                }
+                assert_eq!(
+                    resolve_libtorch_dtype(None, declared, &config.model_type, true),
+                    DType::Float32
+                );
+                assert_eq!(
+                    resolve_libtorch_dtype(
+                        Some(DType::Float16),
+                        declared,
+                        &config.model_type,
+                        false
+                    ),
+                    DType::Float16
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gemma_requirements_and_device_defaults_preserve_explicit_overrides() {
+        for model in ["gemma3_text", "embedding_gemma2"] {
+            assert_eq!(
+                resolve_libtorch_dtype(Some(DType::Auto), Some("float32"), model, false),
+                DType::Bfloat16
+            );
+            assert_eq!(
+                resolve_libtorch_dtype(Some(DType::Float32), Some("bfloat16"), model, false),
+                DType::Float32
+            );
+        }
+        assert_eq!(
+            resolve_libtorch_dtype(None, None, "bert", false),
+            DType::Float16
+        );
+        assert_eq!(
+            resolve_libtorch_dtype(Some(DType::Auto), None, "bert", true),
+            DType::Float32
+        );
+        assert_eq!(
+            resolve_libtorch_dtype(Some(DType::Bfloat16), None, "bert", true),
+            DType::Bfloat16
+        );
     }
 }
 
