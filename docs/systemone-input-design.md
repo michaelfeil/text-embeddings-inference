@@ -71,7 +71,7 @@ on `/v1/embeddings`; clients must send text. `/decode` retains its token-ID inpu
 The decision API continues to use `state: {"messages": [...]}`.
 
 **Current capability:** text-only user/assistant conversations use the checkpoint's
-native chat template through fastokens. Template compilation happens once at
+native chat template through Basetenkenizer. Template compilation happens once at
 startup and rendering runs in the bounded tokenizer workers, including when token
 encoding falls back to Hugging Face. Ordered text parts are concatenated within
 each message. Message order and roles are preserved. System/developer roles,

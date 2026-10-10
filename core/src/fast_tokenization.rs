@@ -3,7 +3,7 @@
 use tokenizers::{Encoding, Tokenizer};
 
 pub(crate) struct FastTokenizer {
-    tokenizer: fastokens::Tokenizer,
+    tokenizer: basetenkenizer::Tokenizer,
     pool: rayon::ThreadPool,
 }
 
@@ -18,9 +18,9 @@ pub(crate) fn load(tokenizer: &Tokenizer, workers: usize) -> Option<FastTokenize
     // Unsupported models/normalizers simply retain the existing implementation.
     let result = serde_json::to_value(tokenizer)
         .map_err(|e| e.to_string())
-        .and_then(|json| {
-            // These settings are accepted but not implemented by fastokens 0.2.17.
-            // Encoding succeeds with different IDs, so error fallback is insufficient.
+        .and_then(|mut json| {
+            // Keep configurations with specialized BPE/added-token semantics on
+            // HF until their ID parity has been verified for this backend.
             if ["continuing_subword_prefix", "end_of_word_suffix"]
                 .iter()
                 .any(|key| json["model"][key].as_str().is_some_and(|s| !s.is_empty()))
@@ -34,8 +34,12 @@ pub(crate) fn load(tokenizer: &Tokenizer, workers: usize) -> Option<FastTokenize
             {
                 return Err("Tokenizer semantics require Hugging Face encoding".into());
             }
-            let tokenizer = fastokens::Tokenizer::from_json(json).map_err(|e| e.to_string())?;
-            // Fastokens parallelizes splits internally. Bound it to the configured
+            // HF applies the configured processor after request-specific truncation.
+            // Disable it here so native encoding returns only content IDs.
+            json["post_processor"] = serde_json::Value::Null;
+            let tokenizer =
+                basetenkenizer::Tokenizer::from_json(json).map_err(|e| e.to_string())?;
+            // Basetenkenizer parallelizes splits internally. Bound it to the configured
             // worker budget instead of initializing Rayon's host-wide global pool.
             let pool = rayon::ThreadPoolBuilder::new()
                 .num_threads(workers.max(1))
@@ -45,7 +49,7 @@ pub(crate) fn load(tokenizer: &Tokenizer, workers: usize) -> Option<FastTokenize
         });
     match result {
         Ok(tokenizer) => {
-            tracing::info!("Using fastokens BPE encoding for embedding text inputs");
+            tracing::info!("Using Basetenkenizer BPE encoding for embedding text inputs");
             Some(tokenizer)
         }
         Err(err) => {
@@ -118,7 +122,7 @@ mod tests {
             AddedToken::from("</s>", true),
         ]);
         let fast = load(&tokenizer, 2).unwrap();
-        // A processor installed after fastokens initialization must still apply.
+        // A processor installed after Basetenkenizer initialization must still apply.
         tokenizer.with_post_processor(Some(
             TemplateProcessing::builder()
                 .try_single("<s>:2 $A:3 </s>:2")
@@ -127,6 +131,8 @@ mod tests {
                 .build()
                 .unwrap(),
         ));
+        // Loading with an existing processor must also avoid applying it twice.
+        let fast_with_processor = load(&tokenizer, 2).unwrap();
         for direction in [TruncationDirection::Left, TruncationDirection::Right] {
             for limit in [2, 3, 8, 128] {
                 tokenizer
@@ -145,6 +151,10 @@ mod tests {
                             expected.get_ids(),
                             "{text:?}, {direction:?}, {limit}"
                         );
+                        let preconfigured =
+                            encode(&fast_with_processor, &tokenizer, text, special).unwrap();
+                        assert_eq!(preconfigured.get_ids(), expected.get_ids());
+                        assert_eq!(preconfigured.get_type_ids(), expected.get_type_ids());
                         assert_eq!(actual.get_type_ids(), expected.get_type_ids());
                         assert_eq!(actual.get_attention_mask(), expected.get_attention_mask());
                         assert_eq!(
@@ -167,7 +177,7 @@ mod tests {
         assert!(load(&tokenizer, 1).is_none());
     }
     #[test]
-    fn unsupported_semantics_fall_back_before_silent_id_mismatches() {
+    fn specialized_semantics_use_hf() {
         let base = serde_json::json!({
             "version":"1.0", "truncation":null, "padding":null,
             "added_tokens":[], "normalizer":null, "pre_tokenizer":null,
@@ -194,9 +204,7 @@ mod tests {
                 });
             }
             let hf = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
-            let expected = hf.encode(input, false).unwrap();
-            let raw = fastokens::Tokenizer::from_json(json).unwrap();
-            assert_ne!(raw.encode(input).unwrap(), expected.get_ids(), "{kind}");
+            hf.encode(input, false).unwrap();
             assert!(load(&hf, 1).is_none(), "{kind}");
         }
     }

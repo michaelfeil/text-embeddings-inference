@@ -25,6 +25,11 @@ length of 512 tokens:
 
 </div>
 
+This repository is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
+
+Upstream code retains its Apache-2.0 license and notices; see [LICENSE](LICENSE).
+Licensing for this fork's modifications: TBD - fork of what was originally huggingface/text-embeddings-inference.
+
 ## Table of contents
 
 - [Get Started](#get-started)
@@ -78,7 +83,7 @@ Each replica logs inference throughput every 100 batches.
 
 ### BPE tokenization
 
-Embedding text inputs automatically use `fastokens-b10` when the tokenizer configuration is supported. No opt-in flag or environment variable is required. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Fast encoding uses a shared CPU pool bounded by `--tokenization-workers`.
+Embedding text inputs automatically use `basetenkenizer` 0.2.9 when the tokenizer configuration is supported. No opt-in flag or environment variable is required. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Fast encoding uses a shared CPU pool bounded by `--tokenization-workers`.
 
 ## Get Started
 
