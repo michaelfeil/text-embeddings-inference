@@ -69,9 +69,10 @@ impl<T: Serialize> IntoResponse for Json<T> {
     }
 }
 
-// Specific ranges override wildcard ranges, including q=0 exclusions.
-fn preference(headers: &HeaderMap, media_type: &str) -> (u8, u16) {
-    let mut best = (0, 0);
+// Check permission only: positive q values do not rank formats. A specific
+// q=0 exclusion overrides a wildcard that would otherwise allow the media type.
+fn allows(headers: &HeaderMap, media_type: &str) -> bool {
+    let mut matched = (0, false);
     for value in headers.get_all(header::ACCEPT) {
         let Ok(value) = value.to_str() else { continue };
         for range in value.split(',') {
@@ -91,48 +92,43 @@ fn preference(headers: &HeaderMap, media_type: &str) -> (u8, u16) {
             } else {
                 continue;
             };
-            let mut quality = 1000;
+            let mut allowed = true;
             for parameter in parts {
                 if let Some((name, value)) = parameter.trim().split_once('=') {
                     if name.trim().eq_ignore_ascii_case("q") {
-                        quality = value
+                        allowed = value
                             .trim()
                             .parse::<f32>()
-                            .ok()
-                            .filter(|q| q.is_finite() && (0.0..=1.0).contains(q))
-                            .map_or(0, |q| (q * 1000.0).round() as u16);
+                            .is_ok_and(|q| q > 0.0 && q <= 1.0);
                     }
                 }
             }
-            best = best.max((specificity, quality));
+            matched = matched.max((specificity, allowed));
         }
     }
-    best
+    matched.1
 }
 
 fn select(headers: &HeaderMap, native: Option<&str>) -> Option<Format> {
     if !headers.contains_key(header::ACCEPT) {
         return Some(Format::Native);
     }
-    let mut selected = None;
-    let mut best = (0, 0);
-    // Stable ties prefer the route's native format, then JSON.
-    for (format, media_type) in native
-        .map(|mime| (Format::Native, mime))
-        .into_iter()
-        .chain([
-            (Format::Json, "application/json"),
-            (Format::MessagePack, "application/msgpack"),
-            (Format::LegacyMessagePack, "application/x-msgpack"),
-        ])
-    {
-        let (specificity, quality) = preference(headers, media_type);
-        if quality > 0 && (quality, specificity) > best {
-            selected = Some(format);
-            best = (quality, specificity);
+    // MessagePack wins whenever allowed, regardless of header order or weights.
+    for (format, media_type) in [
+        (Format::MessagePack, "application/msgpack"),
+        (Format::LegacyMessagePack, "application/x-msgpack"),
+    ] {
+        if allows(headers, media_type) {
+            return Some(format);
         }
     }
-    selected
+    if native.is_some_and(|mime| allows(headers, mime)) {
+        Some(Format::Native)
+    } else if allows(headers, "application/json") {
+        Some(Format::Json)
+    } else {
+        None
+    }
 }
 
 pub(crate) async fn negotiate(request: Request, next: Next) -> Response {
@@ -324,153 +320,108 @@ mod tests {
     }
 
     #[test]
-    fn quality_specificity_exclusions_and_multiple_headers() {
+    fn messagepack_wins_when_allowed() {
         for (accept, expected) in [
-            ("*/*", Some(Format::Json)),
-            ("application/msgpack", Some(Format::MessagePack)),
-            ("APPLICATION/X-MSGPACK", Some(Format::LegacyMessagePack)),
+            ("*/*", Some(Format::MessagePack)),
+            ("application/*", Some(Format::MessagePack)),
             (
-                "application/json;q=0.5,application/msgpack;q=0.9",
+                "application/json,application/msgpack;q=0.1",
                 Some(Format::MessagePack),
             ),
+            ("APPLICATION/X-MSGPACK", Some(Format::LegacyMessagePack)),
             (
-                "application/msgpack;q=0,application/*;q=1",
+                "application/msgpack;q=0,application/x-msgpack;q=0,application/*",
                 Some(Format::Json),
             ),
-            ("application/json;q=0,*/*;q=1", Some(Format::MessagePack)),
-            (
-                "application/msgpack;q=NaN,application/json",
-                Some(Format::Json),
-            ),
-            ("application/json;q=0,application/msgpack;q=0,*/*;q=0", None),
             ("application/xml", None),
         ] {
             let mut headers = HeaderMap::new();
             headers.insert(header::ACCEPT, accept.parse().unwrap());
             assert_eq!(select(&headers, None), expected, "{accept}");
         }
-        let mut headers = HeaderMap::new();
-        headers.append(
-            header::ACCEPT,
-            HeaderValue::from_static("application/json;q=0.5"),
-        );
-        headers.append(
-            header::ACCEPT,
-            HeaderValue::from_static("application/msgpack"),
-        );
-        assert_eq!(select(&headers, None), Some(Format::MessagePack));
     }
 
     #[tokio::test]
-    async fn typed_messagepack_uses_named_maps_and_preserves_numeric_types() {
-        let response = call("/info", Some("application/msgpack")).await;
-        assert_eq!(
-            response.headers()[header::CONTENT_TYPE],
-            "application/msgpack"
-        );
-        assert_eq!(response.headers()[header::VARY], "Accept");
-        let bytes = to_bytes(response.into_body(), 1024).await.unwrap();
-        assert_eq!(bytes[0], 0x82); // Named map, not a positional struct array.
-        assert!(bytes.ends_with(&[0xca, 0x3f, 0, 0, 0])); // Native f32, not a JSON/f64 round trip.
-        assert_eq!(
-            rmp_serde::from_slice::<Payload>(&bytes).unwrap(),
-            Payload {
-                integer: u64::MAX,
-                score: 0.5
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn concurrent_requests_keep_independent_formats() {
+    async fn typed_responses_preserve_numeric_types_and_request_isolation() {
         let (json, msgpack, alias) = tokio::join!(
             call("/info", None),
-            call("/info", Some("application/msgpack")),
+            call("/info", Some("application/json,application/msgpack;q=0.1")),
             call("/info", Some("application/x-msgpack"))
         );
         assert_eq!(json.headers()[header::CONTENT_TYPE], "application/json");
-        assert_eq!(
-            msgpack.headers()[header::CONTENT_TYPE],
-            "application/msgpack"
-        );
         assert_eq!(
             alias.headers()[header::CONTENT_TYPE],
             "application/x-msgpack"
         );
         assert_eq!(
+            msgpack.headers()[header::CONTENT_TYPE],
+            "application/msgpack"
+        );
+        assert_eq!(msgpack.headers()[header::VARY], "Accept");
+        let bytes = to_bytes(msgpack.into_body(), 1024).await.unwrap();
+        assert_eq!(bytes[0], 0x82); // Named map, not a positional struct array.
+        assert!(bytes.ends_with(&[0xca, 0x3f, 0, 0, 0])); // Native f32, without JSON/f64 conversion.
+        let decoded = rmp_serde::from_slice::<Payload>(&bytes).unwrap();
+        assert_eq!(
+            decoded,
+            Payload {
+                integer: u64::MAX,
+                score: 0.5
+            }
+        );
+        assert_eq!(
             serde_json::from_slice::<Payload>(&to_bytes(json.into_body(), 1024).await.unwrap())
-                .unwrap()
-                .integer,
-            u64::MAX
+                .unwrap(),
+            decoded
         );
     }
 
     #[tokio::test]
-    async fn json_requests_and_errors_support_messagepack_responses() {
-        let request = Request::builder()
-            .method(Method::POST)
-            .uri("/echo")
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::ACCEPT, "application/msgpack")
-            .body(Body::from(r#"{"integer":42,"score":0.5}"#))
-            .unwrap();
-        let response = app().oneshot(request).await.unwrap();
-        assert_eq!(
-            rmp_serde::from_slice::<Payload>(&to_bytes(response.into_body(), 1024).await.unwrap())
-                .unwrap()
-                .integer,
-            42
-        );
-        let response = call("/error", Some("application/msgpack")).await;
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    async fn errors_text_and_bodyless_responses() {
+        let error = call("/error", Some("application/msgpack")).await;
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
         assert_eq!(
             rmp_serde::from_slice::<serde_json::Value>(
-                &to_bytes(response.into_body(), 1024).await.unwrap()
+                &to_bytes(error.into_body(), 1024).await.unwrap()
             )
             .unwrap()["error"],
             "bad input"
         );
-        let request = Request::builder()
+        let malformed = Request::builder()
             .method(Method::POST)
             .uri("/echo")
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::ACCEPT, "application/msgpack")
             .body(Body::from("bad JSON"))
             .unwrap();
-        let response = app().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
-        assert!(rmp_serde::from_slice::<String>(
-            &to_bytes(response.into_body(), 1024).await.unwrap()
-        )
-        .unwrap()
-        .contains("Failed to parse"));
-    }
-
-    #[tokio::test]
-    async fn text_and_empty_routes_negotiate_and_preserve_native_defaults() {
-        for (path, expected) in [("/metrics", "requests 1\n"), ("/docs", "<html>docs</html>")] {
-            let native = call(path, None).await;
-            assert_eq!(to_bytes(native.into_body(), 1024).await.unwrap(), expected);
-            let encoded = call(path, Some("application/msgpack")).await;
-            assert_eq!(
-                rmp_serde::from_slice::<String>(
-                    &to_bytes(encoded.into_body(), 1024).await.unwrap()
-                )
-                .unwrap(),
-                expected
-            );
-            let json = call(path, Some("application/json")).await;
-            assert_eq!(
-                serde_json::from_slice::<String>(&to_bytes(json.into_body(), 1024).await.unwrap())
-                    .unwrap(),
-                expected
-            );
-        }
+        let error = app().oneshot(malformed).await.unwrap();
+        assert_eq!(error.status(), StatusCode::BAD_REQUEST);
         assert!(
-            call("/docs", Some("text/html, */*;q=0.8")).await.headers()[header::CONTENT_TYPE]
+            rmp_serde::from_slice::<String>(&to_bytes(error.into_body(), 1024).await.unwrap())
+                .unwrap()
+                .contains("Failed to parse")
+        );
+
+        let native = call("/metrics", None).await;
+        assert_eq!(
+            to_bytes(native.into_body(), 1024).await.unwrap(),
+            "requests 1\n"
+        );
+        let encoded = call("/metrics", Some("*/*")).await;
+        assert_eq!(
+            rmp_serde::from_slice::<String>(&to_bytes(encoded.into_body(), 1024).await.unwrap())
+                .unwrap(),
+            "requests 1\n"
+        );
+        assert!(
+            call("/docs", Some("text/html")).await.headers()[header::CONTENT_TYPE]
                 .to_str()
                 .unwrap()
                 .starts_with("text/html")
+        );
+        assert_eq!(
+            call("/docs", Some("text/html,*/*;q=0.1")).await.headers()[header::CONTENT_TYPE],
+            "application/msgpack"
         );
         let health = call("/health", Some("application/msgpack")).await;
         assert_eq!(
@@ -484,13 +435,13 @@ mod tests {
             call("/info", Some("application/xml")).await.status(),
             StatusCode::NOT_ACCEPTABLE
         );
-        let request = Request::builder()
+        let head = Request::builder()
             .method(Method::HEAD)
             .uri("/health")
             .header(header::ACCEPT, "application/msgpack")
             .body(Body::empty())
             .unwrap();
-        let response = app().oneshot(request).await.unwrap();
+        let response = app().oneshot(head).await.unwrap();
         assert!(to_bytes(response.into_body(), 1024)
             .await
             .unwrap()

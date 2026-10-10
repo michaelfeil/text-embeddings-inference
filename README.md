@@ -566,14 +566,16 @@ curl http://localhost:3000/v1/classify \
 
 MessagePack uses the same field names and shapes as JSON. Typed API results are
 serialized directly, retaining native integer and floating-point types. Token
-usage, status codes and response metadata headers are preserved. `Accept` quality
-weights are supported; unacceptable media types return 406. Responses include
-`Vary: Accept`. Swagger/OpenAPI lists both response formats with the same schemas.
+usage, status codes and response metadata headers are preserved. MessagePack is
+sent whenever `Accept` allows it, including `application/*` and `*/*`, regardless
+of header order or positive quality weights. `q=0` exclusions are respected;
+unacceptable media types return 406. Responses include `Vary: Accept`.
+Swagger/OpenAPI lists both response formats with the same schemas.
 
-Metrics and docs keep their native text/HTML formats by default. Explicit JSON or
-MessagePack requests encode text responses as strings; empty health responses
-encode as null. HEAD, 204 and 304 responses remain bodyless. Framework errors also
-support the selected format.
+Metrics and docs keep their native text/HTML formats when `Accept` is absent or
+only allows their native format. JSON or MessagePack responses encode text as
+strings; empty health responses encode as null. HEAD, 204 and 304 responses remain
+bodyless. Framework errors also support the selected format.
 
 ### Chat inputs for embeddings and classification
 
