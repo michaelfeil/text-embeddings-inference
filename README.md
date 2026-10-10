@@ -28,7 +28,10 @@ length of 512 tokens:
 This repository is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
 
 Upstream code retains its Apache-2.0 license and notices; see [LICENSE](LICENSE).
-Licensing for this fork's modifications: TBD - fork of what was originally huggingface/text-embeddings-inference.
+Relicensing status: TBD - fork of what was originally huggingface/text-embeddings-inference.
+No replacement license has been selected; this is a planning note. See
+[LICENSING.md](LICENSING.md), [NOTICE](NOTICE), and
+[third-party notices](THIRD_PARTY_NOTICES.md) for scope and attribution.
 
 ## Table of contents
 
