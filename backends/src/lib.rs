@@ -392,11 +392,6 @@ async fn init_backend(
     if kind == BackendKind::Libtorch {
         #[cfg(feature = "libtorch")]
         {
-            if enable_fp8_dynamic {
-                return Err(BackendError::Start(
-                    "LibTorch does not support dynamic FP8 yet".into(),
-                ));
-            }
             let dense_paths = if let Some(repo) = api_repo.as_ref() {
                 let paths = download_dense_modules(repo, dense_path)
                     .await
@@ -424,12 +419,13 @@ async fn init_backend(
             };
             let device = torch_device.resolved()?.name(device_id);
             let model = tokio::task::spawn_blocking(move || {
-                text_embeddings_backend_libtorch::LibtorchBackend::new_with_dense_paths(
+                text_embeddings_backend_libtorch::LibtorchBackend::new_with_dense_paths_and_fp8(
                     &model_path,
                     &dtype.to_string(),
                     model_type,
                     &device,
                     dense_paths,
+                    enable_fp8_dynamic,
                 )
             })
             .await

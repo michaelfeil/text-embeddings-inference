@@ -1,8 +1,11 @@
 #include "bridge.h"
+#include "fp8_linear.h"
 #include "radix.h"
 #include "model.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
+#include "encoder_norm.h"
+#include "encoder_activation.h"
 #include "packed_pool.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/detail/CUDAHooksInterface.h>
@@ -64,6 +67,7 @@ struct Bert : tei::Model {
   std::unordered_map<std::string, at::Tensor> weights;
   std::string prefix;
   tei::Options options;
+  std::unordered_map<std::string,tei::Fp8Linear> fp8_mlp;
   bool roberta = false;
   bool cudnn_varlen = false;
   Bert(TeiConfig cfg, c10::Device dev, at::ScalarType type): config(cfg), device(dev), dtype(type) {}
@@ -73,9 +77,18 @@ struct Bert : tei::Model {
     return entry->second;
   }
   at::Tensor linear(const at::Tensor& x, const std::string& name) const {
+    auto quantized=fp8_mlp.find(name);
+    if(quantized!=fp8_mlp.end())return quantized->second.forward(x,w(name+".bias"));
     return at::linear(x, w(name + ".weight"), w(name + ".bias"));
   }
   at::Tensor activated_linear(const at::Tensor& x,const std::string& name) const {
+    if(fp8_mlp.count(name)) {
+      auto projected=linear(x,name);
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(config.activation!=2 && config.activation!=3)return tei::encoder_gelu(projected);
+#endif
+      return config.activation==3?projected/(at::exp(-projected)+1):at::relu(projected);
+    }
     // Candle HiddenAct::Gelu is tanh GELU. Its CUDA linear fuses the same
     // cuBLASLt epilogue; avoid writing then rereading the full intermediate.
     if(x.is_cuda()&&config.activation!=3)return at::_addmm_activation(w(name+".bias"),x,w(name+".weight").t(),1,1,config.activation!=2);
@@ -87,6 +100,8 @@ struct Bert : tei::Model {
   }
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& name) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if (x.is_cuda() && config.hidden == 384)
+      return tei::encoder_layer_norm_only(x, w(name + ".weight"), config.epsilon, residual, w(name + ".bias"), false);
     if (x.is_cuda()) return tei::fused_add_layer_norm(x, residual, w(name + ".weight"), w(name + ".bias"), config.epsilon);
 #endif
     return norm(x + residual, name);
@@ -133,6 +148,12 @@ struct Bert : tei::Model {
       linear_check(p + "intermediate.dense", config.intermediate, config.hidden);
       linear_check(p + "output.dense", config.hidden, config.intermediate);
       norm_check(p + "output.LayerNorm");
+      if(options.boolean("_fp8_dynamic",false)) {
+        for(const auto& name:{p+"intermediate.dense",p+"output.dense"}) {
+          fp8_mlp.try_emplace(name,w(name+".weight"));
+          weights.erase(prefix+name+".weight");
+        }
+      }
     }
   }
   int64_t classification_width() const override {
@@ -189,7 +210,10 @@ struct Bert : tei::Model {
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
     at::Tensor h;
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (word.is_cuda()) h = tei::fused_add_layer_norm(word, token_type,
+    if (word.is_cuda() && config.hidden == 384)
+      h = tei::encoder_layer_norm_only(word + token_type + position,
+        w("embeddings.LayerNorm.weight"), config.epsilon, at::Tensor(), w("embeddings.LayerNorm.bias"), false);
+    else if (word.is_cuda()) h = tei::fused_add_layer_norm(word, token_type,
       w("embeddings.LayerNorm.weight"), w("embeddings.LayerNorm.bias"), config.epsilon, position);
     else
 #endif
@@ -250,6 +274,14 @@ struct Engine {
   void ready() {
     dense = std::make_unique<tei::DenseChain>(options, weights);
     auto family = options.string("model_type", "bert");
+    if(options.boolean("_fp8_dynamic",false)) {
+      TORCH_CHECK(family=="bert" || family=="roberta" || family=="xlm-roberta"
+        || family=="camembert" || family=="modernbert" || family=="llama"
+        || family=="llama_bidirec" || family=="mistral" || family=="ministral3"
+        || family=="qwen2" || family=="qwen3", "Dynamic FP8 is unsupported for this model family");
+      TORCH_CHECK(!options.values.count("quantization_config") && !options.values.count("quantization_config.quant_method"),
+        "Dynamic FP8 requires an unquantized checkpoint");
+    }
     auto decision_kind=options.string("_decision.kind");
     if(!decision_kind.empty()) {
       tei::Options head_config;tei::Weights head_weights;

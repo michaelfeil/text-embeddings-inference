@@ -249,22 +249,27 @@ fn main() {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|meta| meta["sha"].as_str().map(str::to_owned));
+    let fp8_dynamic = std::env::var("TEI_BENCHMARK_FP8")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     let started = Instant::now();
-    let torch = LibtorchBackend::new(
+    let torch = LibtorchBackend::new_with_dense_paths_and_fp8(
         &path,
         &dtype,
         ModelType::Embedding(pool.clone()),
         &format!("cuda:{torch_gpu}"),
+        None,
+        fp8_dynamic,
     )
     .unwrap();
     let torch_load = started.elapsed().as_secs_f64();
     let started = Instant::now();
-    let candle = CandleBackend::new(
+    let candle = CandleBackend::new_with_fp8(
         &path,
         dtype.clone(),
         ModelType::Embedding(pool.clone()),
         None,
         candle_gpu,
+        fp8_dynamic,
     )
     .unwrap();
     let candle_load = started.elapsed().as_secs_f64();
@@ -415,13 +420,22 @@ fn main() {
             "changed_maps_replay_passed":true,"changed_ids_replay_passed":true,"suffix_sequence_isolation_passed":true}),
         );
     }
-    println!(
-        "{}",
-        serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_revision":checkpoint_revision,"vocab_size":vocab_size,"bos_token_id":bos,"eos_token_id":eos,"pad_token_id":pad,"input_pattern":"synthetic valid vocabulary IDs with configured BOS/EOS; real shared prefixes and distinct suffixes; no padding",
+    let mut report = serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_revision":checkpoint_revision,"vocab_size":vocab_size,"bos_token_id":bos,"eos_token_id":eos,"pad_token_id":pad,"input_pattern":"synthetic valid vocabulary IDs with configured BOS/EOS; real shared prefixes and distinct suffixes; no padding",
         "pooling":pooling,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"measurement_mode":"parallel separate GPUs; both backends radix-folded; pooled timings; raw parity outside timings","warmup_per_backend":20,
-        "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows}))
-        .unwrap()
-    );
+        "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows});
+    if fp8_dynamic {
+        report["dynamic_fp8_requested"] = true.into();
+        report["dynamic_fp8_recipe"] = serde_json::json!({
+            "weights": "MLP-only E4M3, per-output-channel FP32 scales, quantized once",
+            "activations": "per-actual-token E4M3; absmax floor1e-12 divided by448; model-dtype gated activation before quantization",
+            "gemm": "FP32 accumulation, model-dtype output; original recipe fast-accumulation where supported, full-accumulation fallback",
+            "unchanged_precision": "attention, normalization, residuals, embeddings and output heads",
+            "token_padding": false,
+            "checkpoint_supplied_quantization_scales": false,
+            "comparison": "both backends use dynamic FP8; all existing raw/full/fold/replay/isolation gates are unchanged"
+        });
+    }
+    println!("{}", serde_json::to_string_pretty(&report).unwrap());
 }
 
 #[cfg(test)]

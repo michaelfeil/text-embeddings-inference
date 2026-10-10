@@ -3,6 +3,7 @@
 #include "moe_kernels.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
+#include "fp8_linear.h"
 #include "decoder_norm.h"
 #include "torch_flash_fma.h"
 #include <ATen/cuda/CUDAContext.h>
@@ -22,6 +23,9 @@ namespace {
 struct DecoderLayer {
   at::Tensor qkv, qkv_bias, out, out_bias, input_norm, post_norm, q_norm, k_norm;
   at::Tensor gate_up, gate_up_bias, down, down_bias, router;
+#ifdef TEI_TORCH_CUDA_KERNELS
+  std::unique_ptr<Fp8Linear> fp8_gate_up, fp8_down;
+#endif
   std::vector<at::Tensor> expert_gate_up, expert_down;
   at::Tensor grouped_gate_up, grouped_down;
 };
@@ -35,6 +39,7 @@ class Decoder final : public Model {
   double epsilon;
   bool causal, renormalize;
   bool cudnn_varlen = false;
+  bool fp8_dynamic = false;
   int64_t left_window = -1, right_window = -1, top_k;
   at::Tensor embedding, final_norm, projection, projection_bias, score, score_bias, cos_cache, sin_cache, query_scale;
   std::vector<DecoderLayer> layers;
@@ -194,12 +199,19 @@ class Decoder final : public Model {
   }
   at::Tensor mlp(const at::Tensor& x, const DecoderLayer& layer) const {
     if (!layer.router.defined()) {
-      auto both = at::linear(x, layer.gate_up, layer.gate_up_bias);
+#ifdef TEI_TORCH_CUDA_KERNELS
+      auto both = layer.fp8_gate_up ? layer.fp8_gate_up->forward(x,layer.gate_up_bias)
+        : at::linear(x,layer.gate_up,layer.gate_up_bias);
+#else
+      auto both = at::linear(x,layer.gate_up,layer.gate_up_bias);
+#endif
       auto width = both.size(-1) / 2;
 #ifdef TEI_TORCH_CUDA_KERNELS
       if(both.is_cuda()) {
         int code=activation=="silu"||activation=="swish"?5:activation=="relu"?3:4;
-        return at::linear(fused_gated_activation(both,code),layer.down,layer.down_bias);
+        auto activated=fused_gated_activation(both,code);
+        return layer.fp8_down ? layer.fp8_down->forward(activated,layer.down_bias)
+          : at::linear(activated,layer.down,layer.down_bias);
       }
 #endif
       return at::linear(activate(both.narrow(-1, 0, width)) * both.narrow(-1, width, width), layer.down, layer.down_bias);
@@ -266,6 +278,20 @@ public:
     if (family == "qwen2" || cfg.values.count("is_causal")) causal = cfg.boolean("is_causal", true);
   }
   void ready() override {
+    fp8_dynamic=options.boolean("_fp8_dynamic",false);
+    if(fp8_dynamic) {
+      TORCH_CHECK(device.is_cuda()&&(dtype==at::kHalf||dtype==at::kBFloat16),
+        "Dynamic FP8 decoder MLPs require CUDA float16/bfloat16");
+      TORCH_CHECK((family=="llama"||family=="mistral"||family=="qwen2"||family=="qwen3")
+        &&options.integer("num_experts",0)==0,
+        "Dynamic FP8 decoder MLPs support dense Llama/Mistral/Qwen2/Qwen3 only; routed experts are unsupported");
+      for(const auto& [key,value]:options.values)
+        TORCH_CHECK(key!="quantization_config"&&key.rfind("quantization_config.",0)!=0,
+          "Dynamic FP8 requires an unquantized checkpoint without supplied quantization scales");
+#ifndef TEI_TORCH_CUDA_KERNELS
+      TORCH_CHECK(false,"Dynamic FP8 decoder MLPs require native CUDA kernels");
+#endif
+    }
     TORCH_CHECK(activation=="silu"||activation=="swish"||activation=="relu"||activation=="gelu"||activation=="gelu_new"||activation=="gelu_fast"||activation=="gelu_pytorch_tanh", "Unsupported decoder activation: ",activation);
     TORCH_CHECK(hidden > 0 && heads > 0 && kvheads > 0 && head_dim > 0 && head_dim % 2 == 0 && heads % kvheads == 0 && layer_count > 0,
       "Invalid decoder dimensions");
@@ -344,6 +370,19 @@ public:
         if (gb.defined()) layer.gate_up_bias = at::cat({gb, ub}, 0);
         layer.down = checked_weight(p + "mlp.down_proj.weight", {hidden, intermediate});
         layer.down_bias = optional(p + "mlp.down_proj.bias");
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if(fp8_dynamic) {
+          // Shape checks above precede one-time row quantization. Bias and the
+          // gated activation retain their existing model-dtype arithmetic.
+          layer.fp8_gate_up=std::make_unique<Fp8Linear>(layer.gate_up);
+          layer.fp8_down=std::make_unique<Fp8Linear>(layer.down);
+          layer.gate_up=at::Tensor();layer.down=at::Tensor();
+          // Quantized caches own all required weight storage. Release the
+          // original checkpoint FFN matrices before the next layer is cached.
+          for(auto name:{"gate_proj.weight","up_proj.weight","down_proj.weight"})
+            weights.erase(prefix+p+"mlp."+name);
+        }
+#endif
       }
       if (!layer.expert_gate_up.empty() && device.is_cuda() && dtype == at::kBFloat16 && hidden%8==0 && layer.expert_down[0].size(-1)%8==0) {
         if (!layer.grouped_gate_up.defined()) {

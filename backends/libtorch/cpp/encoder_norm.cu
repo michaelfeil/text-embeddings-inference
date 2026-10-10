@@ -76,20 +76,21 @@ template<class T> void dispatch(layer_norm::FwdParams& p,cudaStream_t stream) {
   }
 }
 }
-std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual) {
+static std::pair<at::Tensor,at::Tensor> encoder_layer_norm_impl(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual,bool save_residual) {
   TORCH_CHECK(x.is_cuda()&&x.is_contiguous()&&x.dim()>=2&&x.size(-1)>0,"Exact encoder norm requires contiguous CUDA token rows");
   TORCH_CHECK(weight.device()==x.device()&&weight.scalar_type()==x.scalar_type()&&weight.is_contiguous()&&weight.numel()==x.size(-1),"Encoder normalization weight mismatch");
   if(residual.defined())TORCH_CHECK(residual.device()==x.device()&&residual.scalar_type()==x.scalar_type()&&residual.is_contiguous()&&residual.sizes()==x.sizes(),"Encoder normalization residual mismatch");
   if(bias.defined())TORCH_CHECK(bias.device()==x.device()&&bias.scalar_type()==x.scalar_type()&&bias.is_contiguous()&&bias.numel()==x.size(-1),"Encoder normalization bias mismatch");
   c10::cuda::CUDAGuard guard(x.device());
-  auto normalized=at::empty_like(x),sum=residual.defined()?at::empty_like(x):at::Tensor();
+  auto normalized=at::empty_like(x),sum=residual.defined()&&save_residual?at::empty_like(x):at::Tensor();
   if(x.size(-1)>1536) {
-    if(residual.defined())sum=x+residual;
+    if(residual.defined()&&save_residual)sum=x+residual;
     if(residual.defined()&&!round_residual) {
       auto stats=x.to(at::kFloat)+residual.to(at::kFloat);
       return {at::layer_norm(stats,{x.size(-1)},weight.to(at::kFloat),bias.defined()?bias.to(at::kFloat):at::Tensor(),epsilon).to(x.scalar_type()),sum};
     }
-    return {at::layer_norm(residual.defined()?sum:x,{x.size(-1)},weight,bias,epsilon),sum};
+    auto added=residual.defined()?(sum.defined()?sum:x+residual):x;
+    return {at::layer_norm(added,{x.size(-1)},weight,bias,epsilon),sum};
   }
   layer_norm::FwdParams p;
   p.rows=x.numel()/x.size(-1);p.cols=x.size(-1);
@@ -105,5 +106,11 @@ std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at
   else if(x.scalar_type()==at::kFloat)dispatch<float>(p,stream);
   else TORCH_CHECK(false,"Unsupported encoder normalization dtype");
   C10_CUDA_KERNEL_LAUNCH_CHECK();return {normalized,sum};
+}
+std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual) {
+  return encoder_layer_norm_impl(x,weight,epsilon,residual,bias,round_residual,true);
+}
+at::Tensor encoder_layer_norm_only(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual) {
+  return encoder_layer_norm_impl(x,weight,epsilon,residual,bias,round_residual,false).first;
 }
 }

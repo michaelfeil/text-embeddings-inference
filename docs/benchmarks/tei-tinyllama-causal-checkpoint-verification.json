@@ -1,0 +1,134 @@
+{
+  "repository": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "revision": "fe8a4ea1ffedaf415f4da2f062534de366a451e6",
+  "files": [
+    {
+      "file": "README.md",
+      "bytes": 3196,
+      "sha256": "6f620f661ce3f8425b49301b64a642aa7451ce9fbd3b8115e899de59147121c8",
+      "expected_lfs_sha256": null,
+      "git_blob_id": "9737c9ce5074907aa44d575918c5367cd877471f",
+      "expected_git_blob_id": "9737c9ce5074907aa44d575918c5367cd877471f",
+      "verified": true,
+      "verification_method": "Git blob SHA1",
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/README.md"
+    },
+    {
+      "file": "config.json",
+      "bytes": 608,
+      "sha256": "486bedda3a6988332e60d9638a09ca4b260d34ebcf1b19e22cf3b140b63d8fe9",
+      "expected_lfs_sha256": null,
+      "git_blob_id": "4ea05f1bc289d48ba9b92eea2f58ad8acd3dce5d",
+      "expected_git_blob_id": "4ea05f1bc289d48ba9b92eea2f58ad8acd3dce5d",
+      "verified": true,
+      "verification_method": "Git blob SHA1",
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/config.json"
+    },
+    {
+      "file": "generation_config.json",
+      "bytes": 124,
+      "sha256": "18046d04f5bd8b4998095ecabdd17a1bf0053d9acdccead4a05be4a3575f3c5c",
+      "expected_lfs_sha256": null,
+      "git_blob_id": "768e95e5b4dada726d7631277a4a87ecbb236f70",
+      "expected_git_blob_id": "768e95e5b4dada726d7631277a4a87ecbb236f70",
+      "verified": true,
+      "verification_method": "Git blob SHA1",
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/generation_config.json"
+    },
+    {
+      "file": "model.safetensors",
+      "bytes": 2200119864,
+      "sha256": "6e6001da2106d4757498752a021df6c2bdc332c650aae4bae6b0c004dcf14933",
+      "expected_lfs_sha256": "6e6001da2106d4757498752a021df6c2bdc332c650aae4bae6b0c004dcf14933",
+      "git_blob_id": "1f85dee1be6c65af9ffed13d3d3c817b6d99c0ee",
+      "expected_git_blob_id": "2590fdb91785d0aba3e45388b12cf95f5f29a219",
+      "verified": true,
+      "verification_method": "LFS SHA256",
+      "expected_git_blob_is_lfs_pointer": true,
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/model.safetensors"
+    },
+    {
+      "file": "special_tokens_map.json",
+      "bytes": 551,
+      "sha256": "82d96d7a9e6ced037f12394b7ea6a5b02e6ca87e0d11edaa8d60d9be857ce7db",
+      "expected_lfs_sha256": null,
+      "git_blob_id": "492d4b2966a1763442d426d880dbc29f94906e4c",
+      "expected_git_blob_id": "492d4b2966a1763442d426d880dbc29f94906e4c",
+      "verified": true,
+      "verification_method": "Git blob SHA1",
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/special_tokens_map.json"
+    },
+    {
+      "file": "tokenizer.json",
+      "bytes": 1842767,
+      "sha256": "bcd04f0eadf90287bd26e1a183ac487d8a141b09b06aecb7725bbdd343640f2e",
+      "expected_lfs_sha256": null,
+      "git_blob_id": "a6e931b92caff4c79c5c56282f1e89569a0ae558",
+      "expected_git_blob_id": "a6e931b92caff4c79c5c56282f1e89569a0ae558",
+      "verified": true,
+      "verification_method": "Git blob SHA1",
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/tokenizer.json"
+    },
+    {
+      "file": "tokenizer.model",
+      "bytes": 499723,
+      "sha256": "9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347",
+      "expected_lfs_sha256": "9e556afd44213b6bd1be2b850ebbbd98f5481437a8021afaf58ee7fb1818d347",
+      "git_blob_id": "22bccbcb41ec929cf0c9dbe8f41036db82e5e773",
+      "expected_git_blob_id": "6c00c742ce03c627d6cd5b795984876fa49fa899",
+      "verified": true,
+      "verification_method": "LFS SHA256",
+      "expected_git_blob_is_lfs_pointer": true,
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/tokenizer.model"
+    },
+    {
+      "file": "tokenizer_config.json",
+      "bytes": 1289,
+      "sha256": "7b41ba7d0eb91e77914ca3dafde559ea3e19878769b7e68409e89bed5222e77a",
+      "expected_lfs_sha256": null,
+      "git_blob_id": "fa96b85858f4053b0142a18e2b09dbe94e3fae46",
+      "expected_git_blob_id": "fa96b85858f4053b0142a18e2b09dbe94e3fae46",
+      "verified": true,
+      "verification_method": "Git blob SHA1",
+      "pinned_source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0/resolve/fe8a4ea1ffedaf415f4da2f062534de366a451e6/tokenizer_config.json"
+    }
+  ],
+  "all_verified": true,
+  "source_url": "https://huggingface.co/TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "config_original_unmodified": true,
+  "serving_remote_code": false,
+  "checkpoint_derived": false,
+  "tensor_padding": false,
+  "checkpoint_semantics": {
+    "model_type": "llama",
+    "architecture": [
+      "LlamaForCausalLM"
+    ],
+    "causal": true,
+    "dtype": "bfloat16",
+    "hidden_size": 2048,
+    "layers": 22,
+    "query_heads": 32,
+    "kv_heads": 4,
+    "head_dim": 64,
+    "intermediate_size": 5632,
+    "rms_norm_eps": 1e-05,
+    "rope_theta": 10000.0,
+    "bos_token_id": 1,
+    "eos_token_id": 2
+  },
+  "weight_header_dtype_counts": {
+    "BF16": 201
+  },
+  "benchmark_scope": "Causal decoder hidden states and last-token outputs on synthetic valid token IDs, with authentic trained checkpoint; no text generation, LM-head, semantic-task or retrieval-quality qualification.",
+  "paired_production_qualification_reports": [
+    "tei-tinyllama-causal-trained-radix-200-4096-6-7.json",
+    "tei-tinyllama-causal-trained-radix-200-4096-7-6.json"
+  ],
+  "checkpoint_verification_is_separate_from_latency_qualification": true,
+  "discovery_candidate_not_selected": {
+    "repository": "TinyLlama/TinyLlama-1.1B-intermediate-step-1431k-3T",
+    "revision": "59f6f375b26bde864a6ca194a9a3044570490064",
+    "reason": "Pinned config omits rope_theta required by current Candle LLamaConfig. No config modification or production parser change was made; selected authentic causal chat checkpoint has complete supported config."
+  }
+}

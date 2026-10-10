@@ -282,6 +282,16 @@ impl LibtorchBackend {
         device: &str,
         dense_paths: Option<Vec<String>>,
     ) -> Result<Self, BackendError> {
+        Self::new_with_dense_paths_and_fp8(path, dtype, model_type, device, dense_paths, false)
+    }
+    pub fn new_with_dense_paths_and_fp8(
+        path: &Path,
+        dtype: &str,
+        model_type: ModelType,
+        device: &str,
+        dense_paths: Option<Vec<String>>,
+        enable_fp8_dynamic: bool,
+    ) -> Result<Self, BackendError> {
         if device != "cpu" && device != "auto" && !device.starts_with("cuda:") {
             return Err(start("LibTorch 2.14.1 varlen attention requires CUDA; only CPU reference and CUDA are supported"));
         }
@@ -350,6 +360,34 @@ impl LibtorchBackend {
         }
         .to_owned();
         options["model_type"] = normalized_family.clone().into();
+        if enable_fp8_dynamic {
+            if options
+                .get("quantization_config")
+                .is_some_and(|value| !value.is_null())
+            {
+                return Err(start("Dynamic FP8 requires an unquantized checkpoint"));
+            }
+            if !matches!(dtype, "float16" | "bfloat16")
+                || device == "cpu"
+                || !matches!(
+                    normalized_family.as_str(),
+                    "bert"
+                        | "roberta"
+                        | "xlm-roberta"
+                        | "camembert"
+                        | "modernbert"
+                        | "llama"
+                        | "mistral"
+                        | "qwen2"
+                        | "qwen3"
+                )
+            {
+                return Err(start(
+                    "Dynamic FP8 requires CUDA float16/bfloat16 and a supported dense MLP family",
+                ));
+            }
+        }
+        options["_fp8_dynamic"] = enable_fp8_dynamic.into();
         if decision
             && !laya
             && !matches!(
@@ -1084,6 +1122,9 @@ mod tests {
         }
     }
     fn fixture(prefix: &str, sharded: bool) -> Fixture {
+        fixture_with_intermediate(prefix, sharded, 24)
+    }
+    fn fixture_with_intermediate(prefix: &str, sharded: bool, intermediate: usize) -> Fixture {
         static NEXT: AtomicUsize = AtomicUsize::new(0);
         let path = std::env::temp_dir().join(format!(
             "tei-libtorch-test-{}-{}",
@@ -1092,7 +1133,7 @@ mod tests {
         ));
         fs::create_dir(&path).unwrap();
         let config = serde_json::json!({"model_type":"bert", "hidden_size":16, "num_attention_heads":2,
-            "num_hidden_layers":2, "intermediate_size":24, "vocab_size":16, "max_position_embeddings":16,
+            "num_hidden_layers":2, "intermediate_size":intermediate, "vocab_size":16, "max_position_embeddings":16,
             "type_vocab_size":2, "id2label":{"0":"a","1":"b","2":"c"}, "layer_norm_eps":1e-5, "hidden_act":"gelu_pytorch_tanh", "pad_token_id":0,
             "hidden_dropout_prob":0.0, "attention_probs_dropout_prob":0.0, "initializer_range":0.02});
         fs::write(
@@ -1139,9 +1180,12 @@ mod tests {
                 add(format!("{p}{name}.weight"), vec![16]);
                 add(format!("{p}{name}.bias"), vec![16]);
             }
-            add(format!("{p}intermediate.dense.weight"), vec![24, 16]);
-            add(format!("{p}intermediate.dense.bias"), vec![24]);
-            add(format!("{p}output.dense.weight"), vec![16, 24]);
+            add(
+                format!("{p}intermediate.dense.weight"),
+                vec![intermediate, 16],
+            );
+            add(format!("{p}intermediate.dense.bias"), vec![intermediate]);
+            add(format!("{p}output.dense.weight"), vec![16, intermediate]);
             add(format!("{p}output.dense.bias"), vec![16]);
         }
         if prefix.is_empty() {
@@ -1689,6 +1733,102 @@ mod tests {
                     }
                 }
             }
+        }
+    }
+
+    #[test]
+    fn dynamic_fp8_rejects_cpu_and_requantized_checkpoints() {
+        let fixture = fixture_with_intermediate("", false, 32);
+        let cpu = LibtorchBackend::new_with_dense_paths_and_fp8(
+            &fixture.0,
+            "float32",
+            ModelType::Embedding(Pool::Mean),
+            "cpu",
+            None,
+            true,
+        )
+        .err()
+        .unwrap();
+        assert!(cpu.to_string().contains("requires CUDA"));
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.0.join("config.json")).unwrap()).unwrap();
+        config["quantization_config"] = serde_json::json!({"quant_method":"fp8"});
+        fs::write(
+            fixture.0.join("config.json"),
+            serde_json::to_vec(&config).unwrap(),
+        )
+        .unwrap();
+        let quantized = LibtorchBackend::new_with_dense_paths_and_fp8(
+            &fixture.0,
+            "float16",
+            ModelType::Embedding(Pool::Mean),
+            "cuda:0",
+            None,
+            true,
+        )
+        .err()
+        .unwrap();
+        assert!(quantized.to_string().contains("unquantized checkpoint"));
+    }
+
+    #[test]
+    #[ignore = "Requires an FP8-capable NVIDIA GPU and CUDA LibTorch 2.14.1"]
+    fn cuda_dynamic_fp8_bert_preserves_ragged_outputs_and_heads() {
+        let fixture = fixture_with_intermediate("", false, 32);
+        for dtype in ["float16", "bfloat16"] {
+            for pool in [Pool::Mean, Pool::Splade] {
+                let dense = LibtorchBackend::new(
+                    &fixture.0,
+                    dtype,
+                    ModelType::Embedding(pool.clone()),
+                    "cuda:0",
+                )
+                .unwrap();
+                let quantized = LibtorchBackend::new_with_dense_paths_and_fp8(
+                    &fixture.0,
+                    dtype,
+                    ModelType::Embedding(pool),
+                    "cuda:0",
+                    None,
+                    true,
+                )
+                .unwrap();
+                let expected = dense.embed(batch()).unwrap();
+                let actual = quantized.embed(batch()).unwrap();
+                let mut changed = false;
+                for (row, embedding) in &actual {
+                    let got = values(embedding);
+                    let want = values(&expected[row]);
+                    assert_eq!(got.len(), want.len());
+                    assert!(got.iter().all(|v| v.is_finite()));
+                    let error: f32 = got.iter().zip(&want).map(|(a, b)| (a - b).powi(2)).sum();
+                    let norm: f32 = want.iter().map(|v| v.powi(2)).sum();
+                    assert!((error / norm.max(1e-12)).sqrt() < 0.10);
+                    changed |= got != want;
+                }
+                assert!(changed, "FP8 flag must change dense MLP arithmetic");
+                let mut different = batch();
+                different.input_ids[0] = 7;
+                let replay = quantized.embed(different).unwrap();
+                assert_ne!(values(&actual[&0]), values(&replay[&0]));
+            }
+            let classifier = LibtorchBackend::new_with_dense_paths_and_fp8(
+                &fixture.0,
+                dtype,
+                ModelType::Classifier,
+                "cuda:0",
+                None,
+                true,
+            )
+            .unwrap();
+            let mut classifier_batch = batch();
+            classifier_batch.pooled_indices = vec![0, 1];
+            classifier_batch.raw_indices.clear();
+            let logits = classifier.predict(classifier_batch).unwrap();
+            assert_eq!(logits.len(), 2);
+            assert!(logits
+                .values()
+                .all(|row| row.len() == 3 && row.iter().all(|v| v.is_finite())));
         }
     }
 

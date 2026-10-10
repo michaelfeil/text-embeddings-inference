@@ -96,8 +96,15 @@ Unused alignment rows are removed before inference, and the host validator
 requires identical causal prefixes for every alias. Bidirectional, multimodal
 and typed-decision folding are rejected. Trained Qwen3 FP16 and derived Ministral BF16 meet correctness
 and the latency target in both GPU assignments, including every raw token,
-full/fold comparisons, changed-map replay and suffix isolation. Dynamic FP8 and other custom
-modules remain unsupported and are rejected explicitly. Image and
+full/fold comparisons, changed-map replay and suffix isolation. Experimental dynamic FP8
+uses native rowwise E4M3 for dense BERT/RoBERTa/ModernBERT and
+Llama/Mistral/Qwen2/Qwen3 MLP projections only. It requires a supported CUDA
+device, FP16/BF16 and an unquantized checkpoint; unsupported matrix dimensions
+are rejected without padding. Attention, normalization and heads retain their
+original dtype. Component tests pass; trained accuracy and latency remain
+unqualified. Both comparison tools accept `TEI_BENCHMARK_FP8=1` when built
+with `benchmark-fp8`, enabling the same requested mode in both backends. Other custom
+modules are rejected explicitly. Image and
 audio towers have native implementations. EmbeddingGemma2 text, image and audio
 match Candle bitwise and meet the measured P50 target in both GPU assignments;
 Gemma4 trained image/audio and routed-model qualification remain incomplete.

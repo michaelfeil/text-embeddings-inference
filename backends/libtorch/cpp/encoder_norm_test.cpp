@@ -15,9 +15,20 @@ int main(int argc,char** argv) {
     auto oracle=at::layer_norm(unrounded,{768},gamma.to(at::kFloat),beta.to(at::kFloat),1e-5).to(dtype);
     TORCH_CHECK((exact.first-oracle).abs().max().item<float>()<=(dtype==at::kHalf?.003:.03125),"Unrounded residual statistics or beta differs");
     TORCH_CHECK(at::equal(exact.second,base+delta),"Returned residual sum must retain model dtype");
+    auto only=tei::encoder_layer_norm_only(base,gamma,1e-5,delta,beta,false);
+    TORCH_CHECK((only-oracle).abs().max().item<float>()<=(dtype==at::kHalf?.003:.03125),"Normalized-only unrounded statistics or beta differs from independent FP32 oracle");
+    TORCH_CHECK(at::equal(only,exact.first),"Suppressing residual output changed exact arithmetic");
     auto rounded=tei::encoder_layer_norm(base,gamma,1e-5,delta,beta,true);
     TORCH_CHECK((exact.first-rounded.first).abs().max().item<float>()>.5,"Rounding discriminator did not exercise distinct normalization contracts");
-    for(int64_t width:{8,32,40,256,768,1024,1152,1536,2048}) {
+    {
+      auto x=at::randn({17,384},opts),residual=at::randn_like(x)*.2;
+      auto scale=at::randn({384},opts)*.1+1,bias=at::randn({384},opts)*.1;
+      auto stats=x.to(at::kFloat)+residual.to(at::kFloat);
+      auto reference=at::layer_norm(stats,{384},scale.to(at::kFloat),bias.to(at::kFloat),1e-12).to(dtype);
+      auto actual=tei::encoder_layer_norm_only(x,scale,1e-12,residual,bias,false);
+      TORCH_CHECK((actual-reference).abs().max().item<float>()<=(dtype==at::kHalf?.003:.03125),"Width384 biased unrounded norm differs from independent FP32 reference");
+    }
+    for(int64_t width:{8,32,40,256,384,768,1024,1152,1536,2048}) {
       auto options=at::TensorOptions().device(c10::Device(argc>1?argv[1]:"cuda:0")).dtype(dtype);
       auto x=at::randn({7,width},options),residual=at::randn_like(x);
       auto weight=at::randn({width},options)*0.1+1;
@@ -25,6 +36,9 @@ int main(int argc,char** argv) {
         auto result=tei::encoder_layer_norm(x,weight,1e-5,add?residual:at::Tensor());
         auto sum=add?x+residual:x;
         auto expected=at::layer_norm(sum.to(at::kFloat),{width},weight.to(at::kFloat),at::Tensor(),1e-5).to(dtype);
+        auto normalized_only=tei::encoder_layer_norm_only(x,weight,1e-5,add?residual:at::Tensor());
+        TORCH_CHECK((normalized_only-expected).abs().max().item<float>()<=(dtype==at::kHalf?0.003:0.03125),"Normalized-only differs from independent FP32 oracle at width ",width);
+        TORCH_CHECK(at::equal(normalized_only,result.first),"Normalized-only changed rounded normalization at width ",width);
         auto error=(result.first-expected).abs().max().item<float>();
         TORCH_CHECK(error<=(dtype==at::kHalf?0.003:0.03125),"Encoder norm error ",error," at width ",width);
         if(add) {

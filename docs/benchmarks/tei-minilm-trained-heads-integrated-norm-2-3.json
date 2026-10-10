@@ -1,0 +1,1656 @@
+{
+  "candle_gpu": 3,
+  "cases": [
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.0,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 66,
+      "candle": {
+        "p50_ms": 0.49776400000000004,
+        "p95_ms": 0.526075,
+        "tokens_per_second_at_p50": 132592.9556978809
+      },
+      "candle_outputs": [
+        [
+          8.25
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.609375
+        ]
+      ],
+      "case": "real-query-document-inputs",
+      "cuda_graph_count": 1,
+      "latency_delta_percent": -45.94888340659429,
+      "lengths": [
+        21,
+        19,
+        26
+      ],
+      "torch": {
+        "p50_ms": 0.26904700000000004,
+        "p95_ms": 0.301124,
+        "tokens_per_second_at_p50": 245310.29894405062
+      },
+      "torch_outputs": [
+        [
+          8.25
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.609375
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.0,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1
+        ],
+        "nonempty_support": true,
+        "nonnegative": true,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 32,
+      "candle": {
+        "p50_ms": 0.52673,
+        "p95_ms": 0.568666,
+        "tokens_per_second_at_p50": 60752.18802802194
+      },
+      "candle_outputs": [
+        [
+          8.3984375
+        ]
+      ],
+      "case": "1x32",
+      "cuda_graph_count": 2,
+      "latency_delta_percent": -51.42425910808195,
+      "lengths": [
+        32
+      ],
+      "torch": {
+        "p50_ms": 0.255863,
+        "p95_ms": 0.276423,
+        "tokens_per_second_at_p50": 125066.93034944481
+      },
+      "torch_outputs": [
+        [
+          8.3984375
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.0078125,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 256,
+      "candle": {
+        "p50_ms": 0.503438,
+        "p95_ms": 0.6139939999999999,
+        "tokens_per_second_at_p50": 508503.52972957934
+      },
+      "candle_outputs": [
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ]
+      ],
+      "case": "8x32",
+      "cuda_graph_count": 3,
+      "latency_delta_percent": -44.110893496319314,
+      "lengths": [
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32
+      ],
+      "torch": {
+        "p50_ms": 0.281367,
+        "p95_ms": 0.30530999999999997,
+        "tokens_per_second_at_p50": 909843.7272316939
+      },
+      "torch_outputs": [
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.0078125,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 1024,
+      "candle": {
+        "p50_ms": 0.521606,
+        "p95_ms": 0.566206,
+        "tokens_per_second_at_p50": 1963167.601599675
+      },
+      "candle_outputs": [
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.5234375
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ]
+      ],
+      "case": "32x32",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -27.24125105922861,
+      "lengths": [
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32,
+        32
+      ],
+      "torch": {
+        "p50_ms": 0.379514,
+        "p95_ms": 0.397532,
+        "tokens_per_second_at_p50": 2698187.682140843
+      },
+      "torch_outputs": [
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ],
+        [
+          -10.53125
+        ],
+        [
+          8.3984375
+        ],
+        [
+          -11.125
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.0078125,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 1024,
+      "candle": {
+        "p50_ms": 0.518072,
+        "p95_ms": 0.547947,
+        "tokens_per_second_at_p50": 1976559.2427307402
+      },
+      "candle_outputs": [
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ]
+      ],
+      "case": "8x128",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -34.85500084930281,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "torch": {
+        "p50_ms": 0.33749799999999996,
+        "p95_ms": 0.354334,
+        "tokens_per_second_at_p50": 3034092.053878838
+      },
+      "torch_outputs": [
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.0078125,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 4096,
+      "candle": {
+        "p50_ms": 0.544052,
+        "p95_ms": 0.558268,
+        "tokens_per_second_at_p50": 7528692.110312985
+      },
+      "candle_outputs": [
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.5234375
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ]
+      ],
+      "case": "32x128",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -0.1635873041547442,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "torch": {
+        "p50_ms": 0.543162,
+        "p95_ms": 0.563898,
+        "tokens_per_second_at_p50": 7541028.275173889
+      },
+      "torch_outputs": [
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ],
+        [
+          -9.515625
+        ],
+        [
+          7.19140625
+        ],
+        [
+          -10.9453125
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.00390625,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 4096,
+      "candle": {
+        "p50_ms": 0.606504,
+        "p95_ms": 0.61854,
+        "tokens_per_second_at_p50": 6753459.169271761
+      },
+      "candle_outputs": [
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ]
+      ],
+      "case": "8x512",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": 1.612190521414525,
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "torch": {
+        "p50_ms": 0.616282,
+        "p95_ms": 0.63276,
+        "tokens_per_second_at_p50": 6646308.021327899
+      },
+      "torch_outputs": [
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ]
+      ]
+    },
+    {
+      "accuracy": {
+        "finite": true,
+        "maximum_absolute_error": 0.00390625,
+        "maximum_relative_l2_error": null,
+        "minimum_nonzero_support_jaccard": null,
+        "minimum_vector_cosine": null,
+        "native_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "nonempty_support": true,
+        "nonnegative": false,
+        "pass": true,
+        "reference_nonzero_counts": [
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0,
+          0,
+          1,
+          0
+        ],
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_magnitude_pass": true,
+        "scalar_relative_tolerance": 0.001953125
+      },
+      "actual_tokens": 16384,
+      "candle": {
+        "p50_ms": 1.656461,
+        "p95_ms": 1.681118,
+        "tokens_per_second_at_p50": 9890966.343306605
+      },
+      "candle_outputs": [
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.21875
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ]
+      ],
+      "case": "32x512",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": 3.98771839481884,
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "torch": {
+        "p50_ms": 1.7225160000000002,
+        "p95_ms": 1.7411889999999999,
+        "tokens_per_second_at_p50": 9511667.816148005
+      },
+      "torch_outputs": [
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ],
+        [
+          -5.22265625
+        ],
+        [
+          5.9453125
+        ],
+        [
+          -10.71875
+        ]
+      ]
+    }
+  ],
+  "checkpoint_metadata": {
+    "model_id": "cross-encoder/ms-marco-MiniLM-L6-v2",
+    "model_revision": "233902d25c440f23af6f7d6e94d2946bac0bee0a",
+    "siblings": [
+      {
+        "blobId": "cf6d51fc9b1a671c35e92d6bd009880937aaa12d",
+        "rfilename": ".gitattributes",
+        "size": 790
+      },
+      {
+        "blobId": "4c0467b102d751d799638ad2bc0cdf6de56e9745",
+        "rfilename": "README.md",
+        "size": 3673
+      },
+      {
+        "blobId": "88bc4f74b33a2073abc9a66cb532b889448ac3ed",
+        "rfilename": "config.json",
+        "size": 794
+      },
+      {
+        "blobId": "21190b32ec3921c25c336fbaed521d3a7e9b5a03",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "bc6033077e458cf98490d51883382806373325919e7b5dd12f4dd694dcd667cd",
+          "size": 90858210
+        },
+        "rfilename": "flax_model.msgpack",
+        "size": 90858210
+      },
+      {
+        "blobId": "c9aad2ad6c9139e6be3593d5b5a1495732d03154",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "821d1aa69520101d6e0737f78a042ae25b19e5cb9160701909d10434f4aeb0ae",
+          "size": 90870598
+        },
+        "rfilename": "model.safetensors",
+        "size": 90870598
+      },
+      {
+        "blobId": "13b717b1a198202ea80f864bcb461b1bf82a247c",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "5d3e70fd0c9ff14b9b5169a51e957b7a9c74897afd0a35ce4bd318150c1d4d4a",
+          "size": 91011230
+        },
+        "rfilename": "onnx/model.onnx",
+        "size": 91011230
+      },
+      {
+        "blobId": "94254be4eabd6f82097a70fec0c8193a8b40e9f4",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "cd95bda6a2f977bf54b1613fd0491c3612244feffb25cf0c20281d32c905042c",
+          "size": 90962586
+        },
+        "rfilename": "onnx/model_O1.onnx",
+        "size": 90962586
+      },
+      {
+        "blobId": "ccee452947d1e9110b57c38189eea5b7ad1fd0ee",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "ee57fbe4d1569835b870e1aa3395e91611396fbc8c1a0e5d9be2fc6dbd686b60",
+          "size": 90877294
+        },
+        "rfilename": "onnx/model_O2.onnx",
+        "size": 90877294
+      },
+      {
+        "blobId": "fad603e92064660cbf5996bad9fc32401fd7058c",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "26148b185fe31d9164ab45492dee503baba89a9e7448a24cd36564f3d2b62e26",
+          "size": 90877225
+        },
+        "rfilename": "onnx/model_O3.onnx",
+        "size": 90877225
+      },
+      {
+        "blobId": "3c40eaaf293d18f8bee4e08240162e93641807e3",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "b232c2eeedd97a593edc177e3ce4cbd1d6c8f6d8f61a5c201cd0cdeb8134da18",
+          "size": 45516616
+        },
+        "rfilename": "onnx/model_O4.onnx",
+        "size": 45516616
+      },
+      {
+        "blobId": "389415b0d25bf6b428c13a27e68f87273240d68f",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "3573b6b9593cb2f75987a31815d409ca3dd8808629118fd20451bb1a5d90cec7",
+          "size": 23200716
+        },
+        "rfilename": "onnx/model_qint8_arm64.onnx",
+        "size": 23200716
+      },
+      {
+        "blobId": "389415b0d25bf6b428c13a27e68f87273240d68f",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "3573b6b9593cb2f75987a31815d409ca3dd8808629118fd20451bb1a5d90cec7",
+          "size": 23200716
+        },
+        "rfilename": "onnx/model_qint8_avx512.onnx",
+        "size": 23200716
+      },
+      {
+        "blobId": "389415b0d25bf6b428c13a27e68f87273240d68f",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "3573b6b9593cb2f75987a31815d409ca3dd8808629118fd20451bb1a5d90cec7",
+          "size": 23200716
+        },
+        "rfilename": "onnx/model_qint8_avx512_vnni.onnx",
+        "size": 23200716
+      },
+      {
+        "blobId": "05a5e8fc2b07427240c73930d64de876dbe5ea58",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "c80a8b34256ea453093d612e3ac48d3d965a0c0a48c7906709af8b8e28461bf9",
+          "size": 23200716
+        },
+        "rfilename": "onnx/model_quint8_avx2.onnx",
+        "size": 23200716
+      },
+      {
+        "blobId": "b4ef9e786711b333f59349a378923efa6369142c",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "8a9204bfa99fa8300f939862ae91279a587b4c16bd5a7a198db859164b299b9a",
+          "size": 90858656
+        },
+        "rfilename": "openvino/openvino_model.bin",
+        "size": 90858656
+      },
+      {
+        "blobId": "38116f35071acb17e6565d44bfbe5c3b1e61b3a8",
+        "rfilename": "openvino/openvino_model.xml",
+        "size": 205291
+      },
+      {
+        "blobId": "067e359f4b5605605087a9fcc471217e65c91e85",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "02eaa804b1c63f7a0012b7830dea8578fb54478eefdc98e8cdb21f4e4c4e55dc",
+          "size": 23087684
+        },
+        "rfilename": "openvino/openvino_model_qint8_quantized.bin",
+        "size": 23087684
+      },
+      {
+        "blobId": "9ff1f55602bdace4c89106234736defe5fdf6bfa",
+        "rfilename": "openvino/openvino_model_qint8_quantized.xml",
+        "size": 371611
+      },
+      {
+        "blobId": "c513f1ea4ba4173d62ed106cf3788a8444eba109",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "3ae17b87eda3d184502a821fddff43d82feb7c206f665a851c491ec715b497ed",
+          "size": 90903017
+        },
+        "rfilename": "pytorch_model.bin",
+        "size": 90903017
+      },
+      {
+        "blobId": "7520992f25914d962f0e2fd0e0566fc33d19ec59",
+        "rfilename": "special_tokens_map.json",
+        "size": 132
+      },
+      {
+        "blobId": "688882a79f44442ddc1f60d70334a7ff5df0fb47",
+        "rfilename": "tokenizer.json",
+        "size": 711396
+      },
+      {
+        "blobId": "a2435fedfac32b9ad70f052d4f84007730cd3109",
+        "rfilename": "tokenizer_config.json",
+        "size": 1330
+      },
+      {
+        "blobId": "fb140275c155a9c7c5a3b3e0e77a9e839594a938",
+        "rfilename": "vocab.txt",
+        "size": 231508
+      }
+    ]
+  },
+  "dtype": "float16",
+  "fixture_path": "/tmp/tei-classifier-head-cases.json",
+  "gate_contract": "Fixed before trained runs: finite outputs; scalar abs error <= .006 + 2*dtype epsilon*abs(reference), no scalar cosine gate; SPLADE nonnegative, cosine>=.999, relativeL2<=.05, exact nonzero supportJaccard>=.95. All gates required.",
+  "head": "classifier",
+  "iterations": 200,
+  "model_path": "/tmp/tei-minilm-classifier-benchmark-model",
+  "serialization_metadata": null,
+  "torch_gpu": 2,
+  "warmup_iterations": 20,
+  "qualification_status": "integrated_accuracy_and_latency_pass",
+  "model_revision": "233902d25c440f23af6f7d6e94d2946bac0bee0a",
+  "native_library": "/tmp/tei-minilm-norm-fp8-helper-runtime/libtei_torch.so",
+  "native_library_sha256": "44dbde6a326f3d0a052d2caf93e3a05ca199cbe38a4e8f9bda4c77caa7b27181",
+  "benchmark_binary": "/tmp/tei-heads-benchmark-runtime/compare_heads_v1",
+  "benchmark_binary_sha256": "a0774d58ceb224d020873bb879d6a996407dd8704815217a232bb9fa15fd4ec4",
+  "physical_gpu_assignment": {
+    "native": 2,
+    "candle": 3
+  },
+  "python_inference_runtime": false,
+  "no_token_padding": true,
+  "native_torch_varlen_attention": true,
+  "existing_native_suite": {
+    "passed": 24,
+    "failed": 0
+  },
+  "additional_unwired_fp8_helper_test": {
+    "passed": false,
+    "qualification": "not qualified; independent GEMM rounding oracle failure under investigation; default model inference does not invoke helper"
+  },
+  "cuda_graphs": true,
+  "strict_gates_unchanged": true
+}

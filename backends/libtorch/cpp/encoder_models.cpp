@@ -1,4 +1,5 @@
 #include "encoder_models.h"
+#include "fp8_linear.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
 #include "encoder_norm.h"
@@ -30,6 +31,7 @@ struct Encoder final : Model {
     at::Tensor gate_weight, gate_bias;
   };
   std::vector<Layer> fused;
+  std::unordered_map<std::string,Fp8Linear> fp8_mlp;
   at::Tensor global_cos, global_sin, local_cos, local_sin;
   std::optional<at::Tensor> alibi;
 
@@ -46,6 +48,8 @@ struct Encoder final : Model {
     // Preserve Candle normalization and rounded residuals for deep rotary encoders.
     // An explicit zero opts into the ATen diagnostic path.
     exact_norm=f==Family::Modern && (!norm_mode||std::string(norm_mode)=="1"||std::string(norm_mode)=="true");
+    TORCH_CHECK(!o.boolean("_fp8_dynamic",false) || family==Family::Modern,
+      "Dynamic FP8 is unsupported for this encoder family");
   }
   int64_t output_width() const override { return hidden; }
   int64_t classification_width() const override {
@@ -61,6 +65,8 @@ struct Encoder final : Model {
   }
   at::Tensor bias(const std::string& n) const { return has(n + ".bias") ? w(n + ".bias") : at::Tensor(); }
   at::Tensor linear(const at::Tensor& x, const std::string& n) const {
+    auto quantized=fp8_mlp.find(n);
+    if(quantized!=fp8_mlp.end())return quantized->second.forward(x,bias(n));
     return at::linear(x, w(n + ".weight"), bias(n));
   }
   at::Tensor activated_linear(const at::Tensor& x, const std::string& n) const {
@@ -202,6 +208,12 @@ struct Encoder final : Model {
         const auto gate=p+"mlp.fc12",up=p+"mlp.fc11";
         fused[i].gate_weight=at::cat({w(gate+".weight"),w(up+".weight")},0);
         if(has(gate+".bias"))fused[i].gate_bias=at::cat({w(gate+".bias"),w(up+".bias")},0);
+      }
+      if(o.boolean("_fp8_dynamic",false)) {
+        for(const auto& name:{p+"mlp.Wi",p+"mlp.Wo"}) {
+          fp8_mlp.try_emplace(name,w(name+".weight"));
+          weights.erase(prefix+name+".weight");
+        }
       }
     }
   }

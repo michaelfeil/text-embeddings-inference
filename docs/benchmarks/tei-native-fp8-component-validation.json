@@ -1,0 +1,68 @@
+{
+  "status": "component-tested; trained accuracy and latency unqualified",
+  "scope": {
+    "runtime": "native C++ LibTorch 2.14.1+cu130; no Python inference runtime",
+    "hardware": "NVIDIA H100; other supported architecture dispatch paths unmeasured",
+    "padding": "none; actual row counts 1,3,7,17,35,128",
+    "dtypes": [
+      "float16",
+      "bfloat16"
+    ],
+    "quantization": "dynamic rowwise E4M3, dense MLP projections only; original attention, normalization and heads preserved"
+  },
+  "native_library": {
+    "path": "/tmp/tei-native-fp8-model-runtime/libtei_torch.so",
+    "sha256": "3cca28ffda3d09f28cf08e40b1e4e50cee81d0f190f66baa1a75679ca5e03438"
+  },
+  "verification": {
+    "suite": "26/26 CPU/CUDA native tests pass",
+    "elapsed_seconds": 28.07,
+    "quantization": "independent CPU quantization oracle; quantized bytes and FP32 scales bitwise",
+    "gemm": "independently translated original Candle cuBLASLt recipe; bitwise across all 12 row-count/dtype combinations",
+    "workspace_bytes": 33554432,
+    "decoder_fixture": "dense Llama/Mistral/Qwen2/Qwen3, actual packed and compact rows, isolation, cache ownership and invalid configurations",
+    "rust_fp8_api": {
+      "tests": "2/2 pass: real ragged BERT FP16/BF16, SPLADE/classifier heads, changed-input replay, CPU and requantized checkpoint rejection",
+      "scope": "small synthetic fixture; trained accuracy and latency unqualified",
+      "binary_sha256": "37e32e60385af25d62a6797af5bdcf89e2f02c60ee30dfcf80038f21c07b243e",
+      "runtime": "immutable 3cca native library first on LD_LIBRARY_PATH; direct copied executable avoids Cargo loader override",
+      "log_sha256": "cf61b7ca89e1b28507d70bb0dc3b5e4f3881c42fbf226e68a40662596996c305"
+    },
+    "strict_clippy": "all LibTorch targets pass -D warnings with benchmark-fp8 and experimental Candle DeBERTa",
+    "rust_all_tests": "8/8 pass against immutable3cca, including all ignored GPU tests",
+    "backend_crate": "cargo check --release -p text-embeddings-backend --no-default-features --features libtorch passes"
+  },
+  "oracle_correction": {
+    "initial_result": "initial full-FP32-dot/final-model-dtype-rounding oracle failed; old test retained in diagnostic logs",
+    "reason": "actual original FP8 cuBLASLt accumulation also fails this assumed reference; it prefers fast accumulation with fallback",
+    "corrected_reference": "actual original source recipe, including accumulation preference/fallback and workspace; bitwise checks replace inaccurate FP32 approximation",
+    "trained_gates": "unchanged; component results do not qualify trained outputs or P50 latency"
+  },
+  "license": "original Candle-derived quantization and independent cuBLASLt reference retain full MIT notices; upstream project notices preserved",
+  "diagnostic_logs": [
+    {
+      "path": "/tmp/tei-minilm-fp8-helper-native-tests.log",
+      "sha256": "6ca463df4e15f0286b70567e496b82553e7a5a2349c81b3c819d07204c6841f6"
+    },
+    {
+      "path": "/tmp/tei-fp8-integrated-diagnostic.log",
+      "sha256": "0faafed46f277e831d7fef29561ae10172b8282cf4ea710652b6b30e269911f1"
+    },
+    {
+      "path": "/tmp/tei-fp8-accum-diagnostic.log",
+      "sha256": "f070161a3e22b162586592da611b4ef092e2896973b8f59d9a9a9c23a56428f1"
+    },
+    {
+      "path": "/tmp/tei-fp8-cublas-reference-workspace32.log",
+      "sha256": "94eeed10afb5e1b45d0e0c37bc947a40224e7c72f84c9cfb0de0a62d6bc82571"
+    },
+    {
+      "path": "/tmp/tei-fp8-cublas-fast-aligned-reference.log",
+      "sha256": "d7469bb7650836d6e68fb55baa280f34a89f61d4f31d28dc3267a3db2841c38c"
+    },
+    {
+      "path": "/tmp/tei-native-fp8-model-tests.log",
+      "sha256": "b62061916374a840a400f7714ba8e5890459e9a310eb837afe8c50cd624be77f"
+    }
+  ]
+}
