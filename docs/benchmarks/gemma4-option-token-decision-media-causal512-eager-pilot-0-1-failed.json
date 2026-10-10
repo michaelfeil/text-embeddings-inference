@@ -1,0 +1,1034 @@
+{
+  "candle_gpu": 1,
+  "cases": [
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0625,
+        "maximum_scalar_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.00014384726476335263,
+        "minimum_logit_cosine": 0.9999989812524269,
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_fields": 0,
+        "scalar_gate_pass": true,
+        "scalar_relative_tolerance": 0.015625,
+        "sequences": 1
+      },
+      "actual_tokens": 32,
+      "candle": {
+        "p50_ms": 13.45898,
+        "p95_ms": 13.717768,
+        "tokens_per_second_at_p50": 2377.5947360052546
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            4.6875,
+            -0.875,
+            -12.5,
+            -3.640625
+          ]
+        }
+      ],
+      "case": "text1x32",
+      "cuda_graph_count": 0,
+      "latency_delta_percent": 16.470876693479,
+      "lengths": [
+        32
+      ],
+      "torch": {
+        "p50_ms": 15.675792000000001,
+        "p95_ms": 15.781183,
+        "tokens_per_second_at_p50": 2041.3641620149078
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            4.65625,
+            -0.87109375,
+            -12.4375,
+            -3.640625
+          ]
+        }
+      ]
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": false,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.9375,
+        "maximum_scalar_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.01273849981914113,
+        "minimum_logit_cosine": 0.997755006637134,
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_fields": 0,
+        "scalar_gate_pass": true,
+        "scalar_relative_tolerance": 0.015625,
+        "sequences": 1
+      },
+      "actual_tokens": 32,
+      "candle": {
+        "p50_ms": 14.057869,
+        "p95_ms": 14.296931,
+        "tokens_per_second_at_p50": 2276.305178259948
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            2.546875,
+            -0.5625,
+            -13.375,
+            -3.8125
+          ]
+        }
+      ],
+      "case": "image1x32_one_token",
+      "cuda_graph_count": 0,
+      "latency_delta_percent": 76.94817756517718,
+      "lengths": [
+        32
+      ],
+      "torch": {
+        "p50_ms": 24.875142999999998,
+        "p95_ms": 26.534041000000002,
+        "tokens_per_second_at_p50": 1286.4247654777303
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            3.03125,
+            0.1962890625,
+            -14.3125,
+            -3.53125
+          ]
+        }
+      ]
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": false,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 2.21875,
+        "maximum_scalar_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.04689350870463538,
+        "minimum_logit_cosine": 0.992490066055659,
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_fields": 0,
+        "scalar_gate_pass": true,
+        "scalar_relative_tolerance": 0.015625,
+        "sequences": 1
+      },
+      "actual_tokens": 32,
+      "candle": {
+        "p50_ms": 14.739814,
+        "p95_ms": 15.017168,
+        "tokens_per_second_at_p50": 2170.9907601276377
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            2.6875,
+            1.59375,
+            -11.75,
+            -3.59375
+          ]
+        }
+      ],
+      "case": "image1x32_four_tokens",
+      "cuda_graph_count": 0,
+      "latency_delta_percent": 70.96997289110973,
+      "lengths": [
+        32
+      ],
+      "torch": {
+        "p50_ms": 25.200656,
+        "p95_ms": 26.496883,
+        "tokens_per_second_at_p50": 1269.8082145163205
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            3.734375,
+            2.875,
+            -13.625,
+            -5.8125
+          ]
+        }
+      ]
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 2,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": false,
+        "fields": 2,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 3.5625,
+        "maximum_scalar_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.3825978796934376,
+        "minimum_logit_cosine": 0.950608368418856,
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_fields": 0,
+        "scalar_gate_pass": true,
+        "scalar_relative_tolerance": 0.015625,
+        "sequences": 2
+      },
+      "actual_tokens": 80,
+      "candle": {
+        "p50_ms": 17.127386,
+        "p95_ms": 17.372678999999998,
+        "tokens_per_second_at_p50": 4670.882059877672
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            2.078125,
+            -0.44140625,
+            -13.875,
+            -4.0
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            3.1875,
+            2.9375,
+            -10.5625,
+            -1.78125
+          ]
+        }
+      ],
+      "case": "image2ragged32_48",
+      "cuda_graph_count": 0,
+      "latency_delta_percent": 109.68157078961144,
+      "lengths": [
+        32,
+        48
+      ],
+      "torch": {
+        "p50_ms": 35.912972,
+        "p95_ms": 37.259795,
+        "tokens_per_second_at_p50": 2227.607339208796
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.0078125,
+            -1.4140625,
+            -13.625,
+            -4.0625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            2.71875,
+            -0.09130859375,
+            -14.125,
+            -4.53125
+          ]
+        }
+      ]
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": false,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.875,
+        "maximum_scalar_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.1315701051704342,
+        "minimum_logit_cosine": 0.9983065524468455,
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_fields": 0,
+        "scalar_gate_pass": true,
+        "scalar_relative_tolerance": 0.015625,
+        "sequences": 1
+      },
+      "actual_tokens": 48,
+      "candle": {
+        "p50_ms": 15.704583000000001,
+        "p95_ms": 16.031167999999997,
+        "tokens_per_second_at_p50": 3056.432634983049
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.625,
+            -1.890625,
+            -14.9375,
+            -6.65625
+          ]
+        }
+      ],
+      "case": "images_one_sequence",
+      "cuda_graph_count": 0,
+      "latency_delta_percent": 120.50733215902642,
+      "lengths": [
+        48
+      ],
+      "torch": {
+        "p50_ms": 34.629757,
+        "p95_ms": 39.505673,
+        "tokens_per_second_at_p50": 1386.0911585374395
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.453125,
+            -1.015625,
+            -14.5,
+            -5.9375
+          ]
+        }
+      ]
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": false,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 3.5625,
+        "maximum_scalar_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.014761689171023495,
+        "minimum_logit_cosine": 0.9956847173534606,
+        "scalar_absolute_tolerance": 0.006,
+        "scalar_fields": 0,
+        "scalar_gate_pass": true,
+        "scalar_relative_tolerance": 0.015625,
+        "sequences": 1
+      },
+      "actual_tokens": 128,
+      "candle": {
+        "p50_ms": 20.017205999999998,
+        "p95_ms": 20.376875,
+        "tokens_per_second_at_p50": 6394.49881267146
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -11.8125,
+            -8.6875,
+            -23.75,
+            -18.5
+          ]
+        }
+      ],
+      "case": "image1x128_576_patches",
+      "cuda_graph_count": 0,
+      "latency_delta_percent": 46.68644565080662,
+      "lengths": [
+        128
+      ],
+      "torch": {
+        "p50_ms": 29.362527999999998,
+        "p95_ms": 30.737106,
+        "tokens_per_second_at_p50": 4359.297673551814
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -9.5625,
+            -6.75,
+            -23.0,
+            -14.9375
+          ]
+        }
+      ]
+    }
+  ],
+  "checkpoint_metadata": {
+    "model_id": "google/gemma-4-26B-A4B-it",
+    "model_revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+    "siblings": [
+      {
+        "blobId": "085cf881e7568146770ed30f5b5a9c47664a2b84",
+        "rfilename": ".eval_results/mmmu_pro.yaml",
+        "size": 186
+      },
+      {
+        "blobId": "ddcb389f1c4efd0f6ec18e8925435134b04580da",
+        "rfilename": ".gitattributes",
+        "size": 1708
+      },
+      {
+        "blobId": "742346e1fe57997c831b9065f4c54a9416021526",
+        "rfilename": "README.md",
+        "size": 27979
+      },
+      {
+        "blobId": "4741bf6e4132ba23a5537f9d6e74e9a6d613d7cd",
+        "rfilename": "chat_template.jinja",
+        "size": 18683
+      },
+      {
+        "blobId": "f42adcca257bb0865c506947671e7d0af52ac9c4",
+        "rfilename": "config.json",
+        "size": 3815
+      },
+      {
+        "blobId": "e605bb4523b1462ea9d9a3810b9e3ecf7ab7b1f6",
+        "rfilename": "generation_config.json",
+        "size": 208
+      },
+      {
+        "blobId": "2b813216506c6b8266f174ac81c93629b499362e",
+        "lfs": {
+          "pointerSize": 136,
+          "sha256": "1127684971bbca40465435a5cad69d67ad603bf5e61c6dfd5561fae4a3bcfdb3",
+          "size": 49907246508
+        },
+        "rfilename": "model-00001-of-00002.safetensors",
+        "size": 49907246508
+      },
+      {
+        "blobId": "43fd225b228774659bcb8948b8ad1b07b10cb53f",
+        "lfs": {
+          "pointerSize": 135,
+          "sha256": "aab47033e1e8a492ef8e581efae1cf36478d0433567e7729b3c1728bc8970db7",
+          "size": 1704763408
+        },
+        "rfilename": "model-00002-of-00002.safetensors",
+        "size": 1704763408
+      },
+      {
+        "blobId": "889ab10e12aca96c43c9804a041fb1780de1e5ca",
+        "rfilename": "model.safetensors.index.json",
+        "size": 103196
+      },
+      {
+        "blobId": "5465974d23e1eca2c46c2809b26c997946ce0d90",
+        "rfilename": "processor_config.json",
+        "size": 1689
+      },
+      {
+        "blobId": "1ff9f3e3439a939b971f9919e821bf87e835a503",
+        "lfs": {
+          "pointerSize": 133,
+          "sha256": "cc8d3a0ce36466ccc1278bf987df5f71db1719b9ca6b4118264f45cb627bfe0f",
+          "size": 32169626
+        },
+        "rfilename": "tokenizer.json",
+        "size": 32169626
+      },
+      {
+        "blobId": "6068e357379d36f823c377e30efb101fa2c67fe4",
+        "rfilename": "tokenizer_config.json",
+        "size": 3082
+      }
+    ]
+  },
+  "dtype": "bfloat16",
+  "iterations": 20,
+  "model_path": "/tmp/tei-gemma4-moe-benchmark-model",
+  "native_library_path": "/tmp:/tmp/tei-radix-heads-gemma-integrated-runtime:/tmp/tei-audio-laya-llama-integrated-runtime:/tmp/tei-vision-moe-runtime:/tmp/tei-decoder-trained-v5-snapshot:/tmp/tei-packed-pool-runtime:/root/.cache/uv/archive-v0/nnFsn6Sm1ln--Idv/torch/lib:/root/.cache/uv/archive-v0/NrK-u166YHY1V8g9/nvidia/cusparselt/lib:/root/.cache/uv/archive-v0/o7SNPtRUqcI6fYd-/nvidia/nvshmem/lib:/root/.cache/uv/archive-v0/bEgBdSzZhf2YYCK7/nvidia/nccl/lib:/root/.cache/uv/archive-v0/KZaHSRMKwudKYcy2/nvidia/cudnn/lib:/usr/local/cuda/lib64:/tmp/tei-fa4-deberta-aot",
+  "no_token_padding": true,
+  "torch_gpu": 0,
+  "qualification": {
+    "status": "image_accuracy_and_eager_latency_failed",
+    "scope": "isolated native Torch causal512 candidate, one text and five image Decision cases,20iterations one assignment; diagnostic only",
+    "minimum_required_vector_cosine": 0.999,
+    "maximum_allowed_p50_slowdown_percent": 5,
+    "image_accuracy_qualified": false,
+    "both_assignments_qualified": false
+  },
+  "reproducibility": {
+    "whole_baseline_library_sha256": "072b8e7430ad8d164a009b82f78ce50fe5a2640eaf410b689f3af95ed81ab819",
+    "isolated_native_overlay_sha256": "bd58e2bfd4adfb7479cea7857502ce082349ae869f8c3eabeeb69d3ceaf38160",
+    "isolated_native_torch512_sha256": "9efb7bd3978165abbb984055b3ec11b110fecd18380ba86d858e646a9cdf2ec0",
+    "comparator_sha256": "a163244a493c6488104a71025cb937c61ead5a7b210f91fd98bbc16f6622e33d",
+    "fixture": {
+      "checkpoint": "google/gemma-4-26B-A4B-it",
+      "revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+      "cases": [
+        {
+          "name": "text1x32",
+          "sequences": [
+            {
+              "ids": [
+                2,
+                1017,
+                1034,
+                1051,
+                1068,
+                1085,
+                1102,
+                1119,
+                1136,
+                1153,
+                1170,
+                1187,
+                1204,
+                1221,
+                1238,
+                1255,
+                1272,
+                1289,
+                1306,
+                1323,
+                1340,
+                1357,
+                1374,
+                1391,
+                1408,
+                1425,
+                1442,
+                1459,
+                1476,
+                1493,
+                1510,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ]
+            }
+          ]
+        },
+        {
+          "name": "image1x32_one_token",
+          "sequences": [
+            {
+              "ids": [
+                2,
+                1017,
+                258880,
+                1051,
+                1068,
+                1085,
+                1102,
+                1119,
+                1136,
+                1153,
+                1170,
+                1187,
+                1204,
+                1221,
+                1238,
+                1255,
+                1272,
+                1289,
+                1306,
+                1323,
+                1340,
+                1357,
+                1374,
+                1391,
+                1408,
+                1425,
+                1442,
+                1459,
+                1476,
+                1493,
+                1510,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ],
+              "images": [
+                {
+                  "token_start": 2,
+                  "grid_thw": [
+                    1,
+                    3,
+                    3
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "image1x32_four_tokens",
+          "sequences": [
+            {
+              "ids": [
+                2,
+                1017,
+                258880,
+                258880,
+                258880,
+                258880,
+                1102,
+                1119,
+                1136,
+                1153,
+                1170,
+                1187,
+                1204,
+                1221,
+                1238,
+                1255,
+                1272,
+                1289,
+                1306,
+                1323,
+                1340,
+                1357,
+                1374,
+                1391,
+                1408,
+                1425,
+                1442,
+                1459,
+                1476,
+                1493,
+                1510,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ],
+              "images": [
+                {
+                  "token_start": 2,
+                  "grid_thw": [
+                    1,
+                    6,
+                    6
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "image2ragged32_48",
+          "sequences": [
+            {
+              "ids": [
+                2,
+                1017,
+                258880,
+                1051,
+                1068,
+                1085,
+                1102,
+                1119,
+                1136,
+                1153,
+                1170,
+                1187,
+                1204,
+                1221,
+                1238,
+                1255,
+                1272,
+                1289,
+                1306,
+                1323,
+                1340,
+                1357,
+                1374,
+                1391,
+                1408,
+                1425,
+                1442,
+                1459,
+                1476,
+                1493,
+                1510,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ],
+              "images": [
+                {
+                  "token_start": 2,
+                  "grid_thw": [
+                    1,
+                    3,
+                    3
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                }
+              ]
+            },
+            {
+              "ids": [
+                2,
+                1017,
+                258880,
+                258880,
+                258880,
+                258880,
+                1102,
+                1119,
+                1136,
+                1153,
+                1170,
+                1187,
+                1204,
+                1221,
+                1238,
+                1255,
+                1272,
+                1289,
+                1306,
+                1323,
+                1340,
+                1357,
+                1374,
+                1391,
+                1408,
+                1425,
+                1442,
+                1459,
+                1476,
+                1493,
+                1510,
+                1527,
+                1544,
+                1561,
+                1578,
+                1595,
+                1612,
+                1629,
+                1646,
+                1663,
+                1680,
+                1697,
+                1714,
+                1731,
+                1748,
+                1765,
+                1782,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ],
+              "images": [
+                {
+                  "token_start": 2,
+                  "grid_thw": [
+                    1,
+                    6,
+                    6
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "images_one_sequence",
+          "sequences": [
+            {
+              "ids": [
+                2,
+                1017,
+                258880,
+                1051,
+                1068,
+                258880,
+                258880,
+                258880,
+                258880,
+                1153,
+                1170,
+                1187,
+                1204,
+                1221,
+                1238,
+                1255,
+                1272,
+                1289,
+                1306,
+                1323,
+                1340,
+                1357,
+                1374,
+                1391,
+                1408,
+                1425,
+                1442,
+                1459,
+                1476,
+                1493,
+                1510,
+                1527,
+                1544,
+                1561,
+                1578,
+                1595,
+                1612,
+                1629,
+                1646,
+                1663,
+                1680,
+                1697,
+                1714,
+                1731,
+                1748,
+                1765,
+                1782,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ],
+              "images": [
+                {
+                  "token_start": 2,
+                  "grid_thw": [
+                    1,
+                    3,
+                    3
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                },
+                {
+                  "token_start": 5,
+                  "grid_thw": [
+                    1,
+                    6,
+                    6
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "name": "image1x128_576_patches",
+          "sequences": [
+            {
+              "ids": [
+                2,
+                1017,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                258880,
+                2122,
+                2139,
+                2156,
+                2173,
+                2190,
+                2207,
+                2224,
+                2241,
+                2258,
+                2275,
+                2292,
+                2309,
+                2326,
+                2343,
+                2360,
+                2377,
+                2394,
+                2411,
+                2428,
+                2445,
+                2462,
+                2479,
+                2496,
+                2513,
+                2530,
+                2547,
+                2564,
+                2581,
+                2598,
+                2615,
+                2632,
+                2649,
+                2666,
+                2683,
+                2700,
+                2717,
+                2734,
+                2751,
+                2768,
+                2785,
+                2802,
+                2819,
+                2836,
+                2853,
+                2870,
+                2887,
+                2904,
+                2921,
+                2938,
+                2955,
+                2972,
+                2989,
+                3006,
+                3023,
+                3040,
+                3057,
+                3074,
+                3091,
+                3108,
+                3125,
+                3142,
+                1
+              ],
+              "kind": "option_tokens",
+              "option_token_ids": [
+                100,
+                200,
+                300,
+                400
+              ],
+              "images": [
+                {
+                  "token_start": 2,
+                  "grid_thw": [
+                    1,
+                    24,
+                    24
+                  ],
+                  "patch_dim": 768,
+                  "merge_size": 3
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    "torch_cuda_graphs": false,
+    "candle_loader_modified": false,
+    "token_or_head_padding": false
+  },
+  "source_observations": {
+    "vision_head_dimension": 72,
+    "candle_warm_image_features_cache": {
+      "per_model": true,
+      "content_key": "SHA256 original F32 prepared pixels and grid/patch/merge layout",
+      "limit_bytes": 67108864,
+      "limit_entries": 32
+    },
+    "native_vision_feature_cache": false,
+    "earliest_actual_vision_operation_difference": "not yet isolated; actual source-level trace prepared, no accuracy claim"
+  }
+}

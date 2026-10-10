@@ -1,0 +1,78 @@
+{
+  "license": "Apache-2.0 (derived model weights/operands); original checkpoint attribution retained",
+  "model_id": "Qwen/Qwen3.5-35B-A3B",
+  "model_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "source_layer": 0,
+  "source_value_head": 3,
+  "source_query_key_head": 1,
+  "actual_tokens": 32,
+  "runtime_dtype": "bfloat16",
+  "fixture_sha256": "fbf5f2fb808ab3980d3175850a8e4389119ac5c427e83a6d009b7f8c9c2b36f4",
+  "layout": "8-byte TEIQ35R1 magic; LE u32 tokens/key_heads/value_heads/kernel; then contiguous tensors listed below, BF16 as LE16 bits/F32 as LE32 bits",
+  "tensors": [
+    {
+      "name": "qkv",
+      "shape": [
+        32,
+        384
+      ],
+      "dtype": "torch.bfloat16"
+    },
+    {
+      "name": "z",
+      "shape": [
+        32,
+        128
+      ],
+      "dtype": "torch.bfloat16"
+    },
+    {
+      "name": "ab",
+      "shape": [
+        32,
+        2
+      ],
+      "dtype": "torch.bfloat16"
+    },
+    {
+      "name": "conv",
+      "shape": [
+        384,
+        4
+      ],
+      "dtype": "torch.bfloat16"
+    },
+    {
+      "name": "a_log",
+      "shape": [
+        1
+      ],
+      "dtype": "torch.float32"
+    },
+    {
+      "name": "dt_bias",
+      "shape": [
+        1
+      ],
+      "dtype": "torch.float32"
+    },
+    {
+      "name": "norm",
+      "shape": [
+        128
+      ],
+      "dtype": "torch.bfloat16"
+    },
+    {
+      "name": "expected_original_candle_delta_output",
+      "shape": [
+        32,
+        128
+      ],
+      "dtype": "torch.bfloat16"
+    }
+  ],
+  "expected_output_source": "Actual original Candle full trained forward, selected value head3. Original default-FMA native differs oneBF16 value at token15,column21; original --fmad=false contract matches.",
+  "no_python_model_inference": true,
+  "note": "Tensor-only extraction/serialization; independent original Candle output serves as regression oracle."
+}

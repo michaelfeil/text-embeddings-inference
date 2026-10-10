@@ -1,0 +1,5073 @@
+{
+  "model_id": "Qwen/Qwen3.5-35B-A3B",
+  "model_revision": "59d61f3ce65a6d9863b86d2e96597125219dc754",
+  "dtype": "bfloat16",
+  "actual_tokens": 32,
+  "pool": "last_token",
+  "first_input_contract": "All vocabulary IDs valid, source comparator generates authoritative nested BOS/EOS and arbitrary IDs1000+17*i, noPAD",
+  "physical_gpu_assignment": {
+    "native": 2,
+    "candle": 3
+  },
+  "final_cosine": 0.9920832885827131,
+  "required_minimum_cosine": 0.999,
+  "qualification_status": "isolated_exact_delta_sigmoid_first_workload_accuracy_fail",
+  "native_library_sha256": "b0f690a028b90c931b28fdadab0de6e6f5520978c0619431760940cdd02ad477",
+  "no_production_math_change": true,
+  "temporary_candle_source_restored_sha256": "2a2a2c57566a08b3b581b0b87178db91f7e4f17ce32dabd2332f711d65ec5612",
+  "files_sha256": {
+    "/tmp/libtei-q35-delta-no-fma.so": "d13f18a2e997977f944542084c0fe1d90d572387a0f6c9c2218d7cfc85377f8f",
+    "/tmp/libtei-q35-delta-sigmoid-trace-prototype.so": "c85b03a2253397b250dcb8a07d3149c2b4252f565db93c67b54a23449a998d55",
+    "/tmp/tei-q35-delta-sigmoid-trace-prototype.cpp": "887cc808052e4ecfb5461e045b67a0f26f5add03969184f874f721ccc58d3c9e"
+  },
+  "stages": [
+    {
+      "layer": 0,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 0,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 1,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 2,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 525,
+      "max_absolute_error": 0.00048828125,
+      "global_cosine": 0.9999999608019271,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 138,
+      "max_absolute_error": 0.000244140625,
+      "global_cosine": 0.9999999942538441,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 135,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999999906617849,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 2325,
+      "max_absolute_error": 0.000244140625,
+      "global_cosine": 0.999999734177041,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 1822,
+      "max_absolute_error": 0.00048828125,
+      "global_cosine": 0.9999999168231414,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0000000000000002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 1.0,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 1989,
+      "max_absolute_error": 0.000244140625,
+      "global_cosine": 0.9999997291566003,
+      "nonfinite": 0
+    },
+    {
+      "layer": 3,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 954,
+      "max_absolute_error": 0.0009765625,
+      "global_cosine": 0.9999999240781203,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 954,
+      "max_absolute_error": 0.0009765625,
+      "global_cosine": 0.9999999240781203,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 868,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999999190503608,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 8682,
+      "max_absolute_error": 0.0625,
+      "global_cosine": 0.9999998808885842,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 3561,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999999262922593,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 38,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999998236964739,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 14642,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999985601125543,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 12856,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999975302015172,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 5629,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999993929164633,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 5923,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.999999171041838,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 21028,
+      "max_absolute_error": 0.007049560546875,
+      "global_cosine": 0.9992627694641217,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 17600,
+      "max_absolute_error": 0.009765625,
+      "global_cosine": 0.9999969506970097,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 0,
+      "max_absolute_error": 0.0,
+      "global_cosine": 0.9999999999999999,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 19985,
+      "max_absolute_error": 0.007080078125,
+      "global_cosine": 0.9994280242515217,
+      "nonfinite": 0
+    },
+    {
+      "layer": 4,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 13445,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999581226906316,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 13445,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999581226906316,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 13851,
+      "max_absolute_error": 0.1875,
+      "global_cosine": 0.9999525491061012,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 71454,
+      "max_absolute_error": 0.234375,
+      "global_cosine": 0.9999773680578504,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 27682,
+      "max_absolute_error": 0.1865234375,
+      "global_cosine": 0.9999920929562055,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 485,
+      "max_absolute_error": 0.171875,
+      "global_cosine": 0.9999830497541355,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 46200,
+      "max_absolute_error": 0.0108642578125,
+      "global_cosine": 0.9999168015567363,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 24423,
+      "max_absolute_error": 0.0068359375,
+      "global_cosine": 0.9999167178251989,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 18630,
+      "max_absolute_error": 0.01171875,
+      "global_cosine": 0.9999629392574192,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 18665,
+      "max_absolute_error": 0.203125,
+      "global_cosine": 0.9999361828531648,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 25792,
+      "max_absolute_error": 0.0025177001953125,
+      "global_cosine": 0.9999280207577619,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 24619,
+      "max_absolute_error": 0.08349609375,
+      "global_cosine": 0.9998525594675841,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 5,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999988348340313,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 5,
+      "max_absolute_error": 0.0009765625,
+      "global_cosine": 0.9999949474226373,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 25363,
+      "max_absolute_error": 0.01373291015625,
+      "global_cosine": 0.9999016898753519,
+      "nonfinite": 0
+    },
+    {
+      "layer": 5,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 20941,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999626935936569,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 20941,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999626935936569,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 20859,
+      "max_absolute_error": 0.15625,
+      "global_cosine": 0.9999599096864998,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 87841,
+      "max_absolute_error": 0.265625,
+      "global_cosine": 0.9999810455828626,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 32768,
+      "max_absolute_error": 0.1328125,
+      "global_cosine": 0.9999932664741251,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 565,
+      "max_absolute_error": 0.09765625,
+      "global_cosine": 0.9999852487632056,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 49560,
+      "max_absolute_error": 0.00732421875,
+      "global_cosine": 0.9999950113707646,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 25413,
+      "max_absolute_error": 0.01171875,
+      "global_cosine": 0.9999938565478507,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 21751,
+      "max_absolute_error": 0.01171875,
+      "global_cosine": 0.9999871199377399,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 21620,
+      "max_absolute_error": 0.162109375,
+      "global_cosine": 0.9999512176798832,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 26600,
+      "max_absolute_error": 0.0110015869140625,
+      "global_cosine": 0.9981374633193162,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 25197,
+      "max_absolute_error": 0.0322265625,
+      "global_cosine": 0.9999760778268635,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 2,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999994817272223,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 2,
+      "max_absolute_error": 0.0009765625,
+      "global_cosine": 0.9999989145671305,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 26072,
+      "max_absolute_error": 0.0114288330078125,
+      "global_cosine": 0.9991456840076185,
+      "nonfinite": 0
+    },
+    {
+      "layer": 6,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 23310,
+      "max_absolute_error": 0.010986328125,
+      "global_cosine": 0.9999509369581777,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 23310,
+      "max_absolute_error": 0.010986328125,
+      "global_cosine": 0.9999509369581777,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 23404,
+      "max_absolute_error": 0.2578125,
+      "global_cosine": 0.9999052635497738,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 26847,
+      "max_absolute_error": 0.01953125,
+      "global_cosine": 0.9999794297294955,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 24268,
+      "max_absolute_error": 0.01171875,
+      "global_cosine": 0.9999273297439112,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 24222,
+      "max_absolute_error": 0.31640625,
+      "global_cosine": 0.9997586150934425,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 28606,
+      "max_absolute_error": 0.0145111083984375,
+      "global_cosine": 0.9979741543764188,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 27333,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9999388461482054,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 6,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999985079792674,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 5,
+      "max_absolute_error": 0.0009765625,
+      "global_cosine": 0.9999967293071717,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 28278,
+      "max_absolute_error": 0.01470947265625,
+      "global_cosine": 0.9989218733856103,
+      "nonfinite": 0
+    },
+    {
+      "layer": 7,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 25774,
+      "max_absolute_error": 0.0177001953125,
+      "global_cosine": 0.9997788214966157,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 25774,
+      "max_absolute_error": 0.0177001953125,
+      "global_cosine": 0.9997788214966157,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 25609,
+      "max_absolute_error": 0.4296875,
+      "global_cosine": 0.9996552884416403,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 102366,
+      "max_absolute_error": 0.65625,
+      "global_cosine": 0.9998649826228659,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 46372,
+      "max_absolute_error": 0.474609375,
+      "global_cosine": 0.9999399598655835,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 717,
+      "max_absolute_error": 0.3154296875,
+      "global_cosine": 0.9998799109466451,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 59438,
+      "max_absolute_error": 0.01611328125,
+      "global_cosine": 0.9995536506338528,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 32020,
+      "max_absolute_error": 0.037109375,
+      "global_cosine": 0.9995570847381874,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 27686,
+      "max_absolute_error": 0.052734375,
+      "global_cosine": 0.9997884810290754,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 27544,
+      "max_absolute_error": 0.431640625,
+      "global_cosine": 0.9995246106665903,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 34133,
+      "max_absolute_error": 0.01177978515625,
+      "global_cosine": 0.9976196585862868,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 32246,
+      "max_absolute_error": 0.1796875,
+      "global_cosine": 0.9996940289280706,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 5,
+      "max_absolute_error": 0.0234375,
+      "global_cosine": 0.9999966710272269,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 5,
+      "max_absolute_error": 0.0029296875,
+      "global_cosine": 0.9999895922826095,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 33565,
+      "max_absolute_error": 0.0244140625,
+      "global_cosine": 0.9984702735183102,
+      "nonfinite": 0
+    },
+    {
+      "layer": 8,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 30559,
+      "max_absolute_error": 0.033203125,
+      "global_cosine": 0.99973933010638,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 30559,
+      "max_absolute_error": 0.033203125,
+      "global_cosine": 0.99973933010638,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 30367,
+      "max_absolute_error": 0.59375,
+      "global_cosine": 0.9996319118267788,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 122508,
+      "max_absolute_error": 0.4765625,
+      "global_cosine": 0.9998675596646464,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 52725,
+      "max_absolute_error": 0.328125,
+      "global_cosine": 0.9999491415397176,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 876,
+      "max_absolute_error": 0.1875,
+      "global_cosine": 0.9999229317114107,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 70654,
+      "max_absolute_error": 0.0205078125,
+      "global_cosine": 0.9995724824550658,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 35554,
+      "max_absolute_error": 0.01611328125,
+      "global_cosine": 0.9995087222004213,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 32526,
+      "max_absolute_error": 0.0263671875,
+      "global_cosine": 0.9997711118475348,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 32425,
+      "max_absolute_error": 0.40625,
+      "global_cosine": 0.9994953093871853,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 34621,
+      "max_absolute_error": 0.0096435546875,
+      "global_cosine": 0.9989702645219072,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 34574,
+      "max_absolute_error": 0.07421875,
+      "global_cosine": 0.9997423952001707,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 3,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.9999990178793423,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 2,
+      "max_absolute_error": 0.0009765625,
+      "global_cosine": 0.9999988688406746,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 34145,
+      "max_absolute_error": 0.01171875,
+      "global_cosine": 0.9991822649431561,
+      "nonfinite": 0
+    },
+    {
+      "layer": 9,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 32712,
+      "max_absolute_error": 0.02734375,
+      "global_cosine": 0.9997553335273862,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 32712,
+      "max_absolute_error": 0.02734375,
+      "global_cosine": 0.9997553335273862,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 32761,
+      "max_absolute_error": 0.5,
+      "global_cosine": 0.9996970488017997,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 128812,
+      "max_absolute_error": 0.3671875,
+      "global_cosine": 0.9998918953587487,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 53096,
+      "max_absolute_error": 0.2607421875,
+      "global_cosine": 0.999968193665888,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 907,
+      "max_absolute_error": 0.1875,
+      "global_cosine": 0.9999251113265556,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 71159,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999977622189894,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 35683,
+      "max_absolute_error": 0.017578125,
+      "global_cosine": 0.9999968762073086,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 33368,
+      "max_absolute_error": 0.0390625,
+      "global_cosine": 0.9999756701387063,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 33237,
+      "max_absolute_error": 0.318359375,
+      "global_cosine": 0.9995679177448852,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 35486,
+      "max_absolute_error": 0.00733184814453125,
+      "global_cosine": 0.9990795688891696,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 33952,
+      "max_absolute_error": 0.13671875,
+      "global_cosine": 0.9997895967386333,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 4,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999974996420017,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 4,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999964739490602,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 34731,
+      "max_absolute_error": 0.0205078125,
+      "global_cosine": 0.9993714219598675,
+      "nonfinite": 0
+    },
+    {
+      "layer": 10,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 33672,
+      "max_absolute_error": 0.025390625,
+      "global_cosine": 0.9999746725716803,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 33672,
+      "max_absolute_error": 0.025390625,
+      "global_cosine": 0.9999746725716803,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 33668,
+      "max_absolute_error": 0.375,
+      "global_cosine": 0.9998240113986536,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 35787,
+      "max_absolute_error": 0.0318603515625,
+      "global_cosine": 0.9998103203810493,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 34193,
+      "max_absolute_error": 0.04296875,
+      "global_cosine": 0.9999739871404004,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 34097,
+      "max_absolute_error": 0.322265625,
+      "global_cosine": 0.9995685070289335,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 37239,
+      "max_absolute_error": 0.0121307373046875,
+      "global_cosine": 0.9961335703170174,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 36837,
+      "max_absolute_error": 0.140625,
+      "global_cosine": 0.9993233301466183,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.0234375,
+      "global_cosine": 0.9999931728317231,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 8,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999876654793004,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 36921,
+      "max_absolute_error": 0.025390625,
+      "global_cosine": 0.9967536504717622,
+      "nonfinite": 0
+    },
+    {
+      "layer": 11,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 35009,
+      "max_absolute_error": 0.0234375,
+      "global_cosine": 0.9999607732616943,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 35009,
+      "max_absolute_error": 0.0234375,
+      "global_cosine": 0.9999607732616943,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 35130,
+      "max_absolute_error": 0.26953125,
+      "global_cosine": 0.9995531741962912,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 142998,
+      "max_absolute_error": 0.375,
+      "global_cosine": 0.999823706347365,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 58897,
+      "max_absolute_error": 0.193359375,
+      "global_cosine": 0.9999539368739648,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 957,
+      "max_absolute_error": 0.21875,
+      "global_cosine": 0.9998822353762944,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 85182,
+      "max_absolute_error": 0.01806640625,
+      "global_cosine": 0.999134876607325,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 47436,
+      "max_absolute_error": 0.02734375,
+      "global_cosine": 0.9992565500859438,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 39063,
+      "max_absolute_error": 0.03515625,
+      "global_cosine": 0.9999663799659266,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 38840,
+      "max_absolute_error": 0.369140625,
+      "global_cosine": 0.999361095412247,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 52511,
+      "max_absolute_error": 0.010833740234375,
+      "global_cosine": 0.9981068499109287,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 49698,
+      "max_absolute_error": 0.1328125,
+      "global_cosine": 0.9993073369732023,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 7,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999954127326531,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 6,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999864334213135,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 51804,
+      "max_absolute_error": 0.0205078125,
+      "global_cosine": 0.9982165106114772,
+      "nonfinite": 0
+    },
+    {
+      "layer": 12,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 44808,
+      "max_absolute_error": 0.01953125,
+      "global_cosine": 0.9999586306617037,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 44808,
+      "max_absolute_error": 0.01953125,
+      "global_cosine": 0.9999586306617037,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 44738,
+      "max_absolute_error": 0.3125,
+      "global_cosine": 0.9995386100559115,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 188223,
+      "max_absolute_error": 0.3828125,
+      "global_cosine": 0.9998315028256389,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 81669,
+      "max_absolute_error": 0.322265625,
+      "global_cosine": 0.9999544804676124,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1367,
+      "max_absolute_error": 0.25,
+      "global_cosine": 0.9998679604541234,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 106087,
+      "max_absolute_error": 0.03515625,
+      "global_cosine": 0.9991718885921035,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 53822,
+      "max_absolute_error": 0.044921875,
+      "global_cosine": 0.9989152391613657,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 46969,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.999960680738757,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 46746,
+      "max_absolute_error": 0.32421875,
+      "global_cosine": 0.9993315503608095,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 55120,
+      "max_absolute_error": 0.0103759765625,
+      "global_cosine": 0.994378632819194,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 53646,
+      "max_absolute_error": 0.421875,
+      "global_cosine": 0.9989468761920556,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999946450519125,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 8,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999840215916324,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 54534,
+      "max_absolute_error": 0.044921875,
+      "global_cosine": 0.9956516977513677,
+      "nonfinite": 0
+    },
+    {
+      "layer": 13,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 49107,
+      "max_absolute_error": 0.03515625,
+      "global_cosine": 0.9999486172680887,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 49107,
+      "max_absolute_error": 0.03515625,
+      "global_cosine": 0.9999486172680887,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 48879,
+      "max_absolute_error": 0.40625,
+      "global_cosine": 0.9994378201809649,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 199620,
+      "max_absolute_error": 0.375,
+      "global_cosine": 0.9998115537920146,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 81141,
+      "max_absolute_error": 0.265625,
+      "global_cosine": 0.9999449937551379,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1449,
+      "max_absolute_error": 0.2109375,
+      "global_cosine": 0.9998633038099869,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 109738,
+      "max_absolute_error": 0.0830078125,
+      "global_cosine": 0.9987073780508918,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 55478,
+      "max_absolute_error": 0.06640625,
+      "global_cosine": 0.9985304133085552,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 50040,
+      "max_absolute_error": 0.041015625,
+      "global_cosine": 0.9999543601649802,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 49794,
+      "max_absolute_error": 0.3984375,
+      "global_cosine": 0.9991917947157138,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 56237,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9917246819506337,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 53111,
+      "max_absolute_error": 0.26171875,
+      "global_cosine": 0.9994634516988238,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 10,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999923557387473,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 7,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999862575736747,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 55356,
+      "max_absolute_error": 0.0419921875,
+      "global_cosine": 0.9960490188078693,
+      "nonfinite": 0
+    },
+    {
+      "layer": 14,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 51930,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999333046507421,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 51930,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999333046507421,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 51852,
+      "max_absolute_error": 0.375,
+      "global_cosine": 0.9995157765129686,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 57308,
+      "max_absolute_error": 0.0439453125,
+      "global_cosine": 0.9993957476676674,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 53256,
+      "max_absolute_error": 0.052734375,
+      "global_cosine": 0.9999341206254417,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 53038,
+      "max_absolute_error": 0.37890625,
+      "global_cosine": 0.9988235916803209,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 57237,
+      "max_absolute_error": 0.01638031005859375,
+      "global_cosine": 0.9914049214687751,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 56860,
+      "max_absolute_error": 0.36328125,
+      "global_cosine": 0.9981157291208057,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 7,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999898210571864,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 7,
+      "max_absolute_error": 0.0029296875,
+      "global_cosine": 0.9999591232971282,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 57038,
+      "max_absolute_error": 0.037109375,
+      "global_cosine": 0.9925037255991714,
+      "nonfinite": 0
+    },
+    {
+      "layer": 15,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 54094,
+      "max_absolute_error": 0.02734375,
+      "global_cosine": 0.9999101515114298,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 54094,
+      "max_absolute_error": 0.02734375,
+      "global_cosine": 0.9999101515114298,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 54029,
+      "max_absolute_error": 0.46875,
+      "global_cosine": 0.9989955366995699,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 217079,
+      "max_absolute_error": 1.1157684326171875,
+      "global_cosine": 0.9995264890843951,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 93402,
+      "max_absolute_error": 0.38671875,
+      "global_cosine": 0.9999161530145497,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1552,
+      "max_absolute_error": 0.2890625,
+      "global_cosine": 0.9998244200563305,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 116641,
+      "max_absolute_error": 0.087646484375,
+      "global_cosine": 0.997433392194237,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58374,
+      "max_absolute_error": 0.1064453125,
+      "global_cosine": 0.9968147614136851,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 54902,
+      "max_absolute_error": 0.111328125,
+      "global_cosine": 0.9999170729377806,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 54739,
+      "max_absolute_error": 0.453125,
+      "global_cosine": 0.9985195567751227,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 57332,
+      "max_absolute_error": 0.009033203125,
+      "global_cosine": 0.9980246865709547,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 57492,
+      "max_absolute_error": 0.5625,
+      "global_cosine": 0.9985979305489592,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 13,
+      "max_absolute_error": 0.0625,
+      "global_cosine": 0.9999780383971762,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.00537109375,
+      "global_cosine": 0.999937214274095,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 57216,
+      "max_absolute_error": 0.056640625,
+      "global_cosine": 0.998253251088014,
+      "nonfinite": 0
+    },
+    {
+      "layer": 16,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 54987,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9999149806364466,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 54987,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9999149806364466,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 55011,
+      "max_absolute_error": 0.84375,
+      "global_cosine": 0.9990843049844708,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 219805,
+      "max_absolute_error": 0.609375,
+      "global_cosine": 0.9996619027590352,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 94862,
+      "max_absolute_error": 0.4140625,
+      "global_cosine": 0.9999189493144122,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1567,
+      "max_absolute_error": 0.208984375,
+      "global_cosine": 0.9998611641499313,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 116541,
+      "max_absolute_error": 0.03466796875,
+      "global_cosine": 0.9982173702619067,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58397,
+      "max_absolute_error": 0.025360107421875,
+      "global_cosine": 0.9979452743852526,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 55279,
+      "max_absolute_error": 0.08984375,
+      "global_cosine": 0.9999258581520974,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 55269,
+      "max_absolute_error": 0.46484375,
+      "global_cosine": 0.9987245123867968,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58188,
+      "max_absolute_error": 0.014404296875,
+      "global_cosine": 0.9926756551755067,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 57627,
+      "max_absolute_error": 0.40625,
+      "global_cosine": 0.9976731338874676,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9999858861344653,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.00439453125,
+      "global_cosine": 0.9999517519379166,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 57945,
+      "max_absolute_error": 0.030029296875,
+      "global_cosine": 0.9933901001588357,
+      "nonfinite": 0
+    },
+    {
+      "layer": 17,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 55885,
+      "max_absolute_error": 0.0693359375,
+      "global_cosine": 0.9999026042274899,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 55885,
+      "max_absolute_error": 0.0693359375,
+      "global_cosine": 0.9999026042274899,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 55897,
+      "max_absolute_error": 0.859375,
+      "global_cosine": 0.9990356346794468,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 222403,
+      "max_absolute_error": 0.6875,
+      "global_cosine": 0.9995756516394142,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 97580,
+      "max_absolute_error": 0.296875,
+      "global_cosine": 0.9998989914921167,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1650,
+      "max_absolute_error": 0.24609375,
+      "global_cosine": 0.999652035367953,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 117396,
+      "max_absolute_error": 0.083984375,
+      "global_cosine": 0.998275824428875,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58429,
+      "max_absolute_error": 0.072265625,
+      "global_cosine": 0.9983339103328446,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 56115,
+      "max_absolute_error": 0.130859375,
+      "global_cosine": 0.9999049572192429,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 56060,
+      "max_absolute_error": 0.5546875,
+      "global_cosine": 0.9985688609243658,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58578,
+      "max_absolute_error": 0.0115814208984375,
+      "global_cosine": 0.9885670199619079,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 56031,
+      "max_absolute_error": 0.537841796875,
+      "global_cosine": 0.9991545928693538,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 12,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9999799081282593,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 12,
+      "max_absolute_error": 0.00341796875,
+      "global_cosine": 0.9999469746569821,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58032,
+      "max_absolute_error": 0.05029296875,
+      "global_cosine": 0.9941297808726105,
+      "nonfinite": 0
+    },
+    {
+      "layer": 18,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 56647,
+      "max_absolute_error": 0.08203125,
+      "global_cosine": 0.9998829916159571,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 56647,
+      "max_absolute_error": 0.08203125,
+      "global_cosine": 0.9998829916159571,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 56621,
+      "max_absolute_error": 0.78125,
+      "global_cosine": 0.9993031054797509,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 57998,
+      "max_absolute_error": 0.0361328125,
+      "global_cosine": 0.9990678639469119,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 56816,
+      "max_absolute_error": 0.12109375,
+      "global_cosine": 0.9998801864313946,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 56895,
+      "max_absolute_error": 0.47265625,
+      "global_cosine": 0.9983630976520731,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58804,
+      "max_absolute_error": 0.016326904296875,
+      "global_cosine": 0.9920124630065231,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 57970,
+      "max_absolute_error": 1.0234375,
+      "global_cosine": 0.9954487030217144,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9999858813390353,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999210909168563,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58590,
+      "max_absolute_error": 0.08349609375,
+      "global_cosine": 0.9926459218830542,
+      "nonfinite": 0
+    },
+    {
+      "layer": 19,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 57102,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9998531095411916,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 57102,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9998531095411916,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 56998,
+      "max_absolute_error": 0.75,
+      "global_cosine": 0.9989875282377856,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 221810,
+      "max_absolute_error": 0.53125,
+      "global_cosine": 0.9996069838088335,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104231,
+      "max_absolute_error": 0.32421875,
+      "global_cosine": 0.9998475711613037,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1678,
+      "max_absolute_error": 0.279296875,
+      "global_cosine": 0.9997093863807439,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 116577,
+      "max_absolute_error": 0.037353515625,
+      "global_cosine": 0.9980999166349531,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58659,
+      "max_absolute_error": 0.052734375,
+      "global_cosine": 0.9978679393860368,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 57358,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9998617064993359,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 57346,
+      "max_absolute_error": 0.5576171875,
+      "global_cosine": 0.9982455140654967,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59119,
+      "max_absolute_error": 0.02056884765625,
+      "global_cosine": 0.9834267119120895,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58326,
+      "max_absolute_error": 0.400390625,
+      "global_cosine": 0.9975970883873605,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 23,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999815298091831,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 23,
+      "max_absolute_error": 0.0048828125,
+      "global_cosine": 0.9999535694119005,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58842,
+      "max_absolute_error": 0.057373046875,
+      "global_cosine": 0.9879185974089656,
+      "nonfinite": 0
+    },
+    {
+      "layer": 20,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 57569,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9998165556766305,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 57569,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9998165556766305,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 57505,
+      "max_absolute_error": 0.6875,
+      "global_cosine": 0.9987284385200069,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 225638,
+      "max_absolute_error": 0.5625,
+      "global_cosine": 0.999531931706304,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 103602,
+      "max_absolute_error": 0.4375,
+      "global_cosine": 0.999850002735641,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1712,
+      "max_absolute_error": 0.380859375,
+      "global_cosine": 0.9996406248796263,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 118056,
+      "max_absolute_error": 0.04248046875,
+      "global_cosine": 0.9981786621257122,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59022,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9974778722376317,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 57705,
+      "max_absolute_error": 0.109375,
+      "global_cosine": 0.9998300143024504,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 57834,
+      "max_absolute_error": 0.5166015625,
+      "global_cosine": 0.9979661660642279,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58843,
+      "max_absolute_error": 0.01812744140625,
+      "global_cosine": 0.9926635165331203,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58496,
+      "max_absolute_error": 0.25,
+      "global_cosine": 0.9988217596492607,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 18,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.999988186227389,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 18,
+      "max_absolute_error": 0.0029296875,
+      "global_cosine": 0.9999763866829856,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58572,
+      "max_absolute_error": 0.03515625,
+      "global_cosine": 0.994357228842974,
+      "nonfinite": 0
+    },
+    {
+      "layer": 21,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 57641,
+      "max_absolute_error": 0.078125,
+      "global_cosine": 0.9997938540333298,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 57641,
+      "max_absolute_error": 0.078125,
+      "global_cosine": 0.9997938540333298,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 57715,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.9988447864703587,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 226497,
+      "max_absolute_error": 0.4921875,
+      "global_cosine": 0.9995521317540035,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 101008,
+      "max_absolute_error": 0.3984375,
+      "global_cosine": 0.9998824079752553,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1736,
+      "max_absolute_error": 0.203125,
+      "global_cosine": 0.9996977976689291,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 117441,
+      "max_absolute_error": 0.038330078125,
+      "global_cosine": 0.9984400897581752,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58851,
+      "max_absolute_error": 0.06640625,
+      "global_cosine": 0.9981255060337294,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 57941,
+      "max_absolute_error": 0.078125,
+      "global_cosine": 0.9998166796683546,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 57990,
+      "max_absolute_error": 0.517333984375,
+      "global_cosine": 0.9980500314437355,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59129,
+      "max_absolute_error": 0.0126953125,
+      "global_cosine": 0.9950287642602845,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 57720,
+      "max_absolute_error": 0.171875,
+      "global_cosine": 0.999310726285922,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 12,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999903596108635,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 10,
+      "max_absolute_error": 0.0029296875,
+      "global_cosine": 0.9999894846554961,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58620,
+      "max_absolute_error": 0.037109375,
+      "global_cosine": 0.9970485306397971,
+      "nonfinite": 0
+    },
+    {
+      "layer": 22,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58040,
+      "max_absolute_error": 0.0625,
+      "global_cosine": 0.9998023542163755,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58040,
+      "max_absolute_error": 0.0625,
+      "global_cosine": 0.9998023542163755,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58103,
+      "max_absolute_error": 0.5,
+      "global_cosine": 0.9992847837546963,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58453,
+      "max_absolute_error": 0.03564453125,
+      "global_cosine": 0.9993166329807897,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58245,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9997979228746677,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58298,
+      "max_absolute_error": 0.5390625,
+      "global_cosine": 0.9981019992972706,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59090,
+      "max_absolute_error": 0.01544189453125,
+      "global_cosine": 0.9943076648808198,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58973,
+      "max_absolute_error": 0.17578125,
+      "global_cosine": 0.9975266218308741,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 18,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999819329293416,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 16,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999707452175216,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58881,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.9950999451736007,
+      "nonfinite": 0
+    },
+    {
+      "layer": 23,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58236,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.999787090497687,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58236,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.999787090497687,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58478,
+      "max_absolute_error": 0.4375,
+      "global_cosine": 0.9988076022430361,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 229409,
+      "max_absolute_error": 0.8125,
+      "global_cosine": 0.999492545462008,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 101756,
+      "max_absolute_error": 0.3309326171875,
+      "global_cosine": 0.9998895036164887,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1678,
+      "max_absolute_error": 0.25,
+      "global_cosine": 0.9997486371661893,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 119090,
+      "max_absolute_error": 0.01806640625,
+      "global_cosine": 0.9974614550852873,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59603,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9971622527384757,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58303,
+      "max_absolute_error": 0.05859375,
+      "global_cosine": 0.999807806861305,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58486,
+      "max_absolute_error": 0.52734375,
+      "global_cosine": 0.9980438893197476,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59020,
+      "max_absolute_error": 0.01275634765625,
+      "global_cosine": 0.9973636489676184,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 59251,
+      "max_absolute_error": 0.095703125,
+      "global_cosine": 0.9972839415064526,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 20,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999881141376759,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 19,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999749174294431,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58899,
+      "max_absolute_error": 0.0166015625,
+      "global_cosine": 0.997344434470619,
+      "nonfinite": 0
+    },
+    {
+      "layer": 24,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58185,
+      "max_absolute_error": 0.05078125,
+      "global_cosine": 0.999800684495548,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58185,
+      "max_absolute_error": 0.05078125,
+      "global_cosine": 0.999800684495548,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58330,
+      "max_absolute_error": 0.4375,
+      "global_cosine": 0.99884103516845,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 229156,
+      "max_absolute_error": 0.484375,
+      "global_cosine": 0.9995453736463341,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104881,
+      "max_absolute_error": 0.462890625,
+      "global_cosine": 0.9998999635534569,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1728,
+      "max_absolute_error": 0.27587890625,
+      "global_cosine": 0.9997245944172028,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 119006,
+      "max_absolute_error": 0.0244140625,
+      "global_cosine": 0.9985167335897026,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59272,
+      "max_absolute_error": 0.029296875,
+      "global_cosine": 0.9983041894357415,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58259,
+      "max_absolute_error": 0.0703125,
+      "global_cosine": 0.9998072448836585,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58344,
+      "max_absolute_error": 0.541015625,
+      "global_cosine": 0.9982182420484174,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59477,
+      "max_absolute_error": 0.02032470703125,
+      "global_cosine": 0.9864893055442931,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 59163,
+      "max_absolute_error": 0.1875,
+      "global_cosine": 0.9983570631877563,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 16,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.99999212454094,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 14,
+      "max_absolute_error": 0.0029296875,
+      "global_cosine": 0.9999822242667452,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 59307,
+      "max_absolute_error": 0.037109375,
+      "global_cosine": 0.9901952294867687,
+      "nonfinite": 0
+    },
+    {
+      "layer": 25,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58543,
+      "max_absolute_error": 0.05078125,
+      "global_cosine": 0.9997701104469154,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58543,
+      "max_absolute_error": 0.05078125,
+      "global_cosine": 0.9997701104469154,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58659,
+      "max_absolute_error": 0.4453125,
+      "global_cosine": 0.9987836771278042,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 230470,
+      "max_absolute_error": 0.505859375,
+      "global_cosine": 0.9995559625854082,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 103172,
+      "max_absolute_error": 0.3388671875,
+      "global_cosine": 0.9998685732906877,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1772,
+      "max_absolute_error": 0.2421875,
+      "global_cosine": 0.9996472046371432,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 119075,
+      "max_absolute_error": 0.091796875,
+      "global_cosine": 0.9976609577157755,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59483,
+      "max_absolute_error": 0.06640625,
+      "global_cosine": 0.9974981510833082,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58680,
+      "max_absolute_error": 0.0859375,
+      "global_cosine": 0.9997889975749482,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58770,
+      "max_absolute_error": 0.58544921875,
+      "global_cosine": 0.9980453401028294,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59455,
+      "max_absolute_error": 0.014556884765625,
+      "global_cosine": 0.991466967797069,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58233,
+      "max_absolute_error": 0.3203125,
+      "global_cosine": 0.999319108181652,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 16,
+      "max_absolute_error": 0.0234375,
+      "global_cosine": 0.9999850249083211,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 16,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999711611192386,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58982,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.9963444930218858,
+      "nonfinite": 0
+    },
+    {
+      "layer": 26,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58598,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.9997702931768733,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58598,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.9997702931768733,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58707,
+      "max_absolute_error": 0.40625,
+      "global_cosine": 0.9991834168961025,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58746,
+      "max_absolute_error": 0.052734375,
+      "global_cosine": 0.9992468536411241,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58722,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9997743312841523,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58768,
+      "max_absolute_error": 0.50146484375,
+      "global_cosine": 0.998045915827787,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59204,
+      "max_absolute_error": 0.02044677734375,
+      "global_cosine": 0.9949812983640525,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 59153,
+      "max_absolute_error": 0.484375,
+      "global_cosine": 0.9979415330561863,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999921216363519,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999736972329774,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 59164,
+      "max_absolute_error": 0.05078125,
+      "global_cosine": 0.9952534955401487,
+      "nonfinite": 0
+    },
+    {
+      "layer": 27,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58525,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9997264286333615,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58525,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9997264286333615,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58734,
+      "max_absolute_error": 0.66015625,
+      "global_cosine": 0.9988143574958283,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 230985,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.9994367098759808,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104879,
+      "max_absolute_error": 0.52734375,
+      "global_cosine": 0.9998783853562124,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1764,
+      "max_absolute_error": 0.287109375,
+      "global_cosine": 0.9995785660541815,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 119363,
+      "max_absolute_error": 0.08544921875,
+      "global_cosine": 0.9982109169777447,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59397,
+      "max_absolute_error": 0.044921875,
+      "global_cosine": 0.997897115920523,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58692,
+      "max_absolute_error": 0.1171875,
+      "global_cosine": 0.9997530416709206,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58803,
+      "max_absolute_error": 0.548828125,
+      "global_cosine": 0.9981144793932162,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59469,
+      "max_absolute_error": 0.02734375,
+      "global_cosine": 0.9938179568121686,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58956,
+      "max_absolute_error": 0.5625,
+      "global_cosine": 0.998535502809747,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 17,
+      "max_absolute_error": 0.0234375,
+      "global_cosine": 0.9999906202530212,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 17,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999743567055185,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 59264,
+      "max_absolute_error": 0.0546875,
+      "global_cosine": 0.9948893486603333,
+      "nonfinite": 0
+    },
+    {
+      "layer": 28,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58746,
+      "max_absolute_error": 0.1171875,
+      "global_cosine": 0.9997017492639668,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58746,
+      "max_absolute_error": 0.1171875,
+      "global_cosine": 0.9997017492639668,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58829,
+      "max_absolute_error": 0.75,
+      "global_cosine": 0.9989749575771041,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 230912,
+      "max_absolute_error": 0.5625,
+      "global_cosine": 0.9996057743952392,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104795,
+      "max_absolute_error": 0.34375,
+      "global_cosine": 0.9998781529843395,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1745,
+      "max_absolute_error": 0.25390625,
+      "global_cosine": 0.9997512480583027,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 119322,
+      "max_absolute_error": 0.05596923828125,
+      "global_cosine": 0.9977934145065634,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59552,
+      "max_absolute_error": 0.060546875,
+      "global_cosine": 0.9972350345976176,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58753,
+      "max_absolute_error": 0.1796875,
+      "global_cosine": 0.9997321372586581,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58786,
+      "max_absolute_error": 0.48046875,
+      "global_cosine": 0.9982967979305931,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59271,
+      "max_absolute_error": 0.016876220703125,
+      "global_cosine": 0.995363977711681,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 59103,
+      "max_absolute_error": 0.515625,
+      "global_cosine": 0.9973775203230621,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 10,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9999824082759124,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 8,
+      "max_absolute_error": 0.00439453125,
+      "global_cosine": 0.9999557278659966,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 59071,
+      "max_absolute_error": 0.044921875,
+      "global_cosine": 0.9957579444249012,
+      "nonfinite": 0
+    },
+    {
+      "layer": 29,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58682,
+      "max_absolute_error": 0.140625,
+      "global_cosine": 0.9997119490337395,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58682,
+      "max_absolute_error": 0.140625,
+      "global_cosine": 0.9997119490337395,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58784,
+      "max_absolute_error": 0.75,
+      "global_cosine": 0.9990629226088342,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 230253,
+      "max_absolute_error": 0.57080078125,
+      "global_cosine": 0.9995807106728035,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104249,
+      "max_absolute_error": 0.328125,
+      "global_cosine": 0.9998930857111618,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1726,
+      "max_absolute_error": 0.25244140625,
+      "global_cosine": 0.9996506889142527,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 118911,
+      "max_absolute_error": 0.04229736328125,
+      "global_cosine": 0.9984328847075139,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59381,
+      "max_absolute_error": 0.0849609375,
+      "global_cosine": 0.9981519069798933,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58814,
+      "max_absolute_error": 0.15625,
+      "global_cosine": 0.9997287839476634,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58808,
+      "max_absolute_error": 0.46875,
+      "global_cosine": 0.9984586295464737,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59481,
+      "max_absolute_error": 0.02117919921875,
+      "global_cosine": 0.9905357443135221,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58566,
+      "max_absolute_error": 0.59130859375,
+      "global_cosine": 0.9985711313680466,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 13,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999894169438514,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 10,
+      "max_absolute_error": 0.00244140625,
+      "global_cosine": 0.999977708068283,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58989,
+      "max_absolute_error": 0.08203125,
+      "global_cosine": 0.9942953980828573,
+      "nonfinite": 0
+    },
+    {
+      "layer": 30,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58777,
+      "max_absolute_error": 0.1015625,
+      "global_cosine": 0.9996902189167909,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58777,
+      "max_absolute_error": 0.1015625,
+      "global_cosine": 0.9996902189167909,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58783,
+      "max_absolute_error": 0.5,
+      "global_cosine": 0.9992911611008019,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58891,
+      "max_absolute_error": 0.04296875,
+      "global_cosine": 0.9999854750480043,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58766,
+      "max_absolute_error": 0.1328125,
+      "global_cosine": 0.9989098366946986,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58856,
+      "max_absolute_error": 0.5625,
+      "global_cosine": 0.998325911023375,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59097,
+      "max_absolute_error": 0.02862548828125,
+      "global_cosine": 0.9961164902133228,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58596,
+      "max_absolute_error": 0.40625,
+      "global_cosine": 0.9992316307573358,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999898203762664,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.00244140625,
+      "global_cosine": 0.9999672220319502,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58797,
+      "max_absolute_error": 0.041015625,
+      "global_cosine": 0.9972883033781176,
+      "nonfinite": 0
+    },
+    {
+      "layer": 31,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58578,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9988754586269376,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58578,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9988754586269376,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58799,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.999091415392191,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 229255,
+      "max_absolute_error": 0.53955078125,
+      "global_cosine": 0.9996743300450213,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104653,
+      "max_absolute_error": 0.349609375,
+      "global_cosine": 0.9998741797978293,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1721,
+      "max_absolute_error": 0.234375,
+      "global_cosine": 0.9996980110509938,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 119025,
+      "max_absolute_error": 0.0859375,
+      "global_cosine": 0.9986571687986189,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 59149,
+      "max_absolute_error": 0.09765625,
+      "global_cosine": 0.9983706047494378,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58735,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9990376557790506,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58761,
+      "max_absolute_error": 0.5390625,
+      "global_cosine": 0.998609779122984,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58441,
+      "max_absolute_error": 0.033172607421875,
+      "global_cosine": 0.9963164212009716,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58387,
+      "max_absolute_error": 0.421875,
+      "global_cosine": 0.9987462713892818,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 13,
+      "max_absolute_error": 0.0390625,
+      "global_cosine": 0.9999846050500448,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 10,
+      "max_absolute_error": 0.0048828125,
+      "global_cosine": 0.9999751971581868,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58180,
+      "max_absolute_error": 0.087890625,
+      "global_cosine": 0.9967430203121642,
+      "nonfinite": 0
+    },
+    {
+      "layer": 32,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58379,
+      "max_absolute_error": 0.109375,
+      "global_cosine": 0.9989495228864668,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58379,
+      "max_absolute_error": 0.109375,
+      "global_cosine": 0.9989495228864668,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58532,
+      "max_absolute_error": 0.65625,
+      "global_cosine": 0.9990901188054894,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 228760,
+      "max_absolute_error": 0.546875,
+      "global_cosine": 0.9996600024267298,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 105369,
+      "max_absolute_error": 0.34765625,
+      "global_cosine": 0.999847764169887,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1760,
+      "max_absolute_error": 0.28125,
+      "global_cosine": 0.9997647125283319,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 118669,
+      "max_absolute_error": 0.1484375,
+      "global_cosine": 0.9995774404282315,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58891,
+      "max_absolute_error": 0.0625,
+      "global_cosine": 0.9987621886500182,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58470,
+      "max_absolute_error": 0.109375,
+      "global_cosine": 0.9990880507289089,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58427,
+      "max_absolute_error": 0.640625,
+      "global_cosine": 0.9987640294823906,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59095,
+      "max_absolute_error": 0.06396484375,
+      "global_cosine": 0.9955992531048594,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58414,
+      "max_absolute_error": 0.515625,
+      "global_cosine": 0.9988110768384612,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 8,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999863886131543,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 8,
+      "max_absolute_error": 0.00341796875,
+      "global_cosine": 0.9999415548161713,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58754,
+      "max_absolute_error": 0.0625,
+      "global_cosine": 0.9962668749750314,
+      "nonfinite": 0
+    },
+    {
+      "layer": 33,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58371,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9989931851171785,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58371,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9989931851171785,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58592,
+      "max_absolute_error": 0.75,
+      "global_cosine": 0.999142134176845,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 228013,
+      "max_absolute_error": 0.828125,
+      "global_cosine": 0.9996510834807866,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 103255,
+      "max_absolute_error": 0.53515625,
+      "global_cosine": 0.9998759401697221,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1721,
+      "max_absolute_error": 0.2578125,
+      "global_cosine": 0.9997539540823797,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 117631,
+      "max_absolute_error": 0.14337158203125,
+      "global_cosine": 0.9986773239755365,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58962,
+      "max_absolute_error": 0.1142578125,
+      "global_cosine": 0.9985254938105785,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58320,
+      "max_absolute_error": 0.203125,
+      "global_cosine": 0.9991195507667582,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58533,
+      "max_absolute_error": 0.5703125,
+      "global_cosine": 0.9987562045998988,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59082,
+      "max_absolute_error": 0.076171875,
+      "global_cosine": 0.9932485922516658,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58298,
+      "max_absolute_error": 1.75,
+      "global_cosine": 0.9993230896415098,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 10,
+      "max_absolute_error": 0.046875,
+      "global_cosine": 0.9999823026379812,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.00390625,
+      "global_cosine": 0.9999542140781186,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58476,
+      "max_absolute_error": 0.2265625,
+      "global_cosine": 0.997452905077668,
+      "nonfinite": 0
+    },
+    {
+      "layer": 34,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58395,
+      "max_absolute_error": 0.203125,
+      "global_cosine": 0.9991296588077863,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58395,
+      "max_absolute_error": 0.203125,
+      "global_cosine": 0.9991296588077863,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58578,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.9992997438474103,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58669,
+      "max_absolute_error": 0.1640625,
+      "global_cosine": 0.9989942316562602,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58537,
+      "max_absolute_error": 0.171875,
+      "global_cosine": 0.9988945107519096,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58810,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.9984549335371002,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59107,
+      "max_absolute_error": 0.035400390625,
+      "global_cosine": 0.9961811596825153,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 58707,
+      "max_absolute_error": 1.09375,
+      "global_cosine": 0.9989351794222353,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9999853807676136,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.00341796875,
+      "global_cosine": 0.9999306904021349,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58796,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.997151762113387,
+      "nonfinite": 0
+    },
+    {
+      "layer": 35,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58648,
+      "max_absolute_error": 0.15625,
+      "global_cosine": 0.9989003363270041,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58648,
+      "max_absolute_error": 0.15625,
+      "global_cosine": 0.9989003363270041,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58761,
+      "max_absolute_error": 0.59375,
+      "global_cosine": 0.9991119560013558,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 223163,
+      "max_absolute_error": 1.0,
+      "global_cosine": 0.999784163915175,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 106342,
+      "max_absolute_error": 0.515625,
+      "global_cosine": 0.9998160249156727,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1724,
+      "max_absolute_error": 0.296875,
+      "global_cosine": 0.9996768741261121,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 116047,
+      "max_absolute_error": 0.087890625,
+      "global_cosine": 0.9994497488441172,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58767,
+      "max_absolute_error": 0.1396484375,
+      "global_cosine": 0.9987574793375178,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58525,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9990317659145976,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58774,
+      "max_absolute_error": 0.5859375,
+      "global_cosine": 0.9985775208228675,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59198,
+      "max_absolute_error": 0.043701171875,
+      "global_cosine": 0.9953798581666133,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 57914,
+      "max_absolute_error": 0.765625,
+      "global_cosine": 0.9992111901021354,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 17,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999924131764549,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 15,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999754675566186,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58662,
+      "max_absolute_error": 0.107421875,
+      "global_cosine": 0.9966165628080788,
+      "nonfinite": 0
+    },
+    {
+      "layer": 36,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58506,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9989312549604712,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58506,
+      "max_absolute_error": 0.09375,
+      "global_cosine": 0.9989312549604712,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58758,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.9991381224706413,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 220982,
+      "max_absolute_error": 1.1875,
+      "global_cosine": 0.9998137900596922,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 104212,
+      "max_absolute_error": 0.875,
+      "global_cosine": 0.9998462854203735,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1694,
+      "max_absolute_error": 0.3359375,
+      "global_cosine": 0.9997765398702416,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 115364,
+      "max_absolute_error": 0.12109375,
+      "global_cosine": 0.999468472209375,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58328,
+      "max_absolute_error": 0.15625,
+      "global_cosine": 0.9992429144043969,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58458,
+      "max_absolute_error": 0.15625,
+      "global_cosine": 0.9991471850350881,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58685,
+      "max_absolute_error": 0.61328125,
+      "global_cosine": 0.9986911820458486,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 59060,
+      "max_absolute_error": 0.06451416015625,
+      "global_cosine": 0.9954334925653848,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 57582,
+      "max_absolute_error": 0.515625,
+      "global_cosine": 0.9992463188252534,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 12,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999933270944296,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 11,
+      "max_absolute_error": 0.0029296875,
+      "global_cosine": 0.999978156462215,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 58525,
+      "max_absolute_error": 0.09765625,
+      "global_cosine": 0.9964825562383447,
+      "nonfinite": 0
+    },
+    {
+      "layer": 37,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58342,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9989769908013743,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58342,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9989769908013743,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58708,
+      "max_absolute_error": 0.5625,
+      "global_cosine": 0.9991306752169061,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "delta_qkv",
+      "values": 262144,
+      "bitwise_unequal": 221244,
+      "max_absolute_error": 1.75,
+      "global_cosine": 0.999823580793453,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "delta_z",
+      "values": 131072,
+      "bitwise_unequal": 101002,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.999883269702287,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "delta_ab",
+      "values": 2048,
+      "bitwise_unequal": 1702,
+      "max_absolute_error": 0.3125,
+      "global_cosine": 0.9997929650920865,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "delta_core",
+      "values": 131072,
+      "bitwise_unequal": 115104,
+      "max_absolute_error": 0.265625,
+      "global_cosine": 0.9991659095478556,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 58514,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9993026078610144,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58338,
+      "max_absolute_error": 0.125,
+      "global_cosine": 0.9992267071184237,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58692,
+      "max_absolute_error": 0.58984375,
+      "global_cosine": 0.9988784989757772,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58891,
+      "max_absolute_error": 0.140625,
+      "global_cosine": 0.9956890502480413,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 56889,
+      "max_absolute_error": 1.375,
+      "global_cosine": 0.9997094654719776,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 13,
+      "max_absolute_error": 0.015625,
+      "global_cosine": 0.9999925694847793,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.001953125,
+      "global_cosine": 0.9999844239349406,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 57690,
+      "max_absolute_error": 0.1875,
+      "global_cosine": 0.9985648650703655,
+      "nonfinite": 0
+    },
+    {
+      "layer": 38,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 58287,
+      "max_absolute_error": 0.25,
+      "global_cosine": 0.9993179290822478,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "input",
+      "values": 65536,
+      "bitwise_unequal": 58287,
+      "max_absolute_error": 0.25,
+      "global_cosine": 0.9993179290822478,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "input_norm",
+      "values": 65536,
+      "bitwise_unequal": 58423,
+      "max_absolute_error": 0.625,
+      "global_cosine": 0.9994213181013877,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "attention",
+      "values": 65536,
+      "bitwise_unequal": 57315,
+      "max_absolute_error": 0.234375,
+      "global_cosine": 0.9995844118163587,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "residual",
+      "values": 65536,
+      "bitwise_unequal": 58238,
+      "max_absolute_error": 0.46875,
+      "global_cosine": 0.9991811000570958,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "post_norm",
+      "values": 65536,
+      "bitwise_unequal": 58531,
+      "max_absolute_error": 1.25,
+      "global_cosine": 0.9988862226652139,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "routed",
+      "values": 65536,
+      "bitwise_unequal": 58087,
+      "max_absolute_error": 0.173583984375,
+      "global_cosine": 0.9984222364684285,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "shared",
+      "values": 65536,
+      "bitwise_unequal": 54390,
+      "max_absolute_error": 0.59375,
+      "global_cosine": 0.9998777360246084,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "shared_logits",
+      "values": 32,
+      "bitwise_unequal": 29,
+      "max_absolute_error": 0.03125,
+      "global_cosine": 0.9994725549544575,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "shared_sigmoid",
+      "values": 32,
+      "bitwise_unequal": 9,
+      "max_absolute_error": 0.0078125,
+      "global_cosine": 0.999985863134662,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "mlp",
+      "values": 65536,
+      "bitwise_unequal": 55110,
+      "max_absolute_error": 0.296875,
+      "global_cosine": 0.9997570616229506,
+      "nonfinite": 0
+    },
+    {
+      "layer": 39,
+      "stage": "output",
+      "values": 65536,
+      "bitwise_unequal": 56995,
+      "max_absolute_error": 0.6875,
+      "global_cosine": 0.9996226986174483,
+      "nonfinite": 0
+    }
+  ],
+  "first_divergence_explanation": "Exact original Delta FMA policy plus exact original sigmoid makes all stages of layers0,1,2 bitwiseCandle. First remaining divergence is fullattention layer3 (525BF16 outputvalues); fullmodel still fails. No promotion.",
+  "isolated_delta_same_learned_operand_oracle": {
+    "learned_operand_bitwise_mismatch_count": 0,
+    "max_absolute_error": 0.0,
+    "source_sha256": "a069d25a0451e22da2a8240c15dabf9c8fb718d5150555f2529dfa0d3f8dbe0c",
+    "library_sha256": "d13f18a2e997977f944542084c0fe1d90d572387a0f6c9c2218d7cfc85377f8f",
+    "no_python_model_inference": true
+  }
+}

@@ -1,6 +1,6 @@
 // Native Torch pinned Flash source; vendor/torch_flash_attention retains
 // its complete BSD-3-Clause license and AUTHORS notices.
-// Proven SM90 BF16 noncausal global specialization for actual head width512.
+// Proven SM90 BF16 global causal/noncausal specialization for actual head width512.
 #ifdef UNFUSE_FMA
 #undef UNFUSE_FMA
 #endif
@@ -12,6 +12,7 @@ void launch_512(Flash_fwd_params& params,cudaStream_t stream) {
   static_assert(Traits::kSmemSize==128*1024,"Wide-head architecture guard must match actual shared memory");
   // No token or head-dimension padding; batch/sequence strides are supplied by
   // the existing packed adapter and the kernel masks true cumulative lengths.
-  run_flash_fwd<Traits,false,false>(params,stream);
+  if(params.is_causal)run_flash_fwd<Traits,false,true>(params,stream);
+  else run_flash_fwd<Traits,false,false>(params,stream);
 }
 }

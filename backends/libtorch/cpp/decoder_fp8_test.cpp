@@ -3,6 +3,12 @@
 // it does not qualify trained task accuracy or serving performance.
 #include "decoder_models.h"
 #include "radix.h"
+#include "fast_kernels.h"
+#include "decoder_norm.h"
+#include "torch_flash_fma.h"
+#include "fp8_linear.h"
+#include "fp8_reference_test.h"
+#include <cmath>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
@@ -92,6 +98,73 @@ void check_family(const std::string& family,c10::Device device,at::ScalarType dt
     "FP8 fixture did not consume changed suffix IDs");
   std::cout<<family<<" FP8 actual7/compact5, isolation, weight ownership passed\n";
 }
+// This exercises the registered BF16 width2048 causal contract, rather than
+// reproducing a particular checkpoint's layer count, vocabulary or MLP width.
+// The FP8 projection oracle translates the original Candle cuBLASLt recipe;
+// norm/rotary/attention primitives have independent exact-reference tests.
+void check_registered_causal_contract(c10::Device device) {
+  constexpr int64_t hidden=2048,heads=32,kvheads=4,head=64,intermediate=64;
+  tei::Options options=config("llama");
+  options.values["hidden_size"]="2048";options.values["num_attention_heads"]="32";
+  options.values["num_key_value_heads"]="4";options.values["head_dim"]="64";
+  options.values["intermediate_size"]="64";options.values["num_hidden_layers"]="1";
+  options.values["rms_norm_eps"]="0.00001";
+  tei::Weights checkpoint;
+  auto add=[&](const std::string& name,std::initializer_list<int64_t> shape,bool norm=false) {
+    int64_t count=1;float offset=0;for(auto n:shape)count*=n;for(auto c:name)offset+=c;
+    auto values=at::sin(at::arange(count,at::TensorOptions().dtype(at::kFloat))*.131+offset*.019)*.021;
+    if(norm)values=1+values;
+    checkpoint[name]=values.view(at::IntArrayRef(shape)).to(device,at::kBFloat16);
+  };
+  add("model.embed_tokens.weight",{32,hidden});add("model.norm.weight",{hidden},true);
+  const std::string p="model.layers.0.";
+  add(p+"input_layernorm.weight",{hidden},true);add(p+"post_attention_layernorm.weight",{hidden},true);
+  add(p+"self_attn.q_proj.weight",{heads*head,hidden});
+  add(p+"self_attn.k_proj.weight",{kvheads*head,hidden});
+  add(p+"self_attn.v_proj.weight",{kvheads*head,hidden});
+  add(p+"self_attn.o_proj.weight",{hidden,heads*head});
+  add(p+"mlp.gate_proj.weight",{intermediate,hidden});
+  add(p+"mlp.up_proj.weight",{intermediate,hidden});
+  add(p+"mlp.down_proj.weight",{hidden,intermediate});
+  std::vector<int32_t> offsets={0,9,17};
+  auto index=at::TensorOptions().device(device).dtype(at::kLong);
+  tei::PackedInput input{at::tensor({1,2,3,4,5,6,7,8,9,1,2,3,10,11,12,13,14},index),
+    at::zeros({17},index),at::tensor({0,1,2,3,4,5,6,7,8,0,1,2,3,4,5,6,7},index),
+    at::tensor({0,9,17},index.dtype(at::kInt)),offsets.data(),2,9};
+  auto embedding=at::embedding(checkpoint.at("model.embed_tokens.weight"),input.ids);
+  auto first=tei::decoder_exact_rms_norm(embedding,{},checkpoint.at(p+"input_layernorm.weight"),1e-5);
+  auto qkv_weight=at::cat({checkpoint.at(p+"self_attn.q_proj.weight"),
+    checkpoint.at(p+"self_attn.k_proj.weight"),checkpoint.at(p+"self_attn.v_proj.weight")},0);
+  auto packed=at::linear(first.first,qkv_weight).view({17,heads+2*kvheads,head});
+  std::vector<float> inverse(head/2);
+  for(int64_t i=0;i<head/2;++i)inverse[i]=1.f/std::pow(10000.f,float(2*i)/head);
+  auto frequency=at::from_blob(inverse.data(),{head/2},at::TensorOptions().dtype(at::kFloat)).clone().to(device);
+  auto angles=input.positions.to(at::kFloat).unsqueeze(1)*frequency;
+  auto rotated=tei::fused_rotary(packed.narrow(1,0,heads),packed.narrow(1,heads,kvheads),
+    at::cos(angles).to(at::kBFloat16).unsqueeze(1),at::sin(angles).to(at::kBFloat16).unsqueeze(1),true);
+  auto attended=tei::torch_flash_fma(rotated.first,rotated.second,packed.narrow(1,heads+kvheads,kvheads),
+    input.cumulative,9,.125,true).contiguous().view({17,heads*head});
+  auto projected=at::linear(attended,checkpoint.at(p+"self_attn.o_proj.weight"));
+  auto post=tei::decoder_exact_rms_norm(projected,first.second,checkpoint.at(p+"post_attention_layernorm.weight"),1e-5);
+  auto gate_weight=at::cat({checkpoint.at(p+"mlp.gate_proj.weight"),checkpoint.at(p+"mlp.up_proj.weight")},0);
+  for(bool fp8:{false,true}) {
+    auto enabled=options;enabled.values["_fp8_dynamic"]=fp8?"true":"false";
+    auto owned=checkpoint;auto model=tei::create_decoder(enabled,owned,device,at::kBFloat16);model->ready();
+    auto original=[&](const at::Tensor& x,const at::Tensor& weight) {
+      if(!fp8)return at::linear(x,weight);
+      auto activations=tei::fp8_quantize_rows(x),weights=tei::fp8_quantize_rows(weight);
+      return fp8_original_recipe(activations.first,weights.first,activations.second,weights.second,at::kBFloat16);
+    };
+    auto gated=tei::fused_gated_activation(original(post.first,gate_weight),5);
+    auto down=original(gated,checkpoint.at(p+"mlp.down_proj.weight"));
+    auto expected=tei::decoder_exact_rms_norm(down,post.second,checkpoint.at("model.norm.weight"),1e-5).first;
+    auto actual=model->forward(input);
+    TORCH_CHECK(actual.sizes()==at::IntArrayRef({17,hidden})&&at::equal(actual,expected),
+      "Registered causal BF16 decoder contract differs from original norm/attention/FP8 recipe, fp8=",fp8);
+  }
+  std::cout<<"Registered causal BF16 width2048 reference: dense and FP8 bitwise,17 actual rows passed\n";
+}
+
 void rejects(tei::Options options,c10::Device device,at::ScalarType dtype) {
   options.values["_fp8_dynamic"]="true";tei::Weights empty;
   auto model=tei::create_decoder(options,empty,device,dtype);
@@ -111,6 +184,7 @@ int main(int argc,char** argv) {
   if(capability!=89&&capability!=90&&capability!=100&&capability!=120) {
     std::cout<<"FP8 CUDA fixture skipped unsupported capability "<<capability<<"\n";return 0;
   }
+  check_registered_causal_contract(device);
   for(auto dtype:{at::kHalf,at::kBFloat16})
     for(auto family:{"llama","mistral","qwen2","qwen3"})check_family(family,device,dtype);
 }

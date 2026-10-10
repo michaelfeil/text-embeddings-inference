@@ -2,6 +2,8 @@
 #include "multimodal_models.h"
 #include "decoder_models.h"
 #include "qwen35_kernels.h"
+#include "qwen35_reference.h"
+#include "torch_flash_fma.h"
 #include "moe_kernels.h"
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <cmath>
@@ -194,9 +196,18 @@ class Qwen35 final : public Model {
     auto output=native?routed_moe_cuda(x,at::linear(x,m.router).to(at::kFloat),m.experts,m.expert_down,renormalize):at::Tensor();
     if(!output.defined())output=decoder_moe_forward(x,m.router,m.experts,m.expert_down,top,renormalize);
     auto shared=at::linear(gated(at::linear(x,m.shared_gate_up)),m.shared_down);
-    return output+shared*at::sigmoid(at::linear(x,m.shared_gate));
+    auto logits=at::linear(x,m.shared_gate);
+    auto gate=device.is_cuda() && dtype==at::kBFloat16 ?
+      at::reciprocal(at::ones_like(logits)+at::exp(-logits)) : at::sigmoid(logits);
+    return output+shared*gate;
   }
   at::Tensor norm(const at::Tensor& x,const std::string& name) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // Deep routed models amplify individual BF16 differences. Preserve the
+    // original Candle reduction tree before casting the normalized value.
+    if(integer("num_experts",0)>0 && device.is_cuda() && dtype==at::kBFloat16)
+      return qwen35_reference_norm_cuda(x,w(name+".weight"),epsilon);
+#endif
     auto f=x.to(at::kFloat);
     return (f*at::reciprocal(at::sqrt(f.square().mean(-1,true)+epsilon))*(w(name+".weight").to(at::kFloat)+1.)).to(x.scalar_type());
   }
@@ -219,8 +230,18 @@ class Qwen35 final : public Model {
     auto v=linear(x,p+"v_proj").view({tokens,kv_heads,dim});
     auto mode=cfg.string("_decision_attention_mode",cfg.string("decision_attention_mode","causal"));
     auto causal=mode!="noncausal_full_attention" && !cfg.boolean("use_bidirectional_attention",false);
-    auto a=packed_attention(q,k,v,input,1./std::sqrt(static_cast<double>(dim)),causal).view({tokens,heads,dim});
-    return linear((a*at::sigmoid(qg.narrow(-1,dim,dim))).reshape({tokens,heads*dim}),p+"o_proj");
+    const bool reference=integer("num_experts",0)>0 && device.is_cuda() && dtype==at::kBFloat16;
+    at::Tensor attention;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(reference && torch_flash_fma_supported(q,k,v))
+      attention=torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,1./std::sqrt(static_cast<double>(dim)),causal);
+    else
+#endif
+      attention=packed_attention(q,k,v,input,1./std::sqrt(static_cast<double>(dim)),causal);
+    auto a=attention.view({tokens,heads,dim});
+    auto logits=qg.narrow(-1,dim,dim);
+    auto gate=reference ? at::reciprocal(at::ones_like(logits)+at::exp(-logits)) : at::sigmoid(logits);
+    return linear((a*gate).reshape({tokens,heads*dim}),p+"o_proj");
   }
   at::Tensor delta_cpu(const at::Tensor& qkv,const at::Tensor& z,const at::Tensor& ab,const std::string& p,const PackedInput& input) const {
     // Exact-length reference recurrence. No sequence padding and no persistent state.
@@ -275,8 +296,12 @@ class Qwen35 final : public Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
       auto conv=w(p+"conv1d.weight").view({qkv.size(1),-1}).contiguous();
       auto alog=w(p+"A_log").to(at::kFloat).contiguous(),dt=w(p+"dt_bias").to(at::kFloat).contiguous();
-      output=qwen35_delta_cuda(qkv,z,ab,conv,alog,dt,w(p+"norm.weight"),input,
-        integer("linear_num_key_heads"),integer("linear_num_value_heads"),epsilon);
+      if(integer("num_experts",0)>0)
+        output=qwen35_reference_delta_cuda(qkv,z,ab,conv,alog,dt,w(p+"norm.weight"),input,
+          integer("linear_num_key_heads"),integer("linear_num_value_heads"),epsilon);
+      else
+        output=qwen35_delta_cuda(qkv,z,ab,conv,alog,dt,w(p+"norm.weight"),input,
+          integer("linear_num_key_heads"),integer("linear_num_value_heads"),epsilon);
 #else
       TORCH_CHECK(false,"Qwen3.5 requires the native DeltaNet CUDA kernel build");
 #endif

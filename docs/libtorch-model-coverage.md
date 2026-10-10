@@ -23,9 +23,9 @@ attention where the installed Flash build lacks bias support.
 | Qwen3 / Qwen3 MoE | Packed Q/K norm, GQA, dense/routed MLP and optional projection | CUDA Candle parity over dense and fused/unfused MoE layouts. BF16 grouped routing tested. Trained dense Qwen3 meets the 5% P50 target on seven workloads with graphs in both GPU assignments; the earlier trained Qwen3-30B-A3B run failed accuracy (cosine 0.998809860). Private Torch fused-softmax attention plus exact Welford residual RMS now matches every hidden state and routing decision in an independent 48-layer trace. Integrated trained Qwen3-30B-A3B is bitwise identical on all seven workloads in both GPU assignments and meets the latency target with four resident graphs (at least 2.27% faster; 200 iterations; [results](benchmarks/tei-qwen3-moe-v7-graphs-0-1.json), [swapped results](benchmarks/tei-qwen3-moe-v7-graphs-1-0.json)). Recovered allocator mapping warnings occurred at startup; the largest eager workload still completed with graphs resident. These measurements do not establish a general memory guarantee on smaller GPUs. |
 | Gemma3 text | Packed local/global attention, Gemma norm semantics | Trained embeddinggemma-300m, including both Dense heads, is bitwise identical to Candle on seven workloads in both GPU assignments. Private Torch fused-softmax and in-place contracted rotary meet the latency target (worst +1.20%; 40 iterations per backend, 20 warmups). Native CPU/CUDA fixtures also pass. |
 | EmbeddingGemma2 | Packed text model, shared KV, PLE, embedding projection and image/audio towers | Native CPU/CUDA fixtures pass. All seven trained text workloads plus image and audio now match Candle bitwise in both GPU assignments and meet the P50 target (worst +2.43%, 40 iterations, 20 warmups). Audio preserves the actual Candle im2col/FP32 GEMM convolution, shared reduction-tree/runtime-pow norm, and separate BF16 projection-bias rounding; audio is approximately 46x faster on this workload. [Full evidence](benchmarks/embeddinggemma2-private-torch-fma-audio-full-graphs-4-5.json), [swapped evidence](benchmarks/embeddinggemma2-private-torch-fma-audio-full-graphs-5-4.json). Historical failures are retained. |
-| Gemma4 / Gemma4 unified | Packed text plus image tower implementation | Native text/image/audio implementations and routed MLP. Trained Gemma4-26B-A4B-it BF16 text now matches Candle bitwise across all seven workloads in both 200-iteration assignments after source-proven reference RMS rounding and private Torch fused-softmax attention corrections. With a 4096-token graph cap, the swapped assignment misses the P50 target (worst +6.03%); a 16384-token cap still misses by +5.24% in the swapped assignment. Load-time router conversion caching preserves all fourteen outputs bitwise but still misses the target on swapped 32x512 (+5.13% with the 16384-token cap); see [0/1](benchmarks/gemma4-moe-router-cached-full-graphs16384-0-1.json) and [1/0](benchmarks/gemma4-moe-router-cached-full-graphs16384-1-0.json). These are bidirectional embedding-backbone results. Actual causal option-token Decision text fails accuracy (cosine 0.978353784); five image Decision pilots also fail (minimum cosine 0.906257644), so Decision/media remain unqualified; see [failed actual Decision/media pilot](benchmarks/gemma4-option-token-decision-media-eager-pilot-0-1-failed.json). Identical learned Q/K/V isolate the earliest causal discrepancy to the first global head512 attention operation; investigation continues without changing the baseline. The earlier cosine 0.936778922 failure is retained in [historical evidence](benchmarks/tei-gemma4-moe-v7-pilot-0-1-failed.json). |
+| Gemma4 / Gemma4 unified | Packed text plus image tower implementation | Trained Gemma4-26B-A4B-it BF16 bidirectional embedding text and actual causal option-token Decision text pass all seven workloads in both 200-iteration GPU assignments, with and without CUDA graphs. Embedding outputs are bitwise equal; Decision minimum logit cosine is 0.999992159 and all original scalar/vector/action/argmax gates pass. Worst P50 slowdown: embedding +0.995% with graphs (16384-token cap), +3.488% eager; Decision −0.600% with graphs, +3.253% eager. Source-proven staged BF16 rotary, reference RMS arithmetic and private Torch causal/noncausal varlen attention preserve actual token/head dimensions. See [embedding eager 0/1](benchmarks/gemma4-moe-staged-rotary-integrated-eager-200-0-1.json), [1/0](benchmarks/gemma4-moe-staged-rotary-integrated-eager-200-1-0.json), [Decision eager 6/7](benchmarks/gemma4-option-token-causal512-staged-rotary-integrated-eager-200-6-7.json), [7/6](benchmarks/gemma4-option-token-causal512-staged-rotary-integrated-eager-200-7-6.json), and [paired graph reports](benchmarks/libtorch-checkpoints-h100.md#gemma4-26b-a4b-it-text). Image Decision pilots still fail accuracy after the causal correction (minimum cosine 0.950608368); vision/audio decisions remain unqualified. [Failed media evidence](benchmarks/gemma4-option-token-decision-media-causal512-eager-pilot-0-1-failed.json) and the prior [router-cache latency miss](benchmarks/gemma4-moe-router-cached-full-graphs16384-1-0.json) and [initial accuracy failure](benchmarks/tei-gemma4-moe-v7-pilot-0-1-failed.json) are retained. |
 | Qwen3-VL | Native vision tower, mRoPE, patch/deepstack mergers and decoder injection | Synthetic CPU/CUDA image consumption and sequence isolation pass. Trained 2B embedding checkpoint meets parity and the 5% latency target for seven text and two image workloads in both GPU assignments, with media graphs enabled. |
-| Qwen3.5 dense/MoE/text aliases | Packed full attention, DeltaNet, MoE/shared experts and vision tower | Native dense DeltaNet CPU/CUDA parity and MoE/vision isolation fixtures pass. Trained dense 0.8B meets parity and the latency target for seven text and two image workloads in both GPU assignments. Aligned BF16 CUDA uses grouped dispatch; other paths retain a synchronizing reference. Trained MoE qualification pending. |
+| Qwen3.5 dense/MoE/text aliases | Packed full attention, DeltaNet, MoE/shared experts and vision tower | Native dense DeltaNet CPU/CUDA parity and MoE/vision isolation fixtures pass. Trained dense 0.8B meets parity and the latency target for seven text and two image workloads in both GPU assignments. Aligned BF16 CUDA uses grouped dispatch; other paths retain a synchronizing reference. Trained BF16 35B-A3B MoE text meets bitwise pooled parity and the latency target on seven eager workloads in both GPU assignments. |
 | MPNet | Native exact-length relative-biased attention | Independent Transformers CPU/CUDA references pass, including logarithmic bucket distances. Trained all-mpnet-base-v2 CUDA passes four packed workloads against independent exact-length Transformers FP16 calls (minimum mean/CLS/token cosine 0.999998838/0.999997727/0.999993200). Candle rejects packed MPNet, so paired Candle latency is unavailable; see [trained evidence](benchmarks/tei-mpnet-trained-hf-cuda-parity.json). |
 | DeBERTa-v2/v3 (experimental) | Native disentangled relative attention, convolution and classifier | Independent Transformers CPU/CUDA references pass over c2p/p2c, bucket and convolution variants. Trained nli-deberta-v3-base CUDA passes four workloads against independent Transformers FP16 calls (minimum CLS/token cosine 0.999996700, classifier-logit cosine 0.999969728); see [trained evidence](benchmarks/tei-deberta-trained-hf-cuda-parity.json). The packed relative-bias Torch path with verified CUDA graphs beats Candle on all seven workloads in both GPU assignments (at least 8.58% faster; minimum CLS cosine 0.999995064 and classifier cosine 0.999970544). Historical per-sequence eager latency misses are retained in the checkpoint report. |
 
@@ -111,13 +111,38 @@ than Candle.
 [6/7 evidence](benchmarks/tei-tinyllama-causal-trained-radix-200-4096-6-7.json),
 [7/6 evidence](benchmarks/tei-tinyllama-causal-trained-radix-200-4096-7-6.json),
 [checkpoint verification](benchmarks/tei-tinyllama-causal-checkpoint-verification.json).
-Qwen3.5-35B-A3B loads its complete verified checkpoint but fails the first trained
-raw accuracy gate (cosine 0.997000259); no paired latency qualification is claimed.
-[Failure evidence](benchmarks/tei-qwen35-moe-trained-first-workload-failure.json).
+Authentic `Qwen/Qwen3.5-35B-A3B` revision
+`59d61f3ce65a6d9863b86d2e96597125219dc754` now passes all seven BF16
+last-token workloads in both 200-iteration H100 assignments. The integrated
+library produces bitwise-identical pooled outputs with CUDA graphs disabled,
+including ragged batches and 32×512 actual tokens; P50 is 15.40–26.37% faster
+than Candle. The routed-BF16 path preserves the original no-FMA DeltaNet,
+norm reduction tree, model-dtype sigmoid and private native Torch packed
+attention contracts. Dense Qwen3.5 keeps its existing path. All 28 native checks
+and eight Rust integration checks pass. These measurements establish text
+pooled-output accuracy, without qualifying this MoE checkpoint's image path,
+raw-token outputs, other precisions or A10 performance.
+[2/3 evidence](benchmarks/tei-qwen35-moe-integrated-eager-2-3.json),
+[3/2 evidence](benchmarks/tei-qwen35-moe-integrated-eager-3-2.json).
+The original accuracy failure (cosine 0.997000259) and unsuccessful individual
+fixes remain documented.
+[Original failure](benchmarks/tei-qwen35-moe-trained-first-workload-failure.json),
+[combined-operation proof](benchmarks/tei-qwen35-moe-exact-contracts-candidate-2-3.json).
+
+Actual 1024/2048-token Qwen3 FP16 last-token and ModernBERT FP16 mean
+workloads meet their unchanged pooled accuracy gates and the P50 target in
+both 200-iteration H100 assignments, with graphs disabled and enabled.
+ModernBERT outputs are bitwise identical; Qwen3 minimum cosine is 0.999994894.
+These results cover the measured checkpoints, precision and pooling; they do
+not establish raw-token accuracy or A10 performance.
+[Long-context scope and reports](benchmarks/libtorch-checkpoints-h100.md#actual-1k2k-token-inputs-eager-and-cuda-graphs).
 Experimental dynamic FP8 dense-MLP paths are implemented for
 BERT/RoBERTa/ModernBERT and dense Llama/Mistral/Qwen2/Qwen3. Native dense
 decoder fixtures and the ragged BERT Rust FP16/BF16 integration tests pass;
-trained encoder qualification remains pending. Quantization
+trained encoder qualification remains pending. The first trained BGE FP8 pilot
+fails the 1×32 accuracy gate at cosine 0.9812788464430842; no trained FP8
+qualification is claimed.
+[Failure evidence](benchmarks/tei-bert-trained-fp8-pilot-failure.json). Quantization
 and original cuBLASLt recipe checks are bitwise on H100, with actual row
 counts and no padding. Trained FP8 accuracy and paired latency remain open.
 [Component evidence](benchmarks/tei-native-fp8-component-validation.json).

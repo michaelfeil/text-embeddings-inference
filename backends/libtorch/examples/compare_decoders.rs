@@ -153,7 +153,14 @@ fn main() {
     let candle_load = started.elapsed().as_secs_f64();
     let torch = Mutex::new(torch);
     let candle = Mutex::new(candle);
-    let workloads = vec![
+    let long_context = std::env::var("TEI_BENCHMARK_LONG_CONTEXT").unwrap_or_default();
+    let long_requested = matches!(long_context.as_str(), "1" | "true" | "only");
+    let context_limit = config["max_position_embeddings"].as_u64();
+    if long_requested {
+        assert!(context_limit.is_some_and(|limit| limit >= 2048),
+            "Long-context workloads require a checkpoint declaring at least 2048 positions; the checkpoint is never modified");
+    }
+    let mut workloads = vec![
         ("1x32", vec![32]),
         ("1x128", vec![128]),
         ("8x128", vec![128; 8]),
@@ -165,6 +172,18 @@ fn main() {
         ("8x512", vec![512; 8]),
         ("32x512", vec![512; 32]),
     ];
+    if long_requested {
+        if long_context == "only" {
+            workloads.clear();
+        }
+        workloads.extend([
+            ("1x1024", vec![1024]),
+            ("1x2048", vec![2048]),
+            ("8x1024", vec![1024; 8]),
+            ("8x2048", vec![2048; 8]),
+            ("ragged 1024/1536/2048/1280", vec![1024, 1536, 2048, 1280]),
+        ]);
+    }
     let mut rows = Vec::new();
     for (label, lengths) in workloads {
         let input = batch(&lengths, vocab_size, bos, eos);
@@ -230,6 +249,10 @@ fn main() {
     let mut report = serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_revision":checkpoint_revision,"vocab_size":vocab_size,"bos_token_id":bos,"eos_token_id":eos,"pad_token_id":pad,"input_pattern":"synthetic valid vocabulary IDs with configured BOS/EOS; no padding",
         "pooling":pooling,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows});
+    if long_requested {
+        report["long_context_mode"] = long_context.into();
+        report["checkpoint_max_position_embeddings"] = serde_json::json!(context_limit);
+    }
     if fp8_dynamic {
         report["dynamic_fp8_requested"] = true.into();
         report["dynamic_fp8_recipe"] = serde_json::json!({

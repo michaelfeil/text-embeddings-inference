@@ -107,7 +107,18 @@ with `benchmark-fp8`, enabling the same requested mode in both backends. Other c
 modules are rejected explicitly. Image and
 audio towers have native implementations. EmbeddingGemma2 text, image and audio
 match Candle bitwise and meet the measured P50 target in both GPU assignments;
-Gemma4 trained image/audio and routed-model qualification remain incomplete.
+Gemma4-26B-A4B-it BF16 embedding text and causal option-token Decision text also
+meet the measured target in both GPU assignments, with and without CUDA graphs.
+Gemma4 image/audio Decision qualification remains incomplete. Authentic
+Qwen3.5-35B-A3B BF16 text matches Candle pooled outputs bitwise on all seven
+measured eager workloads in both 200-iteration H100 assignments, including
+ragged batches and 32×512 actual tokens. Graphs are disabled; P50 is
+15.40–26.37% faster. Its routed-BF16 path uses the original no-FMA DeltaNet,
+exact norm reduction, model-dtype sigmoid and native Torch packed attention.
+Dense Qwen3.5 retains its existing path. This does not qualify the MoE image
+path, raw-token output, other precisions or A10.
+[2/3 evidence](benchmarks/tei-qwen35-moe-integrated-eager-2-3.json),
+[3/2 evidence](benchmarks/tei-qwen35-moe-integrated-eager-3-2.json).
 BERT uses tanh GELU to match Candle's inference kernels. CUDA fuses bias and
 GELU into the intermediate projection; CPU uses the matching approximation.
 
@@ -250,3 +261,19 @@ Set `CUDA_COMPUTE_CAP` for your GPU (90 for H100, 86 for A10). Each workload use
 ordinals are configurable; swap them to check hardware bias. The JSON includes P50/P95 latency, token throughput at P50 and output
 agreement. These are synchronous backend measurements, not HTTP throughput or
 multi-GPU scaling measurements. GPU clocks are not locked by the harness.
+
+For real 1K/2K-token inputs, build the `compare_decoders` example with the
+same `benchmark-cuda` feature and select a checkpoint declaring at least
+2048 positions. The benchmark never changes the checkpoint's position limit.
+
+```bash
+TEI_BENCHMARK_LONG_CONTEXT=only TEI_TORCH_CUDA_GRAPHS=0 \
+  target/release/examples/compare_decoders /path/to/qwen3-model 200 0 1 float16 last_token
+```
+
+Repeat with GPU ordinals `1 0`, then with `TEI_TORCH_CUDA_GRAPHS=1` and
+`TEI_TORCH_CUDA_GRAPH_MAX_TOKENS=16384`. Use `mean` for ModernBERT embedding
+checkpoints. The five workloads include actual 1024/2048-token sequences,
+eight-sequence batches, and ragged 1024/1536/2048/1280 inputs. Report the
+observed graph count alongside timings; graph requests can fall back to eager
+execution. `TEI_BENCHMARK_LONG_CONTEXT=1` appends these to the short suite.

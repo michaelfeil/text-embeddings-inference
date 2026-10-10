@@ -341,6 +341,10 @@ class Gemma final : public Model {
     return (at::scalar_tensor(.5,x.options())*x)*(at::ones({},x.options())+value);
   }
   at::Tensor rotate(const at::Tensor& x, const Layer& layer, const at::Tensor& positions) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(!legacy && !embedding2 && x.is_cuda() && x.scalar_type()==at::kBFloat16)
+      return gemma_rotary_cuda(x,layer.cos,layer.sin,positions);
+#endif
     auto cos = layer.cos.index_select(0, positions).unsqueeze(1);
     auto sin = layer.sin.index_select(0, positions).unsqueeze(1);
     auto half = x.size(-1) / 2;

@@ -78,6 +78,24 @@ Minimum embedding cosine across both assignments: 0.999998900. All seven workloa
 
 Raw measurements: [6/7](tei-mistral-integrated-gate8-6-7.json), [7/6](tei-mistral-integrated-gate8-7-6.json). Earlier results: [0/1](tei-mistral-v6-graphs-0-1.json), [1/0](tei-mistral-v6-graphs-1-0.json).
 
+## Gemma4-26B-A4B-it text
+
+The official trained BF16 checkpoint is pinned to revision `4d7ae4984b7db7de8f8457170b3f1a419ee76d52`. Both bidirectional embedding (last-token pooling) and the actual causal option-token Decision loader pass the seven packed workloads in both assignments: 200 measured iterations and 20 warmups. Native library SHA256 is `41dbdbe796c6c735ec9ee648796195a9f447083073fe202ca16846631740da76`; reports include checkpoint, comparator and fixture identities. No preload or diagnostic factory is used. Graph runs use a 16384-token cap; eager runs request no graphs and capture none.
+
+| Pipeline | Worst P50 slowdown, graph pair | Worst P50 slowdown, eager pair | Accuracy |
+|---|---:|---:|---|
+| Bidirectional embedding | +0.995% | +3.488% | All fourteen outputs bitwise equal in each mode |
+| Causal option-token Decision | −0.600% | +3.253% | Minimum logit cosine 0.999992159; original gates pass |
+
+Eager execution is approximately 11–12% faster at 8x128 on both pipelines. Small 1x32 requests remain approximately 2.7–3.5% slower. These measurements establish the 5% target on this checkpoint and fixture, rather than a claim that every eager shape is faster.
+
+- Embedding graphs: [0/1](gemma4-moe-staged-rotary-integrated-graphs16384-200-0-1.json), [1/0](gemma4-moe-staged-rotary-integrated-graphs16384-200-1-0.json).
+- Embedding eager: [0/1](gemma4-moe-staged-rotary-integrated-eager-200-0-1.json), [1/0](gemma4-moe-staged-rotary-integrated-eager-200-1-0.json).
+- Decision graphs: [6/7](gemma4-option-token-causal512-staged-rotary-integrated-graphs16384-200-6-7.json), [7/6](gemma4-option-token-causal512-staged-rotary-integrated-graphs16384-200-7-6.json).
+- Decision eager: [6/7](gemma4-option-token-causal512-staged-rotary-integrated-eager-200-6-7.json), [7/6](gemma4-option-token-causal512-staged-rotary-integrated-eager-200-7-6.json).
+
+Decision inputs use synthetic valid IDs and trained vocabulary readout rows 100/200/300/400. This tests computational fidelity, not decision quality; the fixture's action probabilities saturate at 1.0 and do not establish nonconstant calibration. Image decisions remain unqualified: the [post-causal-correction pilot](gemma4-option-token-decision-media-causal512-eager-pilot-0-1-failed.json) fails all five image cases, with minimum cosine 0.950608368. The official checkpoint has no audio tower. Prior [initial accuracy failure](tei-gemma4-moe-v7-pilot-0-1-failed.json), [router-cache latency miss](gemma4-moe-router-cached-full-graphs16384-1-0.json), and smaller-cap misses remain available; source arithmetic fixes, rather than gate changes, produced the current result.
+
 ## Additional trained families and remaining gaps
 
 These runs use exact packed mean pooling, except DistilBERT and ModernBERT MLM (CLS), and Qwen3 MoE (last-token). Graph-enabled model execution is warmed; capture and cache misses are excluded. Visual inputs are synthetic patches with valid geometry, so these results validate checkpoint consumption and backend parity rather than real-image retrieval quality.
@@ -151,3 +169,73 @@ Nemotron Llama 1B BF16 mean pooling now matches Candle bitwise and meets the P50
 Ministral3 3B BF16 with last-token pooling meets the unchanged cosine and P50 latency gates on all seven workloads in both GPU assignments (200 iterations, 20 warmups, minimum cosine 0.999153403, at least 6.97% faster): [6/7](tei-ministral3-trained-integrated-6-7.json), [7/6](tei-ministral3-trained-integrated-7-6.json). Separate valid [boundary IDs 101/102](tei-ministral3-trained-arbitrary-6-7.json) also pass accuracy. Candle now resolves the checkpoint’s authoritative nested rope theta; independent YaRN tests cover scaling beyond the original context.
 
 These runs use a derived text-only checkpoint from the pinned public composite model: all 236 text tensors are copied byte-for-byte with their prefix renamed, and the original text config is preserved. The [derivation manifest](tei-ministral3-text-checkpoint-derivation.json) records source/output SHA256 identities and each tensor mapping. No tensor arithmetic or dtype conversion occurs during extraction. The source Pixtral vision tower and LM readout are outside this embedding qualification; original checkpoint files remain unchanged.
+
+## Eager versus CUDA graphs: short-input comparison
+
+The integrated `41dbdbe7` native library was measured with FP16, CLS pooling,
+200 iterations and 20 warmups on GPUs 2/3, then 3/2. Both runtimes execute
+in parallel on separate H100s. All seven pooled-output accuracy gates pass
+for both models and both execution modes. This Qwen3 run checks pooled CLS
+outputs; it does not establish last-token or raw-token accuracy for causal
+attention. The separate Qwen3 last-token qualification above remains relevant.
+
+| Model | Worst eager P50 slowdown, either assignment | Worst graph-enabled P50 slowdown, either assignment | Scope |
+|---|---:|---:|---|
+| BGE-base-en-v1.5 | +10.12% | +2.17% | 32–512 tokens per sequence |
+| Qwen3-Embedding-0.6B | +2.47% | -6.47% | 32–512 tokens per sequence |
+
+BERT's eager 8×512 workload misses the 5% target in both assignments.
+Graph-enabled runs meet it; graph capture and startup costs are excluded by
+warmup. No 1K/2K result is inferred from these short-input measurements.
+BGE's checkpoint declares only 512 positions.
+
+Raw reports: [BERT eager 2/3](tei-bert-eager-vs-graphs-200-0-2-3.json),
+[BERT eager 3/2](tei-bert-eager-vs-graphs-200-0-3-2.json),
+[BERT graphs 2/3](tei-bert-eager-vs-graphs-200-1-2-3.json),
+[BERT graphs 3/2](tei-bert-eager-vs-graphs-200-1-3-2.json),
+[Qwen3 eager 2/3](tei-qwen3-eager-vs-graphs-200-0-2-3.json),
+[Qwen3 eager 3/2](tei-qwen3-eager-vs-graphs-200-0-3-2.json),
+[Qwen3 graphs 2/3](tei-qwen3-eager-vs-graphs-200-1-2-3.json),
+[Qwen3 graphs 3/2](tei-qwen3-eager-vs-graphs-200-1-3-2.json).
+
+`compare_decoders` accepts `TEI_BENCHMARK_LONG_CONTEXT=only` to measure
+1×1024, 1×2048, 8×1024, 8×2048 and ragged 1024/1536/2048/1280 inputs.
+The original checkpoint must declare at least 2048 positions. `=1` appends
+these shapes to the normal suite. These inputs use actual sequence lengths
+and unchanged positional configuration, without token padding.
+
+## Actual 1K/2K-token inputs: eager and CUDA graphs
+
+Qwen3-Embedding-0.6B uses FP16 last-token pooling; ModernBERT embedding
+uses FP16 mean pooling. Both unchanged checkpoints declare sufficient
+positional capacity (32768 and 8192 respectively). Each runtime receives
+actual 1024/2048-token sequences, including eight-sequence and ragged
+1024/1536/2048/1280 batches. There is no token padding. These are synthetic
+valid vocabulary IDs, measuring backend accuracy and execution rather than
+retrieval quality.
+
+The immutable comparator `c22f2b16` and native library `d62642be` are identical
+in all reports. Each backend has 20 warmups and 200 measured iterations,
+running in parallel on GPUs 0/1 and then 1/0. All five unchanged pooled
+accuracy gates pass in both assignments and both modes. Graph-enabled
+runs request a 16384-token cap; recorded graph counts confirm capture.
+BLAS settings are cuBLASLt preferred and 32768 KiB workspace. Timing includes
+input/output transfers and pooling, excluding cloning, HTTP, tokenization,
+startup and graph capture. Throughput is tokens divided by synchronous
+backend P50; it does not measure concurrent serving throughput.
+
+| Model / mode | Worst P50 slowdown, either assignment | 8×2048 Torch / Candle P50, ms (0/1) | 8×2048 Torch / Candle P50, ms (1/0) | Torch 8×2048 tokens/s, lower assignment |
+|---|---:|---:|---:|---:|
+| Qwen3 eager | -13.47% | 41.251 / 49.382 | 42.008 / 49.004 | 390,018 |
+| Qwen3 graphs | -14.69% | 41.189 / 49.492 | 41.829 / 49.032 | 391,692 |
+| ModernBERT eager | -13.61% | 15.369 / 18.226 | 15.643 / 18.108 | 1,047,375 |
+| ModernBERT graphs | -14.11% | 15.228 / 18.216 | 15.532 / 18.084 | 1,054,836 |
+
+ModernBERT pooled outputs match bitwise on every measured shape. Qwen3
+minimum last-token cosine is 0.999994894. Both meet the 5% target in eager
+and graph modes; these results do not establish raw-token parity, other
+precisions, all long-context checkpoints or A10 performance.
+
+Qwen3: [eager 0-1](tei-qwen3-long-context-200-graphs0-0-1.json), [eager 1-0](tei-qwen3-long-context-200-graphs0-1-0.json), [graphs 0-1](tei-qwen3-long-context-200-graphs1-0-1.json), [graphs 1-0](tei-qwen3-long-context-200-graphs1-1-0.json).
+
+ModernBERT: [eager 0-1](tei-modernbert-long-context-200-graphs0-0-1.json), [eager 1-0](tei-modernbert-long-context-200-graphs0-1-0.json), [graphs 0-1](tei-modernbert-long-context-200-graphs1-0-1.json), [graphs 1-0](tei-modernbert-long-context-200-graphs1-1-0.json).

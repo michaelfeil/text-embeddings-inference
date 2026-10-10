@@ -10,6 +10,51 @@
 
 namespace tei {
 // SPDX-License-Identifier: MIT
+// Adapted from Candle gemma_rope_reference_bf16 (included above with its full
+// MIT notices). Preserve BF16 rounding after each product. Read original
+// packed strides and per-token positions directly; no synthetic rows or heads.
+namespace {
+__global__ void staged_rotary(const __nv_bfloat16* x, const __nv_bfloat16* cos,
+ const __nv_bfloat16* sin, const int64_t* positions, __nv_bfloat16* out,
+ int64_t pairs,int64_t heads,int64_t half,int64_t token_stride,int64_t head_stride,int64_t table_rows) {
+ const auto i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+ if(i>=pairs)return;
+ const auto column=i%half,head=(i/half)%heads,token=i/(half*heads);
+ const auto source=token*token_stride+head*head_stride+column;
+ CUDA_KERNEL_ASSERT(positions[token]>=0 && positions[token]<table_rows);
+ const auto frequency=positions[token]*half+column;
+ const auto a=__bfloat162float(x[source]),b=__bfloat162float(x[source+half]);
+ const auto c=__bfloat162float(cos[frequency]),s=__bfloat162float(sin[frequency]);
+ const auto ac=__bfloat162float(__float2bfloat16_rn(__fmul_rn(a,c)));
+ const auto bs=__bfloat162float(__float2bfloat16_rn(__fmul_rn(b,s)));
+ const auto bc=__bfloat162float(__float2bfloat16_rn(__fmul_rn(b,c)));
+ const auto as=__bfloat162float(__float2bfloat16_rn(__fmul_rn(a,s)));
+ const auto destination=(token*heads+head)*half*2+column;
+ out[destination]=__float2bfloat16_rn(__fsub_rn(ac,bs));
+ out[destination+half]=__float2bfloat16_rn(__fadd_rn(bc,as));
+}
+}
+at::Tensor gemma_rotary_cuda(const at::Tensor& x,const at::Tensor& cos,
+ const at::Tensor& sin,const at::Tensor& positions) {
+ TORCH_CHECK(x.is_cuda()&&x.scalar_type()==at::kBFloat16&&x.dim()==3&&x.stride(2)==1,
+  "Gemma rotary requires true BF16 packed T/H/D rows");
+ TORCH_CHECK(x.size(2)>0&&x.numel()/2<=int64_t(INT32_MAX)*256,"Gemma rotary launch exceeds kernel range");
+ const auto half=x.size(2)/2;
+ TORCH_CHECK(x.size(2)==2*half&&cos.dim()==2&&cos.size(1)==half&&cos.sizes()==sin.sizes(),"Invalid rotary dimensions");
+ TORCH_CHECK(cos.device()==x.device()&&sin.device()==x.device()&&positions.device()==x.device()&&
+  cos.scalar_type()==x.scalar_type()&&sin.scalar_type()==x.scalar_type()&&positions.scalar_type()==at::kLong&&
+  cos.is_contiguous()&&sin.is_contiguous()&&positions.is_contiguous()&&positions.numel()==x.size(0),"Invalid rotary tables/positions");
+ c10::cuda::CUDAGuard guard(x.device());
+ auto out=at::empty(x.sizes(),x.options());
+ const auto pairs=x.numel()/2;
+ if(pairs)staged_rotary<<<(pairs+255)/256,256,0,at::cuda::getCurrentCUDAStream()>>>(
+  reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),reinterpret_cast<const __nv_bfloat16*>(cos.const_data_ptr()),
+  reinterpret_cast<const __nv_bfloat16*>(sin.const_data_ptr()),positions.const_data_ptr<int64_t>(),
+  reinterpret_cast<__nv_bfloat16*>(out.mutable_data_ptr()),pairs,x.size(1),half,x.stride(0),x.stride(1),cos.size(0));
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
+
+// SPDX-License-Identifier: MIT
 // Adapted from backends/candle/src/kernels/gemma_rms_norm.cu.
 // Candle compiles this reference with --fmad=false. Keep the mean and epsilon
 // as separate FP32 rounds without changing other native kernel flags.
