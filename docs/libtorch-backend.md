@@ -25,6 +25,13 @@ and attention uses SDPA on each sequence at its actual length. This is useful fo
 correctness testing; it is not a fused CPU varlen kernel. MPS and XPU are rejected
 in this prototype because this Torch varlen operator is exposed through CUDA.
 
+Native routed MoE CUDA kernels reuse Candle’s retained MIT sources and the same
+pinned CUTLASS revision `e406c186f510a15091cce01f782020ceb7ba8eb5`.
+Set `CUTLASS_ROOT` for an offline checkout; otherwise CMake reuses the Candle
+cache or downloads that pinned revision. Installation includes the retained
+CUTLASS BSD notice under `share/licenses/tei_torch`. Kernel-level exact routing
+tests do not establish trained checkpoint accuracy.
+
 ## Model support
 
 Native implementations now cover BERT/RoBERTa, DistilBERT, GTE, ModernBERT,
@@ -34,11 +41,17 @@ Gemma families. Model availability and numerical validation are tracked in the
 not establish production support or the latency target.
 
 Single-file and sharded safetensors, CLS/mean/last-token pooling and raw token
-embeddings remain supported. Classification and SPLADE heads are being checked
+embeddings remain supported. BERT supports tanh GELU, ReLU and SiLU; other
+BERT activation names fail at startup instead of silently selecting GELU.
+Classification and SPLADE heads are being checked
 against their Candle counterparts. FP32, FP16 and BF16 are accepted; CUDA Flash
 requires FP16/BF16. Wider Gemma attention heads use native packed efficient
 attention. The installed Torch Flash build disables ALiBi, so Jina uses native
-efficient varlen attention independently at each actual sequence length.
+efficient varlen attention in one packed call per layer. A shared sequence-local
+ALiBi tile uses overlapping read-only strides with bounded backing storage:
+`O(T*M + H*M*M)` elements for total tokens `T`, maximum actual sequence length
+`M`, and heads `H`. Q/K/V contain only actual tokens. Jina reuses the bias across
+all layers within each request; no mutable cross-request cache is used.
 
 Typed decision heads have native implementations and synthetic parity checks;
 trained-checkpoint validation remains pending. Sentence Transformers Dense
@@ -145,19 +158,24 @@ Unsupported captures fall back to eager inference. Trained media accuracy and
 performance remain under evaluation.
 
 The [checkpoint comparison](benchmarks/libtorch-checkpoints-h100.md) records
-Qwen3, GTE, BERT, ModernBERT, Nomic, Mistral and Qwen vision workloads meeting the
+Qwen3, GTE, BERT, RoBERTa, DistilBERT, ModernBERT, Nomic, Jina/JinaCode, Mistral and
+Qwen vision workloads meeting the
 5% P50 target with the recorded options. ModernBERT still has a separate
-arbitrary-ID MLM parity failure; Gemma has trained-checkpoint accuracy gaps,
-and Jina has a batched latency gap. The initial
+arbitrary-ID MLM parity failure; Gemma has trained-checkpoint accuracy gaps.
+The Jina/JinaCode packed Torch bias implementation resolves the previously
+recorded batched latency gap. The initial
 [H100 BERT comparison](benchmarks/libtorch-bert-h100.md) shows Candle ahead,
 including when the GPU assignments are swapped.
 
 ## Comparing against Candle
 
 The `compare_bert` example loads the same checkpoint into both runtimes on CUDA
-devices 0 (LibTorch) and 1 (Candle), concurrently, with FP16 and CLS pooling. It covers single requests, uniform batches,
-and ragged batches. Inputs contain deterministic synthetic WordPiece IDs bounded
-to BERT's vocabulary, with CLS/SEP markers; tokenization and HTTP are excluded.
+devices 0 (LibTorch) and 1 (Candle), concurrently, with FP16 and CLS pooling by
+default. The optional final argument selects `cls`, `mean`, or `last_token`
+pooling. It covers single requests, uniform batches and ragged batches. Inputs
+contain deterministic synthetic IDs bounded to the checkpoint vocabulary, with
+configured special tokens and the router position offset; tokenization and HTTP
+are excluded.
 Both runtimes return host embeddings before the timer stops, including input
 transfer, model execution, pooling and output transfer. Input cloning is excluded
 equally. It checks embedding cosine agreement before measuring each workload.

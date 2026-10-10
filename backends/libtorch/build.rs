@@ -9,6 +9,10 @@ fn main() {
     println!("cargo:rerun-if-changed=../candle/src/kernels/gemma_rms_norm.cu");
     println!("cargo:rerun-if-changed=../candle/src/kernels/gated_activation.cu");
     println!("cargo:rerun-if-changed=../candle/src/pooling_kernels/mean_pool.cu");
+    println!("cargo:rerun-if-env-changed=CUTLASS_ROOT");
+    println!("cargo:rerun-if-changed=../candle/src/kernels/gemma4_moe.cu");
+    println!("cargo:rerun-if-changed=../candle/src/kernels/gemma4_moe_kernels.cuh");
+    println!("cargo:rerun-if-changed=../candle/extensions/candle-gemma4-moe/kernels");
     let torch = PathBuf::from(env::var_os("LIBTORCH").expect(
         "Set LIBTORCH to the root of a LibTorch 2.14.1 C++ distribution (include/, lib/, share/)",
     ));

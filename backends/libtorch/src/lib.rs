@@ -528,6 +528,7 @@ impl LibtorchBackend {
             "gelu" => 0,
             "gelu_new" | "gelu_pytorch_tanh" => 1,
             "relu" => 2,
+            "silu" => 3,
             _ => 0,
         };
         let native = NativeConfig {
@@ -1347,6 +1348,82 @@ mod tests {
             }
         }
     }
+    #[cfg(not(feature = "benchmark-cuda"))]
+    #[test]
+    fn bert_relu_and_silu_match_candle_for_embeddings_and_heads() {
+        for activation in ["relu", "silu"] {
+            let fixture = fixture("", false);
+            let mut config: serde_json::Value =
+                serde_json::from_slice(&fs::read(fixture.0.join("config.json")).unwrap()).unwrap();
+            config["hidden_act"] = activation.into();
+            fs::write(
+                fixture.0.join("config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            for pool in [Pool::Cls, Pool::Mean, Pool::LastToken, Pool::Splade] {
+                let model_type = ModelType::Embedding(pool);
+                let torch =
+                    LibtorchBackend::new(&fixture.0, "float32", model_type.clone(), "cpu").unwrap();
+                let candle =
+                    CandleBackend::new(&fixture.0, "float32".into(), model_type, None, 0).unwrap();
+                let actual = torch.embed(batch()).unwrap();
+                for (row, expected) in candle.embed(batch()).unwrap() {
+                    let got = values(&actual[&row]);
+                    let want = values(&expected);
+                    assert_eq!(got.len(), want.len());
+                    assert!(
+                        got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0001),
+                        "{activation} embedding row {row}"
+                    );
+                }
+            }
+            let torch =
+                LibtorchBackend::new(&fixture.0, "float32", ModelType::Classifier, "cpu").unwrap();
+            let candle =
+                CandleBackend::new(&fixture.0, "float32".into(), ModelType::Classifier, None, 0)
+                    .unwrap();
+            let mut input = batch();
+            input.pooled_indices = vec![0, 1];
+            input.raw_indices.clear();
+            let actual = torch.predict(input.clone()).unwrap();
+            for (row, expected) in candle.predict(input.clone()).unwrap() {
+                assert!(
+                    actual[&row]
+                        .iter()
+                        .zip(expected)
+                        .all(|(a, b)| (a - b).abs() < 0.0001),
+                    "{activation} classifier row {row}"
+                );
+            }
+            input.pooled_indices.clear();
+            input.raw_indices = vec![0, 1];
+            let actual = torch.predict_tokens(input.clone()).unwrap();
+            for (row, expected) in candle.predict_tokens(input).unwrap() {
+                assert!(
+                    actual[&row]
+                        .iter()
+                        .flatten()
+                        .zip(expected.iter().flatten())
+                        .all(|(a, b)| (a - b).abs() < 0.0001),
+                    "{activation} token classifier row {row}"
+                );
+            }
+            config["hidden_act"] = "unsupported".into();
+            fs::write(
+                fixture.0.join("config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            assert!(LibtorchBackend::new(
+                &fixture.0,
+                "float32",
+                ModelType::Embedding(Pool::Mean),
+                "cpu"
+            )
+            .is_err());
+        }
+    }
     // Candle selects CUDA when compiled with it; CPU parity runs in the default feature build.
     #[cfg(not(feature = "benchmark-cuda"))]
     #[test]
@@ -1552,21 +1629,32 @@ mod tests {
     #[ignore = "Requires an NVIDIA GPU and CUDA LibTorch 2.14.1"]
     fn cuda_varlen_matches_cpu_for_ragged_outputs() {
         let fixture = fixture("", false);
-        for pool in [Pool::Cls, Pool::Mean, Pool::LastToken] {
-            let model_type = ModelType::Embedding(pool);
-            let cpu =
-                LibtorchBackend::new(&fixture.0, "float32", model_type.clone(), "cpu").unwrap();
-            let gpu = LibtorchBackend::new(&fixture.0, "float16", model_type, "cuda:0").unwrap();
-            let expected = cpu.embed(batch()).unwrap();
-            let actual = std::thread::spawn(move || gpu.embed(batch()).unwrap())
-                .join()
-                .unwrap();
-            for index in [0, 1] {
-                for (a, e) in values(&actual[&index])
-                    .iter()
-                    .zip(values(&expected[&index]))
-                {
-                    assert!((a - e).abs() < 1e-2, "CUDA varlen: {a} != {e}");
+        let mut config: serde_json::Value =
+            serde_json::from_slice(&fs::read(fixture.0.join("config.json")).unwrap()).unwrap();
+        for activation in ["gelu_pytorch_tanh", "relu", "silu"] {
+            config["hidden_act"] = activation.into();
+            fs::write(
+                fixture.0.join("config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            for pool in [Pool::Cls, Pool::Mean, Pool::LastToken, Pool::Splade] {
+                let model_type = ModelType::Embedding(pool);
+                let cpu =
+                    LibtorchBackend::new(&fixture.0, "float32", model_type.clone(), "cpu").unwrap();
+                let gpu =
+                    LibtorchBackend::new(&fixture.0, "float16", model_type, "cuda:0").unwrap();
+                let expected = cpu.embed(batch()).unwrap();
+                let actual = std::thread::spawn(move || gpu.embed(batch()).unwrap())
+                    .join()
+                    .unwrap();
+                for index in [0, 1] {
+                    for (a, e) in values(&actual[&index])
+                        .iter()
+                        .zip(values(&expected[&index]))
+                    {
+                        assert!((a - e).abs() < 1e-2, "CUDA varlen {activation}: {a} != {e}");
+                    }
                 }
             }
         }

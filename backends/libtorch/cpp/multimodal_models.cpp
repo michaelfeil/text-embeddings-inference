@@ -2,6 +2,7 @@
 #include "multimodal_models.h"
 #include "decoder_models.h"
 #include "qwen35_kernels.h"
+#include "moe_kernels.h"
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <cmath>
 
@@ -177,7 +178,11 @@ class Qwen35 final : public Model {
     const auto& m=mlps[layer];
     if(!m.router.defined())return at::linear(gated(at::linear(x,m.gate_up)),m.down);
     auto top=integer("num_experts_per_tok",8);
-    auto output=decoder_moe_forward(x,m.router,m.experts,m.expert_down,top,cfg.boolean(key("norm_topk_prob"),true));
+    auto renormalize=cfg.boolean(key("norm_topk_prob"),true);
+    const bool native=top==8 && device.is_cuda() && dtype==at::kBFloat16 &&
+      (m.experts.size(0)==128 || m.experts.size(0)==256) && x.size(1)%8==0 && m.expert_down.size(2)%8==0;
+    auto output=native?routed_moe_cuda(x,at::linear(x,m.router).to(at::kFloat),m.experts,m.expert_down,renormalize):at::Tensor();
+    if(!output.defined())output=decoder_moe_forward(x,m.router,m.experts,m.expert_down,top,renormalize);
     auto shared=at::linear(gated(at::linear(x,m.shared_gate_up)),m.shared_down);
     return output+shared*at::sigmoid(at::linear(x,m.shared_gate));
   }

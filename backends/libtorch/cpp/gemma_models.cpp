@@ -3,6 +3,7 @@
 #include "gemma_models.h"
 #include "decoder_models.h"
 #include "qwen35_kernels.h"
+#include "moe_kernels.h"
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <ATen/ops/_cudnn_attention_forward.h>
@@ -41,12 +42,18 @@ class Gemma final : public Model {
     auto logits=at::linear(routing,w(p+"router.proj.weight").to(at::kFloat));
     auto count=integer("num_experts",0),top=integer("top_k_experts",8);
     TORCH_CHECK(count>0 && top>0 && top<=count,"Invalid Gemma4 MoE routing geometry");
+    const auto& gate_up=w(p+"experts.gate_up_proj");const auto& down=w(p+"experts.down_proj");
+    auto act=string("hidden_activation","gelu_pytorch_tanh");
+    if(device.is_cuda() && dtype==at::kBFloat16 && count==128 && top==8 && hidden==2816 && down.size(2)==704 &&
+       (act=="gelu_pytorch_tanh" || act=="gelu_new")) {
+      auto output=routed_moe_cuda(input,logits,gate_up,down,true,w(p+"router.per_expert_scale").to(at::kFloat).contiguous());
+      if(output.defined())return norm(dense,p+"post_feedforward_layernorm_1")+norm(output,p+"post_feedforward_layernorm_2");
+    }
     // Stable descending order gives lower expert IDs precedence on tied logits.
     auto ids=std::get<1>(at::sort(logits,true,-1,true)).narrow(-1,0,top);
     auto probability=at::softmax(logits,-1).gather(-1,ids);
     probability=probability/probability.sum(-1,true);
     probability=probability*w(p+"router.per_expert_scale").to(at::kFloat).index_select(0,ids.reshape({-1})).view_as(ids);
-    const auto& gate_up=w(p+"experts.gate_up_proj");const auto& down=w(p+"experts.down_proj");
     auto activation=[&](const at::Tensor& gu) {
 #ifdef TEI_TORCH_CUDA_KERNELS
       auto act=string("hidden_activation","gelu_pytorch_tanh");
@@ -221,7 +228,8 @@ class Gemma final : public Model {
     auto ix=at::arange(height*width,image.pixels.options().dtype(at::kLong));
     auto columns=ix.remainder(width),rows=at::floor_divide(ix,width);
     auto table=vw("vision_tower.patch_embedder.position_embedding_table");
-    auto states=vl((image.pixels-.5)*2.,"vision_tower.patch_embedder.input_proj")+
+    // Normalize source pixels in FP32 before the projection's activation cast.
+    auto states=vl(((image.pixels.to(at::kFloat)-.5)*2.).to(dtype),"vision_tower.patch_embedder.input_proj")+
       table.select(0,0).index_select(0,columns)+table.select(0,1).index_select(0,rows);
     auto col_angles=columns.to(at::kFloat).unsqueeze(1)*vision_frequency,row_angles=rows.to(at::kFloat).unsqueeze(1)*vision_frequency;
     auto cos=at::cat({col_angles.cos(),row_angles.cos()},-1).to(dtype).unsqueeze(1);

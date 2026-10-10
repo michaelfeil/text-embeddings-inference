@@ -120,6 +120,18 @@ int main(int argc,char** argv) {
       TORCH_CHECK(!at::allclose(output.narrow(0,0,5),with_image.narrow(0,0,5)),family," vision features were ignored");
       TORCH_CHECK(at::allclose(output.narrow(0,5,2),with_image.narrow(0,5,2),1e-5,1e-6),family," image injection leaked across sequence boundaries");
       std::cout<<family<<": natural-resolution vision injection/isolation passed\n";
+      Weights bf16_weights;
+      for(const auto& [name,value]:f.weights)bf16_weights[name]=value.to(at::kBFloat16);
+      auto bf16_visual=create_gemma(f.cfg,bf16_weights,c10::Device("cpu"),at::kBFloat16);bf16_visual->ready();
+      auto precise=bf16_visual->forward(batch);
+      auto canonical=batch;
+      // Distinct FP32 pixels whose normalized projection inputs are identical
+      // after BF16 rounding must produce identical complete model outputs.
+      canonical.images[0].pixels=((batch.images[0].pixels-.5)*2.).to(at::kBFloat16).to(at::kFloat)*.5+.5;
+      TORCH_CHECK(at::equal(precise,bf16_visual->forward(canonical)),family," vision normalized source pixels after premature activation cast");
+      auto rounded=batch;rounded.images[0].pixels=batch.images[0].pixels.to(at::kBFloat16).to(at::kFloat);
+      TORCH_CHECK(!at::equal(precise,bf16_visual->forward(rounded)),family," vision pixel precision regression fixture was insensitive to premature BF16 conversion");
+      std::cout<<family<<": FP32 image normalization before BF16 projection passed\n";
       if(f.embedding2) {
         f.cfg.values["audio_config.hidden_size"]="8";f.cfg.values["audio_config.num_attention_heads"]="2";
         f.cfg.values["audio_config.num_hidden_layers"]="1";f.cfg.values["audio_config.attention_chunk_size"]="2";

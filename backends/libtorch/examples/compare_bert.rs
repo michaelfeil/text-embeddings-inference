@@ -93,17 +93,45 @@ fn main() {
         serde_json::from_slice(&std::fs::read(path.join("config.json")).unwrap()).unwrap();
     let vocab = u32::try_from(config["vocab_size"].as_u64().unwrap()).unwrap();
     assert!(vocab > 0);
-    let special = |primary: &str, secondary: &str, fallback: u64| {
-        let value = config[primary]
-            .as_u64()
-            .or_else(|| config[secondary].as_u64())
-            .unwrap_or(fallback);
-        let value = u32::try_from(value).unwrap();
-        assert!(value < vocab, "Special token ID exceeds vocabulary");
-        value
-    };
-    let cls = special("cls_token_id", "bos_token_id", 101);
-    let sep = special("sep_token_id", "eos_token_id", 102);
+    let tokenizer: serde_json::Value = std::fs::read(path.join("tokenizer_config.json"))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .unwrap_or(serde_json::Value::Null);
+    let special =
+        |primary: &str, secondary: &str, token: &str, default_token: &str, fallback: u64| {
+            let configured = config[primary]
+                .as_u64()
+                .map(|value| (value, format!("config.{primary}")));
+            let content = tokenizer[token]
+                .as_str()
+                .or_else(|| tokenizer[token]["content"].as_str())
+                .unwrap_or(default_token);
+            let decoded = tokenizer["added_tokens_decoder"]
+                .as_object()
+                .and_then(|tokens| {
+                    tokens.iter().find_map(|(id, entry)| {
+                        (entry["content"].as_str() == Some(content))
+                            .then(|| id.parse::<u64>().ok())
+                            .flatten()
+                            .map(|value| {
+                                (value, format!("tokenizer_config.added_tokens_decoder.{id}"))
+                            })
+                    })
+                });
+            let (value, source) = configured
+                .or(decoded)
+                .or_else(|| {
+                    config[secondary]
+                        .as_u64()
+                        .map(|value| (value, format!("config.{secondary}")))
+                })
+                .unwrap_or((fallback, "legacy fallback".into()));
+            let value = u32::try_from(value).unwrap();
+            assert!(value < vocab, "Special token ID exceeds vocabulary");
+            (value, source)
+        };
+    let (cls, cls_source) = special("cls_token_id", "bos_token_id", "cls_token", "[CLS]", 101);
+    let (sep, sep_source) = special("sep_token_id", "eos_token_id", "sep_token", "[SEP]", 102);
     let family = config["model_type"].as_str().expect("model_type");
     let position_offset = match family {
         "roberta" | "xlm-roberta" | "camembert" => {
@@ -213,7 +241,7 @@ fn main() {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":"float16",
-        "pooling":pool_name,"cls_token_id":cls,"sep_token_id":sep,"vocab_size":vocab,"position_offset":position_offset,"model_type":family,"checkpoint_revision":checkpoint_revision,"input_pattern":"synthetic valid vocabulary IDs with configured special tokens and router position offset; no padding","iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        "pooling":pool_name,"cls_token_id":cls,"sep_token_id":sep,"special_token_sources":{"cls":cls_source,"sep":sep_source},"vocab_size":vocab,"position_offset":position_offset,"model_type":family,"checkpoint_revision":checkpoint_revision,"input_pattern":"synthetic valid vocabulary IDs with configured special tokens and router position offset; no padding","iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows}))
         .unwrap()
     );

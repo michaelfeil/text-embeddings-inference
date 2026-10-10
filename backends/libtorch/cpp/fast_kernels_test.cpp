@@ -9,7 +9,7 @@ void close(const at::Tensor& x,const at::Tensor& expected,double tolerance,const
 int main(){c10::InferenceMode guard;
  for(auto dtype:{at::kHalf,at::kBFloat16,at::kFloat}) {
   auto opts=at::TensorOptions().device(at::kCUDA).dtype(dtype);
-  for(int width:{7,16,63,128,257,513,768,769,1024,1152,4096,8192}) {
+  for(int width:{7,16,63,128,257,513,768,769,1024,1152,2048,4096,8192}) {
    auto x=at::randn({33,width},opts),r=at::randn_like(x),r2=at::randn_like(x);
    auto w=at::randn({width},opts),b=at::randn({width},opts);
    auto tol=dtype==at::kBFloat16?0.04:dtype==at::kHalf?0.006:0.00001;
@@ -17,7 +17,12 @@ int main(){c10::InferenceMode guard;
    close(tei::fused_add_layer_norm(x,r,w,b,1e-5,r2),at::layer_norm(x+r+r2,{width},w,b,1e-5),tol,"two residual LN");
    auto rms=tei::fused_add_rms_norm(x,r,w,1e-5);
    close(rms.second,x+r,0,"RMS residual output");
-   close(rms.first,std::get<0>(at::_fused_rms_norm((x+r).contiguous(),{width},w,1e-5)),tol,"residual RMSNorm");
+   auto unrounded=x.to(at::kFloat)+r.to(at::kFloat);
+   auto rms_reference=(unrounded*at::rsqrt(unrounded.square().mean(-1,true)+1e-5))*w.to(at::kFloat);
+   close(rms.first,rms_reference.to(dtype),tol,"unrounded residual RMSNorm");
+   auto initial=tei::fused_add_rms_norm(x,{},w,1e-5);
+   close(initial.second,x,0,"Initial RMS residual aliases original input");
+   TORCH_CHECK(initial.second.data_ptr()==x.data_ptr(),"Initial RMS residual must reuse input storage");
    auto both=at::randn({33,2*width},opts);
    for(int code=0;code<4;++code)for(bool gate_first:{false,true}) {
      auto gate=both.narrow(-1,gate_first?0:width,width),up=both.narrow(-1,gate_first?width:0,width);
@@ -83,5 +88,16 @@ int main(){c10::InferenceMode guard;
    close(actual.second,ref(k,kw),dtype==at::kBFloat16?0.0625:0.008,"K norm+RoPE");
   }
   std::cout<<dtype<<" fused CUDA operator parity passed\n";
+ }
+ {
+  auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kBFloat16);
+  auto x=at::ones({2,256},opts);x.narrow(-1,128,128).fill_(2);
+  auto residual=at::full_like(x,.005),weight=at::full({256},64.,opts);
+  auto exact=x.to(at::kFloat)+residual.to(at::kFloat);
+  auto reference=(exact*at::rsqrt(exact.square().mean(-1,true)+1e-5)*weight.to(at::kFloat)).to(at::kBFloat16);
+  auto rounded=x+residual;
+  auto wrong=std::get<0>(at::_fused_rms_norm(rounded,{256},weight,1e-5));
+  TORCH_CHECK((wrong-reference).abs().max().item<float>()>=.125,"Residual rounding fixture must distinguish semantics");
+  close(tei::fused_add_rms_norm(x,residual,weight,1e-5).first,reference,0,"RMS statistics retain FP32 residual sum");
  }
 }

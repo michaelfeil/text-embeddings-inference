@@ -1,4 +1,5 @@
 #include "decoder_models.h"
+#include "moe_kernels.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
 #include <ATen/cuda/CUDAContext.h>
@@ -169,7 +170,13 @@ class Decoder final : public Model {
 #endif
       return at::linear(activate(both.narrow(-1, 0, width)) * both.narrow(-1, width, width), layer.down, layer.down_bias);
     }
-    auto probabilities = at::softmax(at::linear(x, layer.router).to(at::kFloat), -1);
+    auto logits=at::linear(x, layer.router).to(at::kFloat);
+    if(top_k==8&&layer.grouped_down.defined()) {
+      auto native=routed_moe_cuda(x,logits,layer.grouped_gate_up.transpose(-2,-1),
+        layer.grouped_down.transpose(-2,-1),renormalize);
+      if(native.defined())return native;
+    }
+    auto probabilities = at::softmax(logits, -1);
     // Stable sorting gives Candle's lower-expert-index tie break. Routing remains on-device.
     auto ids = at::argsort(probabilities, true, -1, true).narrow(-1, 0, top_k);
     auto routing = probabilities.gather(-1, ids);

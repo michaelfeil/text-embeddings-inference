@@ -1,5 +1,8 @@
 #include "cuda_graph.h"
 #include "decoder_models.h"
+#include "fast_kernels.h"
+#include <ATen/ops/_fused_rms_norm.h>
+#include <ATen/ops/_flash_attention_forward.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 using namespace tei;
@@ -36,7 +39,7 @@ public:
   return result.unsqueeze(1);
  }
 };
-std::unique_ptr<Model> tiny_decoder() {
+std::unique_ptr<Model> tiny_decoder(Weights* fixture=nullptr) {
  Options cfg;cfg.values={{"model_type","qwen3"},{"hidden_size","16"},{"num_attention_heads","2"},{"num_key_value_heads","1"},{"head_dim","8"},{"intermediate_size","24"},{"num_hidden_layers","1"},{"vocab_size","32"},{"max_position_embeddings","32"}};
  Weights w;auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kHalf);
  auto add=[&](std::string name,std::initializer_list<int64_t> shape,bool norm=false){w[name]=norm?at::ones(at::IntArrayRef(shape),opts):at::randn(at::IntArrayRef(shape),opts)*.1;};
@@ -45,9 +48,10 @@ std::unique_ptr<Model> tiny_decoder() {
  add(p+"self_attn.q_proj.weight",{16,16});add(p+"self_attn.k_proj.weight",{8,16});add(p+"self_attn.v_proj.weight",{8,16});add(p+"self_attn.o_proj.weight",{16,16});
  add(p+"self_attn.q_norm.weight",{8},true);add(p+"self_attn.k_norm.weight",{8},true);
  add(p+"mlp.gate_proj.weight",{24,16});add(p+"mlp.up_proj.weight",{24,16});add(p+"mlp.down_proj.weight",{16,24});
+ if(fixture)*fixture=w;
  auto result=create_decoder(cfg,w,c10::Device("cuda:0"),at::kHalf);result->ready();return result;
 }
-int main(){c10::InferenceMode guard;auto decoder=tiny_decoder();auto& model=*decoder;CudaGraphCache cache(2,8);
+int main(){c10::InferenceMode guard;Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;CudaGraphCache cache(2,8);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);
@@ -70,11 +74,29 @@ int main(){c10::InferenceMode guard;auto decoder=tiny_decoder();auto& model=*dec
  auto visual_indices=at::tensor({int64_t(1)},options),visual=at::ones({1,16},options.dtype(at::kHalf))*.25;
  auto injected=decoder_multimodal_forward(model,input,visual_indices,visual,cosine,sine);
  auto withzero=decoder_multimodal_forward(model,input,visual_indices,visual,cosine,sine,{at::zeros_like(visual)});
- TORCH_CHECK((injected-withzero).abs().max().item<float>()<0.0001,"Deepstack residual materialization changed decoder output");
+ // Candle's visual forward explicitly materializes h+r in model dtype
+ // before adding deepstack features, even when those features are zero.
+ // Compare that ordering rather than assuming a zero feature bypasses it.
+ auto initial=at::embedding(fixture.at("model.embed_tokens.weight"),ids);
+ initial.index_copy_(0,visual_indices,visual);
+ const std::string p="model.layers.0.";
+ auto n=tei::fused_add_rms_norm(initial,{},fixture.at(p+"input_layernorm.weight"),1e-6).first;
+ auto projection=at::cat({fixture.at(p+"self_attn.q_proj.weight"),fixture.at(p+"self_attn.k_proj.weight"),fixture.at(p+"self_attn.v_proj.weight")},0);
+ auto qkv=at::linear(n,projection).view({3,4,8});
+ auto q=std::get<0>(at::_fused_rms_norm(qkv.narrow(1,0,2).contiguous(),{8},fixture.at(p+"self_attn.q_norm.weight"),1e-6));
+ auto k=std::get<0>(at::_fused_rms_norm(qkv.narrow(1,2,1).contiguous(),{8},fixture.at(p+"self_attn.k_norm.weight"),1e-6));
+ auto rotated=tei::fused_rotary(q,k,cosine.view({3,1,4}),sine.view({3,1,4}));
+ auto attention=std::get<0>(at::_flash_attention_forward(rotated.first,rotated.second,qkv.narrow(1,3,1),cu,cu,3,3,0.,true,false)).contiguous().view({3,16});
+ auto post=tei::fused_add_rms_norm(at::linear(attention,fixture.at(p+"self_attn.o_proj.weight")),initial,fixture.at(p+"post_attention_layernorm.weight"),1e-6);
+ auto gu=at::linear(post.first,at::cat({fixture.at(p+"mlp.gate_proj.weight"),fixture.at(p+"mlp.up_proj.weight")},0));
+ auto materialized=at::linear(tei::fused_gated_activation(gu,5),fixture.at(p+"mlp.down_proj.weight"))+post.second;
+ materialized=materialized.index_add(0,visual_indices,at::zeros_like(visual));
+ auto reference=tei::fused_add_rms_norm(materialized,{},fixture.at("model.norm.weight"),1e-6).first;
+ TORCH_CHECK((withzero-reference).abs().max().item<float>()<0.0001,"Deepstack did not follow Candle residual materialization ordering");
  auto deepstack=at::arange(16,options.dtype(at::kHalf)).view({1,16})*.07;
  auto withdeep=decoder_multimodal_forward(model,input,visual_indices,visual,cosine,sine,{deepstack});
- TORCH_CHECK((withdeep-injected).abs().max().item<float>()>0.001,"CUDA deepstack features were ignored");
- TORCH_CHECK((withdeep[0]-injected[0]).abs().max().item<float>()<0.0001,"CUDA deepstack crossed causal token boundary");
+ TORCH_CHECK((withdeep-withzero).abs().max().item<float>()>0.001,"CUDA deepstack features were ignored");
+ TORCH_CHECK((withdeep[0]-withzero[0]).abs().max().item<float>()<0.0001,"CUDA deepstack crossed causal token boundary");
  Uncapturable unsupported;CudaGraphCache fallback;
  for(int i=0;i<2;++i){auto actual=fallback.forward(unsupported,input);TORCH_CHECK(actual[0][0].item<float>()==12,"Graph fallback changed result");}
  TORCH_CHECK(fallback.size()==0,"Unsupported model unexpectedly captured");

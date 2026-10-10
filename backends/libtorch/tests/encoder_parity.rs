@@ -664,3 +664,79 @@ fn input_json_batch(path: &std::path::Path) -> Batch {
     input.raw_indices.clear();
     input
 }
+
+#[cfg(feature = "benchmark-cuda")]
+#[test]
+fn pretrained_deberta_classifier_cuda_matches_candle() {
+    let Some(path) = std::env::var_os("TEI_ENCODER_PRETRAINED") else {
+        return;
+    };
+    let path = PathBuf::from(path);
+    let config: serde_json::Value =
+        serde_json::from_slice(&fs::read(path.join("config.json")).unwrap()).unwrap();
+    if config["model_type"] != "deberta-v2" {
+        return;
+    }
+    // Build Candle with its experimental-deberta feature and pinned FA4 AOT bundle.
+    let torch = LibtorchBackend::new(&path, "float16", ModelType::Classifier, "cuda:2").unwrap();
+    let candle =
+        CandleBackend::new(&path, "float16".into(), ModelType::Classifier, None, 3).unwrap();
+    for lengths in [
+        vec![32],
+        vec![128; 8],
+        (0..32).map(|i| 32 + i % 8 * 32).collect(),
+        vec![512; 32],
+    ] {
+        let mut input = batch();
+        input.input_ids.clear();
+        input.position_ids.clear();
+        input.cumulative_seq_lengths = vec![0];
+        for (row, &length) in lengths.iter().enumerate() {
+            input.input_ids.extend((0..length).map(|i| {
+                if i == 0 {
+                    1
+                } else if i + 1 == length {
+                    2
+                } else {
+                    (1000 + (i * 17 + row * 31) % 20000) as u32
+                }
+            }));
+            input.position_ids.extend((0..length).map(|i| i as u32));
+            input
+                .cumulative_seq_lengths
+                .push(input.input_ids.len() as u32);
+        }
+        input.token_type_ids = vec![0; input.input_ids.len()];
+        input.max_length = *lengths.iter().max().unwrap() as u32;
+        input.pooled_indices = (0..lengths.len() as u32).collect();
+        input.raw_indices.clear();
+        let actual = torch.predict(input.clone()).unwrap();
+        let expected = candle.predict(input).unwrap();
+        let mut minimum = 1_f64;
+        let mut maximum = 0_f32;
+        for row in 0..lengths.len() {
+            let a = &actual[&row];
+            let b = &expected[&row];
+            assert_eq!(a.len(), b.len());
+            let mut dot = 0_f64;
+            let mut aa = 0_f64;
+            let mut bb = 0_f64;
+            for (&x, &y) in a.iter().zip(b) {
+                assert!(x.is_finite() && y.is_finite());
+                dot += x as f64 * y as f64;
+                aa += (x as f64).powi(2);
+                bb += (y as f64).powi(2);
+                maximum = maximum.max((x - y).abs());
+            }
+            let cosine = dot / (aa * bb).sqrt();
+            minimum = minimum.min(cosine);
+            assert!(
+                cosine >= 0.999,
+                "DeBERTa classifier row {row} cosine {cosine}"
+            );
+        }
+        println!(
+            "DeBERTa classifier lengths {lengths:?}: minimum cosine {minimum}, max abs {maximum}"
+        );
+    }
+}

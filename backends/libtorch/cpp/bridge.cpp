@@ -76,9 +76,9 @@ struct Bert : tei::Model {
   at::Tensor activated_linear(const at::Tensor& x,const std::string& name) const {
     // Candle HiddenAct::Gelu is tanh GELU. Its CUDA linear fuses the same
     // cuBLASLt epilogue; avoid writing then rereading the full intermediate.
-    if(x.is_cuda())return at::_addmm_activation(w(name+".bias"),x,w(name+".weight").t(),1,1,config.activation!=2);
+    if(x.is_cuda()&&config.activation!=3)return at::_addmm_activation(w(name+".bias"),x,w(name+".weight").t(),1,1,config.activation!=2);
     auto projected=linear(x,name);
-    return config.activation==2?at::relu(projected):at::gelu(projected,"tanh");
+    return config.activation==3?at::silu(projected):config.activation==2?at::relu(projected):at::gelu(projected,"tanh");
   }
   at::Tensor norm(const at::Tensor& x, const std::string& name) const {
     return at::layer_norm(x, {config.hidden}, w(name + ".weight"), w(name + ".bias"), config.epsilon);
@@ -162,7 +162,7 @@ struct Bert : tei::Model {
       bias = tei::weight(weights, "lm_head.bias");
     } else {
       transformed = root_linear(h, "cls.predictions.transform.dense");
-      transformed = config.activation == 2 ? at::relu(transformed) : at::gelu(transformed, "tanh");
+      transformed = config.activation == 3 ? at::silu(transformed) : config.activation == 2 ? at::relu(transformed) : at::gelu(transformed, "tanh");
       transformed = at::layer_norm(transformed, {config.hidden}, tei::weight(weights, "cls.predictions.transform.LayerNorm.weight"), tei::weight(weights, "cls.predictions.transform.LayerNorm.bias"), config.epsilon);
       matrix = weights.count("cls.predictions.decoder.weight") ? weights.at("cls.predictions.decoder.weight") : w("embeddings.word_embeddings.weight");
       bias = tei::weight(weights, "cls.predictions.bias");
@@ -198,7 +198,7 @@ struct Bert : tei::Model {
         // ragged batches with maximum length 256, despite a similar token total.
         if (cudnn_varlen && max_sequence >= 512) {
           attended = std::get<0>(at::_cudnn_attention_forward(q, k, v, std::nullopt,
-            cumulative, cumulative, max_sequence, max_sequence, true, 0.0, false, false));
+            cumulative, cumulative, max_sequence, max_sequence, false, 0.0, false, false));
         } else {
           attended = std::get<0>(at::_flash_attention_forward(
             q, k, v, cumulative, cumulative, max_sequence, max_sequence,
@@ -260,6 +260,9 @@ struct Engine {
     if (!model) model = tei::create_gemma(options, weights, device, dtype);
     if (!model) model = tei::create_multimodal(options, weights, device, dtype);
     if (!model && (family == "bert" || family == "roberta" || family == "xlm-roberta" || family == "camembert")) {
+      const auto activation=options.string("hidden_act","gelu");
+      TORCH_CHECK(activation=="gelu"||activation=="gelu_new"||activation=="gelu_pytorch_tanh"||activation=="relu"||activation=="silu",
+        "Unsupported native BERT activation: ",activation);
       auto bert = std::make_unique<Bert>(config, device, dtype);
       bert->options = options;
       bert->weights = std::move(weights);
@@ -295,7 +298,11 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
  TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
  if(media_positions)packed.multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options).to(model.device);
  for(size_t i=0;i<image_count;++i){const auto& item=images[i];
-  const auto image_dtype=model.options.string("model_type").starts_with("qwen3_5")?at::kHalf:model.dtype;
+  const auto family=model.options.string("model_type");
+  // Gemma normalizes incoming pixels in F32 before casting for projection.
+  // Casting the raw pixels first loses precision before that normalization.
+  const bool gemma_image=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
+  const auto image_dtype=gemma_image?at::kFloat:family.starts_with("qwen3_5")?at::kHalf:model.dtype;
   auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat)).to(model.device,image_dtype);
   packed.images.push_back({pixels,{item.grid[0],item.grid[1],item.grid[2]},item.merge_size,item.token_start,item.token_count,item.sequence_start});
  }

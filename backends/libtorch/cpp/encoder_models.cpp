@@ -224,8 +224,8 @@ struct Encoder final : Model {
     }
     return output + w(p + "mlp.experts.bias");
   }
-  at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1) const {
-    return packed_attention(q, k, v, input, 1.0 / std::sqrt(hidden / heads), false, window, window, alibi);
+  at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
+    return packed_attention(q, k, v, input, 1.0 / std::sqrt(hidden / heads), false, window, window, alibi, bias);
   }
   at::Tensor forward(const PackedInput& input) const override {
     at::Tensor h, modern_residual;
@@ -236,6 +236,10 @@ struct Encoder final : Model {
       if (family == Family::Distil || ((family == Family::Jina || family == Family::JinaCode) && !alibi)) h = h + at::embedding(w("embeddings.position_embeddings.weight"), input.positions);
       h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
     }
+    // All Jina layers share slopes and local positions, so materialize their
+    // packed bias once per request rather than once per layer.
+    std::optional<at::Tensor> attention_bias;
+    if(alibi && h.is_cuda())attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
     bool scaled = family == Family::Nomic && local_cos.defined() && input.max_sequence > o.integer("max_trained_positions", 2048);
     at::Tensor cos_global, sin_global, cos_local, sin_local;
     if (global_cos.defined()) {
@@ -281,7 +285,7 @@ struct Encoder final : Model {
         q = norm(q.reshape({h.size(0), hidden}), p + "attention.self.layer_norm_q").view_as(q);
         k = norm(k.reshape({h.size(0), hidden}), p + "attention.self.layer_norm_k").view_as(k);
       }
-      auto a = attend(q, k, v, input, local ? o.integer("local_attention", 128) / 2 : -1).contiguous().view({h.size(0), hidden});
+      auto a = attend(q, k, v, input, local ? o.integer("local_attention", 128) / 2 : -1, attention_bias).contiguous().view({h.size(0), hidden});
       const auto output = p + (family == Family::Distil ? "attention.out_lin" : family == Family::Modern ? "attn.Wo" : family == Family::Nomic ? "attn.out_proj" : family == Family::Gte ? "attention.o_proj" : "attention.output.dense");
       auto residual = h;
       auto projected = linear(a, output);

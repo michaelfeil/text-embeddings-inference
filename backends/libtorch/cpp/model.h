@@ -67,36 +67,44 @@ inline const at::Tensor& weight(const Weights& weights, const std::string& name)
   TORCH_CHECK(it != weights.end(), "Missing model weight: ", name);
   return it->second;
 }
+// PyTorch 2.14.1 validates a bias with logical total-token dimensions, while
+// its varlen efficient-attention kernel reads sequence-local query/key offsets.
+// Overlapping read-only strides express one shared ALiBi tile per head. The
+// backing allocation covers every logical view address (including unused tails),
+// and grows as total*max_sequence + heads*max_sequence^2, never total^2.
+// Q/K/V retain precisely the real packed tokens; only bias storage is aligned.
+inline at::Tensor packed_alibi_bias(const at::Tensor& q, const PackedInput& input,
+                                    const at::Tensor& slopes,
+                                    int64_t window_left = -1, int64_t window_right = -1) {
+  const int64_t total=q.size(0), heads=q.size(1), length=input.max_sequence;
+  TORCH_CHECK(total>0 && length>0 && length<=total && heads>0, "Invalid packed ALiBi dimensions");
+  const int64_t stride=((length+7)/8)*8, tile=length*stride;
+  const int64_t backing=(heads-1)*tile+(total-1)*stride+total;
+  auto storage=at::empty({backing},q.options());
+  auto local=storage.as_strided({heads,length,length},{tile,stride,1});
+  auto idx=at::arange(length,q.options().dtype(at::kLong));
+  auto delta=idx.unsqueeze(0)-idx.unsqueeze(1);
+  local.copy_((-slopes.view({heads,1,1})*delta.abs()).to(q.scalar_type()));
+  if(window_left>=0)local.masked_fill_(delta < -window_left,-INFINITY);
+  if(window_right>=0)local.masked_fill_(delta > window_right,-INFINITY);
+  return storage.as_strided({1,heads,total,total},{0,tile,stride,1});
+}
 // Q/K/V are packed [total_tokens, heads, head_dim]; cumulative offsets delimit sequences.
 inline at::Tensor packed_attention(const at::Tensor& q, const at::Tensor& k,
                                    const at::Tensor& v, const PackedInput& input,
                                    double scale, bool causal = false,
                                    int64_t window_left = -1, int64_t window_right = -1,
-                                   const std::optional<at::Tensor>& alibi = std::nullopt) {
+                                   const std::optional<at::Tensor>& alibi = std::nullopt,
+                                   const std::optional<at::Tensor>& prepared_bias = std::nullopt) {
   if (q.is_cuda()) {
     if (alibi) {
-      // PyTorch's prebuilt FlashAttention disables ALiBi despite exposing it in
-      // the operator schema. Use its memory-efficient varlen operator for each
-      // exact-length sequence; do not create a quadratic total_tokens bias or
-      // padded Q/K/V. Bias rows have aligned storage strides, not padded tokens.
-      std::vector<at::Tensor> results;
-      for (int64_t row = 0; row < input.batch; ++row) {
-        const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
-        auto idx = at::arange(length, q.options().dtype(at::kLong));
-        auto delta = idx.unsqueeze(0) - idx.unsqueeze(1);
-        const int64_t stride = ((length + 7) / 8) * 8;
-        auto bias = at::empty_strided({1,q.size(1),length,length},
-          {q.size(1)*length*stride,length*stride,stride,1}, q.options());
-        bias.copy_((-alibi->view({1,q.size(1),1,1}) * delta.abs()).to(q.scalar_type()));
-        if (window_left >= 0) bias.masked_fill_(delta < -window_left, -INFINITY);
-        if (window_right >= 0) bias.masked_fill_(delta > window_right, -INFINITY);
-        auto cumulative = input.cumulative.narrow(0,row,2) - start;
-        auto slice = [&](const at::Tensor& t) { return t.narrow(0,start,length).unsqueeze(0); };
-        results.push_back(std::get<0>(at::_efficient_attention_forward(
-          slice(q),slice(k),slice(v),bias,cumulative,cumulative,length,length,
-          0.0,causal ? 1 : 0,false,scale)).squeeze(0));
-      }
-      return at::cat(results,0);
+      // The prebuilt Torch Flash operator disables ALiBi. Its efficient
+      // operator accepts actual packed Q/K/V and cumulative sequence offsets.
+      auto bias=prepared_bias.value_or(at::Tensor());
+      if(!bias.defined())bias=packed_alibi_bias(q,input,*alibi,window_left,window_right);
+      return std::get<0>(at::_efficient_attention_forward(
+        q.unsqueeze(0),k.unsqueeze(0),v.unsqueeze(0),bias,input.cumulative,input.cumulative,
+        input.max_sequence,input.max_sequence,0.0,causal ? 1 : 0,false,scale)).squeeze(0);
     }
     return std::get<0>(at::_flash_attention_forward(q, k, v, input.cumulative,
       input.cumulative, input.max_sequence, input.max_sequence, 0.0, causal,

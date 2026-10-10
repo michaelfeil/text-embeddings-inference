@@ -82,28 +82,40 @@ Raw measurements: [tei-mistral-lt32-v2-graphs-0-1.json](tei-mistral-lt32-v2-grap
 
 ## Additional trained families and remaining gaps
 
-These runs use exact packed mean pooling. Graph-enabled model execution is warmed; capture and cache misses are excluded. Visual inputs are synthetic patches with valid geometry, so these results validate checkpoint consumption and backend parity rather than real-image retrieval quality.
+These runs use exact packed mean pooling, except DistilBERT (CLS). Graph-enabled model execution is warmed; capture and cache misses are excluded. Visual inputs are synthetic patches with valid geometry, so these results validate checkpoint consumption and backend parity rather than real-image retrieval quality.
 
 | Checkpoint | Workloads per assignment | Worst P50 slowdown | Minimum cosine | Result |
 |---|---:|---:|---:|---|
+| DistilBERT base uncased | 7 | +3.82% | 0.999997784 | Meets measured target |
 | ModernBERT embed base | 7 | -8.82% | 0.999893990 | Meets measured target |
 | Nomic embed text v1.5 | 7 | -44.68% | 0.999998367 | Meets measured target |
 | Qwen3-VL embedding 2B | 9 | +1.49% | 0.999994471 | Meets measured target |
 | Qwen3.5 0.8B | 9 | -24.68% | 0.999961894 | Meets measured target |
-| DistilRoBERTa v1 | 7 | +5.06% | 0.999997893 | Latency target incomplete |
-| Jina v2 base en | 7 | +116.98% | 0.999996964 | Latency target incomplete |
-| Jina v2 base code | 7 | +91.86% | 0.999987606 | Latency target incomplete |
+| DistilRoBERTa v1 | 7 | +4.75% | 0.999997893 | Meets measured target |
+| Jina v2 base en | 7 | -38.09% | 0.999996964 | Meets measured target |
+| Jina v2 base code | 7 | -42.61% | 0.999987606 | Meets measured target |
 
-ModernBERT still has a separate arbitrary-ID MLM checkpoint parity failure; its embedding checkpoint passes the retained arbitrary-ID mean regression (cosine >=0.999552693). Qwen3-VL uses FP16 last-token pooling; Qwen3.5 uses BF16 mean pooling. Media graph capture was verified in isolated image and ragged-image runs. Jina attention preserves ALiBi with exact-length native Torch efficient attention per sequence; this currently causes a substantial batched latency gap.
+ModernBERT still has a separate arbitrary-ID MLM checkpoint parity failure; its embedding checkpoint passes the retained arbitrary-ID mean regression (cosine >=0.999552693). Qwen3-VL uses FP16 last-token pooling; Qwen3.5 uses BF16 mean pooling. Media graph capture was verified in isolated image and ragged-image runs. Jina now preserves ALiBi in a single packed Torch efficient-attention call per layer. Its shared local bias uses bounded overlapping read-only strides; Q/K/V retain actual token counts. Independent FP16/BF16 attention, sequence-isolation and NaN-unused-storage tests pass. Both checkpoints retain the same trained parity as the earlier per-sequence implementation. The previous 32–117% batched slowdowns are retained as historical reports below.
 
 Raw paired measurements:
 
+- DistilBERT base uncased: [tei-distilbert-packedalibi-final-graphs-benchmark-2-3.json](tei-distilbert-packedalibi-final-graphs-benchmark-2-3.json), [tei-distilbert-fused-graphs-benchmark-3-2.json](tei-distilbert-fused-graphs-benchmark-3-2.json).
 - ModernBERT embed base: [tei-modernbert-embed-mean-packedpool-graphs-benchmark-2-3.json](tei-modernbert-embed-mean-packedpool-graphs-benchmark-2-3.json), [tei-modernbert-embed-mean-packedpool-graphs-benchmark-3-2.json](tei-modernbert-embed-mean-packedpool-graphs-benchmark-3-2.json).
 - Nomic embed text v1.5: [tei-nomic-mean-packedpool-graphs-benchmark-2-3.json](tei-nomic-mean-packedpool-graphs-benchmark-2-3.json), [tei-nomic-mean-packedpool-graphs-benchmark-3-2.json](tei-nomic-mean-packedpool-graphs-benchmark-3-2.json).
 - Qwen3-VL embedding 2B: [tei-qwen3vl-full-graphs-4-5-metadata.json](tei-qwen3vl-full-graphs-4-5-metadata.json), [tei-qwen3vl-full-graphs-5-4-metadata.json](tei-qwen3vl-full-graphs-5-4-metadata.json).
 - Qwen3.5 0.8B: [tei-qwen35-full-graphs-fixed-4-5-metadata.json](tei-qwen35-full-graphs-fixed-4-5-metadata.json), [tei-qwen35-full-graphs-fixed-5-4-metadata.json](tei-qwen35-full-graphs-fixed-5-4-metadata.json).
-- DistilRoBERTa v1: [tei-roberta-packed-pool-6-7.json](tei-roberta-packed-pool-6-7.json), [tei-roberta-packed-pool-7-6.json](tei-roberta-packed-pool-7-6.json).
-- Jina v2 base en: [tei-jina-mean-packedpool-graphs-benchmark-2-3.json](tei-jina-mean-packedpool-graphs-benchmark-2-3.json), [tei-jina-mean-packedpool-graphs-benchmark-3-2.json](tei-jina-mean-packedpool-graphs-benchmark-3-2.json).
-- Jina v2 base code: [tei-jina-code-mean-packedpool-graphs-benchmark-2-3.json](tei-jina-code-mean-packedpool-graphs-benchmark-2-3.json), [tei-jina-code-mean-packedpool-graphs-benchmark-3-2.json](tei-jina-code-mean-packedpool-graphs-benchmark-3-2.json).
+- DistilRoBERTa v1: [tei-roberta-cudnn-inference-4-5.json](tei-roberta-cudnn-inference-4-5.json), [tei-roberta-cudnn-inference-5-4.json](tei-roberta-cudnn-inference-5-4.json). These 400-iteration runs disable unused cuDNN backward statistics and preserve the same outputs. Historical packed-pooling runs [6/7](tei-roberta-packed-pool-6-7.json) and [7/6](tei-roberta-packed-pool-7-6.json) include the earlier +5.06% miss.
+- Jina v2 base en: [tei-jina-mean-packedalibi-final-graphs-benchmark-2-3.json](tei-jina-mean-packedalibi-final-graphs-benchmark-2-3.json), [tei-jina-mean-packedalibi-final-graphs-benchmark-3-2.json](tei-jina-mean-packedalibi-final-graphs-benchmark-3-2.json).
+- Jina v2 base code: [tei-jina-code-mean-packedalibi-final-graphs-benchmark-2-3.json](tei-jina-code-mean-packedalibi-final-graphs-benchmark-2-3.json), [tei-jina-code-mean-packedalibi-final-graphs-benchmark-3-2.json](tei-jina-code-mean-packedalibi-final-graphs-benchmark-3-2.json).
 
 EmbeddingGemma2 remains unqualified. Its latest exact-pooling run has minimum text cosine 0.995607, image cosine 0.993262 and audio cosine 0.998332. The image P50 is 4.877 ms versus Candle 4.603 ms. These failures are retained in [the full Gemma run](tei-gemma-exact-pool-full-graphs-4-5.json).
+
+Historical Jina per-sequence Torch attention reports: [Jina 2/3](tei-jina-mean-packedpool-graphs-benchmark-2-3.json), [Jina 3/2](tei-jina-mean-packedpool-graphs-benchmark-3-2.json), [JinaCode 2/3](tei-jina-code-mean-packedpool-graphs-benchmark-2-3.json), [JinaCode 3/2](tei-jina-code-mean-packedpool-graphs-benchmark-3-2.json). Updated Jina/JinaCode artifacts use accepted native library SHA256 `3a97963f4ca9b50757be1ecf7db08f24f6f5ad8293812c3b3bfede271c928793`, FP16 mean pooling, 100 iterations, 20 warmups, graphs enabled and a 16384-token graph cap.
+
+Current decoder failures are retained separately: trained BF16 mean-pooled
+[Nemotron Llama 1B](tei-llama-nemotron-lt32-v5-graphs-6-7.json) passes the
+cosine gate but misses latency by up to 8.59% in a single GPU assignment.
+[Qwen3-30B-A3B](tei-qwen3-moe-v5-failed-0-1.json) stops at the unchanged
+accuracy gate on the first 1x32 workload (cosine 0.998809860); that run does
+not establish latency across the remaining workloads. Correct routing-kernel
+oracles alone do not qualify these complete models.

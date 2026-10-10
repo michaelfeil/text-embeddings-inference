@@ -80,15 +80,52 @@ template<class T,int Columns> __global__ __launch_bounds__(256) void add_norm_re
     if(col<width) out[row*width+col]=T(((values[j]-mean)*inverse)*(weight?float(weight[col]):1.f)+(bias?float(bias[col]):0.f));
   }
 }
-template<class T> __global__ void add_rms_kernel(const T* x,const T* residual,const T* weight,T* out,T* summed,int64_t width,float epsilon) {
+template<class T,int Columns> __global__ void add_rms_kernel(const T* x,const T* residual,const T* weight,T* out,T* summed,int64_t width,float epsilon) {
   const int64_t row=blockIdx.x;float variance=0;
-  for(int64_t col=threadIdx.x;col<width;col+=blockDim.x){
-    T value=residual?T(float(x[row*width+col])+float(residual[row*width+col])):x[row*width+col];
-    summed[row*width+col]=value;variance+=float(value)*float(value);
+  float values[Columns];
+#pragma unroll
+  for(int j=0;j<Columns;++j){
+    auto col=threadIdx.x+j*256;
+    float value=col<width?float(x[row*width+col]):0.f;
+    if(col<width&&residual)value+=float(residual[row*width+col]);
+    // Candle normalizes the unrounded FP32 sum, while its residual output
+    // separately stores that sum in model dtype (round_residual=false).
+    values[j]=value;variance+=value*value;
+    if(col<width&&residual)summed[row*width+col]=T(value);
   }
   float inverse=rsqrtf(block_sum(variance)/width+epsilon);
-  for(int64_t col=threadIdx.x;col<width;col+=blockDim.x)
-    out[row*width+col]=T((float(summed[row*width+col])*inverse)*float(weight[col]));
+#pragma unroll
+  for(int j=0;j<Columns;++j) {
+    auto col=threadIdx.x+j*256;
+    if(col<width)out[row*width+col]=T((values[j]*inverse)*float(weight[col]));
+  }
+}
+template<class T> __global__ void add_rms_large_kernel(const T* x,const T* residual,const T* weight,T* out,T* summed,int64_t width,float epsilon) {
+  const int64_t row=blockIdx.x;float variance=0;
+  for(int64_t col=threadIdx.x;col<width;col+=blockDim.x){
+    float value=float(x[row*width+col]);if(residual)value+=float(residual[row*width+col]);
+    if(residual)summed[row*width+col]=T(value);variance+=value*value;
+  }
+  float inverse=rsqrtf(block_sum(variance)/width+epsilon);
+  for(int64_t col=threadIdx.x;col<width;col+=blockDim.x){
+    float value=float(x[row*width+col]);if(residual)value+=float(residual[row*width+col]);
+    out[row*width+col]=T(value*inverse*float(weight[col]));
+  }
+}
+template<class T> void run_rms(const at::Tensor& x,const at::Tensor& residual,const at::Tensor& weight,at::Tensor& out,at::Tensor& sum,float epsilon,cudaStream_t stream){
+ auto xp=reinterpret_cast<const T*>(x.const_data_ptr());
+ auto rp=residual.defined()?reinterpret_cast<const T*>(residual.const_data_ptr()):nullptr;
+ auto wp=reinterpret_cast<const T*>(weight.const_data_ptr());
+ auto op=reinterpret_cast<T*>(out.mutable_data_ptr());
+ auto sp=residual.defined()?reinterpret_cast<T*>(sum.mutable_data_ptr()):nullptr;
+ auto width=x.size(-1),rows=x.numel()/width;
+#define TEI_RMS_COLUMNS(C) add_rms_kernel<T,C><<<rows,256,0,stream>>>(xp,rp,wp,op,sp,width,epsilon)
+ if(width<=256){TEI_RMS_COLUMNS(1);}else if(width<=512){TEI_RMS_COLUMNS(2);}
+ else if(width<=768){TEI_RMS_COLUMNS(3);}else if(width<=1024){TEI_RMS_COLUMNS(4);}
+ else if(width<=2048){TEI_RMS_COLUMNS(8);}else if(width<=4096){TEI_RMS_COLUMNS(16);}
+ else if(width<=8192){TEI_RMS_COLUMNS(32);}
+ else add_rms_large_kernel<T><<<rows,256,0,stream>>>(xp,rp,wp,op,sp,width,epsilon);
+#undef TEI_RMS_COLUMNS
 }
 template<class T> __global__ void gelu_kernel(const T* x,const T* bias,T* out,int64_t count,int64_t width,bool approximate) {
   int64_t index=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
@@ -214,9 +251,9 @@ at::Tensor fused_add_layer_norm(const at::Tensor& x,const at::Tensor& residual,c
 std::pair<at::Tensor,at::Tensor> fused_add_rms_norm(const at::Tensor& x,const at::Tensor& residual,const at::Tensor& weight,double epsilon) {
   TORCH_CHECK(x.is_cuda()&&x.is_contiguous()&&x.dim()>=2&&x.size(-1)>0,"Fused residual RMSNorm requires contiguous CUDA input");
   validate(x,residual,"residual",true);validate(x,weight,"weight",false);TORCH_CHECK(weight.defined(),"RMSNorm weight must be defined");
-  c10::cuda::CUDAGuard guard(x.device());auto output=at::empty_like(x),sum=at::empty_like(x);if(x.numel()==0)return {output,sum};
+  c10::cuda::CUDAGuard guard(x.device());auto output=at::empty_like(x),sum=residual.defined()?at::empty_like(x):x;if(x.numel()==0)return {output,sum};
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
-#define TEI_RMS_DISPATCH(T) add_rms_kernel<T><<<x.numel()/x.size(-1),256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),residual.defined()?reinterpret_cast<const T*>(residual.const_data_ptr()):nullptr,reinterpret_cast<const T*>(weight.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),reinterpret_cast<T*>(sum.mutable_data_ptr()),x.size(-1),epsilon)
+#define TEI_RMS_DISPATCH(T) run_rms<T>(x,residual,weight,output,sum,epsilon,stream)
   if(x.scalar_type()==at::kHalf){TEI_RMS_DISPATCH(__half);}
   else if(x.scalar_type()==at::kBFloat16){TEI_RMS_DISPATCH(__nv_bfloat16);}
   else if(x.scalar_type()==at::kFloat){TEI_RMS_DISPATCH(float);}
