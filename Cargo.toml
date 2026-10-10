@@ -4,8 +4,6 @@ members = [
     "backends/candle",
     "backends/candle-bench",
     "backends/core",
-    "backends/python",
-    "backends/grpc-client",
     "core",
     "router",
 ]
@@ -13,8 +11,6 @@ default-members = [
     "backends",
     "backends/candle",
     "backends/core",
-    "backends/python",
-    "backends/grpc-client",
     "core",
     "router",
 ]

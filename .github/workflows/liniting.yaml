@@ -25,8 +25,6 @@ jobs:
           toolchain: 1.93.1
           override: true
           components: rustfmt, clippy
-      - name: Install Protoc
-        uses: arduino/setup-protoc@v1
       - name: Clean unused files
         run: |
           sudo rm -rf /usr/local/lib/android # will release about 10 GB if you don't need Android
@@ -56,7 +54,7 @@ jobs:
       - name: Build
         run: |
           cargo build
-          cargo build -F candle -F grpc --no-default-features
+          cargo build -F candle -F http --no-default-features
       - name: Pre-commit checks
         run: |
           pip install pre-commit

@@ -35,15 +35,15 @@ Full-featured script with error handling, parallel builds, and verification.
 
 ## Supported Variants
 
-| Prefix | Architecture | Compute Cap | Dockerfile | gRPC Support |
-|--------|--------------|-------------|------------|--------------|
-| `turing-` | Turing | sm75 | Dockerfile-cuda | ✅ |
-| (none) | Ampere | sm80 | Dockerfile-cuda | ✅ |
-| `86-` | A10 | sm86 | Dockerfile-cuda | ✅ |
-| `89-` | RTX 4000 | sm89 | Dockerfile-cuda | ✅ |
-| `hopper-` | Hopper | sm90 | Dockerfile-cuda | ✅ |
-| `blackwell-` | Datacenter Blackwell | sm100 | Dockerfile-cuda | ✅ |
-| `sm120-` | RTX Blackwell | sm120 | Dockerfile-cuda | ✅ |
+| Prefix | Architecture | Compute Cap | Dockerfile |
+|--------|--------------|-------------|------------|
+| `turing-` | Turing | sm75 | Dockerfile-cuda |
+| (none) | Ampere | sm80 | Dockerfile-cuda |
+| `86-` | A10 | sm86 | Dockerfile-cuda |
+| `89-` | RTX 4000 | sm89 | Dockerfile-cuda |
+| `hopper-` | Hopper | sm90 | Dockerfile-cuda |
+| `blackwell-` | Datacenter Blackwell | sm100 | Dockerfile-cuda |
+| `sm120-` | RTX Blackwell | sm120 | Dockerfile-cuda |
 
 ## Image Naming Convention
 
@@ -54,16 +54,11 @@ Images are tagged following the GitHub Actions conventions:
 - `{prefix}1.8.4` - Full version
 - `{prefix}1.8` - Major.minor version
 
-**gRPC Images:**
-- `{prefix}latest-grpc` - Latest gRPC version
-- `{prefix}1.8.4-grpc` - Full gRPC version
-- `{prefix}1.8-grpc` - Major.minor gRPC version
-
 **Examples:**
 - `ghcr.io/huggingface/text-embeddings-inference:latest` (sm80)
 - `ghcr.io/huggingface/text-embeddings-inference:turing-1.8.4` (sm75)
-- `ghcr.io/huggingface/text-embeddings-inference:blackwell-1.8.4-grpc` (sm100)
-- `ghcr.io/huggingface/text-embeddings-inference:sm120-1.8.4-grpc` (sm120)
+- `ghcr.io/huggingface/text-embeddings-inference:blackwell-1.8.4` (sm100)
+- `ghcr.io/huggingface/text-embeddings-inference:sm120-1.8.4` (sm120)
 
 ## Registries
 

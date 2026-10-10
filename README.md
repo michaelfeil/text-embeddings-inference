@@ -46,11 +46,14 @@ No replacement license has been selected; this is a planning note. See
     - [Using Sequence Classification models](#using-sequence-classification-models)
     - [Using SPLADE pooling](#using-splade-pooling)
     - [Distributed Tracing](#distributed-tracing)
-    - [gRPC](#grpc)
 - [Local Install](#local-install)
 - [Docker Build](#docker-build)
     - [Apple M1/M2 Arm](#apple-m1m2-arm64-architectures)
 - [Examples](#examples)
+
+This fork serves inference through HTTP using the Candle backend. The Python
+backend, Intel IPEX/Gaudi images, and public gRPC API have been removed.
+OpenTelemetry export over OTLP/gRPC remains supported.
 
 Text Embeddings Inference (TEI) is a toolkit for deploying and serving open source text embeddings and sequence
 classification models. TEI enables high-performance extraction for the most popular models, including FlagEmbedding,
@@ -251,8 +254,6 @@ Options:
       --auto-truncate
           Automatically truncate inputs that are longer than the maximum supported size
 
-          Unused for gRPC servers
-
           [env: AUTO_TRUNCATE=]
 
       --default-prompt-name <DEFAULT_PROMPT_NAME>
@@ -302,12 +303,6 @@ Options:
           [env: PORT=]
           [default: 3000]
 
-      --uds-path <UDS_PATH>
-          The name of the unix socket some text-embeddings-inference backends will use as they communicate internally with gRPC
-
-          [env: UDS_PATH=]
-          [default: /tmp/text-embeddings-inference-server]
-
       --huggingface-hub-cache <HUGGINGFACE_HUB_CACHE>
           The location of the huggingface hub cache. Used to override the location if you want to provide a mounted disk for instance
 
@@ -354,8 +349,6 @@ Options:
           [default: 9000]
 
       --cors-allow-origin <CORS_ALLOW_ORIGIN>
-          Unused for gRPC servers
-
           [env: CORS_ALLOW_ORIGIN=]
 
   -h, --help
@@ -694,25 +687,6 @@ curl 127.0.0.1:8080/embed_sparse \
 `text-embeddings-inference` is instrumented with distributed tracing using OpenTelemetry. You can use this feature
 by setting the address to an OTLP collector with the `--otlp-endpoint` argument.
 
-### gRPC
-
-`text-embeddings-inference` offers a gRPC API as an alternative to the default HTTP API for high performance
-deployments. The API protobuf definition can be
-found [here](https://github.com/huggingface/text-embeddings-inference/blob/main/proto/tei.proto).
-
-You can use the gRPC API by adding the `-grpc` tag to any TEI Docker image. For example:
-
-```shell
-model=Qwen/Qwen3-Embedding-0.6B
-volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
-
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8-grpc --model-id $model
-```
-
-```shell
-grpcurl -d '{"inputs": "What is Deep Learning"}' -plaintext 0.0.0.0:8080 tei.v1.Embed/Embed
-```
-
 ## Local install
 
 ### CPU
@@ -740,7 +714,7 @@ Then run:
 ```shell
 # On x86 with Candle
 cargo install --path router -F candle
-# On x86 with Intel backend
+# On x86 with Candle and Intel MKL
 cargo install --path router -F mkl
 # On M1 or M2
 cargo install --path router -F metal

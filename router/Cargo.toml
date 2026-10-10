@@ -49,14 +49,6 @@ tower-http = { version = "0.5.1", features = ["cors"], optional = true }
 utoipa = { version = "4.2", features = ["axum_extras"], optional = true }
 utoipa-swagger-ui = { version = "7.1", features = ["axum", "vendored"], optional = true }
 
-# gRPC dependencies
-async-stream = { version = "0.3.5", optional = true }
-prost = { version = "0.12.1", optional = true }
-tonic = { version = "0.11.0", optional = true }
-tonic-health = { version = "0.11.0", optional = true }
-tonic-reflection = { version = "0.11.0", optional = true }
-tokio-stream = { version = "0.1.14", optional = true }
-
 # Optional
 cudarc = { workspace = true, optional = true }
 intel-mkl-src = { workspace = true, optional = true }
@@ -76,7 +68,6 @@ serial_test = { workspace = true }
 
 [build-dependencies]
 vergen = { version = "8.0.0", features = ["build", "git", "gitcl"] }
-tonic-build = { version = "0.11.0", optional = true }
 
 [features]
 experimental-fp8 = ["candle-cuda", "text-embeddings-backend/experimental-fp8"]
@@ -84,11 +75,9 @@ experimental-fa4 = ["fa4"]
 fa4 = ["candle-cuda", "text-embeddings-backend/fa4"]
 default = ["candle", "http", "dynamic-linking"]
 http = ["text-embeddings-core/openapi", "dep:axum", "dep:axum-tracing-opentelemetry", "dep:base64", "dep:tower-http", "dep:utoipa", "dep:utoipa-swagger-ui"]
-grpc = ["metrics-exporter-prometheus/http-listener", "dep:prost", "dep:tonic", "dep:tonic-health", "dep:tonic-reflection", "dep:tonic-build", "dep:async-stream", "dep:tokio-stream"]
 metal = ["text-embeddings-backend/metal"]
 mkl = ["text-embeddings-backend/mkl", "dep:intel-mkl-src"]
 accelerate = ["text-embeddings-backend/accelerate"]
-python = ["text-embeddings-backend/python"]
 candle = ["text-embeddings-backend/candle"]
 candle-cuda = ["candle", "text-embeddings-backend/flash-attn", "dep:cudarc"]
 candle-cuda-turing = ["candle", "text-embeddings-backend/flash-attn-v1", "dep:cudarc"]

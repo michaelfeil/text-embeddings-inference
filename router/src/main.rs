@@ -119,7 +119,6 @@ struct Args {
 
     /// Automatically truncate inputs that are longer than the maximum supported size
     ///
-    /// Unused for gRPC servers
     #[clap(long, env)]
     auto_truncate: bool,
 
@@ -190,11 +189,6 @@ struct Args {
     #[clap(default_value = "3000", long, short, env)]
     port: u16,
 
-    /// The name of the unix socket some text-embeddings-inference backends will use as they
-    /// communicate internally with gRPC.
-    #[clap(default_value = "/tmp/text-embeddings-inference-server", long, env)]
-    uds_path: String,
-
     /// The location of the huggingface hub cache.
     /// Used to override the location if you want to provide a mounted disk for instance
     #[clap(long, env)]
@@ -234,7 +228,6 @@ struct Args {
     #[clap(default_value = "9000", long, env)]
     prometheus_port: u16,
 
-    /// Unused for gRPC servers
     #[clap(long, env)]
     cors_allow_origin: Option<Vec<String>>,
 }
@@ -296,12 +289,9 @@ async fn main() -> Result<()> {
         token,
         Some(args.hostname),
         args.port,
-        Some(args.uds_path),
         args.huggingface_hub_cache,
         args.payload_limit,
         args.api_key,
-        args.otlp_endpoint,
-        args.otlp_service_name,
         args.prometheus_port,
         args.cors_allow_origin,
         args.device_id,

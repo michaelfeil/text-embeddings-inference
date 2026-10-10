@@ -14,15 +14,15 @@ REGISTRIES=(
     "baseten/bei_bert"
 )
 
-# Matrix configurations: prefix:compute_cap:dockerfile:grpc:sccache:extra_args
+# Matrix configurations: prefix:compute_cap:dockerfile:sccache:extra_args
 declare -A IMAGES=(
-    ["turing-"]="75:Dockerfile-cuda:false:true:DEFAULT_USE_FLASH_ATTENTION=True"
-    ["ampere-"]="80:Dockerfile-cuda:false:true:"
-    ["86-"]="86:Dockerfile-cuda:false:true:"
-    ["89-"]="89:Dockerfile-cuda:false:true:"
-    ["hopper-"]="90:Dockerfile-cuda:false:true:"
-    ["blackwell-"]="100:Dockerfile-cuda:false:true:"
-    ["sm120-"]="120:Dockerfile-cuda:false:true:"
+    ["turing-"]="75:Dockerfile-cuda:true:DEFAULT_USE_FLASH_ATTENTION=True"
+    ["ampere-"]="80:Dockerfile-cuda:true:"
+    ["86-"]="86:Dockerfile-cuda:true:"
+    ["89-"]="89:Dockerfile-cuda:true:"
+    ["hopper-"]="90:Dockerfile-cuda:true:"
+    ["blackwell-"]="100:Dockerfile-cuda:true:"
+    ["sm120-"]="120:Dockerfile-cuda:true:"
 )
 
 # Colors for output
@@ -80,7 +80,7 @@ build_and_push_variant() {
     local prefix="$1"
     local config="$2"
 
-    IFS=':' read -r compute_cap dockerfile grpc sccache extra_args <<< "$config"
+    IFS=':' read -r compute_cap dockerfile sccache extra_args <<< "$config"
 
     log_info "Building variant: ${prefix}sm${compute_cap}"
 
@@ -102,17 +102,14 @@ build_and_push_variant() {
         done
     fi
 
-    # Separate cache manifests prevent parallel architectures/protocols overwriting
+    # Separate cache manifests prevent parallel architectures overwriting
     # each other. Registry cache preserves intermediate layers on fresh builders;
     # the sccache mount itself remains local to the BuildKit builder.
     local cache_args=()
-    local grpc_cache_args=()
     if [[ -n "${BUILD_CACHE_REPO:-}" ]]; then
         local cache_ref="${BUILD_CACHE_REPO}:cuda12.9-sm${compute_cap}"
         cache_args=(--cache-from "type=registry,ref=${cache_ref}-http"
                     --cache-to "type=registry,ref=${cache_ref}-http,mode=max")
-        grpc_cache_args=(--cache-from "type=registry,ref=${cache_ref}-grpc"
-                         --cache-to "type=registry,ref=${cache_ref}-grpc,mode=max")
     fi
 
     # Tags to build
@@ -132,27 +129,6 @@ build_and_push_variant() {
         "${cache_args[@]}" \
         --push \
         .
-
-    # Build gRPC image if enabled
-    if [[ "$grpc" == "true" ]]; then
-        log_info "Building gRPC image for ${prefix}sm${compute_cap}..."
-
-        local grpc_tags=()
-        for registry in "${REGISTRIES[@]}"; do
-            grpc_tags+=("-t" "${registry}:${prefix}${VERSION}-grpc")
-            grpc_tags+=("-t" "${registry}:${prefix}latest-grpc")
-        done
-
-        docker buildx build \
-            --target grpc \
-            --platform linux/amd64 \
-            --file "${dockerfile}" \
-            "${build_args[@]}" \
-            "${grpc_tags[@]}" \
-            "${grpc_cache_args[@]}" \
-            --push \
-            .
-    fi
 
     log_success "Completed variant: ${prefix}sm${compute_cap}"
 }
@@ -198,7 +174,7 @@ verify_images() {
 
     local failed=0
     for prefix_config in "${!IMAGES[@]}"; do
-        IFS=':' read -r compute_cap dockerfile grpc sccache extra_args <<< "${IMAGES[$prefix_config]}"
+        IFS=':' read -r compute_cap dockerfile sccache extra_args <<< "${IMAGES[$prefix_config]}"
         local actual_prefix="$prefix_config"
         [[ "$actual_prefix" == "ampere-" ]] && actual_prefix=""
 
@@ -209,16 +185,6 @@ verify_images() {
                 ((failed++))
             else
                 log_success "Verified ${registry}:${actual_prefix}${VERSION}"
-            fi
-
-            # Check gRPC image if enabled
-            if [[ "$grpc" == "true" ]]; then
-                if ! docker pull "${registry}:${actual_prefix}${VERSION}-grpc" &> /dev/null; then
-                    log_error "Failed to verify ${registry}:${actual_prefix}${VERSION}-grpc"
-                    ((failed++))
-                else
-                    log_success "Verified ${registry}:${actual_prefix}${VERSION}-grpc"
-                fi
             fi
         done
     done
@@ -248,10 +214,10 @@ show_usage() {
     echo ""
     echo "Supported Variants:"
     for prefix_config in "${!IMAGES[@]}"; do
-        IFS=':' read -r compute_cap dockerfile grpc sccache extra_args <<< "${IMAGES[$prefix_config]}"
+        IFS=':' read -r compute_cap dockerfile sccache extra_args <<< "${IMAGES[$prefix_config]}"
         local display_prefix="$prefix_config"
         [[ "$display_prefix" == "ampere-" ]] && display_prefix=""
-        echo "  ${display_prefix}sm${compute_cap} (${dockerfile}, grpc: ${grpc})"
+        echo "  ${display_prefix}sm${compute_cap} (${dockerfile})"
     done
 }
 
@@ -301,10 +267,10 @@ main() {
     if [[ "$dry_run" == "true" ]]; then
         log_info "DRY RUN - Would build the following images:"
         for prefix_config in "${!IMAGES[@]}"; do
-            IFS=':' read -r compute_cap dockerfile grpc sccache extra_args <<< "${IMAGES[$prefix_config]}"
+            IFS=':' read -r compute_cap dockerfile sccache extra_args <<< "${IMAGES[$prefix_config]}"
             local display_prefix="$prefix_config"
             [[ "$display_prefix" == "ampere-" ]] && display_prefix=""
-            echo "  ${display_prefix}sm${compute_cap} (${dockerfile}, grpc: ${grpc})"
+            echo "  ${display_prefix}sm${compute_cap} (${dockerfile})"
         done
         exit 0
     fi

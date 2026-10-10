@@ -99,8 +99,6 @@ Options:
       --auto-truncate
           Automatically truncate inputs that are longer than the maximum supported size
 
-          Unused for gRPC servers
-
           [env: AUTO_TRUNCATE=]
 
       --default-prompt-name <DEFAULT_PROMPT_NAME>
@@ -150,12 +148,6 @@ Options:
           [env: PORT=]
           [default: 3000]
 
-      --uds-path <UDS_PATH>
-          The name of the unix socket some text-embeddings-inference backends will use as they communicate internally with gRPC
-
-          [env: UDS_PATH=]
-          [default: /tmp/text-embeddings-inference-server]
-
       --huggingface-hub-cache <HUGGINGFACE_HUB_CACHE>
           The location of the huggingface hub cache. Used to override the location if you want to provide a mounted disk for instance
 
@@ -202,8 +194,6 @@ Options:
           [default: 9000]
 
       --cors-allow-origin <CORS_ALLOW_ORIGIN>
-          Unused for gRPC servers
-
           [env: CORS_ALLOW_ORIGIN=]
 
   -h, --help

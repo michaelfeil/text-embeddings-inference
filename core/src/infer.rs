@@ -9,7 +9,7 @@ use std::sync::{
 use std::time::{Duration, Instant};
 use text_embeddings_backend::{Backend, BackendError, Embedding, ModelType};
 use tokenizers::TruncationDirection;
-use tokio::sync::{mpsc, oneshot, watch, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::instrument;
 
 /// Inference struct
@@ -736,11 +736,6 @@ impl Infer {
     #[instrument(skip(self))]
     pub async fn health(&self) -> bool {
         self.backend.health().await.is_ok()
-    }
-
-    #[instrument(skip(self))]
-    pub fn health_watcher(&self) -> watch::Receiver<bool> {
-        self.backend.health_watcher()
     }
 }
 

@@ -7,7 +7,7 @@ for Hopper (compute capability 9.0). Enable with `--enable-fp8-dynamic` or
 
 ## Bundled, disabled by default
 
-Official Hopper images bundle FP8 support in both HTTP and gRPC builds. No
+Official Hopper images bundle FP8 support in HTTP builds. No
 custom image is needed to opt in. The runtime option defaults to false.
 When disabled, MLP projections use the existing dense linear and activation
 kernels: no FP8 weight copies, quantization kernels, FP8 executor, workspace or
