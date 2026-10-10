@@ -91,7 +91,17 @@ class Qwen3VL final : public Model {
   }
  public:
   Qwen3VL(const Options& options,Weights& weights,c10::Device dev,at::ScalarType type,bool only_vision=false):cfg(options),device(dev),dtype(type),tower_only(only_vision) {
-    for(const auto& [name,value]:weights)if(name.starts_with("model.visual."))visual_weights[name]=value.to(dtype);
+    // Published full checkpoints use both model.visual.* and visual.*. Keep
+    // one canonical local name and reject ambiguous towers instead of mixing
+    // weights from two namespaces. Complete tower validation remains in ready.
+    for(const auto& [name,value]:weights) {
+      std::string canonical;
+      if(name.starts_with("model.visual."))canonical=name;
+      else if(name.starts_with("visual."))canonical="model."+name;
+      else continue;
+      TORCH_CHECK(!visual_weights.count(canonical),"Duplicate Qwen visual weight: ",canonical);
+      visual_weights.emplace(std::move(canonical),value.to(dtype));
+    }
     Options tc=cfg;
     for(const auto& [name,value]:cfg.values)if(name.starts_with("text_config."))tc.values[name.substr(12)]=value;
     tc.values["model_type"]="qwen3";tc.values["use_sliding_window"]="false";

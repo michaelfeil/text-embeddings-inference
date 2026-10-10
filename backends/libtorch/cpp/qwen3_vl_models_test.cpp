@@ -69,6 +69,21 @@ int main(int argc,char** argv) {
   auto q35text=q35->forward(q35plain),q35image=q35->forward(input);
   TORCH_CHECK(q35->supports_images() && (q35image-q35text).abs().max().item<float>()>1e-4,"Qwen3.5 vision features not injected");
   TORCH_CHECK(at::allclose(q35image.narrow(0,4,2),q35text.narrow(0,4,2),1e-5,1e-6),"Qwen3.5 vision leaked between packed sequences");
+  Weights published;
+  for(const auto& [name,value]:q35weights)
+    published[name.starts_with("model.")?name.substr(6):name]=value;
+  auto unprefixed=create_multimodal(q35cfg,published,c10::Device("cpu"),at::kFloat);unprefixed->ready();
+  TORCH_CHECK(unprefixed->supports_images() && at::equal(q35text,unprefixed->forward(q35plain)) &&
+    at::equal(q35image,unprefixed->forward(input)),"Published Qwen3.5 visual/language prefix changed full text or image outputs");
+  auto missing=published;missing.erase("visual.patch_embed.proj.weight");bool rejected=false;
+  try {auto incomplete=create_multimodal(q35cfg,missing,c10::Device("cpu"),at::kFloat);incomplete->ready();}
+  catch(const c10::Error& error) {rejected=std::string(error.what()).find("patch_embed.proj.weight")!=std::string::npos;}
+  TORCH_CHECK(rejected,"Incomplete published visual tower silently accepted");
+  auto duplicate=published;duplicate["model.visual.patch_embed.proj.weight"]=published.at("visual.patch_embed.proj.weight");rejected=false;
+  try {auto ambiguous=create_multimodal(q35cfg,duplicate,c10::Device("cpu"),at::kFloat);ambiguous->ready();}
+  catch(const c10::Error& error) {rejected=std::string(error.what()).find("Duplicate Qwen visual weight")!=std::string::npos;}
+  TORCH_CHECK(rejected,"Duplicate canonical/published visual weight silently accepted");
+  std::cout<<"Qwen3.5 published prefixes preserve full outputs; missing/ambiguous tower rejected\n";
   std::cout<<"Qwen3.5 FP16 vision, BF16-compatible injection and mRoPE packed isolation passed\n";
   if(argc>1) {
     c10::Device device(argv[1]);Weights hw,cw;
