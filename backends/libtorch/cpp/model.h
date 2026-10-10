@@ -41,6 +41,10 @@ struct PackedInput {
   std::vector<ImageInput> images{};
   std::vector<AudioInput> audios{};
   at::Tensor multimodal_positions{};
+  // Logical sequences remain full-length for attention and output metadata.
+  // Radix maps share only actual token rows with identical causal prefixes.
+  at::Tensor compact_ids{}, compact_positions{}, compact_types{};
+  at::Tensor scatter_unfold{}, fold_gather{};
 };
 class Model {
 public:
@@ -61,6 +65,7 @@ public:
   virtual at::Tensor predict(const PackedInput&, bool) const {
     TORCH_CHECK(false, "This model does not implement classification");
   }
+  virtual bool supports_radix() const { return false; }
 };
 inline const at::Tensor& weight(const Weights& weights, const std::string& name) {
   auto it = weights.find(name);

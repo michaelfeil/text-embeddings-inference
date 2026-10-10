@@ -9,6 +9,83 @@
 #include "../../candle/src/kernels/gemma_rms_norm.cu"
 
 namespace tei {
+// SPDX-License-Identifier: MIT
+// Adapted from backends/candle/src/kernels/gemma_rms_norm.cu.
+// Candle compiles this reference with --fmad=false. Keep the mean and epsilon
+// as separate FP32 rounds without changing other native kernel flags.
+template<bool VIRTUAL_LANES, bool PAIRED = false>
+__device__ __forceinline__ void tei_gemma_rms_norm_reference_impl(
+    const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps,
+    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {}) {
+    const size_t base = static_cast<size_t>(blockIdx.x / heads) * token_stride
+        + static_cast<size_t>(blockIdx.x % heads) * width;
+    const size_t out_base = static_cast<size_t>(blockIdx.x) * width;
+    __shared__ float sums[1024];
+    float sum = 0.f;
+    if constexpr (VIRTUAL_LANES) {
+        // Emulate the original logical lanes before reducing across this smaller
+        // block. Pairing lane 0+512, then 0+256 preserves the 1024-lane tree.
+        unsigned int logical_threads = 1;
+        while (logical_threads < width && logical_threads < 1024) logical_threads <<= 1;
+        const unsigned int lanes = logical_threads / blockDim.x;
+        float partial[4] = {0.f, 0.f, 0.f, 0.f};
+        for (unsigned int lane = 0; lane < lanes; ++lane) {
+            for (unsigned int col = threadIdx.x + lane * blockDim.x;
+                 col < width; col += logical_threads) {
+                float v = __bfloat162float(x[base + col]);
+                partial[lane] += v * v;
+            }
+        }
+        for (unsigned int stride = lanes / 2; stride; stride >>= 1)
+            for (unsigned int lane = 0; lane < stride; ++lane)
+                partial[lane] += partial[lane + stride];
+        sum = partial[0];
+    } else {
+        for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+            float v = __bfloat162float(x[base + col]);
+            sum += v * v;
+        }
+    }
+    sums[threadIdx.x] = sum;
+    for (unsigned int stride = blockDim.x / 2; stride >= 32; stride >>= 1) {
+        __syncthreads();
+        if (threadIdx.x < stride) sums[threadIdx.x] += sums[threadIdx.x + stride];
+    }
+    // Finish the same reduction tree within the first warp.
+    if (threadIdx.x < 32) {
+        sum = sums[threadIdx.x];
+        const unsigned int mask = __activemask();
+        for (unsigned int stride = blockDim.x < 32 ? blockDim.x / 2 : 16;
+             stride; stride >>= 1) {
+            float other = __shfl_down_sync(mask, sum, stride);
+            if (threadIdx.x < stride) sum += other;
+        }
+        if (threadIdx.x == 0) {
+            float mean = __fmul_rn(sum, static_cast<float>(1.0 / static_cast<double>(width)));
+            sums[0] = sqrtf(__fadd_rn(mean, eps));
+        }
+    }
+    __syncthreads();
+    for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+        float normalized = __bfloat162float(x[base + col]) / sums[0];
+        out[out_base + col] = __float2bfloat16_rn(normalized * scale[col]);
+        if constexpr (PAIRED) {
+            __nv_bfloat16 router = __float2bfloat16_rn(normalized * 1.f);
+            router = router * root + __float2bfloat16_rn(0.f);
+            out[static_cast<size_t>(gridDim.x) * width + out_base + col]
+                = router * router_scale[col];
+        }
+    }
+}
+
+static __global__ void tei_gemma_rms_norm_reference_bf16(
+    const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps) {
+    tei_gemma_rms_norm_reference_impl<false>(x, scale, out, width, heads, token_stride, eps);
+}
+
+
 // Adapted from the MIT precise_activation in Candle's gated_activation.cu.
 // The original source and its complete notices remain in the repository.
 template<bool Gelu> __device__ __forceinline__ __nv_bfloat16 gemma_precise_activation(__nv_bfloat16 x) {
@@ -71,7 +148,7 @@ at::Tensor gemma_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double ep
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
   auto source=reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr());
   auto destination=reinterpret_cast<__nv_bfloat16*>(output.mutable_data_ptr());
-  if(reference)gemma_rms_norm_reference_bf16<<<rows,threads,0,stream>>>(source,scale.const_data_ptr<float>(),destination,width,heads,x.stride(0),epsilon);
+  if(reference)tei_gemma_rms_norm_reference_bf16<<<rows,threads,0,stream>>>(source,scale.const_data_ptr<float>(),destination,width,heads,x.stride(0),epsilon);
   else gemma_rms_norm_bf16<<<rows,threads,0,stream>>>(source,scale.const_data_ptr<float>(),destination,width,heads,x.stride(0),epsilon);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output;

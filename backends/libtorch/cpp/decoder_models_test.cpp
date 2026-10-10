@@ -1,5 +1,6 @@
 // Native packed decoder regression tests; no Python runtime or padded tokens.
 #include "decoder_models.h"
+#include "radix.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <ATen/Parallel.h>
@@ -48,6 +49,23 @@ at::Tensor run(Model& model, std::vector<int64_t> ids, std::vector<int32_t> offs
   return model.forward(input);
 }
 void check_close(const at::Tensor& a,const at::Tensor& b){auto error=(a-b).abs().max().item<float>();TORCH_CHECK(error<2e-5,"Decoder parity error ",error);}
+void radix_decoder_test(Model& model) {
+ auto options=at::TensorOptions().dtype(at::kLong);
+ std::vector<int32_t> offsets={0,3,7,10};
+ PackedInput input{at::tensor({3,4,5,3,4,6,7,3,4,5},options),at::zeros({10},options),
+   at::tensor({0,1,2,0,1,2,3,0,1,2},options),at::tensor({0,3,7,10},options.dtype(at::kInt)),offsets.data(),3,4};
+ auto expected=model.forward(input);
+ input.compact_ids=at::tensor({3,4,5,6,7},options);input.compact_positions=at::tensor({0,1,2,2,3},options);
+ input.compact_types=at::zeros({5},options);input.scatter_unfold=at::tensor({0,1,2,0,1,3,4,0,1,2},options);
+ input.fold_gather=at::tensor({0,1,2,5,6},options);
+ validate_radix(input,true);
+ if(!model.supports_radix()) {
+   bool rejected=false;try{model.forward(input);}catch(const c10::Error&){rejected=true;}
+   TORCH_CHECK(rejected,"Unsupported bidirectional folding was silently ignored");return;
+ }
+ check_close(model.forward(input),expected);
+ TORCH_CHECK(radix_ids(input).numel()==5&&input.ids.numel()==10,"Radix retained duplicate token rows");
+}
 void multimodal_test(){
  auto cfg=config("qwen3");auto w=weights(cfg);auto model=create_decoder(cfg,w,c10::Device("cpu"),at::kFloat);model->ready();
  auto opts=at::TensorOptions().dtype(at::kLong);
@@ -86,6 +104,7 @@ int main(){c10::InferenceMode inference;at::set_num_threads(1);
 
  for(auto family:{"llama","mistral","qwen2","qwen3","qwen3_moe"}){
   auto cfg=config(family,std::string(family)=="qwen3_moe");auto w=weights(cfg);auto initial=w;auto model=create_decoder(cfg,initial,c10::Device("cpu"),at::kFloat);model->ready();
+  radix_decoder_test(*model);
   auto packed=run(*model,{3,4,5,6,7,8,9},{0,3,7});check_close(packed,at::cat({run(*model,{3,4,5},{0,3}),run(*model,{6,7,8,9},{0,4})},0));
   check_close(run(*model,{3,4},{0,2}),run(*model,{3,4,5},{0,3}).narrow(0,0,2));
   if(std::string(family)=="qwen2"||std::string(family)=="qwen3"){
@@ -100,6 +119,8 @@ int main(){c10::InferenceMode inference;at::set_num_threads(1);
   if(std::string(family)=="qwen3_moe"){auto fused=weights(cfg,true);auto other=create_decoder(cfg,fused,c10::Device("cpu"),at::kFloat);other->ready();check_close(packed,run(*other,{3,4,5,6,7,8,9},{0,3,7}));}
   cfg.values["use_bidirectional_attention"]="true";if(std::string(family)=="qwen2")cfg.values["is_causal"]="false";
   auto bidi=create_decoder(cfg,w,c10::Device("cpu"),at::kFloat);bidi->ready();auto b=run(*bidi,{3,4,5},{0,3});TORCH_CHECK((b.narrow(0,0,2)-run(*bidi,{3,4},{0,2})).abs().max().item<float>()>1e-5,"Bidirectional attention was accidentally causal");
+  radix_decoder_test(*bidi);
+  TORCH_CHECK(!bidi->supports_radix(),"Bidirectional decoder incorrectly advertises prefix folding");
   check_close(run(*bidi,{3,4,5,6,7},{0,3,5}),at::cat({b,run(*bidi,{6,7},{0,2})},0));
   std::cout<<family<<" packed boundaries, causality and bidirectional attention passed\n";
  }

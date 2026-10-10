@@ -2,12 +2,13 @@
 use std::{
     hint::black_box,
     path::PathBuf,
-    sync::{Barrier, Mutex},
+    sync::{Arc, Barrier, Mutex},
     time::Instant,
 };
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{
-    Backend, Batch, ClefField, DecisionInput, DecisionOutput, ModelType,
+    AudioFeatures, Backend, Batch, ClefField, DecisionInput, DecisionOutput, ImagePatches,
+    ModelType, MultimodalEncoding,
 };
 use text_embeddings_backend_libtorch::LibtorchBackend;
 fn input(sequences: &[serde_json::Value]) -> (Batch, Vec<DecisionInput>) {
@@ -30,6 +31,56 @@ fn input(sequences: &[serde_json::Value]) -> (Batch, Vec<DecisionInput>) {
     let mut requests = vec![];
     for s in sequences {
         let ids: Vec<u32> = serde_json::from_value(s["ids"].clone()).unwrap();
+        let length = ids.len();
+        let images = s["images"].as_array();
+        let audios = s["audios"].as_array();
+        let media = if images.is_some() || audios.is_some() {
+            let mut media = MultimodalEncoding {
+                images: vec![],
+                audios: vec![],
+                position_ids: s.get("multimodal_position_ids").map_or_else(
+                    || std::array::from_fn(|_| (0..length as u32).collect()),
+                    |positions| serde_json::from_value(positions.clone()).unwrap(),
+                ),
+                memory: None,
+            };
+            for image in images.into_iter().flatten() {
+                let grid_thw: [usize; 3] =
+                    serde_json::from_value(image["grid_thw"].clone()).unwrap();
+                let patch_dim = image["patch_dim"].as_u64().unwrap() as usize;
+                let pixels = image.get("pixels").map_or_else(
+                    || {
+                        (0..grid_thw.iter().product::<usize>() * patch_dim)
+                            .map(|i| (i % 251) as f32 / 250.)
+                            .collect()
+                    },
+                    |pixels| serde_json::from_value(pixels.clone()).unwrap(),
+                );
+                media.images.push((
+                    image["token_start"].as_u64().unwrap() as usize,
+                    Arc::new(ImagePatches {
+                        pixels,
+                        grid_thw,
+                        patch_dim,
+                        merge_size: image["merge_size"].as_u64().unwrap() as usize,
+                    }),
+                ));
+            }
+            for audio in audios.into_iter().flatten() {
+                media.audios.push((
+                    audio["token_start"].as_u64().unwrap() as usize,
+                    Arc::new(AudioFeatures {
+                        values: serde_json::from_value(audio["values"].clone()).unwrap(),
+                        mask: serde_json::from_value(audio["mask"].clone()).unwrap(),
+                        feature_size: audio["feature_size"].as_u64().unwrap() as usize,
+                    }),
+                ));
+            }
+            Some(Arc::new(media))
+        } else {
+            None
+        };
+        b.multimodal.push(media);
         b.max_length = b.max_length.max(ids.len() as u32);
         b.position_ids.extend(0..ids.len() as u32);
         b.token_type_ids.extend(vec![0; ids.len()]);
@@ -59,6 +110,32 @@ fn input(sequences: &[serde_json::Value]) -> (Batch, Vec<DecisionInput>) {
         });
     }
     (b, requests)
+}
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn media_fixture_preserves_true_shapes_and_sequence_alignment() {
+        let sequences = serde_json::json!([
+            {"ids":[2,3,4,5,6,7,1],"kind":"option_tokens","option_token_ids":[8,9],
+             "images":[{"token_start":2,"grid_thw":[1,3,6],"patch_dim":2,"merge_size":3}]},
+            {"ids":[2,8,9,1],"kind":"option_tokens","option_token_ids":[8,9]},
+            {"ids":[2,3,4,1],"kind":"option_tokens","option_token_ids":[8,9],
+             "audios":[{"token_start":1,"feature_size":2,"values":[0.1,0.2,0.3,0.4],"mask":[1,0]}]}
+        ]);
+        let (batch, requests) = super::input(sequences.as_array().unwrap());
+        assert_eq!(batch.cumulative_seq_lengths, [0, 7, 11, 15]);
+        assert_eq!(requests.len(), 3);
+        assert!(batch.multimodal[1].is_none());
+        let image = &batch.multimodal[0].as_ref().unwrap().images[0];
+        assert_eq!(image.0, 2);
+        assert_eq!(image.1.grid_thw, [1, 3, 6]);
+        assert_eq!(image.1.pixels.len(), 36);
+        assert_eq!(image.1.token_count(), 2);
+        let audio = &batch.multimodal[2].as_ref().unwrap().audios[0];
+        assert_eq!(audio.0, 1);
+        assert_eq!(audio.1.values.len(), 4);
+        assert_eq!(audio.1.mask, [1, 0]);
+    }
 }
 fn stats(mut t: Vec<f64>, tokens: usize) -> serde_json::Value {
     t.sort_by(f64::total_cmp);

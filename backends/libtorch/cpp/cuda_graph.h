@@ -12,7 +12,8 @@ public:
   ~CudaGraphCache();
   CudaGraphCache(const CudaGraphCache&) = delete;
   CudaGraphCache& operator=(const CudaGraphCache&) = delete;
-  at::Tensor forward(const Model&, const PackedInput&);
+  // operation: 0 hidden states, 1 sequence classification, 2 token classification.
+  at::Tensor forward(const Model&, const PackedInput&, int operation = 0);
   size_t size() const;
 };
 }

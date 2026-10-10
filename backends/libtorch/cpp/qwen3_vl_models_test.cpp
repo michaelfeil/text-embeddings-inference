@@ -64,7 +64,7 @@ int main(int argc,char** argv) {
     auto query=q35weights.at(key).view({2,8,16});
     q35weights[key]=at::cat({query,at::zeros_like(query)},1).reshape({32,16});
   }
-  auto q35=create_multimodal(q35cfg,q35weights,c10::Device("cpu"),at::kFloat);q35->ready();
+  auto q35loader=q35weights;auto q35=create_multimodal(q35cfg,q35loader,c10::Device("cpu"),at::kFloat);q35->ready();
   auto q35plain=input;q35plain.images.clear();q35plain.multimodal_positions=at::Tensor();
   auto q35text=q35->forward(q35plain),q35image=q35->forward(input);
   TORCH_CHECK(q35->supports_images() && (q35image-q35text).abs().max().item<float>()>1e-4,"Qwen3.5 vision features not injected");
@@ -72,7 +72,7 @@ int main(int argc,char** argv) {
   Weights published;
   for(const auto& [name,value]:q35weights)
     published[name.starts_with("model.")?name.substr(6):name]=value;
-  auto unprefixed=create_multimodal(q35cfg,published,c10::Device("cpu"),at::kFloat);unprefixed->ready();
+  auto published_loader=published;auto unprefixed=create_multimodal(q35cfg,published_loader,c10::Device("cpu"),at::kFloat);unprefixed->ready();
   TORCH_CHECK(unprefixed->supports_images() && at::equal(q35text,unprefixed->forward(q35plain)) &&
     at::equal(q35image,unprefixed->forward(input)),"Published Qwen3.5 visual/language prefix changed full text or image outputs");
   auto missing=published;missing.erase("visual.patch_embed.proj.weight");bool rejected=false;

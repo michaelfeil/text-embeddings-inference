@@ -1,4 +1,6 @@
 //! Experimental native packed inference. Python and exported TorchScript models are not required.
+mod radix;
+use radix::{NativeRadix, OwnedRadix};
 use safetensors::{Dtype, SafeTensors};
 use serde::Deserialize;
 use std::{
@@ -176,7 +178,7 @@ extern "C" {
         audios: *const NativeAudio,
         audio_count: usize,
     ) -> i32;
-    fn tei_forward(
+    fn tei_forward_radix(
         handle: *mut c_void,
         ids: *const i64,
         types: *const i64,
@@ -196,6 +198,7 @@ extern "C" {
         image_count: usize,
         audios: *const NativeAudio,
         audio_count: usize,
+        radix: *const NativeRadix,
     ) -> i32;
     fn tei_destroy(handle: *mut c_void);
 }
@@ -739,13 +742,13 @@ impl LibtorchBackend {
         {
             return Err(inference("Invalid packed batch"));
         }
-        if batch.compact_input_ids.is_some()
-            || batch.compact_position_ids.is_some()
-            || batch.scatter_unfold.is_some()
-            || batch.fold_gather.is_some()
-        {
-            return Err(inference("LibTorch does not yet support radix folding"));
+        let owned_radix = OwnedRadix::from_batch(&batch)?;
+        if owned_radix.is_some() && requests.is_some() {
+            return Err(inference(
+                "Radix folding is not yet supported for typed decisions",
+            ));
         }
+        let native_radix = owned_radix.as_ref().map(OwnedRadix::native);
         let b = ends.len() - 1;
         let lengths: Vec<i64> = ends.windows(2).map(|w| (w[1] - w[0]) as i64).collect();
         let seq = *lengths.iter().max().unwrap() as usize;
@@ -955,7 +958,7 @@ impl LibtorchBackend {
         // SAFETY: validated dimensions and indices bound every native read/write. All buffers stay
         // live until this synchronous call returns; exceptions cannot cross the C ABI.
         if unsafe {
-            tei_forward(
+            tei_forward_radix(
                 self.handle.as_ptr(),
                 ids.as_ptr(),
                 types.as_ptr(),
@@ -979,6 +982,9 @@ impl LibtorchBackend {
                 images.len(),
                 audios.as_ptr(),
                 audios.len(),
+                native_radix
+                    .as_ref()
+                    .map_or(std::ptr::null(), |radix| radix),
             )
         } != 0
         {
@@ -1705,6 +1711,14 @@ mod tests {
         let mut bad = batch();
         bad.pooled_indices = vec![2];
         assert!(torch.embed(bad).is_err());
+        let mut bad = batch();
+        bad.compact_input_ids = Some(bad.input_ids.clone());
+        bad.compact_position_ids = Some(bad.position_ids.clone());
+        let identity: Vec<u32> = (0..bad.input_ids.len() as u32).collect();
+        bad.scatter_unfold = Some(identity.clone());
+        bad.fold_gather = Some(identity);
+        let error = torch.embed(bad).err().unwrap();
+        assert!(error.to_string().contains("does not support radix folding"));
         assert!(torch.embed(batch()).is_ok());
         fs::write(
             fixture.0.join("model.safetensors"),

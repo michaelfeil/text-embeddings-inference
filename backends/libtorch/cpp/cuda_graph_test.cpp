@@ -1,4 +1,5 @@
 #include "cuda_graph.h"
+#include "radix.h"
 #include "decoder_models.h"
 #include "fast_kernels.h"
 #include <ATen/ops/_fused_rms_norm.h>
@@ -12,6 +13,18 @@ public:
  at::Tensor forward(const PackedInput& input) const override{
   return at::sin(input.ids.to(at::kFloat).unsqueeze(1)+input.positions.to(at::kFloat).unsqueeze(1)*.1)
     *at::arange(1,9,input.ids.options().dtype(at::kFloat)).unsqueeze(0);
+ }
+};
+class Heads final:public Model {
+public:
+ void ready() override{}
+ at::Tensor forward(const PackedInput& input) const override {
+  return input.ids.to(at::kFloat).unsqueeze(1).repeat({1,3});
+ }
+ at::Tensor predict(const PackedInput& input,bool tokenwise) const override {
+  auto h=forward(input);
+  if(!tokenwise)h=h.index_select(0,input.cumulative.narrow(0,0,input.batch).to(at::kLong));
+  return h+(tokenwise?13:7);
  }
 };
 class Uncapturable final:public Model {
@@ -51,7 +64,34 @@ std::unique_ptr<Model> tiny_decoder(Weights* fixture=nullptr) {
  if(fixture)*fixture=w;
  auto result=create_decoder(cfg,w,c10::Device("cuda:0"),at::kHalf);result->ready();return result;
 }
-int main(){c10::InferenceMode guard;Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;CudaGraphCache cache(2,8);
+void radix_graph_test(Model& model) {
+ CudaGraphCache cache(3,16);
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ std::vector<int32_t> offsets={0,3,6};
+ PackedInput input{at::tensor({3,4,5,3,4,6},options),at::zeros({6},options),at::tensor({0,1,2,0,1,2},options),
+   at::tensor({0,3,6},options.dtype(at::kInt)),offsets.data(),2,3};
+ input.compact_ids=at::tensor({3,4,5,6},options);input.compact_positions=at::tensor({0,1,2,2},options);input.compact_types=at::zeros({4},options);
+ input.scatter_unfold=at::tensor({0,1,2,0,1,3},options);input.fold_gather=at::tensor({0,1,2,5},options);
+ for(int run=0;run<3;++run) {
+   // Reorder compact rows and representatives without changing their shapes.
+   // Replayed maps and all compact metadata must contain the new values.
+   if(run==1) {
+     input.compact_ids=at::tensor({6,5,4,3},options);input.compact_positions=at::tensor({2,2,1,0},options);
+     input.scatter_unfold=at::tensor({3,2,1,3,2,0},options);input.fold_gather=at::tensor({5,2,1,0},options);
+   }
+   if(run==2) {input.ids.add_(2);input.compact_ids.add_(2);input.positions.add_(1);input.compact_positions.add_(1);}
+   auto expected=model.forward(input),actual=cache.forward(model,input).clone();
+   TORCH_CHECK(at::equal(actual,expected),"Radix capture/replay retained stale compact metadata or maps");
+   auto full=input;full.compact_ids=at::Tensor();full.compact_positions=at::Tensor();full.compact_types=at::Tensor();full.scatter_unfold=at::Tensor();full.fold_gather=at::Tensor();
+   TORCH_CHECK((actual-model.forward(full)).abs().max().item<float>()<.004,"Folded decoder changed full packed output");
+ }
+ TORCH_CHECK(cache.size()==1,"Radix graph failed to capture or map values changed shape key");
+ input.compact_ids=input.ids.clone();input.compact_positions=input.positions.clone();input.compact_types=input.types.clone();
+ input.scatter_unfold=at::arange(6,options);input.fold_gather=input.scatter_unfold.clone();
+ TORCH_CHECK(at::equal(cache.forward(model,input).clone(),model.forward(input)),"Different compact token count reused stale graph");
+ TORCH_CHECK(cache.size()==2,"Compact token count missing from radix graph key");
+}
+int main(){c10::InferenceMode guard;Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);
@@ -97,6 +137,17 @@ int main(){c10::InferenceMode guard;Weights fixture;auto decoder=tiny_decoder(&f
  auto withdeep=decoder_multimodal_forward(model,input,visual_indices,visual,cosine,sine,{deepstack});
  TORCH_CHECK((withdeep-withzero).abs().max().item<float>()>0.001,"CUDA deepstack features were ignored");
  TORCH_CHECK((withdeep[0]-withzero[0]).abs().max().item<float>()<0.0001,"CUDA deepstack crossed causal token boundary");
+ Heads heads;CudaGraphCache heads_cache(4,8);
+ for(int repeat=0;repeat<3;++repeat) {
+  input.ids.add_(1);
+  for(int operation=0;operation<=2;++operation) {
+   auto expected=operation==0?heads.forward(input):heads.predict(input,operation==2);
+   auto actual=heads_cache.forward(heads,input,operation).clone();
+   TORCH_CHECK(at::equal(actual,expected),"Graph head operation collision or stale input");
+  }
+ }
+ TORCH_CHECK(heads_cache.size()==3,"Hidden, sequence and token head graph keys collided");
+ input.ids.sub_(3);
  Uncapturable unsupported;CudaGraphCache fallback;
  for(int i=0;i<2;++i){auto actual=fallback.forward(unsupported,input);TORCH_CHECK(actual[0][0].item<float>()==12,"Graph fallback changed result");}
  TORCH_CHECK(fallback.size()==0,"Unsupported model unexpectedly captured");

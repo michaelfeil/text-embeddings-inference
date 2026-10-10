@@ -1,3 +1,4 @@
+#include "radix.h"
 #include "decoder_models.h"
 #include "moe_kernels.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -56,15 +57,19 @@ class Decoder final : public Model {
     return at::rms_norm(x, {w.numel()}, w, epsilon);
   }
 #ifdef TEI_TORCH_CUDA_KERNELS
+  bool exact_mistral_math() const {
+    // The original Candle RMS launcher registers BF16 width 3072 with a
+    // 1x4 warp layout. Learned causal Mistral operands independently prove
+    // its residual statistics, rotary HFMA and fused softmax contracts.
+    return dtype==at::kBFloat16&&family=="mistral"&&causal&&hidden==3072;
+  }
   bool exact_decoder_math() const {
-    // Learned Qwen3-30B-A3B and bidirectional Llama-Nemotron need both the
-    // fork's Welford residual RMS and fused Torch softmax arithmetic. Learned
-    // layer traces isolate rounding differences before they amplify in routed
-    // or deep dense layers. The exact RMS adapter is compiled for BF16 width
-    // 2048; other widths and causal Llama retain their existing path.
-    return dtype==at::kBFloat16&&hidden==2048
+    // Preserve the proven width 2048 routed/bidirectional paths. The new
+    // causal Mistral path depends on a registered RMS geometry, rather than
+    // a particular checkpoint's layer, vocabulary or intermediate sizes.
+    return exact_mistral_math()||(dtype==at::kBFloat16&&hidden==2048
       &&((family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
-        ||(family=="llama"&&!causal));
+        ||(family=="llama"&&!causal)));
   }
   std::pair<at::Tensor,at::Tensor> residual_norm(const at::Tensor& x,
     const at::Tensor& residual,const at::Tensor& weight) const {
@@ -143,10 +148,10 @@ class Decoder final : public Model {
       query_scale = (1 + beta * at::log1p(at::floor(at::arange(maximum, inv.options()) / original))).to(dtype);
     }
   }
-  at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input) const {
+  at::Tensor attend_full(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input) const {
     if (device.is_cuda()) {
 #ifdef TEI_TORCH_CUDA_KERNELS
-      if(exact_decoder_math()&&torch_flash_fma_supported(q,k,v))
+      if(exact_decoder_math()&&torch_flash_fma_supported(q,k,v,causal,left_window,right_window))
         return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
           1./std::sqrt(static_cast<double>(head_dim)),causal,left_window,right_window);
 #endif
@@ -181,6 +186,11 @@ class Decoder final : public Model {
       outputs.push_back(at::scaled_dot_product_attention(qs, ks, vs, mask, 0., causal && !mask.has_value()).squeeze(0).transpose(0, 1));
     }
     return at::cat(outputs, 0);
+  }
+  at::Tensor attend(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input) const {
+    if(!radix_enabled(input))return attend_full(q,k,v,input);
+    auto full=attend_full(radix_unfold(q,input),radix_unfold(k,input),radix_unfold(v,input),input);
+    return radix_fold(full,input);
   }
   at::Tensor mlp(const at::Tensor& x, const DecoderLayer& layer) const {
     if (!layer.router.defined()) {
@@ -375,6 +385,7 @@ public:
     // All runtime weights are captured in layers; release unfused checkpoint tensors.
     weights.clear();
   }
+  bool supports_radix() const override {return causal;}
   int64_t output_width() const override { return projection.defined() ? projection.size(0) : hidden; }
   int64_t classification_width() const override {return score.defined()?score.size(0):0;}
   at::Tensor predict(const PackedInput& input,bool tokenwise) const override {
@@ -397,11 +408,15 @@ public:
     return at::linear(hidden_states.index_select(0,selected),score,score_bias);
   }
   at::Tensor forward(const PackedInput& input) const override {
-    return forward_states(input,at::embedding(embedding,input.ids),
-      cos_cache.index_select(0,input.positions).unsqueeze(1),sin_cache.index_select(0,input.positions).unsqueeze(1));
+    TORCH_CHECK(!radix_enabled(input)||supports_radix(),"Radix folding currently requires a causal text decoder");
+    const auto& positions=radix_positions(input);
+    auto compact=forward_states(input,at::embedding(embedding,radix_ids(input)),
+      cos_cache.index_select(0,positions).unsqueeze(1),sin_cache.index_select(0,positions).unsqueeze(1));
+    return radix_unfold(compact,input);
   }
   at::Tensor multimodal_forward(const PackedInput& input,const at::Tensor& indices,const at::Tensor& visual,
     const at::Tensor& cosine,const at::Tensor& sine,const std::vector<at::Tensor>& deepstack) const {
+    TORCH_CHECK(!radix_enabled(input),"Multimodal radix folding is not supported");
     TORCH_CHECK(family=="qwen3","Multimodal decoder hook currently requires Qwen3 text layers");
     auto h=at::embedding(embedding,input.ids);
     TORCH_CHECK(cosine.numel()==input.ids.numel()*(head_dim/2)&&sine.sizes()==cosine.sizes(),"Invalid multimodal RoPE geometry");
@@ -439,14 +454,15 @@ public:
       {
         if (layer.q_norm.defined()) { q = norm(q, layer.q_norm); k = norm(k, layer.k_norm); }
 #ifdef TEI_TORCH_CUDA_KERNELS
-        if(q.is_cuda()) {// Llama's Candle rotary kernel contracts one modeldtype product
-        // into HFMA. BF16 trained embeddings amplify separate-product rounding.
-        auto pair=fused_rotary(q,k,cosine,sine,family=="llama");q=pair.first;k=pair.second;}
+        if(q.is_cuda()) {// Candle contracts one modeldtype product into HFMA.
+        // Preserve Llama's path; learned causal BF16 Mistral operands prove
+        // the same contract with the registered exact RMS geometry.
+        auto pair=fused_rotary(q,k,cosine,sine,family=="llama"||exact_mistral_math());q=pair.first;k=pair.second;}
         else
 #endif
         {q = rotate(q, cosine, sine); k = rotate(k, cosine, sine);}
       }
-      if (query_scale.defined()) q = q * query_scale.index_select(0, input.positions).view({-1, 1, 1});
+      if (query_scale.defined()) q = q * query_scale.index_select(0, radix_positions(input)).view({-1, 1, 1});
       auto attended = attend(q, k, v, input).contiguous().view({h.size(0), heads * head_dim});
       auto projected=at::linear(attended,layer.out,layer.out_bias);
 #ifdef TEI_TORCH_CUDA_KERNELS

@@ -70,5 +70,29 @@ int main(int argc,char** argv) {
     }
     TORCH_CHECK(at::equal(actual.cpu(),expected.to(at::kBFloat16)),"Audio FP32 norm differs from independent reduction/pow reference width",width);
   }
-  std::cout<<"Vision norm/pooling and audio runtime-pow norm match independent references bitwise\n";
+  // The text reference stages mean and epsilon separately because Candle
+  // compiles Gemma RMSNorm with --fmad=false. Keep this independent case
+  // separate from the original vision/audio inputs and random seeds.
+  at::manual_seed(42261);
+  for(int64_t width:{2816}) {
+    auto input=at::randn({257,1,width},at::TensorOptions().device(device).dtype(at::kBFloat16));
+    auto scale=at::randn({width},input.options()).to(at::kFloat);
+    auto actual=tei::gemma_norm_cuda(input,scale,1e-6,true);
+    auto host=input.cpu().to(at::kFloat).contiguous(),weights=scale.cpu();
+    auto expected=at::empty_like(host);auto x=host.const_data_ptr<float>();auto alpha=weights.const_data_ptr<float>();auto y=expected.mutable_data_ptr<float>();
+    int64_t lanes=1;while(lanes<width&&lanes<1024)lanes*=2;
+    for(int64_t row=0;row<257;++row) {
+      std::vector<float> sums(lanes);
+      for(int64_t lane=0;lane<lanes;++lane)for(int64_t col=lane;col<width;col+=lanes) {
+        volatile float squared=x[row*width+col]*x[row*width+col];
+        sums[lane]=sums[lane]+squared;
+      }
+      for(int64_t stride=lanes/2;stride;stride/=2)for(int64_t lane=0;lane<stride;++lane)sums[lane]=sums[lane]+sums[lane+stride];
+      volatile float mean=sums[0]*float(1./double(width));
+      const float denominator=std::sqrt(float(mean+1e-6f));
+      for(int64_t col=0;col<width;++col){volatile float normalized=x[row*width+col]/denominator;y[row*width+col]=normalized*alpha[col];}
+    }
+    TORCH_CHECK(at::equal(actual.cpu(),expected.to(at::kBFloat16)),"Text reference FP32 norm differs from independent shared reduction-tree reference width",width);
+  }
+  std::cout<<"Vision norm/pooling, audio runtime-pow and text reference norm match independent references bitwise\n";
 }

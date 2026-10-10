@@ -36,3 +36,11 @@ required-features = ["benchmark-cuda"]
 [[example]]
 name = "compare_decisions"
 required-features = ["benchmark-cuda"]
+
+[[example]]
+name = "compare_radix"
+required-features = ["benchmark-cuda"]
+
+[[example]]
+name = "compare_heads"
+required-features = ["benchmark-cuda"]

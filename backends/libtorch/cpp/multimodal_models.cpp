@@ -160,7 +160,7 @@ class Qwen3VL final : public Model {
 };
 class Qwen35 final : public Model {
   Options cfg;
-  Weights& weights;
+  Weights weights;
   c10::Device device;
   at::ScalarType dtype;
   std::string prefix;
@@ -285,7 +285,7 @@ class Qwen35 final : public Model {
   }
  public:
   Qwen35(const Options& config,Weights& tensors,c10::Device dev,at::ScalarType type)
-    :cfg(config),weights(tensors),device(dev),dtype(type) {
+    :cfg(config),weights(std::move(tensors)),device(dev),dtype(type) {
     hidden=integer("hidden_size"); heads=integer("num_attention_heads"); kv_heads=integer("num_key_value_heads");
     dim=integer("head_dim",hidden/(heads?heads:1)); layer_count=integer("num_hidden_layers"); epsilon=real("rms_norm_eps",1e-6);
     rotary=static_cast<int64_t>(dim*real("rope_parameters.partial_rotary_factor",1.));
@@ -324,24 +324,39 @@ class Qwen35 final : public Model {
       TORCH_CHECK(kind=="full_attention" || kind=="linear_attention","Invalid Qwen3.5 attention layer ",i);
       auto p="layers."+std::to_string(i)+".";
       w(p+"input_layernorm.weight");w(p+"post_attention_layernorm.weight");
-      auto mp=p+"mlp.";Mlp m;
+      auto mp=p+"mlp.";Mlp m;std::vector<std::string> consumed;
       auto experts=integer("num_experts",0);
       if(experts==0) {
         m.gate_up=at::cat({w(mp+"gate_proj.weight"),w(mp+"up_proj.weight")},0);m.down=w(mp+"down_proj.weight");
+        consumed={mp+"gate_proj.weight",mp+"up_proj.weight",mp+"down_proj.weight"};
       } else {
         auto top=integer("num_experts_per_tok",8);
         TORCH_CHECK(top>0 && top<=experts,"Invalid Qwen3.5 routed expert count");
         m.router=w(mp+"gate.weight");
-        if(weights.count(prefix+mp+"experts.gate_up_proj")) {m.experts=w(mp+"experts.gate_up_proj");m.expert_down=w(mp+"experts.down_proj");}
+        consumed.push_back(mp+"gate.weight");
+        if(weights.count(prefix+mp+"experts.gate_up_proj")) {
+          m.experts=w(mp+"experts.gate_up_proj");m.expert_down=w(mp+"experts.down_proj");
+          consumed.push_back(mp+"experts.gate_up_proj");consumed.push_back(mp+"experts.down_proj");
+        }
         else {
           std::vector<at::Tensor> gu,down;
-          for(int64_t e=0;e<experts;++e){auto ep=mp+"experts."+std::to_string(e)+".";gu.push_back(at::cat({w(ep+"gate_proj.weight"),w(ep+"up_proj.weight")},0));down.push_back(w(ep+"down_proj.weight"));}
+          for(int64_t e=0;e<experts;++e){
+            auto ep=mp+"experts."+std::to_string(e)+".";
+            gu.push_back(at::cat({w(ep+"gate_proj.weight"),w(ep+"up_proj.weight")},0));down.push_back(w(ep+"down_proj.weight"));
+            for(const auto& name:{"gate_proj.weight","up_proj.weight","down_proj.weight"})consumed.push_back(ep+name);
+          }
           m.experts=at::stack(gu);m.expert_down=at::stack(down);
         }
         m.shared_gate_up=at::cat({w(mp+"shared_expert.gate_proj.weight"),w(mp+"shared_expert.up_proj.weight")},0);
         m.shared_down=w(mp+"shared_expert.down_proj.weight");m.shared_gate=w(mp+"shared_expert_gate.weight");
+        for(const auto& name:{"shared_expert.gate_proj.weight","shared_expert.up_proj.weight","shared_expert.down_proj.weight","shared_expert_gate.weight"})consumed.push_back(mp+name);
       }
       mlps.push_back(std::move(m));
+      // Every FFN tensor is now owned by its inference cache. The dense/shared
+      // gate and up projections, and individually stacked experts, otherwise
+      // retain a second full allocation after concatenation. Forward reads FFNs
+      // exclusively through mlps; keep all attention/embedding/vision/head keys.
+      for(const auto& name:consumed)weights.erase(prefix+name);
       if(kind=="linear_attention") {
         auto kh=integer("linear_num_key_heads"),vh=integer("linear_num_value_heads");
         TORCH_CHECK(kh>0 && vh>0 && vh%kh==0,"Invalid Qwen3.5 DeltaNet heads");

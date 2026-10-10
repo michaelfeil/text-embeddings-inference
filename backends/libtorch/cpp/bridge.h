@@ -17,6 +17,14 @@ struct TeiAudio {
   const uint8_t* mask;
   int64_t frames, feature_size, token_start, token_count;
 };
+struct TeiRadix {
+  const int64_t* ids;
+  const int64_t* types;
+  const int64_t* positions;
+  const int64_t* scatter;
+  const int64_t* fold;
+  int64_t compact_tokens;
+};
 struct TeiDecisionField {
   int64_t kind, question_start, question_end;
   const int64_t* options;
@@ -59,5 +67,14 @@ int32_t tei_forward(void*, const int64_t* ids, const int64_t* types,
                     const int64_t* raw, size_t raw_count, float* output, size_t capacity,
                     const int64_t* media_positions, const TeiImage* images, size_t image_count,
                     const TeiAudio* audios, size_t audio_count);
+// A separate entry point preserves the existing packed C ABI for callers that
+// do not provide radix maps. Maps never contain padded or unused compact rows.
+int32_t tei_forward_radix(void*, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, float* output, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix);
 void tei_destroy(void*);
 }

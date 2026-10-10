@@ -34,6 +34,7 @@ class Gemma final : public Model {
   };
   std::vector<Layer> stack;
   Weights norm_scales;
+  Weights router_f32;
   at::Tensor vision_frequency;
   std::unordered_map<int64_t,at::Tensor> norm_ones;
   std::unordered_map<std::string,std::array<double,4>> audio_bounds;
@@ -42,21 +43,21 @@ class Gemma final : public Model {
     // Preserve the router's BF16 rounding before both root-size and learned scales.
     auto root=at::scalar_tensor(1./std::sqrt(double(hidden)),residual.options());
     auto routing=((norm(residual,"",true)*root)*w(p+"router.scale")).to(at::kFloat);
-    auto logits=at::linear(routing,w(p+"router.proj.weight").to(at::kFloat));
+    auto logits=at::linear(routing,weight(router_f32,prefix+p+"router.proj.weight"));
     auto count=integer("num_experts",0),top=integer("top_k_experts",8);
     TORCH_CHECK(count>0 && top>0 && top<=count,"Invalid Gemma4 MoE routing geometry");
     const auto& gate_up=w(p+"experts.gate_up_proj");const auto& down=w(p+"experts.down_proj");
     auto act=string("hidden_activation","gelu_pytorch_tanh");
     if(device.is_cuda() && dtype==at::kBFloat16 && count==128 && top==8 && hidden==2816 && down.size(2)==704 &&
        (act=="gelu_pytorch_tanh" || act=="gelu_new")) {
-      auto output=routed_moe_cuda(input,logits,gate_up,down,true,w(p+"router.per_expert_scale").to(at::kFloat).contiguous());
+      auto output=routed_moe_cuda(input,logits,gate_up,down,true,weight(router_f32,prefix+p+"router.per_expert_scale"));
       if(output.defined())return norm(dense,p+"post_feedforward_layernorm_1")+norm(output,p+"post_feedforward_layernorm_2");
     }
     // Stable descending order gives lower expert IDs precedence on tied logits.
     auto ids=std::get<1>(at::sort(logits,true,-1,true)).narrow(-1,0,top);
     auto probability=at::softmax(logits,-1).gather(-1,ids);
     probability=probability/probability.sum(-1,true);
-    probability=probability*w(p+"router.per_expert_scale").to(at::kFloat).index_select(0,ids.reshape({-1})).view_as(ids);
+    probability=probability*weight(router_f32,prefix+p+"router.per_expert_scale").index_select(0,ids.reshape({-1})).view_as(ids);
     auto activation=[&](const at::Tensor& gu) {
 #ifdef TEI_TORCH_CUDA_KERNELS
       auto act=string("hidden_activation","gelu_pytorch_tanh");
@@ -356,7 +357,7 @@ class Gemma final : public Model {
     auto scale = legacy ? 1.0 / std::sqrt(real("query_pre_attn_scalar", layer.dim)) : 1.0;
     if (device.is_cuda()) {
 #ifdef TEI_TORCH_CUDA_KERNELS
-      if(embedding2 && layer.dim>256 && torch_flash_fma_supported(q,k,v,causal,left,right))
+      if(layer.dim>256 && torch_flash_fma_supported(q,k,v,causal,left,right))
         return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,scale,causal,left,right);
 #endif
       if(layer.dim>256) {
@@ -371,7 +372,7 @@ class Gemma final : public Model {
       }
       at::Tensor output;
 #ifdef TEI_TORCH_CUDA_KERNELS
-      if((legacy || embedding2) && torch_flash_fma_supported(q,k,v,causal,left,right))
+      if(torch_flash_fma_supported(q,k,v,causal,left,right))
         output=torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,scale,causal,left,right);
       else
 #endif
@@ -455,7 +456,10 @@ class Gemma final : public Model {
     hidden = integer("hidden_size", 0); heads = integer("num_attention_heads", 0);
     layers = integer("num_hidden_layers", 0); epsilon = real("rms_norm_eps", 1e-6);
     ple_width = integer("hidden_size_per_layer_input", 0);
-    causal = legacy ? !boolean("use_bidirectional_attention", false) : false;
+    // The fork's Gemma4 option-token decision path always requests causal
+    // hidden states; embedding requests retain their bidirectional contract.
+    causal = legacy ? !boolean("use_bidirectional_attention", false)
+                    : !embedding2 && cfg.string("_decision.kind")=="option_tokens";
     for (const auto& p : {"model.language_model.", "language_model.", "model.", ""}) {
       if (weights.count(std::string(p) + "embed_tokens.weight")) { prefix = p; break; }
     }
@@ -479,6 +483,10 @@ class Gemma final : public Model {
       norm_ones[head_width]=at::ones({head_width},at::TensorOptions().dtype(at::kFloat).device(device));
     }
     for(const auto& [name,value]:weights) {
+      // Match Gemma4's loader: convert these learned routing tensors once,
+      // before inference/graph capture, retaining exactly the same F32 values.
+      if(name.ends_with("router.proj.weight") || name.ends_with("router.per_expert_scale"))
+        router_f32[name]=value.to(at::kFloat).contiguous();
       if(name.ends_with(".weight") && name.find("norm")!=std::string::npos) {
         auto scale=value.to(at::kFloat);
         norm_scales[name]=legacy?scale+1.:scale;

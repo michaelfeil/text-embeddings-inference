@@ -547,6 +547,52 @@ fn distilbert_splade_and_raw_widths_match_candle() {
 }
 
 #[test]
+fn splade_selected_spans_preserve_mixed_raw_order() {
+    let fixture = fixture("distilbert");
+    let cuda_device = std::env::var("TEI_TEST_CUDA_DEVICE").unwrap_or_else(|_| "cuda:0".into());
+    let mut devices = vec![("cpu", "float32", 0.00001)];
+    if std::env::var_os("TEI_TEST_CUDA").is_some() {
+        devices.push((cuda_device.as_str(), "float16", 0.012));
+    }
+    for (device, dtype, tolerance) in devices {
+        let backend = LibtorchBackend::new(
+            &fixture.0,
+            dtype,
+            ModelType::Embedding(Pool::Splade),
+            device,
+        )
+        .unwrap();
+        let mut input = batch();
+        input.input_ids.extend([9, 10]);
+        input.token_type_ids.extend([0, 0]);
+        input.position_ids.extend([0, 1]);
+        input.cumulative_seq_lengths.push(10);
+        input.pooled_indices = vec![2, 1];
+        let mixed = backend.embed(input.clone()).unwrap();
+        let mut pooled = input.clone();
+        pooled.pooled_indices = vec![0, 1, 2];
+        pooled.raw_indices.clear();
+        let pooled = backend.embed(pooled).unwrap();
+        input.pooled_indices.clear();
+        let raw = backend.embed(input).unwrap();
+        for row in [2, 1] {
+            assert_eq!(values(&mixed[&row]).len(), 64);
+            for (a, b) in values(&mixed[&row]).iter().zip(values(&pooled[&row])) {
+                assert!(
+                    (a - b).abs() <= tolerance,
+                    "selected SPLADE span {row}: {a} != {b}"
+                );
+            }
+        }
+        assert_eq!(
+            values(&mixed[&0]),
+            values(&raw[&0]),
+            "raw hidden rows changed during packed SPLADE"
+        );
+    }
+}
+
+#[test]
 fn mpnet_cuda_varlen_matches_cpu() {
     // MPNet has no packed Candle implementation, so compare the native GPU
     // memory-efficient varlen operator to its independent CPU SDPA path.

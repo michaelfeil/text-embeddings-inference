@@ -1,4 +1,5 @@
 #include "multimodal_models.h"
+#include "decision_models.h"
 #include <iostream>
 using namespace tei;
 int main(int argc,char** argv) {
@@ -30,7 +31,10 @@ int main(int argc,char** argv) {
       put(p+"q_norm.weight",{8},true);put(p+"k_norm.weight",{8},true);
     }
   }
-  auto model=create_multimodal(cfg,weights,c10::Device("cpu"),at::kFloat);model->ready();
+  auto build=[](const Options& options,const Weights& source,c10::Device device,at::ScalarType dtype) {
+    auto loader=source;return create_multimodal(options,loader,device,dtype);
+  };
+  auto model=build(cfg,weights,c10::Device("cpu"),at::kFloat);model->ready();
   std::vector<int32_t> offsets={0,3,5},one={0,3},two={0,2};
   auto make=[](const std::vector<int64_t>& ids,const std::vector<int32_t>& ends) {
     auto tokens=at::from_blob(const_cast<int64_t*>(ids.data()),{static_cast<int64_t>(ids.size())},at::TensorOptions().dtype(at::kLong)).clone();
@@ -43,12 +47,30 @@ int main(int argc,char** argv) {
   };
   auto output=model->forward(make({1,2,3,4,5},offsets));
   auto independent=at::cat({model->forward(make({1,2,3},one)),model->forward(make({4,5},two))},0);
+  Weights owned_loader;
+  for(const auto& [name,value]:weights)owned_loader[name]=value.clone();
+  c10::weak_intrusive_ptr<c10::TensorImpl> original_gate(owned_loader.at("model.layers.0.mlp.gate_proj.weight").getIntrusivePtr());
+  auto tied_cfg=cfg;tied_cfg.values["tie_word_embeddings"]="true";
+  auto tied=create_decision_head("option_tokens",{},tied_cfg,{},owned_loader);
+  auto owned=create_multimodal(cfg,owned_loader,c10::Device("cpu"),at::kFloat);
+  TORCH_CHECK(owned_loader.empty() && !original_gate.expired(),"Qwen3.5 must own loaded tensors before initialization");
+  owned->ready();
+  TORCH_CHECK(original_gate.expired(),"Consumed Qwen3.5 FFN projection still retained after initialization");
+  auto owned_hidden=owned->forward(make({1,2,3,4,5},offsets));
+  TORCH_CHECK(at::equal(output,owned_hidden),"Qwen3.5 ownership/cache pruning changed full outputs");
+  DecisionRequest options{DecisionRequest::Kind::OptionTokens};options.token_ids={1,2};
+  auto baseline_head=create_decision_head("option_tokens",{},tied_cfg,{},weights);
+  auto before=baseline_head->forward(output,make({1,2,3,4,5},offsets),{options,options});
+  auto after=tied->forward(owned_hidden,make({1,2,3,4,5},offsets),{options,options});
+  TORCH_CHECK(at::equal(before[0].logits,after[0].logits) && at::equal(before[1].logits,after[1].logits),"Tied option head lost owned embeddings");
+  std::cout<<"Qwen3.5 loader ownership, consumed FFN lifetime and tied decision outputs passed\n";
+
   TORCH_CHECK(at::allclose(output,independent,1e-5,1e-6),"DeltaNet packed recurrence leaked sequence state");
   auto changed=model->forward(make({31,2,3,4,5},offsets));
   TORCH_CHECK(at::allclose(output.narrow(0,3,2),changed.narrow(0,3,2),1e-5,1e-6),"DeltaNet state not reset at sequence boundary");
   std::cout<<"Qwen3.5 packed/single parity and recurrence reset passed\n";
   auto bidirectional_cfg=cfg;bidirectional_cfg.values["decision_attention_mode"]="noncausal_full_attention";
-  auto bidirectional=create_multimodal(bidirectional_cfg,weights,c10::Device("cpu"),at::kFloat);bidirectional->ready();
+  auto bidirectional=build(bidirectional_cfg,weights,c10::Device("cpu"),at::kFloat);bidirectional->ready();
   auto bi=bidirectional->forward(make({1,2,3,4,5},offsets));
   auto future=bidirectional->forward(make({1,2,31,4,5},offsets));
   TORCH_CHECK((bi.select(0,0)-future.select(0,0)).abs().max().item<float>()>1e-5,"Qwen3.5 noncausal full attention ignored future tokens");
@@ -65,7 +87,7 @@ int main(int argc,char** argv) {
     for(auto name:{"gate_proj","up_proj","down_proj"})moe_weights[p+"shared_expert."+name+".weight"]=weights.at(p+name+".weight");
     moe_weights[p+"shared_expert_gate.weight"]=at::zeros({1,16});
   }
-  auto moe=create_multimodal(moe_cfg,moe_weights,c10::Device("cpu"),at::kFloat);moe->ready();
+  auto moe=build(moe_cfg,moe_weights,c10::Device("cpu"),at::kFloat);moe->ready();
   auto routed=moe->forward(make({1,2,3,4,5},offsets));
   auto routed_single=at::cat({moe->forward(make({1,2,3},one)),moe->forward(make({4,5},two))},0);
   TORCH_CHECK(at::allclose(routed,routed_single,1e-5,1e-6),"Qwen3.5 routed experts leak packed sequences");
@@ -75,10 +97,12 @@ int main(int argc,char** argv) {
   if(argc>1) {
     c10::Device device(argv[1]);
     for(auto& [key,value]:weights)value=value.to(at::kBFloat16);
-    auto cpu=create_multimodal(cfg,weights,c10::Device("cpu"),at::kBFloat16);cpu->ready();
+    auto cpu=build(cfg,weights,c10::Device("cpu"),at::kBFloat16);cpu->ready();
     Weights cuda_weights;
     for(const auto& [key,value]:weights)cuda_weights[key]=value.to(device);
+    c10::weak_intrusive_ptr<c10::TensorImpl> cuda_gate(cuda_weights.at("model.layers.0.mlp.gate_proj.weight").getIntrusivePtr());
     auto cuda=create_multimodal(cfg,cuda_weights,device,at::kBFloat16);cuda->ready();
+    TORCH_CHECK(cuda_weights.empty() && cuda_gate.expired(),"CUDA Qwen3.5 retained consumed loader/FFN ownership");
     auto host=make({1,2,3,4,5},offsets),dev=host;
     dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);
     auto reference=cpu->forward(host).to(at::kFloat),actual=cuda->forward(dev).cpu().to(at::kFloat);

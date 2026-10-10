@@ -38,17 +38,21 @@ size_t CudaGraphCache::size() const {
   return 0;
 #endif
 }
-at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original) {
+at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original, int operation) {
+  TORCH_CHECK(operation >= 0 && operation <= 2, "Invalid CUDA graph operation");
+  auto run = [&](const PackedInput& input) {
+    return operation == 0 ? model.forward(input) : model.predict(input, operation == 2);
+  };
 #ifdef TEI_TORCH_CUDA_KERNELS
   auto input=original;
   if(!input.ids.is_cuda()||!impl->limit||input.ids.numel()>impl->max_tokens||input.ids.numel()==0)
-    return model.forward(input);
+    return run(input);
   c10::cuda::CUDAGuard device(input.ids.device());
   model.prepare_input(input);
   // Include offsets, max length, device and scalar types: no sequence metadata
   // from one batch can leak into another graph with the same total token count.
   std::ostringstream key;
-  key<<&model<<':'<<input.ids.device()<<':'<<input.ids.scalar_type()<<':'<<input.positions.scalar_type()<<':'<<input.types.scalar_type()<<':'<<input.cumulative.scalar_type()<<':'<<input.max_sequence<<':';
+  key<<operation<<':'<<&model<<':'<<input.ids.device()<<':'<<input.ids.scalar_type()<<':'<<input.positions.scalar_type()<<':'<<input.types.scalar_type()<<':'<<input.cumulative.scalar_type()<<':'<<input.max_sequence<<':';
   for(int64_t i=0;i<=input.batch;++i)key<<input.offsets[i]<<',';
   auto tensor_key=[&](const at::Tensor& tensor) {
     key<<';'<<tensor.defined();
@@ -66,6 +70,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     key<<':'<<audio.token_start<<':'<<audio.token_count;
   }
   tensor_key(input.multimodal_positions);
+  tensor_key(input.compact_ids);tensor_key(input.compact_positions);tensor_key(input.compact_types);
+  tensor_key(input.scatter_unfold);tensor_key(input.fold_gather);
   auto id=key.str();
   auto found=impl->entries.find(id);
   if(found!=impl->entries.end()) {
@@ -80,10 +86,15 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
       if(input.audios[i].selected_frames.defined())entry.input.audios[i].selected_frames.copy_(input.audios[i].selected_frames);
     }
     if(input.multimodal_positions.defined())entry.input.multimodal_positions.copy_(input.multimodal_positions);
+    if(input.compact_ids.defined()) {
+      entry.input.compact_ids.copy_(input.compact_ids);entry.input.compact_positions.copy_(input.compact_positions);
+      entry.input.compact_types.copy_(input.compact_types);entry.input.scatter_unfold.copy_(input.scatter_unfold);
+      entry.input.fold_gather.copy_(input.fold_gather);
+    }
     entry.graph->replay();
     return entry.output;
   }
-  if(impl->failed.count(id))return model.forward(input);
+  if(impl->failed.count(id))return run(input);
   auto entry=std::make_unique<Impl::Entry>();
   entry->offsets.assign(input.offsets,input.offsets+input.batch+1);
   entry->input={input.ids.clone(),input.types.clone(),input.positions.clone(),input.cumulative.clone(),entry->offsets.data(),input.batch,input.max_sequence};
@@ -94,6 +105,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     entry->input.audios.push_back(std::move(audio));
   }
   if(input.multimodal_positions.defined())entry->input.multimodal_positions=input.multimodal_positions.clone();
+  if(input.compact_ids.defined()) {
+    entry->input.compact_ids=input.compact_ids.clone();entry->input.compact_positions=input.compact_positions.clone();
+    entry->input.compact_types=input.compact_types.clone();entry->input.scatter_unfold=input.scatter_unfold.clone();
+    entry->input.fold_gather=input.fold_gather.clone();
+  }
   auto current=c10::cuda::getCurrentCUDAStream(input.ids.device().index());
   auto capture_stream=c10::cuda::getStreamFromPool(false,input.ids.device().index());
   at::cuda::CUDAEvent input_ready;input_ready.record(current);input_ready.block(capture_stream);
@@ -102,10 +118,10 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     {
       c10::cuda::CUDAStreamGuard stream(capture_stream);
       // Initialize GEMM and attention handles before entering capture.
-      for(int i=0;i<3;++i)entry->output=model.forward(entry->input);
+      for(int i=0;i<3;++i)entry->output=run(entry->input);
       entry->graph=std::make_unique<at::cuda::CUDAGraph>();
       entry->graph->capture_begin({0,0},cudaStreamCaptureModeThreadLocal);capturing=true;
-      entry->output=model.forward(entry->input);
+      entry->output=run(entry->input);
       entry->graph->capture_end();capturing=false;
     }
     at::cuda::CUDAEvent warmed;warmed.record(capture_stream);warmed.block(current);
@@ -121,7 +137,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     // Bound failed shapes too; prevent an unbounded negative cache.
     if(impl->failed.size()>=impl->limit)impl->failed.clear();
     impl->failed.insert(id);
-    return model.forward(input);
+    return run(input);
   }
   if(impl->entries.size()>=impl->limit) {
     impl->entries.erase(impl->lru.back());impl->lru.pop_back();
@@ -131,7 +147,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   impl->entries.emplace(std::move(id),std::move(entry));
   return result;
 #else
-  return model.forward(original);
+  return run(original);
 #endif
 }
 }

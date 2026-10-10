@@ -103,6 +103,20 @@ int main(int argc,char** argv) {
     TORCH_CHECK(output.size(0)==7 && output.size(1)==(f.embedding2?12:16),family," unexpected packed output geometry");
     std::cout << family << ": packed/single parity and independent sequence isolation passed\n";
     if(std::string(family)=="gemma4") {
+      auto decision_options=f.cfg;decision_options.values["_decision.kind"]="option_tokens";
+      auto decision=create_gemma(decision_options,f.weights,c10::Device("cpu"),at::kFloat);decision->ready();
+      auto decision_output=decision->forward(input(packed,po));
+      auto changed_future=packed;changed_future[4]=55;
+      auto decision_future=decision->forward(input(changed_future,po));
+      TORCH_CHECK(at::allclose(decision_output.narrow(0,0,4),decision_future.narrow(0,0,4),1e-5,1e-6),
+        "Gemma4 option-token decision observed future text tokens");
+      TORCH_CHECK(!at::allclose(output.narrow(0,0,4),model->forward(input(changed_future,po)).narrow(0,0,4),1e-5,1e-6),
+        "Gemma4 embedding unexpectedly lost bidirectional attention");
+      auto decision_separate=at::cat({decision->forward(input(a,ao)),decision->forward(input(b,bo))},0);
+      TORCH_CHECK(at::allclose(decision_output,decision_separate,1e-5,1e-6),"Gemma4 causal decision leaked across packed sequences");
+      TORCH_CHECK(at::allclose(decision_output.narrow(0,0,1),decision->forward(input({1},{0,1})),1e-5,1e-6),
+        "Gemma4 causal decision prefix differs from independent one-token reference");
+      std::cout<<"Gemma4 decisions causal; embeddings bidirectional; packed sequence isolation passed\n";
       Fixture mf(family);
       mf.cfg.values["enable_moe_block"]="true";mf.cfg.values["num_experts"]="3";mf.cfg.values["top_k_experts"]="2";
       for(int layer=0;layer<4;++layer) {
@@ -119,9 +133,14 @@ int main(int argc,char** argv) {
       for(int layer=0;layer<4;++layer)mf.weights["layers."+std::to_string(layer)+".experts.down_proj"].select(0,2).fill_(100.);
       TORCH_CHECK(at::allclose(mo,routed->forward(input(packed,po)),1e-5,1e-6),"Gemma4 routing tie did not select lower expert IDs");
       for(int layer=0;layer<4;++layer)mf.weights["layers."+std::to_string(layer)+".router.per_expert_scale"]=at::tensor({0.f,1.f,1.f});
-      auto scaled=routed->forward(input(packed,po));
+      TORCH_CHECK(at::allclose(mo,routed->forward(input(packed,po)),1e-5,1e-6),"Gemma4 cached checkpoint scales changed after external map handle replacement");
+      // Learned routing scales are cached by the checkpoint loader, like Candle.
+      // Compare a separately loaded changed checkpoint, preserving sensitivity
+      // to the same zero-vs-unit scales rather than replacing live map handles.
+      auto rescaled=create_gemma(mf.cfg,mf.weights,c10::Device("cpu"),at::kFloat);rescaled->ready();
+      auto scaled=rescaled->forward(input(packed,po));
       TORCH_CHECK(!at::allclose(mo,scaled,1e-5,1e-6),"Gemma4 learned expert output scales were ignored");
-      TORCH_CHECK(at::allclose(scaled,at::cat({routed->forward(input(a,ao)),routed->forward(input(b,bo))},0),1e-5,1e-6),"Gemma4 scaled expert outputs leaked across sequences");
+      TORCH_CHECK(at::allclose(scaled,at::cat({rescaled->forward(input(a,ao)),rescaled->forward(input(b,bo))},0),1e-5,1e-6),"Gemma4 scaled expert outputs leaked across sequences");
       std::cout<<"gemma4: native MoE packed isolation and stable routing ties passed\n";
     }
     if(!f.legacy) {

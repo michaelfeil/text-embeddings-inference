@@ -1,0 +1,441 @@
+{
+  "bos_token_id": 151643,
+  "candle_gpu": 0,
+  "candle_load_seconds": 1.241122038,
+  "checkpoint_revision": "97b0c614be4d77ee51c0cef4e5f07c00f9eb65b3",
+  "dtype": "float16",
+  "eos_token_id": 151643,
+  "input_pattern": "synthetic valid vocabulary IDs with configured BOS/EOS; real shared prefixes and distinct suffixes; no padding",
+  "iterations_per_backend": 200,
+  "measurement_mode": "parallel separate GPUs; both backends radix-folded; pooled timings; raw parity outside timings",
+  "model_path": "/tmp/tei-qwen3-benchmark-model",
+  "pad_token_id": null,
+  "pooling": "last_token",
+  "torch_cuda_graph_count": 4,
+  "torch_cuda_graph_max_tokens": "4096",
+  "torch_cuda_graphs_requested": true,
+  "torch_cudnn_varlen_requested": true,
+  "torch_gpu": 1,
+  "torch_load_seconds": 2.139628085,
+  "vocab_size": 151669,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 3.5741560000000003,
+        "p50_ms": 3.638455,
+        "p95_ms": 4.009524000000001,
+        "tokens_per_second_at_p50": 281438.1378909455
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 352,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 8
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.02734375,
+        "min_cosine": 0.9999964070311053,
+        "vectors": 8
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 8
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 1024
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.1796875,
+        "min_cosine": 0.9999748800920211,
+        "vectors": 1024
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 1024
+      },
+      "shared_prefix_tokens": 96,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 2.37455,
+        "p50_ms": 2.410833,
+        "p95_ms": 2.443354,
+        "tokens_per_second_at_p50": 424749.453819489
+      },
+      "torch_speedup": 1.509210716793739,
+      "workload": "8x128 prefix96"
+    },
+    {
+      "candle": {
+        "min_ms": 7.483733,
+        "p50_ms": 7.511566,
+        "p95_ms": 7.53326,
+        "tokens_per_second_at_p50": 545292.4197164746
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 2112,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 32
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.03515625,
+        "min_cosine": 0.9999968330342771,
+        "vectors": 32
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 32
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 4096
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.109375,
+        "min_cosine": 0.9999687812224988,
+        "vectors": 4096
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 4096
+      },
+      "shared_prefix_tokens": 64,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 6.21384,
+        "p50_ms": 6.261607,
+        "p95_ms": 6.448131,
+        "tokens_per_second_at_p50": 654145.1739146197
+      },
+      "torch_speedup": 1.1996227166604356,
+      "workload": "32x128 prefix64"
+    },
+    {
+      "candle": {
+        "min_ms": 12.672414,
+        "p50_ms": 12.730872000000002,
+        "p95_ms": 12.771067,
+        "tokens_per_second_at_p50": 387090.53079789033
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 3936,
+      "lengths": [
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        64,
+        96,
+        128,
+        160
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 32
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.046875,
+        "min_cosine": 0.9999956311188465,
+        "vectors": 32
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 32
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 4928
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.09375,
+        "min_cosine": 0.9999818359830936,
+        "vectors": 4928
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 4928
+      },
+      "shared_prefix_tokens": 32,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 4928,
+      "torch": {
+        "min_ms": 11.252535,
+        "p50_ms": 11.336287,
+        "p95_ms": 11.450663,
+        "tokens_per_second_at_p50": 434710.2362528401
+      },
+      "torch_speedup": 1.123019556579681,
+      "workload": "32 ragged64..256 prefix32"
+    },
+    {
+      "candle": {
+        "min_ms": 7.89533,
+        "p50_ms": 7.950062000000001,
+        "p95_ms": 7.980371,
+        "tokens_per_second_at_p50": 515216.1077485936
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 1408,
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 8
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.05078125,
+        "min_cosine": 0.9999938200567906,
+        "vectors": 8
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 8
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 4096
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.109375,
+        "min_cosine": 0.9999915877773674,
+        "vectors": 4096
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 4096
+      },
+      "shared_prefix_tokens": 384,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 5.1683129999999995,
+        "p50_ms": 5.1920839999999995,
+        "p95_ms": 5.255401,
+        "tokens_per_second_at_p50": 788893.2459490256
+      },
+      "torch_speedup": 1.5311890177431646,
+      "workload": "8x512 prefix384"
+    },
+    {
+      "candle": {
+        "min_ms": 30.297785,
+        "p50_ms": 30.492532999999998,
+        "p95_ms": 30.636599,
+        "tokens_per_second_at_p50": 537311.8723852821
+      },
+      "changed_ids_replay_passed": true,
+      "changed_maps_replay_passed": true,
+      "compact_tokens": 8448,
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "pooled_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 32
+      },
+      "pooled_cross_backend": {
+        "max_absolute_difference": 0.0390625,
+        "min_cosine": 0.9999954404961864,
+        "vectors": 32
+      },
+      "pooled_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 32
+      },
+      "raw_candle_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 16384
+      },
+      "raw_cross_backend": {
+        "max_absolute_difference": 0.34375,
+        "min_cosine": 0.9999763348399807,
+        "vectors": 16384
+      },
+      "raw_native_full_vs_fold": {
+        "max_absolute_difference": 0.0,
+        "min_cosine": 1.0,
+        "vectors": 16384
+      },
+      "shared_prefix_tokens": 256,
+      "suffix_sequence_isolation_passed": true,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 22.612170000000003,
+        "p50_ms": 23.688008,
+        "p95_ms": 24.334505,
+        "tokens_per_second_at_p50": 691657.9899837926
+      },
+      "torch_speedup": 1.287256108660551,
+      "workload": "32x512 prefix256"
+    }
+  ],
+  "model_repository": "Qwen/Qwen3-Embedding-0.6B",
+  "benchmark_binary": "/tmp/tei-radix-benchmark-runtime/compare_radix_v1",
+  "benchmark_binary_sha256": "1233fc79df28f28e297d214472136ff32c25b13db45ffaeb6d1ca3ea4da7abc9",
+  "native_library": "/tmp/tei-radix-memory-runtime/libtei_torch.so",
+  "native_library_sha256": "b0f690a028b90c931b28fdadab0de6e6f5520978c0619431760940cdd02ad477",
+  "physical_torch_gpu": 7,
+  "physical_candle_gpu": 6,
+  "benchmark_environment": {
+    "CUDA_VISIBLE_DEVICES": "6,7",
+    "TEI_TORCH_CUDA_GRAPHS": "true",
+    "TEI_TORCH_CUDA_GRAPH_MAX_TOKENS": "4096",
+    "TORCH_BLAS_PREFER_CUBLASLT": "1",
+    "CUBLASLT_WORKSPACE_SIZE": "32768",
+    "TEI_TORCH_CUDNN_VARLEN": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "LD_PRELOAD": ""
+  },
+  "command": [
+    "/tmp/tei-radix-benchmark-runtime/compare_radix_v1",
+    "/tmp/tei-qwen3-benchmark-model",
+    "200",
+    "1",
+    "0",
+    "float16",
+    "last_token"
+  ],
+  "exit_code": 0,
+  "wall_seconds": 20.56238079071045,
+  "log_path": "/tmp/tei-qwen3-trained-radix-4096-7-6.log",
+  "worst_p50_slowdown_percent": -10.95435567964238,
+  "all_workloads_within_5_percent": true,
+  "raw_log_sha256": "1339ab5f53fa715472d2edbb0b4a1b66d1b3ff14a0b02ed0c1b0533b38669a64",
+  "raw_log": "8x128 prefix96: torch 2.411ms, candle 3.638ms, torch speedup 1.51x, cosine 0.999996\n32x128 prefix64: torch 6.262ms, candle 7.512ms, torch speedup 1.20x, cosine 0.999997\n32 ragged64..256 prefix32: torch 11.336ms, candle 12.731ms, torch speedup 1.12x, cosine 0.999996\n8x512 prefix384: torch 5.192ms, candle 7.950ms, torch speedup 1.53x, cosine 0.999994\n32x512 prefix256: torch 23.688ms, candle 30.493ms, torch speedup 1.29x, cosine 0.999995\n",
+  "token_padding": false,
+  "qualification_scope": "Trained causal Qwen3-Embedding0.6B FP16 last-token pooling; all five packed shared-prefix workloads, every raw token, changed-map replay, changed compact-count recapture, and suffix sequence isolation. Not a guarantee for other checkpoints."
+}

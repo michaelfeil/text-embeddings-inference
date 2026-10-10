@@ -1,0 +1,40 @@
+{
+  "model_repository": "mistralai/Ministral-3-3B-Instruct-2512-BF16",
+  "checkpoint_revision": "b6d637bef2393152b3da2b2fde72eecdee30557e",
+  "benchmark_binary": "/tmp/tei-radix-benchmark-runtime/compare_radix_v1",
+  "benchmark_binary_sha256": "1233fc79df28f28e297d214472136ff32c25b13db45ffaeb6d1ca3ea4da7abc9",
+  "native_library": "/tmp/tei-radix-memory-runtime/libtei_torch.so",
+  "native_library_sha256": "b0f690a028b90c931b28fdadab0de6e6f5520978c0619431760940cdd02ad477",
+  "physical_torch_gpu": 7,
+  "physical_candle_gpu": 6,
+  "benchmark_environment": {
+    "CUDA_VISIBLE_DEVICES": "6,7",
+    "TEI_TORCH_CUDA_GRAPHS": "true",
+    "TEI_TORCH_CUDA_GRAPH_MAX_TOKENS": "4096",
+    "TORCH_BLAS_PREFER_CUBLASLT": "1",
+    "CUBLASLT_WORKSPACE_SIZE": "32768",
+    "TEI_TORCH_CUDNN_VARLEN": "1",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "LD_PRELOAD": ""
+  },
+  "dtype": "bfloat16",
+  "pooling": "last_token",
+  "command": [
+    "/tmp/tei-radix-benchmark-runtime/compare_radix_v1",
+    "/tmp/tei-ministral3-benchmark-model",
+    "200",
+    "1",
+    "0",
+    "bfloat16",
+    "last_token"
+  ],
+  "exit_code": -6,
+  "wall_seconds": 15.07819390296936,
+  "log_path": "/tmp/tei-ministral3-trained-radix-4096-7-6.log",
+  "qualification": "FAILED before benchmark completion; retain full log, no complete performance qualification",
+  "failure_log_tail": "8x128 prefix96: torch 6.214ms, candle 7.433ms, torch speedup 1.20x, cosine 0.999459\n\nthread 'main' (3268203) panicked at backends/libtorch/examples/compare_radix.rs:144:13:\nnative/Candle folded raw row16 cosine0.9989722422475755\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+  "raw_log_sha256": "e6c989ea676701eb4d949b5d3451962b7147ae9f3ac8d09ff28922653895d2ed",
+  "raw_log": "8x128 prefix96: torch 6.214ms, candle 7.433ms, torch speedup 1.20x, cosine 0.999459\n\nthread 'main' (3268203) panicked at backends/libtorch/examples/compare_radix.rs:144:13:\nnative/Candle folded raw row16 cosine0.9989722422475755\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n",
+  "token_padding": false,
+  "qualification_scope": "Incomplete: strict raw per-token native/Candle cosine gate failed; partial timings do not qualify the model. Full-vs-fold baseline diagnosis is pending."
+}

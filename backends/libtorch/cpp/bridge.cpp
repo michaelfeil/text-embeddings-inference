@@ -1,4 +1,5 @@
 #include "bridge.h"
+#include "radix.h"
 #include "model.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
@@ -141,11 +142,19 @@ struct Bert : tei::Model {
   at::Tensor root_linear(const at::Tensor& h, const std::string& name) const {
     return at::linear(h, tei::weight(weights, name + ".weight"), tei::weight(weights, name + ".bias"));
   }
+  at::Tensor head_activation(const at::Tensor& h, const at::Tensor& matrix,
+                             const at::Tensor& bias, int activation) const {
+    if (h.is_cuda() && h.dim() == 2 && bias.defined() && bias.dim() == 1
+        && (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)
+        && activation != 3)
+      return at::_addmm_activation(bias, h, matrix.t(), 1, 1, activation != 2);
+    auto projected = at::linear(h, matrix, bias);
+    return activation == 3 ? at::silu(projected) : activation == 2 ? at::relu(projected) : at::gelu(projected, "tanh");
+  }
   at::Tensor predict(const tei::PackedInput& input, bool tokenwise) const override {
     auto h = forward(input);
     if (!tokenwise) {
-      std::vector<int64_t> first(input.offsets, input.offsets + input.batch);
-      auto indices = at::tensor(first, at::TensorOptions().dtype(at::kLong)).to(device);
+      auto indices = input.cumulative.narrow(0, 0, input.batch).to(at::kLong);
       h = h.index_select(0, indices);
     }
     if (weights.count("classifier.dense.weight")) {
@@ -157,18 +166,18 @@ struct Bert : tei::Model {
   at::Tensor token_scores(const at::Tensor& h) const override {
     at::Tensor transformed, matrix, bias;
     if (roberta) {
-      transformed = at::gelu(root_linear(h, "lm_head.dense"), "tanh");
+      transformed = head_activation(h, tei::weight(weights, "lm_head.dense.weight"), tei::weight(weights, "lm_head.dense.bias"), 1);
       transformed = at::layer_norm(transformed, {config.hidden}, tei::weight(weights, "lm_head.layer_norm.weight"), tei::weight(weights, "lm_head.layer_norm.bias"), config.epsilon);
       matrix = weights.count("lm_head.decoder.weight") ? weights.at("lm_head.decoder.weight") : w("embeddings.word_embeddings.weight");
       bias = tei::weight(weights, "lm_head.bias");
     } else {
-      transformed = root_linear(h, "cls.predictions.transform.dense");
-      transformed = config.activation == 3 ? at::silu(transformed) : config.activation == 2 ? at::relu(transformed) : at::gelu(transformed, "tanh");
+      transformed = head_activation(h, tei::weight(weights, "cls.predictions.transform.dense.weight"),
+                                    tei::weight(weights, "cls.predictions.transform.dense.bias"), config.activation);
       transformed = at::layer_norm(transformed, {config.hidden}, tei::weight(weights, "cls.predictions.transform.LayerNorm.weight"), tei::weight(weights, "cls.predictions.transform.LayerNorm.bias"), config.epsilon);
       matrix = weights.count("cls.predictions.decoder.weight") ? weights.at("cls.predictions.decoder.weight") : w("embeddings.word_embeddings.weight");
       bias = tei::weight(weights, "cls.predictions.bias");
     }
-    return at::log1p(at::relu(at::linear(transformed, matrix, bias)));
+    return at::log1p(head_activation(transformed, matrix, bias, 2));
   }
   int64_t output_width() const override { return config.hidden; }
   at::Tensor forward(const tei::PackedInput& input) const override {
@@ -274,8 +283,8 @@ struct Engine {
     TORCH_CHECK(model->output_width() > 0, "Model must declare a positive output width");
     dense->output_width(options.string("_pooling") == "splade" ? config.vocab : model->output_width());
     media_graphs=options.boolean("_media_cuda_graphs",false);
-    // Only the trained Hopper BF16 geometry with device-only routing has
-    // qualified capture/replay. Other MoE geometries retain eager execution.
+    // These Hopper BF16 geometries use device-only routing. Other MoE
+    // geometries retain eager execution rather than synchronizing in capture.
     bool native_moe_graphs=false;
 #if defined(TEI_TORCH_MOE_KERNELS) && defined(TEI_TORCH_MOE_HOPPER)
     if(device.is_cuda()&&dtype==at::kBFloat16&&family=="qwen3_moe"
@@ -284,6 +293,16 @@ struct Engine {
       &&options.integer("head_dim",0)==128&&options.integer("num_attention_heads",0)==32
       &&options.integer("num_key_value_heads",0)==4)
       native_moe_graphs=tei::native_hopper_moe_available(device);
+    if(device.is_cuda()&&dtype==at::kBFloat16&&(family=="gemma4"||family=="gemma4_text")) {
+      auto text_integer=[&](const char* key,int64_t fallback=0) {
+        return options.integer(std::string("text_config.")+key,options.integer(key,fallback));
+      };
+      auto act=options.string("text_config.hidden_activation",options.string("hidden_activation","gelu_pytorch_tanh"));
+      if(text_integer("hidden_size")==2816&&text_integer("num_experts")==128
+        &&text_integer("top_k_experts",8)==8&&text_integer("moe_intermediate_size")==704
+        &&(act=="gelu_pytorch_tanh"||act=="gelu_new"))
+        native_moe_graphs=tei::native_hopper_moe_available(device);
+    }
 #endif
     if (device.is_cuda() && options.boolean("_cuda_graphs", false)
         && (native_moe_graphs || (options.integer("num_experts", options.integer("text_config.num_experts", 0)) == 0
@@ -432,13 +451,61 @@ int32_t tei_forward(void* handle, const int64_t* ids, const int64_t* types,
                     const int64_t* raw, size_t raw_count, float* output, size_t capacity,
                     const int64_t* media_positions, const TeiImage* images, size_t image_count,
                     const TeiAudio* audios, size_t audio_count) {
+  return tei_forward_radix(handle,ids,types,positions,cumulative,batch,max_sequence,pool,
+    pooled,pooled_count,raw,raw_count,output,capacity,media_positions,images,image_count,
+    audios,audio_count,nullptr);
+}
+int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, float* output, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix) {
   return checked([&] {
     auto& model = *static_cast<Engine*>(handle);
     auto packed=packed_input(model,ids,types,positions,cumulative,batch,max_sequence,
       media_positions,images,image_count,audios,audio_count);
-    auto h = pool >= 4 ? model.model->predict(packed, pool == 5)
-      : model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions))
-        ? model.graphs->forward(*model.model, packed) : model.model->forward(packed);
+    if(radix) {
+      TORCH_CHECK(model.model->supports_radix(),"This native model does not support radix folding");
+      TORCH_CHECK(!image_count&&!audio_count&&!media_positions,"Radix media inference is not supported");
+      const int64_t total=cumulative[batch],compact=radix->compact_tokens;
+      TORCH_CHECK(compact>0&&compact<=total&&radix->ids&&radix->types&&radix->positions&&radix->scatter&&radix->fold,"Invalid native radix buffers");
+      const auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);
+      auto host=[&](const int64_t* data,int64_t rows){return at::from_blob(const_cast<int64_t*>(data),{rows},options);};
+      tei::PackedInput metadata{host(ids,total),host(types,total),host(positions,total),
+        at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)),cumulative,batch,max_sequence};
+      metadata.compact_ids=host(radix->ids,compact);
+      metadata.compact_types=host(radix->types,compact);
+      metadata.compact_positions=host(radix->positions,compact);
+      metadata.scatter_unfold=host(radix->scatter,total);
+      metadata.fold_gather=host(radix->fold,compact);
+      // Validate complete causal contexts on host before capture or map upload.
+      tei::validate_radix(metadata,true);
+      packed.compact_ids=metadata.compact_ids.to(model.device);
+      packed.compact_types=metadata.compact_types.to(model.device);
+      packed.compact_positions=metadata.compact_positions.to(model.device);
+      packed.scatter_unfold=metadata.scatter_unfold.to(model.device);
+      packed.fold_gather=metadata.fold_gather.to(model.device);
+    }
+    const bool graph_eligible = model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions));
+    auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
+      : pool >= 4 ? model.model->predict(packed, pool == 5) : model.model->forward(packed);
+    // Project only requested real token spans once. Offsets below preserve
+    // caller order, repeated requests and mixed pooled/raw output semantics.
+    at::Tensor sparse_scores;
+    std::vector<int64_t> sparse_starts;
+    if (pool == 3 && pooled_count) {
+      std::vector<at::Tensor> selected;
+      int64_t cursor = 0;
+      for (size_t i = 0; i < pooled_count; ++i) {
+        const auto row = pooled[i];
+        const auto start = cumulative[row], length = cumulative[row + 1] - start;
+        sparse_starts.push_back(cursor); cursor += length;
+        selected.push_back(h.narrow(0, start, length));
+      }
+      sparse_scores = model.model->token_scores(at::cat(selected, 0));
+    }
     std::vector<at::Tensor> outputs;
     bool mean_pooled=false;
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -458,7 +525,7 @@ int32_t tei_forward(void* handle, const int64_t* ids, const int64_t* types,
       const auto row = pooled[i];
       const auto start = cumulative[row], length = cumulative[row + 1] - start;
       if (pool == 4) outputs.push_back(h.narrow(0, row, 1));
-      else if (pool == 3) outputs.push_back(std::get<0>(model.model->token_scores(h.narrow(0, start, length)).max(0, true)));
+      else if (pool == 3) outputs.push_back(std::get<0>(sparse_scores.narrow(0, sparse_starts[i], length).max(0, true)));
       else if (pool == 0) outputs.push_back(h.narrow(0, start, 1));
       else if (pool == 1) outputs.push_back(h.narrow(0, start, length).mean(0, true, at::kFloat));
       else outputs.push_back(h.narrow(0, start + length - 1, 1));
