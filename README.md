@@ -551,6 +551,30 @@ checkpoint's `choice:11+` temperature is outside this range; confidence for that
 bucket is not verified as calibrated. ModernBERT uses approximate (tanh) GELU;
 the custom head retains ReLU and exact scorer/action GELU.
 
+### JSON and MessagePack responses
+
+All HTTP routes negotiate response formats through `Accept`. API responses default
+to JSON; request bodies remain JSON. To receive MessagePack, send
+`Accept: application/msgpack` (`application/x-msgpack` is also accepted):
+
+```sh
+curl http://localhost:3000/v1/classify \
+  -H 'Content-Type: application/json' \
+  -H 'Accept: application/msgpack' \
+  -d '{"input":"I love this!"}' --output classification.msgpack
+```
+
+MessagePack uses the same field names and shapes as JSON. Typed API results are
+serialized directly, retaining native integer and floating-point types. Token
+usage, status codes and response metadata headers are preserved. `Accept` quality
+weights are supported; unacceptable media types return 406. Responses include
+`Vary: Accept`. Swagger/OpenAPI lists both response formats with the same schemas.
+
+Metrics and docs keep their native text/HTML formats by default. Explicit JSON or
+MessagePack requests encode text responses as strings; empty health responses
+encode as null. HEAD, 204 and 304 responses remain bodyless. Framework errors also
+support the selected format.
+
 ### Chat inputs for embeddings and classification
 
 `/v1/embeddings` accepts a top-level `messages` array as an alternative to `input`:
