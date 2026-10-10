@@ -1,3 +1,4 @@
+use super::response_format::Json;
 use crate::http::ner::apply_aggregation;
 /// HTTP Server logic
 use crate::http::types::{
@@ -21,7 +22,7 @@ use axum::extract::{DefaultBodyLimit, Extension};
 use axum::http::HeaderValue;
 use axum::http::{Method, StatusCode};
 use axum::routing::{get, post};
-use axum::{http, Json, Router};
+use axum::{http, Router};
 use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
 use base64::prelude::BASE64_STANDARD;
 use base64::Engine;
@@ -2151,6 +2152,7 @@ fn api_doc() -> utoipa::openapi::OpenApi {
             );
         }
     }
+    super::response_format::document(&mut doc);
     doc
 }
 
@@ -2325,6 +2327,7 @@ pub async fn run(
             logging::http::trace_context_middleware,
         ))
         .layer(DefaultBodyLimit::max(payload_limit))
+        .layer(axum::middleware::from_fn(super::response_format::negotiate))
         .layer(cors_layer);
 
     // Run server
@@ -2486,8 +2489,23 @@ mod classify_tests {
         let doc = serde_json::to_value(api_doc()).unwrap();
         let checked_in: serde_json::Value =
             serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap();
-        for path in ["/predict", "/v1/classify"] {
-            assert_eq!(doc["paths"][path], checked_in["paths"][path], "{path}");
+        for (path, item) in doc["paths"].as_object().unwrap() {
+            // Some existing runtime routes are absent from the checked-in reference.
+            if !checked_in["paths"][path].is_null() {
+                assert_eq!(item, &checked_in["paths"][path], "{path}");
+            }
+            for operation in item.as_object().unwrap().values() {
+                for response in operation["responses"].as_object().unwrap().values() {
+                    let content = &response["content"];
+                    if !content["application/json"].is_null() {
+                        assert_eq!(
+                            content["application/json"]["schema"],
+                            content["application/msgpack"]["schema"],
+                            "{path}"
+                        );
+                    }
+                }
+            }
         }
         for schema in [
             "ClassifyRequest",

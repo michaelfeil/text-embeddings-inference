@@ -1,8 +1,8 @@
 //! Jev typed decisions, submitted to TEI's shared queue and replica pool.
+use super::response_format::Json;
 use axum::{
     extract::Extension,
     http::{HeaderMap, StatusCode},
-    Json,
 };
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
