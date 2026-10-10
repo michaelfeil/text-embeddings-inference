@@ -551,15 +551,54 @@ Provide exactly one of `input` or `messages`. A conversation produces one embedd
 `encoding_format` and `dimensions` work as they do for ordinary embedding inputs.
 The existing `input` message-array format remains supported.
 
-`/predict` accepts a conversation under `inputs`:
+`/v1/classify` accepts a conversation under `messages`:
 
 ```json
-{"inputs":{"messages":[{"role":"system","content":"Classify the user's sentiment."},{"role":"user","content":"I love this!"}]},"raw_scores":false}
+{"messages":[{"role":"system","content":"Classify the user's sentiment."},{"role":"user","content":"I love this!"}]}
 ```
 
-For independent conversations, pass an array of `{"messages": [...]}` objects as
-`inputs`. Responses retain `/predict`'s existing label/score arrays. Text, text
-pairs and token-ID requests retain their existing behavior.
+For plain text classification, send `{"input": "I love this!"}`. An `input` array
+of strings describes independent inputs, so `["first", "second"]` is a batch,
+rather than a text pair. Final token IDs and batches of token IDs are also accepted.
+Provide exactly one of `input` or `messages`.
+
+The SGLang-compatible response contains class probabilities in class-ID order,
+the predicted label, and token usage:
+
+```json
+{
+  "id": "classify-9bf17f2847b046c7b2d5495f4b4f9682",
+  "object": "list",
+  "created": 1791590400,
+  "model": "your-deployed-model",
+  "data": [{"index": 0, "label": "positive", "probs": [0.12, 0.88], "num_classes": 2}],
+  "usage": {"prompt_tokens": 12, "completion_tokens": 0, "total_tokens": 12, "prompt_tokens_details": null}
+}
+```
+
+`prompt_tokens` sums the actual input tokens across the batch, including chat
+formatting and special tokens, after truncation. `total_tokens` equals
+`prompt_tokens`; classification generates no completion tokens. Cached-token
+billing details are unavailable and `prompt_tokens_details` is null. Pricing is
+applied by your serving platform. Probabilities use softmax, including `[1.0]`
+for a one-class model, matching SGLang. Use `/rerank` for reranking scores.
+
+Optional `model`, `user` and `rid` fields are accepted as metadata; the response
+identifies the deployed model and generates its own request ID. A batch of `rid`
+values must match the input batch length. Nonzero `priority` is rejected because
+priority scheduling is unsupported. `truncate` and `truncation_direction` are
+TEI extensions. Errors use an `object`, `message`, `type`, `param` and `code` envelope.
+
+`/predict` is deprecated; new clients should use `/v1/classify`. It remains
+available with its existing text/pair/token-ID inputs, conversation objects and
+label/score response arrays. Legacy classifier aliases `/` and `/invocations`
+retain the same behavior. These legacy routes include `Deprecation` and a `Link`
+to `/v1/classify` on responses. No removal date is scheduled. To migrate, rename
+`inputs` to `input` for strings and token IDs, send chat conversations as
+`messages`, and read `data[].probs` and `usage` from the new response. A legacy
+text pair cannot be migrated as a two-string array: that array is a batch in the
+new endpoint. Raw-score clients should continue to use `/predict` until they can
+consume probabilities, or use `/rerank` when appropriate.
 
 Text conversations use the deployed model's `chat_template.jinja` or the template
 in `tokenizer_config.json`. System, developer, user and assistant roles are passed
