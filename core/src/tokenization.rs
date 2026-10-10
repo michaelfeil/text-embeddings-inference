@@ -1,6 +1,7 @@
 /// Payload tokenization logic
 use crate::TextEmbeddingsError;
 use std::collections::HashMap;
+use std::num::NonZeroUsize;
 use std::sync::Arc;
 use tokenizers::tokenizer::Tokenizer;
 pub use tokenizers::Encoding as RawEncoding;
@@ -9,6 +10,12 @@ use tokio::sync::oneshot;
 use tracing::{instrument, Span};
 
 static MAX_CHAR_MULTIPLIER: usize = 250;
+
+/// Maximum outer tokenizer workers and threads in the shared fast-tokenizer pool.
+pub const MAX_TOKENIZATION_WORKERS: usize = 16;
+
+/// Waiting tokenizer jobs, independent of the worker count.
+pub const DEFAULT_TOKENIZATION_QUEUE_CAPACITY: usize = 1024;
 
 /// Validation
 #[derive(Debug, Clone)]
@@ -42,11 +49,39 @@ impl Tokenization {
         prompts: Option<HashMap<String, String>>,
         chat: Option<crate::chat::ChatProcessor>,
     ) -> Self {
+        Self::with_queue_capacity(
+            workers,
+            NonZeroUsize::new(DEFAULT_TOKENIZATION_QUEUE_CAPACITY).unwrap(),
+            tokenizer,
+            max_input_length,
+            position_offset,
+            default_prompt,
+            prompts,
+            chat,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn with_queue_capacity(
+        workers: usize,
+        queue_capacity: NonZeroUsize,
+        tokenizer: Tokenizer,
+        max_input_length: usize,
+        position_offset: usize,
+        default_prompt: Option<String>,
+        prompts: Option<HashMap<String, String>>,
+        chat: Option<crate::chat::ChatProcessor>,
+    ) -> Self {
+        let workers = workers.clamp(1, MAX_TOKENIZATION_WORKERS);
         let chat = chat.map(Arc::new);
-        tracing::info!("Starting {workers} tokenization workers");
+        tracing::info!(
+            workers,
+            queue_capacity = queue_capacity.get(),
+            "Starting tokenization workers"
+        );
 
         // Create channel
-        let (sender, receiver) = async_channel::bounded(workers * 4);
+        let (sender, receiver) = async_channel::bounded(queue_capacity.get());
 
         // Spawn a background thread that creates all workers
         // since tokenizer.clone() require 0.2s.
@@ -1136,47 +1171,51 @@ mod fast_embedding_tests {
 
     #[test]
     fn concurrent_requests_preserve_fast_and_fallback_ids() {
-        let tokenizer = Tokenization::new(
-            4,
-            crate::fast_tokenization::test_tokenizer(),
-            256,
-            0,
-            None,
-            None,
-            None,
-        );
-        tokio::runtime::Runtime::new().unwrap().block_on(async {
-            let mut tasks = tokio::task::JoinSet::new();
-            for i in 0..32 {
-                let tokenizer = tokenizer.clone();
-                tasks.spawn(async move {
-                    let pair = (format!("query {i}"), "東京 passage".to_string());
-                    let expected = tokenizer
-                        .encode(pair.clone().into(), true, TruncationDirection::Right, None)
-                        .await
-                        .unwrap();
-                    let actual = tokenizer
-                        .encode_embedding(pair.into(), true, TruncationDirection::Right, None)
-                        .await
-                        .unwrap();
-                    assert_eq!(actual.input_ids, expected.input_ids);
-                    assert_eq!(actual.token_type_ids, expected.token_type_ids);
-                    let text = format!("request {i} 東京 👩🏽‍💻");
-                    let expected = tokenizer
-                        .encode(text.clone().into(), true, TruncationDirection::Left, None)
-                        .await
-                        .unwrap();
-                    let actual = tokenizer
-                        .encode_embedding(text.into(), true, TruncationDirection::Left, None)
-                        .await
-                        .unwrap();
-                    assert_eq!(actual.input_ids, expected.input_ids);
-                    assert_eq!(actual.token_type_ids, expected.token_type_ids);
-                });
-            }
-            while let Some(result) = tasks.join_next().await {
-                result.unwrap();
-            }
-        });
+        for capacity in [1, DEFAULT_TOKENIZATION_QUEUE_CAPACITY] {
+            let tokenizer = Tokenization::with_queue_capacity(
+                4,
+                NonZeroUsize::new(capacity).unwrap(),
+                crate::fast_tokenization::test_tokenizer(),
+                256,
+                0,
+                None,
+                None,
+                None,
+            );
+            assert_eq!(tokenizer.sender.capacity(), Some(capacity));
+            tokio::runtime::Runtime::new().unwrap().block_on(async {
+                let mut tasks = tokio::task::JoinSet::new();
+                for i in 0..256 {
+                    let tokenizer = tokenizer.clone();
+                    tasks.spawn(async move {
+                        let pair = (format!("query {i}"), "東京 passage".to_string());
+                        let expected = tokenizer
+                            .encode(pair.clone().into(), true, TruncationDirection::Right, None)
+                            .await
+                            .unwrap();
+                        let actual = tokenizer
+                            .encode_embedding(pair.into(), true, TruncationDirection::Right, None)
+                            .await
+                            .unwrap();
+                        assert_eq!(actual.input_ids, expected.input_ids);
+                        assert_eq!(actual.token_type_ids, expected.token_type_ids);
+                        let text = format!("request {i} 東京 👩🏽‍💻");
+                        let expected = tokenizer
+                            .encode(text.clone().into(), true, TruncationDirection::Left, None)
+                            .await
+                            .unwrap();
+                        let actual = tokenizer
+                            .encode_embedding(text.into(), true, TruncationDirection::Left, None)
+                            .await
+                            .unwrap();
+                        assert_eq!(actual.input_ids, expected.input_ids);
+                        assert_eq!(actual.token_type_ids, expected.token_type_ids);
+                    });
+                }
+                while let Some(result) = tasks.join_next().await {
+                    result.unwrap();
+                }
+            });
+        }
     }
 }

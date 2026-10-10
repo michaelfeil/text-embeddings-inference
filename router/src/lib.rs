@@ -25,7 +25,7 @@ use text_embeddings_backend::{DType, Pool};
 use text_embeddings_core::download::{download_artifacts, ST_CONFIG_NAMES};
 use text_embeddings_core::infer::Infer;
 use text_embeddings_core::queue::Queue;
-use text_embeddings_core::tokenization::Tokenization;
+use text_embeddings_core::tokenization::{Tokenization, MAX_TOKENIZATION_WORKERS};
 use text_embeddings_core::TextEmbeddingsError;
 use tokenizers::processors::sequence::Sequence;
 use tokenizers::processors::template::TemplateProcessing;
@@ -50,6 +50,7 @@ pub async fn run(
     model_id: String,
     revision: Option<String>,
     tokenization_workers: Option<usize>,
+    tokenization_queue_capacity: std::num::NonZeroUsize,
     dtype: Option<DType>,
     pooling: Option<text_embeddings_backend::Pool>,
     decision_protocol: Option<DecisionProtocol>,
@@ -338,9 +339,10 @@ pub async fn run(
 
     tracing::info!("Maximum number of tokens per request: {max_input_length}");
 
-    // fall-back to num_cpus - 1 to leave some CPU for the backend, and at most 64 workers.
-    let tokenization_workers =
-        tokenization_workers.unwrap_or_else(|| (num_cpus::get() - 1).clamp(1, 64));
+    // Reserve one CPU for the backend and cap both defaults and explicit settings.
+    let tokenization_workers = tokenization_workers
+        .unwrap_or_else(|| num_cpus::get().saturating_sub(1))
+        .clamp(1, MAX_TOKENIZATION_WORKERS);
 
     // Try to load new ST Config
     let mut new_st_config: Option<NewSTConfig> = None;
@@ -419,8 +421,9 @@ pub async fn run(
     } else {
         None
     };
-    let tokenization = Tokenization::new(
+    let tokenization = Tokenization::with_queue_capacity(
         tokenization_workers,
+        tokenization_queue_capacity,
         tokenizer,
         max_input_length,
         position_offset,
@@ -562,6 +565,7 @@ pub async fn run(
         max_input_length,
         max_batch_tokens,
         tokenization_workers,
+        tokenization_queue_capacity: tokenization_queue_capacity.get(),
         max_batch_requests,
         max_client_batch_size,
         max_decision_questions,
@@ -903,6 +907,9 @@ pub struct Info {
     pub auto_truncate: bool,
     #[cfg_attr(feature = "http", schema(example = "4"))]
     pub tokenization_workers: usize,
+    /// Maximum waiting tokenizer jobs (individual inputs, not HTTP requests).
+    #[cfg_attr(feature = "http", schema(example = "1024"))]
+    pub tokenization_queue_capacity: usize,
     #[cfg_attr(feature = "http", schema(example = "0.5"))]
     pub radix_mlp_threshold: f32,
     /// Experimental per-token activation and per-row weight FP8 MLP quantization.

@@ -91,6 +91,13 @@ Each replica logs inference throughput every 100 batches.
 
 Embedding text inputs automatically use `basetenkenizer` 0.2.9 when the tokenizer configuration is supported. No opt-in flag or environment variable is required. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Fast encoding uses a shared CPU pool bounded by `--tokenization-workers`.
 
+Tokenization workers are capped at 16, including explicit overrides. BPE encoding
+uses a shared Rayon pool with up to 16 additional threads. The waiting-job queue
+has a separate default capacity of 1,024; set `--tokenization-queue-capacity` or
+`TOKENIZATION_QUEUE_CAPACITY` to change it. Capacity counts individual inputs,
+not HTTP requests, and must be positive. Producers wait when the queue is full.
+The effective worker count and queue capacity are reported by `/info`.
+
 ## Get Started
 
 ### Supported Models
@@ -184,9 +191,14 @@ Options:
           [env: REVISION=]
 
       --tokenization-workers <TOKENIZATION_WORKERS>
-          Optionally control the number of tokenizer workers used for payload tokenization, validation and truncation. Default to the number of CPU cores on the machine
+          Optionally control the number of tokenizer workers used for payload tokenization, validation and truncation. Defaults to CPU cores minus one. Values are clamped to 1–16
 
           [env: TOKENIZATION_WORKERS=]
+
+      --tokenization-queue-capacity <TOKENIZATION_QUEUE_CAPACITY>
+          Maximum waiting tokenizer jobs, independent of worker count. Counts individual inputs, not HTTP requests. When full, producers wait for space
+
+          [env: TOKENIZATION_QUEUE_CAPACITY=] [default: 1024]
 
       --dtype <DTYPE>
           Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default

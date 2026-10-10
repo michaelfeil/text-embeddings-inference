@@ -37,9 +37,14 @@ Options:
           [env: REVISION=]
 
       --tokenization-workers <TOKENIZATION_WORKERS>
-          Optionally control the number of tokenizer workers used for payload tokenization, validation and truncation. Default to the number of CPU cores on the machine
+          Optionally control the number of tokenizer workers used for payload tokenization, validation and truncation. Defaults to CPU cores minus one. Values are clamped to 1–16
 
           [env: TOKENIZATION_WORKERS=]
+
+      --tokenization-queue-capacity <TOKENIZATION_QUEUE_CAPACITY>
+          Maximum waiting tokenizer jobs, independent of worker count. Counts individual inputs, not HTTP requests. When full, producers wait for space
+
+          [env: TOKENIZATION_QUEUE_CAPACITY=] [default: 1024]
 
       --dtype <DTYPE>
           Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default
