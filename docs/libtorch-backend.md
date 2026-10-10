@@ -70,7 +70,7 @@ uses one packed efficient-attention call per layer. Its backing storage is
 are never read. Neither Q/K/V nor token activations are padded.
 
 Typed decision heads have native implementations and synthetic parity checks.
-Trained BF16 text decisions for Laya, Clef and Qwen3.5 option-token heads now
+Trained BF16 text decisions for Laya, Clef, Pplx and Qwen3.5 option-token heads now
 pass the strict accuracy gates and the 5% P50 latency target in both H100
 assignments. Laya covers the published three-question fixture and extended
 states through 256 tokens; its combined Q/K/V projection preserves all tested
@@ -80,12 +80,14 @@ choice/noul/three-level-score schemas; a separate scalar score passes an
 explicit BF16 magnitude gate without using scalar cosine as fidelity evidence.
 Option-token Qwen3.5 covers real
 choice prompts with actual token IDs. Laya enables `TEI_TORCH_CUDA_GRAPHS=true`;
-Clef/option-token runs additionally enable `TEI_TORCH_MEDIA_CUDA_GRAPHS=true`,
+Clef/Pplx/option-token runs additionally enable `TEI_TORCH_MEDIA_CUDA_GRAPHS=true`,
 with verified graph counts 1–4. [Exact decision coverage and reports](libtorch-model-coverage.md)
-retain historical latency misses. Trained Pplx 27B qualification is pending;
-its explicit attention-head geometry now has a scoped startup fix and an
-independent CUDA regression. The subsequent public-checkpoint visual prefix
-mismatch remains open; trained Pplx scores and latency are not yet qualified. Sentence Transformers Dense
+retain historical latency misses. Trained Pplx 27B now passes four real choice
+workloads in both GPU assignments, at least 15.27% faster, using its published
+noncausal-full-attention contract and readout rows 0/1/2. Its explicit head
+geometry and genuine visual-weight prefixes have validated startup fixes;
+this text qualification does not cover all 255 readout rows or image inference.
+Sentence Transformers Dense
 chains support identity/tanh projections of pooled outputs, retaining raw token
 widths. Dense modules require safetensors weights. Radix folding, dynamic FP8
 and other custom modules remain unsupported and are rejected explicitly. Image and

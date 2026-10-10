@@ -33,23 +33,26 @@ Classifier and SPLADE coverage is architecture-specific. Typed decision contract
 and sidecar loading have synthetic CPU/CUDA coverage, including nonconstant
 learned Laya actions and Pplx causal/noncausal modes. Trained BF16 text decisions
 now pass the strict cosine/action/argmax gates and the 5% P50 latency target in
-both H100 assignments for Laya, Clef and Qwen3.5 option-token decisions:
+both H100 assignments for Laya, Clef, Pplx and Qwen3.5 option-token decisions:
 
 - Laya `convaiinnovations/laya-typed-decisions` revision `e929ae5cf69bc34259cd2f95c9e91145b818b1f0`: eight workloads per assignment, including the published three-question fixture and valid extended states through 256 tokens. Minimum logit cosine 0.999996787; worst P50 slowdown +2.75%. The combined trained Q/K/V projection preserves all tested native outputs bitwise. The independent upstream CPU fixture passes its original tolerances. Actual tested action probabilities saturate at 1.0, so these trained runs establish agreement on saturated actions; nonconstant actions remain covered by the synthetic fixture. [Correctness and scope](benchmarks/tei-laya-trained-decisions-correctness.json).
 - Clef `Cloudflare/clef-flash` revision `8b2e5fd17c09fd49bc2880b805d5323ec7ff4ff3`: real joint choice/noul/three-level-score schemas, 320–325 actual tokens, batches 1/3/8/32. Minimum individual-field cosine 0.999885575; every field's selected option agrees; both assignments are at least 18.30% faster. [2/3](benchmarks/tei-clef-trained-decisions-graphs-2-3.json), [3/2](benchmarks/tei-clef-trained-decisions-graphs-3-2.json). These categorical score fields have three logits. A separate one-level scalar score passes the fixed magnitude gate `absolute error <= 0.006 + 2*BF16 epsilon*abs(reference)`: native −0.20703125 versus Candle −0.2109375, absolute error 0.00390625. Scalar cosine is excluded from this fidelity gate; both GPU assignments reproduce the same scalar error. [Scalar 2/3](benchmarks/tei-clef-trained-scalar-decisions-2-3.json), [scalar 3/2](benchmarks/tei-clef-trained-scalar-decisions-3-2.json).
 - Option-token Qwen3.5 `Qwen/Qwen3.5-0.8B` revision `2fc06364715b967f1860aea9cf38778875588b17`: real choice prompts with actual vocabulary IDs 32/33/34, 108–113 tokens, batches 1/3/8/32. Minimum cosine 0.999997970; every selected option agrees; both assignments are at least 24.72% faster. [2/3](benchmarks/tei-option-token-trained-decisions-graphs-2-3.json), [3/2](benchmarks/tei-option-token-trained-decisions-graphs-3-2.json).
 
-Laya uses `TEI_TORCH_CUDA_GRAPHS=true`. Clef and option-token runs also enable
+- Pplx `perplexity-ai/pplx-decider-v1.1-27b` revision `6195aa55a72ae21e503c8a60198f7b390d42adb5`: real three-option choice prompts, 108–113 tokens per prompt, batches 1/3/8/32, trained external BF16 readout rows 0/1/2. Minimum logit cosine 0.999995742; every selected option agrees; all eight paired latency cases are at least 15.27% faster. This covers the published noncausal-full-attention text decision contract; all 255 readout rows and image inference are not qualified by these runs. [2/3](benchmarks/tei-pplx-trained-decisions-prefix-2-3.json), [3/2](benchmarks/tei-pplx-trained-decisions-prefix-3-2.json).
+
+Laya uses `TEI_TORCH_CUDA_GRAPHS=true`. Clef, Pplx and option-token runs also enable
 `TEI_TORCH_MEDIA_CUDA_GRAPHS=true`; actual graph counts progress from 1 to 4.
 All use native Torch varlen attention without padded token activations or a
 Python inference runtime. Historical eager/separate-QKV latency misses are
-retained. Pplx 27B public weights are downloaded and verified; trained paired
-qualification remains pending. Its legitimate 5120-wide hidden states and
-24 attention heads of explicit dimension 256 exposed a generic startup guard;
-a narrowly scoped Qwen3.5 fix has CPU and independent Candle CUDA regressions.
-The subsequent startup failure is a visual-weight prefix mismatch: the published
-checkpoint contains `visual.*`, while the adapter expects `model.visual.*`.
-No trained scores or latency are claimed. [Startup evidence](benchmarks/tei-pplx-trained-decisions-startup.json). Sentence Transformers Dense
+retained. Pplx's legitimate 5120-wide hidden states and 24 attention heads of
+explicit dimension 256 have a narrowly scoped Qwen3.5 startup guard with CPU
+and independent Candle CUDA regressions. Genuine `visual.*` checkpoint weights
+are normalized to the native tower namespace, preserving the original FP16
+vision conversion. Full text/image prefix fixtures remain bitwise equal;
+incomplete and ambiguous towers are rejected. The prior startup failures are
+preserved in [startup evidence](benchmarks/tei-pplx-trained-decisions-startup.json).
+Sentence Transformers Dense
 chains support identity/tanh projections and retain raw token widths; CPU Candle
 parity passes for all three pooling modes with mixed pooled/raw outputs.
 CUDA Dense mixed-width outputs also pass native GPU versus CPU comparisons.
