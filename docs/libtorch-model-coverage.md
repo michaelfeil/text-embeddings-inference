@@ -79,11 +79,18 @@ changed-map graph replay, compact-count recapture, and suffix isolation pass.
 All measured P50 latencies are at least 10.95% lower than Candle's folded path.
 [6/7 evidence](benchmarks/tei-qwen3-trained-radix-4096-6-7.json),
 [7/6 evidence](benchmarks/tei-qwen3-trained-radix-4096-7-6.json).
-Derived trained Ministral BF16 fails the stricter raw-token cosine gate on
-32x128 (minimum 0.998972242), before complete timing qualification; both failures
-are retained and full-vs-fold diagnosis proves the same raw-token difference also occurs without
-folding. Source-proven RMSNorm, rotary rounding and attention corrections now match learned reference operands; integrated paired qualification remains in progress.
-[Failure evidence](benchmarks/tei-ministral3-trained-radix-4096-6-7-failed.json).
+Derived trained Ministral BF16 now passes the stricter shared-prefix raw-token
+qualification on all five workloads in both 200-iteration assignments. Full
+native/Candle, folded native/Candle, full/fold raw and pooled comparisons are
+bitwise equal; changed-map replay, compact-count recapture and suffix isolation
+also pass. Every measured last-token P50 is at least 8.88% faster than Candle.
+The scoped correction preserves original BF16 width3072 causal Mistral RMS,
+rotary and attention arithmetic; unsupported geometries retain native fallbacks.
+[6/7 evidence](benchmarks/tei-ministral3-trained-radix-corrected-4096-6-7.json),
+[7/6 evidence](benchmarks/tei-ministral3-trained-radix-corrected-4096-7-6.json),
+[learned-operand math proof](benchmarks/tei-ministral3-radix-math-contract-proof.json).
+The earlier 32x128 raw-token cosine failure (0.998972242), present with and
+without folding, remains in [historical evidence](benchmarks/tei-ministral3-trained-radix-4096-6-7-failed.json).
 Trained SPLADE (`naver/splade-cocondenser-ensembledistil`) now passes all eight
 workloads in both assignments, including support-set and relative-error gates,
 at least 14.24% faster than Candle. Requested real token spans are projected in

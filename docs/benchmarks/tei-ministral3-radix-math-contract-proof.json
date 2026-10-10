@@ -1,0 +1,116 @@
+{
+  "model_repository": "mistralai/Ministral-3-3B-Instruct-2512-BF16",
+  "note": "Text-backbone byte-exact extraction provenance is included below. Diagnostic proof, not latency qualification.",
+  "attention": {
+    "physical_gpu": 6,
+    "dtype": "bfloat16",
+    "tokens": 1024,
+    "sequences": 8,
+    "sequence_length": 128,
+    "query_heads": 32,
+    "kv_heads": 8,
+    "head_width": 128,
+    "causal": true,
+    "original_candle_run_mha_windows": [
+      128,
+      0
+    ],
+    "default_torch_differences": 514,
+    "default_torch_max_absolute_difference": 0.000244140625,
+    "private_torch_fma_differences": 0,
+    "private_torch_fma_max_absolute_difference": 0,
+    "reference_static_library": "/root/text-embeddings-inference/target/release/build/candle-flash-attn-df7a7c5b820bc340/out/libflashattention.a"
+  },
+  "full_pipeline_isolated_log": "/tmp/tei-ministral-isolated-combined-6-7.log",
+  "full_pipeline_bitwise_equal_workloads": 5,
+  "qualified_latency": false,
+  "file_sha256": {
+    "/tmp/tei-trained-ministral-attention-probe.cpp": "bce21f78200942f465575200d38df0a04a0dfb8f003be114bdcb1551ccc1fcff",
+    "/tmp/tei-trained-ministral-attention-probe": "40cc95dd5bdd16484df923f018e1398b633bdb1a3f2896f111d609f6fe42a814",
+    "/tmp/tei-trained-ministral-attention-probe.log": "884320b5dcd2e1d7ed60b939198bdb2684af00320ce9cf6eb73c16def2710b11",
+    "/tmp/tei-ministral-first-attention.q.bin": "c9d5ceabb0b8d16e96af6e49396971946b22d1d7f32525875104a328edb86929",
+    "/tmp/tei-ministral-first-attention.k.bin": "ad8028ac6844aadcda13bb88d565a4564c0b098a1f6020914d769a36c498e38e",
+    "/tmp/tei-ministral-first-attention.v.bin": "dfaa0f1ed6aadccf0612510b1ccdc8e3e814dbe3bb6587f6bb34e9cea93434e2",
+    "/tmp/tei-ministral-first-attention.cu.bin": "3cf1cadc266878f9071e8c84c795b69f2b6fc8663a69ddcdf8b79bc30277ffaa",
+    "backends/libtorch/cpp/decoder_models.cpp": "22df8816c8c91e104b6bfec528723eba17d0743364bf03f5547b0aa19c29978f",
+    "backends/libtorch/cpp/decoder_norm.cu": "69fc2d319a6da16e9c295343f413702fa83aadedb73fe2addb029d70c164999a",
+    "backends/libtorch/cpp/decoder_norm_test.cpp": "e375539d70b4a4b52299f14dee890ca51dec28f3d4d39825a958c9f9b8fc77e3",
+    "/tmp/tei-ministral-isolated-trace-6-7.log": "82bc2da908fb14beee406f6a158fa6ade527450e491baad003c241638453998b",
+    "/tmp/tei-ministral-isolated-combined-6-7.log": "ad3c446a6b3a3c26a6d29ceef35bcca308cce6c5d73d51a61d02afc972e971ae",
+    "/tmp/tei-ministral3-radix-v2-full-raw-diagnostic-6-7.log": "b9875dd409f3191deac5757bae91b71a8aa027b6a201f8e158cf0d73bc668a2f"
+  },
+  "checkpoint_revision": "b6d637bef2393152b3da2b2fde72eecdee30557e",
+  "checkpoint_derivation_manifest": "tei-ministral3-text-checkpoint-derivation.json",
+  "scope": {
+    "production_selector": "causal Mistral or normalized Ministral3 alias, BF16, hidden width3072; original paths remain for other dtypes/families/widths",
+    "registered_width_reason": "Original Candle RMS launcher uses registered3072 BF16 1x4 warp geometry, distinct from2048 4x1. This is a kernel geometry constraint, not a checkpoint layer/vocabulary/intermediate signature.",
+    "attention_selection": "Private pinned native Torch Flash for supported head/mask geometry; unsupported geometry retains native fallback. Learned trained proof uses head128 and actual causal offsets.",
+    "model_inputs": "Authentic trained text-backbone weights; synthetic valid token IDs with true shared causal prefixes and distinct suffixes; no padding and no Python runtime",
+    "latency_status": "Source-math proof only. Separate paired production200 reports determine end-to-end latency qualification."
+  },
+  "same_operand_contracts": {
+    "rms_norm": {
+      "original_source": "backends/candle/extensions/candle-layer-norm/kernels/ln_api.cu",
+      "registered_signature": "3072 BF16/BF16/BF16/BF16 FP32, CTAS_PER_ROW1, WARPS_M1, WARPS_N4, BYTES_PER_LDG16",
+      "residual_statistics": "FP32 x+residual, round_residual=false; model-dtype rounding at residual output store only",
+      "independent_regression": "backends/libtorch/cpp/decoder_norm_test.cpp covers both registered2048/3072 widths, residual/plain paths, FP32 statistics oracle and known residual-rounding boundary fixture",
+      "first_learned_norm_default_mismatches": 18,
+      "first_learned_norm_elements": 3145728,
+      "first_learned_norm_default_max_abs": 0.001953125
+    },
+    "rotary": {
+      "original_source": "backends/candle/extensions/candle-rotary/kernels/rotary.cu",
+      "contract": "lower=BF16 FMA(x,cos,-BF16(y*sin)), upper=BF16 FMA(y,cos,BF16(x*sin)); original kernel half-width argument64 for fullhead128",
+      "first_learned_default_query_mismatches": 472428,
+      "first_learned_default_key_mismatches": 117784,
+      "first_learned_corrected_query_mismatches": 0,
+      "first_learned_corrected_key_mismatches": 0,
+      "all_26_layer_corrected_rotary_mismatches": 0
+    },
+    "attention": {
+      "physical_gpu": 6,
+      "dtype": "bfloat16",
+      "tokens": 1024,
+      "sequences": 8,
+      "sequence_length": 128,
+      "query_heads": 32,
+      "kv_heads": 8,
+      "head_width": 128,
+      "causal": true,
+      "original_candle_run_mha_windows": [
+        128,
+        0
+      ],
+      "default_torch_differences": 514,
+      "default_torch_max_absolute_difference": 0.000244140625,
+      "private_torch_fma_differences": 0,
+      "private_torch_fma_max_absolute_difference": 0,
+      "reference_static_library": "/root/text-embeddings-inference/target/release/build/candle-flash-attn-df7a7c5b820bc340/out/libflashattention.a"
+    }
+  },
+  "original_candle_libraries": {
+    "flash_sha256": "5fd5e51aabba55032c4272e5a5002bd7f1d2b3e5f812992e05ba8e8b92ac41ea"
+  },
+  "baseline_failure": {
+    "scope": "Before correction, native/Candle full and folded raw share same genuine underlying model-math failure; not induced by folding.",
+    "workload": "32x128 prefix64",
+    "min_cosine": 0.9989722422475755,
+    "sequence_index": 16,
+    "token_index": 127,
+    "max_absolute_difference": 1.0625,
+    "full_raw_log": "/tmp/tei-ministral3-radix-v2-full-raw-diagnostic-6-7.log",
+    "paired_failure_manifests": [
+      "tei-ministral3-trained-radix-4096-6-7-failed.json",
+      "tei-ministral3-trained-radix-4096-7-6-failed.json"
+    ],
+    "diagnostic_executable_sha256": "7b67a88812ab4cddd7ef6ed9d19ed7def4f8eb4d872aafc1720f380b3f6176f5",
+    "native_library_sha256": "b0f690a028b90c931b28fdadab0de6e6f5520978c0619431760940cdd02ad477"
+  },
+  "accepted_production_native_sha256": "072b8e7430ad8d164a009b82f78ce50fe5a2640eaf410b689f3af95ed81ab819",
+  "accepted_native_validation": "24/24 CPU/CUDA native tests passed before paired trained qualification",
+  "paired_production_qualification_reports": [
+    "tei-ministral3-trained-radix-corrected-4096-6-7.json",
+    "tei-ministral3-trained-radix-corrected-4096-7-6.json"
+  ],
+  "source_proof_is_separate_from_latency_qualification": true
+}

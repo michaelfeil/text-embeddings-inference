@@ -94,9 +94,9 @@ causal Llama, Mistral, Qwen2, Qwen3 and Qwen3 MoE text decoders. Projections and
 MLPs use real compact rows; attention receives the original packed token rows.
 Unused alignment rows are removed before inference, and the host validator
 requires identical causal prefixes for every alias. Bidirectional, multimodal
-and typed-decision folding are rejected. Trained Qwen3 FP16 meets correctness
-and the latency target in both GPU assignments; Ministral's stricter raw-token
-check currently fails and remains under diagnosis. Dynamic FP8 and other custom
+and typed-decision folding are rejected. Trained Qwen3 FP16 and derived Ministral BF16 meet correctness
+and the latency target in both GPU assignments, including every raw token,
+full/fold comparisons, changed-map replay and suffix isolation. Dynamic FP8 and other custom
 modules remain unsupported and are rejected explicitly. Image and
 audio towers have native implementations. EmbeddingGemma2 text, image and audio
 match Candle bitwise and meet the measured P50 target in both GPU assignments;
