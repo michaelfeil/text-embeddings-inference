@@ -1,4 +1,4 @@
-//! Experimental native BERT inference. Python and exported TorchScript models are not required.
+//! Experimental native packed inference. Python and exported TorchScript models are not required.
 use safetensors::{Dtype, SafeTensors};
 use serde::Deserialize;
 use std::{
@@ -8,8 +8,8 @@ use std::{
     ptr::NonNull,
 };
 use text_embeddings_backend_core::{
-    Backend, BackendError, Batch, Embedding, Embeddings, ModelType, Pool, Predictions,
-    TokenPredictions,
+    Backend, BackendError, Batch, DecisionInput, DecisionOutput, Embedding, Embeddings, ModelType,
+    Pool, Predictions, TokenPredictions,
 };
 
 #[repr(C)]
@@ -24,6 +24,116 @@ struct NativeConfig {
     epsilon: f64,
     activation: i32,
 }
+#[repr(C)]
+struct NativeImage {
+    pixels: *const f32,
+    rows: i64,
+    patch_dim: i64,
+    grid: [i64; 3],
+    merge_size: i64,
+    token_start: i64,
+    token_count: i64,
+    sequence_start: i64,
+}
+#[repr(C)]
+struct NativeAudio {
+    values: *const f32,
+    mask: *const u8,
+    frames: i64,
+    feature_size: i64,
+    token_start: i64,
+    token_count: i64,
+}
+#[repr(C)]
+struct NativeDecisionField {
+    kind: i64,
+    question_start: i64,
+    question_end: i64,
+    options: *const i64,
+    option_count: usize,
+}
+#[repr(C)]
+struct NativeDecision {
+    kind: i32,
+    question_type: i64,
+    markers: *const i64,
+    marker_count: usize,
+    token_ids: *const i64,
+    token_count: usize,
+    fields: *const NativeDecisionField,
+    field_count: usize,
+}
+struct OwnedDecision {
+    kind: i32,
+    question_type: i64,
+    markers: Vec<i64>,
+    token_ids: Vec<i64>,
+    fields: Vec<NativeDecisionField>,
+    // Own the backing storage referenced by each native field descriptor.
+    _spans: Vec<Vec<i64>>,
+}
+impl OwnedDecision {
+    fn new(input: &DecisionInput) -> Result<Self, BackendError> {
+        let mut result = Self {
+            kind: 3,
+            question_type: 0,
+            markers: vec![],
+            token_ids: vec![],
+            fields: vec![],
+            _spans: vec![],
+        };
+        match input {
+            DecisionInput::Laya {
+                question_type,
+                markers,
+            } => {
+                result.kind = 0;
+                result.question_type = i64::try_from(*question_type).map_err(inference)?;
+                result.markers = markers
+                    .iter()
+                    .map(|&n| i64::try_from(n).map_err(inference))
+                    .collect::<Result<_, _>>()?;
+            }
+            DecisionInput::OptionTokens { token_ids } => {
+                result.kind = 1;
+                result.token_ids = token_ids.iter().map(|&n| i64::from(n)).collect();
+            }
+            DecisionInput::Clef { fields } => {
+                result.kind = 2;
+                for field in fields {
+                    let spans = field
+                        .options
+                        .iter()
+                        .flat_map(|&(a, b)| [a, b])
+                        .map(|n| i64::try_from(n).map_err(inference))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    result.fields.push(NativeDecisionField {
+                        kind: i64::try_from(field.kind).map_err(inference)?,
+                        question_start: i64::try_from(field.question.0).map_err(inference)?,
+                        question_end: i64::try_from(field.question.1).map_err(inference)?,
+                        options: spans.as_ptr(),
+                        option_count: field.options.len(),
+                    });
+                    result._spans.push(spans);
+                }
+            }
+            DecisionInput::Warmup => {}
+        }
+        Ok(result)
+    }
+    fn native(&self) -> NativeDecision {
+        NativeDecision {
+            kind: self.kind,
+            question_type: self.question_type,
+            markers: self.markers.as_ptr(),
+            marker_count: self.markers.len(),
+            token_ids: self.token_ids.as_ptr(),
+            token_count: self.token_ids.len(),
+            fields: self.fields.as_ptr(),
+            field_count: self.fields.len(),
+        }
+    }
+}
 extern "C" {
     fn tei_error() -> *const c_char;
     fn tei_device_count(device: *const c_char) -> i64;
@@ -36,7 +146,36 @@ extern "C" {
         rank: usize,
         dtype: i32,
     ) -> i32;
+    fn tei_option(handle: *mut c_void, key: *const c_char, value: *const c_char) -> i32;
+    fn tei_output_width(handle: *mut c_void) -> i64;
+    fn tei_pooled_width(handle: *mut c_void) -> i64;
+    fn tei_classification_width(handle: *mut c_void) -> i64;
+    fn tei_graph_count(handle: *mut c_void) -> i64;
     fn tei_ready(handle: *mut c_void) -> i32;
+    fn tei_decision_counts(
+        handle: *mut c_void,
+        requests: *const NativeDecision,
+        count: usize,
+        counts: *mut i64,
+    ) -> i32;
+    fn tei_decide(
+        handle: *mut c_void,
+        ids: *const i64,
+        types: *const i64,
+        positions: *const i64,
+        cumulative: *const i32,
+        batch: i64,
+        max_sequence: i64,
+        requests: *const NativeDecision,
+        logits: *mut f32,
+        capacity: usize,
+        actions: *mut f32,
+        media_positions: *const i64,
+        images: *const NativeImage,
+        image_count: usize,
+        audios: *const NativeAudio,
+        audio_count: usize,
+    ) -> i32;
     fn tei_forward(
         handle: *mut c_void,
         ids: *const i64,
@@ -51,6 +190,12 @@ extern "C" {
         raw: *const i64,
         raw_count: usize,
         output: *mut f32,
+        capacity: usize,
+        media_positions: *const i64,
+        images: *const NativeImage,
+        image_count: usize,
+        audios: *const NativeAudio,
+        audio_count: usize,
     ) -> i32;
     fn tei_destroy(handle: *mut c_void);
 }
@@ -97,6 +242,10 @@ pub struct LibtorchBackend {
     handle: NonNull<c_void>,
     config: Config,
     pool: Pool,
+    output_width: usize,
+    pooled_width: usize,
+    classification_width: usize,
+    decision: bool,
 }
 // SAFETY: the handle owns its tensors and is used by TEI's single backend worker.
 // It can move between threads; it is deliberately not Sync. InferenceMode is set per native call.
@@ -110,11 +259,25 @@ impl Drop for LibtorchBackend {
 }
 
 impl LibtorchBackend {
+    /// Number of captured packed shapes; zero also covers eager fallback.
+    pub fn cuda_graph_count(&self) -> usize {
+        // SAFETY: this uniquely owned handle stays live throughout the synchronous query.
+        unsafe { tei_graph_count(self.handle.as_ptr()) as usize }
+    }
     pub fn new(
         path: &Path,
         dtype: &str,
         model_type: ModelType,
         device: &str,
+    ) -> Result<Self, BackendError> {
+        Self::new_with_dense_paths(path, dtype, model_type, device, None)
+    }
+    pub fn new_with_dense_paths(
+        path: &Path,
+        dtype: &str,
+        model_type: ModelType,
+        device: &str,
+        dense_paths: Option<Vec<String>>,
     ) -> Result<Self, BackendError> {
         if device != "cpu" && device != "auto" && !device.starts_with("cuda:") {
             return Err(start("LibTorch 2.14.1 varlen attention requires CUDA; only CPU reference and CUDA are supported"));
@@ -122,45 +285,179 @@ impl LibtorchBackend {
         if device.starts_with("cuda:") && !matches!(dtype, "float16" | "bfloat16") {
             return Err(start("CUDA varlen attention requires float16 or bfloat16"));
         }
-        let pool =
-            match model_type {
-                ModelType::Embedding(pool @ (Pool::Cls | Pool::Mean | Pool::LastToken)) => pool,
-                _ => return Err(start(
-                    "LibTorch currently supports BERT embeddings with cls/mean/last-token pooling",
-                )),
+        let pool = match &model_type {
+            ModelType::Embedding(pool) => pool.clone(),
+            ModelType::Classifier => Pool::Cls,
+            ModelType::Decision => Pool::LastToken,
+        };
+        let decision = model_type == ModelType::Decision;
+        let read_config = |name: &str| -> Result<serde_json::Value, BackendError> {
+            serde_json::from_slice(&fs::read(path.join(name)).map_err(start)?).map_err(start)
+        };
+        let laya = decision && path.join("rl_agent_config.json").exists();
+        let mut options = read_config(if laya {
+            "encoder/config.json"
+        } else {
+            "config.json"
+        })?;
+        if laya {
+            if options["model_type"] != "modernbert" {
+                return Err(start("Laya requires a ModernBERT encoder"));
+            }
+            for (kind, field) in [
+                ("full_attention", "global_rope_theta"),
+                ("sliding_attention", "local_rope_theta"),
+            ] {
+                if options.get(field).is_none() {
+                    options[field] = options["rope_parameters"][kind]["rope_theta"].clone();
+                }
+            }
+        }
+        let decision_kind = if decision {
+            let (kind, config) = if laya {
+                ("laya", read_config("rl_agent_config.json")?)
+            } else if path.join("decision_config.json").exists() {
+                ("pplx", read_config("decision_config.json")?)
+            } else if path.join("joint_head_config.json").exists() {
+                ("clef", read_config("joint_head_config.json")?)
+            } else {
+                ("option_tokens", serde_json::json!({}))
             };
-        let config: Config =
-            serde_json::from_slice(&fs::read(path.join("config.json")).map_err(start)?)
-                .map_err(start)?;
-        if config.model_type != "bert"
-            || config.is_decoder
-            || config.add_cross_attention
-            || config
-                .position_embedding_type
-                .as_deref()
-                .is_some_and(|p| p != "absolute")
+            if kind == "pplx" {
+                options["_decision_attention_mode"] = config
+                    .get("attention_mode")
+                    .cloned()
+                    .unwrap_or_else(|| "causal".into());
+            }
+            options["_decision"] = serde_json::json!({"kind":kind,"config":config});
+            Some(kind)
+        } else {
+            None
+        };
+        let family = options["model_type"]
+            .as_str()
+            .ok_or_else(|| start("Missing model_type"))?
+            .to_owned();
+        let normalized_family = match family.as_str() {
+            "llama_bidirec" => "llama",
+            "ministral3" => "mistral",
+            "new" => "gte",
+            "gemma4_unified" => "gemma4",
+            other => other,
+        }
+        .to_owned();
+        options["model_type"] = normalized_family.clone().into();
+        if decision
+            && !laya
+            && !matches!(
+                normalized_family.as_str(),
+                "gemma4"
+                    | "gemma4_text"
+                    | "qwen3_5"
+                    | "qwen3_5_text"
+                    | "qwen3_5_moe"
+                    | "qwen3_5_moe_text"
+            )
+        {
+            return Err(start("Typed decisions require Laya, Gemma4, or Qwen3.5"));
+        }
+        if matches!(decision_kind, Some("pplx" | "clef"))
+            && !normalized_family.starts_with("qwen3_5")
+        {
+            return Err(start("Pplx and Clef heads require Qwen3.5"));
+        }
+        options["_cuda_graphs"] = std::env::var("TEI_TORCH_CUDA_GRAPHS")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .into();
+        options["_media_cuda_graphs"] = std::env::var("TEI_TORCH_MEDIA_CUDA_GRAPHS")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .into();
+        let graph_max_tokens = std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS")
+            .map(|value| value.parse::<i64>().map_err(start))
+            .unwrap_or(Ok(4096))?;
+        if graph_max_tokens <= 0 {
+            return Err(start("CUDA graph maximum tokens must be positive"));
+        }
+        options["_cuda_graph_max_tokens"] = graph_max_tokens.into();
+        options["_cudnn_varlen"] = std::env::var("TEI_TORCH_CUDNN_VARLEN")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+            .into();
+        if family == "llama_bidirec" {
+            options["use_bidirectional_attention"] = true.into();
+        }
+        let text = options.get("text_config").unwrap_or(&options);
+        let integer = |key: &str, alias: &str, fallback: i64| {
+            text.get(key)
+                .or_else(|| text.get(alias))
+                .and_then(serde_json::Value::as_i64)
+                .unwrap_or(fallback)
+        };
+        let config = Config {
+            model_type: normalized_family,
+            hidden_size: integer("hidden_size", "dim", 0),
+            num_attention_heads: integer("num_attention_heads", "n_heads", 0),
+            num_hidden_layers: integer("num_hidden_layers", "n_layers", 0),
+            intermediate_size: integer("intermediate_size", "hidden_dim", 0),
+            vocab_size: integer("vocab_size", "vocab_size", 0),
+            max_position_embeddings: integer(
+                "max_position_embeddings",
+                "max_position_embeddings",
+                i64::MAX,
+            ),
+            type_vocab_size: integer("type_vocab_size", "type_vocab_size", 1),
+            layer_norm_eps: text
+                .get("layer_norm_eps")
+                .and_then(serde_json::Value::as_f64)
+                .unwrap_or(1e-5),
+            hidden_act: text
+                .get("hidden_act")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("gelu")
+                .into(),
+            is_decoder: text
+                .get("is_decoder")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            add_cross_attention: text
+                .get("add_cross_attention")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            position_embedding_type: text
+                .get("position_embedding_type")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned),
+        };
+        if config.model_type == "bert"
+            && ![
+                options["auto_map"]["AutoConfig"].as_str(),
+                options["_name_or_path"].as_str(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|name| {
+                name.contains("jina-bert-implementation")
+                    || name.contains("jina-bert-v2-qk-post-norm")
+            })
+            && (config.is_decoder
+                || config.add_cross_attention
+                || config
+                    .position_embedding_type
+                    .as_deref()
+                    .is_some_and(|p| p != "absolute"))
         {
             return Err(start(
-                "LibTorch currently supports encoder BERT with absolute position embeddings",
+                "BERT requires an encoder with absolute position embeddings",
             ));
         }
-        if [
-            config.hidden_size,
-            config.num_attention_heads,
-            config.num_hidden_layers,
-            config.intermediate_size,
-            config.vocab_size,
-            config.max_position_embeddings,
-            config.type_vocab_size,
-        ]
-        .iter()
-        .any(|&v| v <= 0)
+        if config.hidden_size <= 0
+            || config.vocab_size <= 0
+            || config.num_attention_heads <= 0
+            || config.num_hidden_layers <= 0
             || config.hidden_size % config.num_attention_heads != 0
-            || !config.layer_norm_eps.is_finite()
-            || config.layer_norm_eps <= 0.0
         {
-            return Err(start("Invalid BERT dimensions or layer_norm_eps"));
+            return Err(start("Invalid model dimensions"));
         }
+        let mut module_dense_paths = Vec::new();
         if path.join("modules.json").exists() {
             let modules: serde_json::Value =
                 serde_json::from_slice(&fs::read(path.join("modules.json")).map_err(start)?)
@@ -172,23 +469,66 @@ impl LibtorchBackend {
                 let kind = module["type"]
                     .as_str()
                     .ok_or_else(|| start("Missing module type"))?;
-                if !matches!(
-                    kind,
-                    "sentence_transformers.models.Transformer"
-                        | "sentence_transformers.models.Pooling"
-                        | "sentence_transformers.models.Normalize"
-                ) {
+                if !kind.starts_with("sentence_transformers.")
+                    || !matches!(
+                        kind.rsplit('.').next(),
+                        Some("Transformer" | "Pooling" | "Normalize" | "Dense")
+                    )
+                {
                     return Err(start(format!(
                         "LibTorch does not yet support Sentence Transformers module {kind}"
                     )));
                 }
+                if kind.rsplit('.').next() == Some("Dense") {
+                    module_dense_paths.push(
+                        module["path"]
+                            .as_str()
+                            .ok_or_else(|| start("Dense module is missing its path"))?
+                            .to_owned(),
+                    );
+                }
             }
+        }
+        let dense_paths = dense_paths.unwrap_or(module_dense_paths);
+        if !dense_paths.is_empty() && !matches!(model_type, ModelType::Embedding(_)) {
+            return Err(start(
+                "Sentence Transformers Dense modules require an embedding model",
+            ));
+        }
+        options["_dense_count"] = serde_json::json!(dense_paths.len());
+        options["_pooling"] = serde_json::json!(if pool == Pool::Splade {
+            "splade"
+        } else {
+            "embedding"
+        });
+        for (i, dense_path) in dense_paths.iter().enumerate() {
+            let relative = Path::new(dense_path);
+            if relative.as_os_str().is_empty()
+                || relative
+                    .components()
+                    .any(|part| !matches!(part, std::path::Component::Normal(_)))
+            {
+                return Err(start(
+                    "Dense module path must stay inside the model directory",
+                ));
+            }
+            let dense_config: serde_json::Value = serde_json::from_slice(
+                &fs::read(path.join(relative).join("config.json")).map_err(start)?,
+            )
+            .map_err(start)?;
+            if !dense_config.is_object() {
+                return Err(start("Dense config must be an object"));
+            }
+            if dense_config["bias"].as_bool().is_none() {
+                return Err(start("Dense config bias must be a boolean"));
+            }
+            options["_dense"][i.to_string()] = dense_config;
         }
         let activation = match config.hidden_act.as_str() {
             "gelu" => 0,
             "gelu_new" | "gelu_pytorch_tanh" => 1,
             "relu" => 2,
-            other => return Err(start(format!("Unsupported BERT activation {other}"))),
+            _ => 0,
         };
         let native = NativeConfig {
             hidden: config.hidden_size,
@@ -211,11 +551,48 @@ impl LibtorchBackend {
         // SAFETY: config and device stay valid during creation, and the bridge copies them.
         let handle = NonNull::new(unsafe { tei_create(&native, device.as_ptr(), dtype) })
             .ok_or_else(|| start(native_error()))?;
-        let model = Self {
+        let mut model = Self {
             handle,
             config,
             pool,
+            output_width: 0,
+            pooled_width: 0,
+            classification_width: 0,
+            decision,
         };
+        fn flatten(value: &serde_json::Value, key: &str, output: &mut Vec<(String, String)>) {
+            match value {
+                serde_json::Value::Object(map) => {
+                    for (name, value) in map {
+                        let key = if key.is_empty() {
+                            name.clone()
+                        } else {
+                            format!("{key}.{name}")
+                        };
+                        flatten(value, &key, output);
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    output.push((key.into(), value.to_string()));
+                    for (index, value) in items.iter().enumerate() {
+                        flatten(value, &format!("{key}.{index}"), output);
+                    }
+                }
+                serde_json::Value::Null => {}
+                serde_json::Value::String(value) => output.push((key.into(), value.clone())),
+                value => output.push((key.into(), value.to_string())),
+            }
+        }
+        let mut flattened = Vec::new();
+        flatten(&options, "", &mut flattened);
+        for (key, value) in flattened {
+            let key = CString::new(key).map_err(start)?;
+            let value = CString::new(value).map_err(start)?;
+            // SAFETY: the bridge copies both NUL-terminated strings before returning.
+            if unsafe { tei_option(handle.as_ptr(), key.as_ptr(), value.as_ptr()) } != 0 {
+                return Err(start(native_error()));
+            }
+        }
         let index = path.join("model.safetensors.index.json");
         let files = if index.exists() {
             let index: serde_json::Value =
@@ -238,16 +615,30 @@ impl LibtorchBackend {
         } else {
             vec!["model.safetensors".to_owned()]
         };
-        for file in files {
+        let mut files = files
+            .into_iter()
+            .map(|file| (file, String::new()))
+            .collect::<Vec<_>>();
+        if let Some(kind) = decision_kind {
+            if kind == "pplx" {
+                files.push(("readout.safetensors".into(), "__tei_decision.".into()));
+            }
+            if kind == "clef" {
+                files.push(("joint_head.safetensors".into(), "__tei_decision.".into()));
+            }
+        }
+        for (i, dense_path) in dense_paths.iter().enumerate() {
+            files.push((
+                format!("{dense_path}/model.safetensors"),
+                format!("_dense.{i}."),
+            ));
+        }
+        for (file, prefix) in files {
             let data = fs::read(path.join(file)).map_err(start)?;
             let tensors = SafeTensors::deserialize(&data).map_err(start)?;
             for (name, tensor) in tensors.tensors() {
-                // Extra pooler/MLM tensors are not needed for TEI embeddings.
-                let key = name.strip_prefix("bert.").unwrap_or(&name);
-                if !key.starts_with("embeddings.") && !key.starts_with("encoder.layer.") {
-                    continue;
-                }
-                if key.ends_with("position_ids") || key.ends_with("token_type_ids") {
+                // Integer buffers are derived from packed positions rather than uploaded as weights.
+                if name.ends_with("position_ids") || name.ends_with("token_type_ids") {
                     continue;
                 }
                 let dtype = match tensor.dtype() {
@@ -261,7 +652,7 @@ impl LibtorchBackend {
                     .iter()
                     .map(|&n| i64::try_from(n).map_err(start))
                     .collect::<Result<Vec<_>, _>>()?;
-                let name = CString::new(name).map_err(start)?;
+                let name = CString::new(format!("{prefix}{name}")).map_err(start)?;
                 // SAFETY: safetensors validates byte lengths. Native code copies the data before returning.
                 if unsafe {
                     tei_weight(
@@ -282,15 +673,35 @@ impl LibtorchBackend {
         if unsafe { tei_ready(handle.as_ptr()) } != 0 {
             return Err(start(native_error()));
         }
+        // SAFETY: ready() has created and validated the concrete model.
+        model.output_width = usize::try_from(unsafe { tei_output_width(handle.as_ptr()) })
+            .map_err(|_| start(native_error()))?;
+        // SAFETY: ready() has validated the projection chain and its output width.
+        model.pooled_width = usize::try_from(unsafe { tei_pooled_width(handle.as_ptr()) })
+            .map_err(|_| start(native_error()))?;
+        // SAFETY: ready() has validated the concrete model and owns its weights.
+        model.classification_width =
+            usize::try_from(unsafe { tei_classification_width(handle.as_ptr()) })
+                .map_err(|_| start(native_error()))?;
+        if model_type == ModelType::Classifier && model.classification_width == 0 {
+            return Err(start("Checkpoint has no supported classification head"));
+        }
         Ok(model)
     }
 }
 
-impl Backend for LibtorchBackend {
-    fn health(&self) -> Result<(), BackendError> {
-        Ok(())
+impl LibtorchBackend {
+    fn run(&self, batch: Batch, pool: i32, hidden: usize) -> Result<Embeddings, BackendError> {
+        self.run_inner(batch, pool, hidden, None)
+            .map(|(embeddings, _)| embeddings)
     }
-    fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError> {
+    fn run_inner(
+        &self,
+        batch: Batch,
+        pool: i32,
+        hidden: usize,
+        requests: Option<&[DecisionInput]>,
+    ) -> Result<(Embeddings, Vec<DecisionOutput>), BackendError> {
         let ends = &batch.cumulative_seq_lengths;
         if ends.len() < 2
             || ends[0] != 0
@@ -301,19 +712,93 @@ impl Backend for LibtorchBackend {
         {
             return Err(inference("Invalid packed batch"));
         }
-        if batch.multimodal.iter().any(Option::is_some)
-            || batch.compact_input_ids.is_some()
+        if batch.compact_input_ids.is_some()
             || batch.compact_position_ids.is_some()
             || batch.scatter_unfold.is_some()
             || batch.fold_gather.is_some()
         {
-            return Err(inference(
-                "LibTorch supports text batches without radix folding",
-            ));
+            return Err(inference("LibTorch does not yet support radix folding"));
         }
         let b = ends.len() - 1;
         let lengths: Vec<i64> = ends.windows(2).map(|w| (w[1] - w[0]) as i64).collect();
         let seq = *lengths.iter().max().unwrap() as usize;
+        if !batch.multimodal.is_empty() && batch.multimodal.len() != b {
+            return Err(inference("Invalid multimodal batch length"));
+        }
+        let mut images = Vec::new();
+        let mut audios = Vec::new();
+        let mut media_positions = Vec::new();
+        if batch.multimodal.iter().any(Option::is_some) {
+            media_positions = (0..3)
+                .flat_map(|_| batch.position_ids.iter().map(|&p| i64::from(p)))
+                .collect();
+            for (row, media) in batch.multimodal.iter().enumerate() {
+                let Some(media) = media else { continue };
+                let begin = ends[row] as usize;
+                let length = lengths[row] as usize;
+                for axis in 0..3 {
+                    if media.position_ids[axis].len() != length {
+                        return Err(inference("Invalid multimodal position length"));
+                    }
+                    for (index, &value) in media.position_ids[axis].iter().enumerate() {
+                        media_positions[axis * batch.input_ids.len() + begin + index] =
+                            i64::from(value);
+                    }
+                }
+                for (start, image) in &media.images {
+                    let patches = image
+                        .grid_thw
+                        .iter()
+                        .try_fold(1usize, |n, &d| n.checked_mul(d))
+                        .ok_or_else(|| inference("Image grid overflow"))?;
+                    let merge = image
+                        .merge_size
+                        .checked_mul(image.merge_size)
+                        .filter(|&n| n > 0)
+                        .ok_or_else(|| inference("Invalid image merge size"))?;
+                    if image.patch_dim == 0
+                        || patches == 0
+                        || patches % merge != 0
+                        || patches.checked_mul(image.patch_dim) != Some(image.pixels.len())
+                        || start
+                            .checked_add(patches / merge)
+                            .is_none_or(|end| end > length)
+                    {
+                        return Err(inference("Invalid image layout or token span"));
+                    }
+                    images.push(NativeImage {
+                        pixels: image.pixels.as_ptr(),
+                        rows: patches as i64,
+                        patch_dim: image.patch_dim as i64,
+                        grid: image.grid_thw.map(|n| n as i64),
+                        merge_size: image.merge_size as i64,
+                        token_start: (begin + start) as i64,
+                        token_count: (patches / merge) as i64,
+                        sequence_start: begin as i64,
+                    });
+                }
+                for (start, audio) in &media.audios {
+                    if audio.feature_size == 0
+                        || audio.mask.is_empty()
+                        || audio.mask.len().checked_mul(audio.feature_size)
+                            != Some(audio.values.len())
+                        || start
+                            .checked_add(audio.token_count())
+                            .is_none_or(|end| end > length)
+                    {
+                        return Err(inference("Invalid audio layout or token span"));
+                    }
+                    audios.push(NativeAudio {
+                        values: audio.values.as_ptr(),
+                        mask: audio.mask.as_ptr(),
+                        frames: audio.mask.len() as i64,
+                        feature_size: audio.feature_size as i64,
+                        token_start: (begin + start) as i64,
+                        token_count: audio.token_count() as i64,
+                    });
+                }
+            }
+        }
         // Preserve TEI's packed layout: allocations scale with actual tokens, never B * max_length.
         let ids: Vec<i64> = batch.input_ids.iter().map(|&id| id as i64).collect();
         let types: Vec<i64> = batch.token_type_ids.iter().map(|&id| id as i64).collect();
@@ -323,14 +808,93 @@ impl Backend for LibtorchBackend {
             .map(|&end| i32::try_from(end).map_err(inference))
             .collect::<Result<Vec<_>, _>>()?;
         if ids.iter().any(|&id| id >= self.config.vocab_size)
-            || types.iter().any(|&id| id >= self.config.type_vocab_size)
+            || (self.config.type_vocab_size > 0
+                && types.iter().any(|&id| id >= self.config.type_vocab_size))
             || positions
                 .iter()
                 .any(|&id| id >= self.config.max_position_embeddings)
         {
             return Err(inference(
-                "Token/type/position ID exceeds BERT embedding table",
+                "Token/type/position ID exceeds configured limits",
             ));
+        }
+        if let Some(requests) = requests {
+            if !self.decision || requests.len() != b {
+                return Err(inference(
+                    "Decision metadata count does not match a typed decision model/batch",
+                ));
+            }
+            let owned = requests
+                .iter()
+                .map(OwnedDecision::new)
+                .collect::<Result<Vec<_>, _>>()?;
+            let native = owned.iter().map(OwnedDecision::native).collect::<Vec<_>>();
+            let mut counts = vec![0i64; b];
+            // SAFETY: descriptors and their backing span/token buffers remain owned above.
+            if unsafe {
+                tei_decision_counts(
+                    self.handle.as_ptr(),
+                    native.as_ptr(),
+                    native.len(),
+                    counts.as_mut_ptr(),
+                )
+            } != 0
+            {
+                return Err(inference(native_error()));
+            }
+            let counts = counts
+                .into_iter()
+                .map(|count| usize::try_from(count).map_err(inference))
+                .collect::<Result<Vec<_>, _>>()?;
+            let total = counts.iter().try_fold(0usize, |n, &count| {
+                n.checked_add(count)
+                    .ok_or_else(|| inference("Decision output size overflow"))
+            })?;
+            let mut logits = vec![0f32; total];
+            let mut actions = vec![0f32; b];
+            // SAFETY: native output counts bound capacity, validated packed/media buffers stay live,
+            // and all exceptions are caught by the bridge before returning across the C ABI.
+            if unsafe {
+                tei_decide(
+                    self.handle.as_ptr(),
+                    ids.as_ptr(),
+                    types.as_ptr(),
+                    positions.as_ptr(),
+                    cumulative.as_ptr(),
+                    b as i64,
+                    seq as i64,
+                    native.as_ptr(),
+                    logits.as_mut_ptr(),
+                    logits.len(),
+                    actions.as_mut_ptr(),
+                    if media_positions.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        media_positions.as_ptr()
+                    },
+                    images.as_ptr(),
+                    images.len(),
+                    audios.as_ptr(),
+                    audios.len(),
+                )
+            } != 0
+            {
+                return Err(inference(native_error()));
+            }
+            let mut offset = 0;
+            let decisions = counts
+                .into_iter()
+                .zip(actions)
+                .map(|(count, action_probability)| {
+                    let result = DecisionOutput {
+                        logits: logits[offset..offset + count].to_vec(),
+                        action_probability,
+                    };
+                    offset += count;
+                    result
+                })
+                .collect();
+            return Ok((Embeddings::default(), decisions));
         }
         let pooled: Vec<i64> = batch.pooled_indices.iter().map(|&n| n as i64).collect();
         let raw: Vec<i64> = batch.raw_indices.iter().map(|&n| n as i64).collect();
@@ -346,23 +910,21 @@ impl Backend for LibtorchBackend {
         {
             return Err(inference("Duplicate output indices"));
         }
-        let hidden = self.config.hidden_size as usize;
-        let rows = pooled.len()
-            + raw
-                .iter()
-                .map(|&i| lengths[i as usize] as usize)
-                .sum::<usize>();
-        let mut output = vec![
-            0f32;
-            rows.checked_mul(hidden)
-                .ok_or_else(|| inference("Output size overflow"))?
-        ];
-        let pool = match self.pool {
-            Pool::Cls => 0,
-            Pool::Mean => 1,
-            Pool::LastToken => 2,
-            _ => unreachable!(),
-        };
+        let raw_width = if pool >= 4 { hidden } else { self.output_width };
+        let raw_rows = raw
+            .iter()
+            .map(|&i| lengths[i as usize] as usize)
+            .sum::<usize>();
+        let size = pooled
+            .len()
+            .checked_mul(hidden)
+            .and_then(|n| {
+                raw_rows
+                    .checked_mul(raw_width)
+                    .and_then(|r| n.checked_add(r))
+            })
+            .ok_or_else(|| inference("Output size overflow"))?;
+        let mut output = vec![0f32; size];
         // SAFETY: validated dimensions and indices bound every native read/write. All buffers stay
         // live until this synchronous call returns; exceptions cannot cross the C ABI.
         if unsafe {
@@ -380,6 +942,16 @@ impl Backend for LibtorchBackend {
                 raw.as_ptr(),
                 raw.len(),
                 output.as_mut_ptr(),
+                output.len(),
+                if media_positions.is_empty() {
+                    std::ptr::null()
+                } else {
+                    media_positions.as_ptr()
+                },
+                images.as_ptr(),
+                images.len(),
+                audios.as_ptr(),
+                audios.len(),
             )
         } != 0
         {
@@ -395,21 +967,72 @@ impl Backend for LibtorchBackend {
             offset += hidden;
         }
         for index in raw {
-            let size = lengths[index as usize] as usize * hidden;
+            let size = lengths[index as usize] as usize * raw_width;
             let values = output[offset..offset + size]
-                .chunks_exact(hidden)
+                .chunks_exact(raw_width)
                 .map(<[f32]>::to_vec)
                 .collect();
             result.insert(index as usize, Embedding::All(values));
             offset += size;
         }
+        Ok((result, vec![]))
+    }
+}
+
+impl Backend for LibtorchBackend {
+    fn decide(
+        &self,
+        mut batch: Batch,
+        inputs: Vec<DecisionInput>,
+    ) -> Result<Vec<DecisionOutput>, BackendError> {
+        batch.pooled_indices.clear();
+        batch.raw_indices.clear();
+        self.run_inner(batch, 2, self.output_width, Some(&inputs))
+            .map(|(_, decisions)| decisions)
+    }
+    fn health(&self) -> Result<(), BackendError> {
+        Ok(())
+    }
+    fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError> {
+        let (pool, width) = match self.pool {
+            Pool::Cls => (0, self.pooled_width),
+            Pool::Mean => (1, self.pooled_width),
+            Pool::LastToken => (2, self.pooled_width),
+            Pool::Splade => (3, self.pooled_width),
+        };
+        self.run(batch, pool, width)
+    }
+    fn predict(&self, mut batch: Batch) -> Result<Predictions, BackendError> {
+        if self.classification_width == 0 {
+            return Err(inference("Checkpoint has no classification head"));
+        }
+        batch.pooled_indices =
+            (0..batch.cumulative_seq_lengths.len().saturating_sub(1) as u32).collect();
+        batch.raw_indices.clear();
+        let values = self.run(batch, 4, self.classification_width)?;
+        let mut result = Predictions::default();
+        for (index, value) in values {
+            if let Embedding::Pooled(value) = value {
+                result.insert(index, value);
+            }
+        }
         Ok(result)
     }
-    fn predict(&self, _: Batch) -> Result<Predictions, BackendError> {
-        Err(inference("LibTorch classifiers are not implemented"))
-    }
-    fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
-        Err(inference("LibTorch token classifiers are not implemented"))
+    fn predict_tokens(&self, mut batch: Batch) -> Result<TokenPredictions, BackendError> {
+        if self.classification_width == 0 {
+            return Err(inference("Checkpoint has no classification head"));
+        }
+        batch.raw_indices =
+            (0..batch.cumulative_seq_lengths.len().saturating_sub(1) as u32).collect();
+        batch.pooled_indices.clear();
+        let values = self.run(batch, 5, self.classification_width)?;
+        let mut result = TokenPredictions::default();
+        for (index, value) in values {
+            if let Embedding::All(value) = value {
+                result.insert(index, value);
+            }
+        }
+        Ok(result)
     }
 }
 
@@ -437,7 +1060,7 @@ mod tests {
         fs::create_dir(&path).unwrap();
         let config = serde_json::json!({"model_type":"bert", "hidden_size":16, "num_attention_heads":2,
             "num_hidden_layers":2, "intermediate_size":24, "vocab_size":16, "max_position_embeddings":16,
-            "type_vocab_size":2, "layer_norm_eps":1e-5, "hidden_act":"gelu_pytorch_tanh", "pad_token_id":0,
+            "type_vocab_size":2, "id2label":{"0":"a","1":"b","2":"c"}, "layer_norm_eps":1e-5, "hidden_act":"gelu_pytorch_tanh", "pad_token_id":0,
             "hidden_dropout_prob":0.0, "attention_probs_dropout_prob":0.0, "initializer_range":0.02});
         fs::write(
             path.join("config.json"),
@@ -487,6 +1110,22 @@ mod tests {
             add(format!("{p}intermediate.dense.bias"), vec![24]);
             add(format!("{p}output.dense.weight"), vec![16, 24]);
             add(format!("{p}output.dense.bias"), vec![16]);
+        }
+        if prefix.is_empty() {
+            add("classifier.weight".into(), vec![3, 16]);
+            add("classifier.bias".into(), vec![3]);
+            add(
+                "cls.predictions.transform.dense.weight".into(),
+                vec![16, 16],
+            );
+            add("cls.predictions.transform.dense.bias".into(), vec![16]);
+            add(
+                "cls.predictions.transform.LayerNorm.weight".into(),
+                vec![16],
+            );
+            add("cls.predictions.transform.LayerNorm.bias".into(), vec![16]);
+            add("cls.predictions.decoder.weight".into(), vec![16, 16]);
+            add("cls.predictions.bias".into(), vec![16]);
         }
         let views = weights
             .iter()
@@ -548,7 +1187,330 @@ mod tests {
             Embedding::All(v) => v.iter().flatten().copied().collect(),
         }
     }
+    fn dense_fixture() -> (Fixture, Vec<String>) {
+        let fixture = fixture("", false);
+        let paths = vec!["2_Dense".to_owned(), "3_Dense".to_owned()];
+        fs::write(fixture.0.join("modules.json"), serde_json::to_vec(&serde_json::json!([
+            {"idx":0,"name":"0","path":"","type":"sentence_transformers.models.Transformer"},
+            {"idx":1,"name":"1","path":"1_Pooling","type":"sentence_transformers.models.Pooling"},
+            {"idx":2,"name":"2","path":"2_Dense","type":"sentence_transformers.models.Dense"},
+            {"idx":3,"name":"3","path":"3_Dense","type":"sentence_transformers.models.Dense"}
+        ])).unwrap()).unwrap();
+        for (index, (input, output)) in [(16, 7), (7, 3)].into_iter().enumerate() {
+            let dir = fixture.0.join(&paths[index]);
+            fs::create_dir(&dir).unwrap();
+            fs::write(dir.join("config.json"), serde_json::to_vec(&serde_json::json!({
+                "in_features":input,"out_features":output,"bias":index == 0,
+                "activation_function":if index == 0 { "torch.nn.modules.activation.Tanh" } else { "torch.nn.modules.linear.Identity" }
+            })).unwrap()).unwrap();
+            let weight = (0..input * output)
+                .flat_map(|i| (((i % 11) as f32 - 5.) * 0.04).to_le_bytes())
+                .collect::<Vec<_>>();
+            let bias = (0..output)
+                .flat_map(|i| (i as f32 * 0.01).to_le_bytes())
+                .collect::<Vec<_>>();
+            let mut tensors = vec![(
+                "linear.weight",
+                TensorView::new(Dtype::F32, vec![output, input], &weight).unwrap(),
+            )];
+            if index == 0 {
+                tensors.push((
+                    "linear.bias",
+                    TensorView::new(Dtype::F32, vec![output], &bias).unwrap(),
+                ));
+            }
+            fs::write(
+                dir.join("model.safetensors"),
+                serialize(tensors, None).unwrap(),
+            )
+            .unwrap();
+        }
+        (fixture, paths)
+    }
+    #[cfg(not(feature = "benchmark-cuda"))]
+    #[test]
+    fn dense_chain_matches_candle_and_preserves_raw_width() {
+        let (fixture, paths) = dense_fixture();
+        for pool in [Pool::Cls, Pool::Mean, Pool::LastToken] {
+            let model_type = ModelType::Embedding(pool);
+            let native =
+                LibtorchBackend::new(&fixture.0, "float32", model_type.clone(), "cpu").unwrap();
+            let candle = CandleBackend::new(
+                &fixture.0,
+                "float32".into(),
+                model_type,
+                Some(paths.clone()),
+                0,
+            )
+            .unwrap();
+            let expected = candle.embed(batch()).unwrap();
+            let actual = native.embed(batch()).unwrap();
+            for (row, embedding) in &actual {
+                match embedding {
+                    Embedding::Pooled(v) => assert_eq!(v.len(), 3),
+                    Embedding::All(v) => assert!(v.iter().all(|token| token.len() == 16)),
+                }
+                let got = values(embedding);
+                let want = values(&expected[row]);
+                assert_eq!(got.len(), want.len());
+                assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0001));
+            }
+        }
+        fs::write(
+            fixture.0.join("2_Dense/config.json"),
+            br#"{"in_features":15,"out_features":7,"bias":true}"#,
+        )
+        .unwrap();
+        assert!(LibtorchBackend::new(
+            &fixture.0,
+            "float32",
+            ModelType::Embedding(Pool::Cls),
+            "cpu"
+        )
+        .is_err());
+    }
+    #[test]
+    #[ignore = "Requires an NVIDIA GPU and CUDA LibTorch 2.14.1"]
+    fn cuda_dense_chain_matches_cpu_with_mixed_widths() {
+        let (fixture, _) = dense_fixture();
+        for pool in [Pool::Cls, Pool::Mean, Pool::LastToken] {
+            let model_type = ModelType::Embedding(pool);
+            let cpu =
+                LibtorchBackend::new(&fixture.0, "float32", model_type.clone(), "cpu").unwrap();
+            let gpu = LibtorchBackend::new(&fixture.0, "float16", model_type, "cuda:0").unwrap();
+            let expected = cpu.embed(batch()).unwrap();
+            let actual = gpu.embed(batch()).unwrap();
+            for (row, embedding) in actual {
+                let got = values(&embedding);
+                let want = values(&expected[&row]);
+                assert_eq!(got.len(), want.len());
+                assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.02));
+                match embedding {
+                    Embedding::Pooled(v) => assert_eq!(v.len(), 3),
+                    Embedding::All(v) => assert!(v.iter().all(|token| token.len() == 16)),
+                }
+            }
+        }
+    }
+    #[cfg(not(feature = "benchmark-cuda"))]
+    #[test]
+    fn native_classifier_and_splade_match_candle() {
+        let fixture = fixture("", false);
+        let torch =
+            LibtorchBackend::new(&fixture.0, "float32", ModelType::Classifier, "cpu").unwrap();
+        let candle =
+            CandleBackend::new(&fixture.0, "float32".into(), ModelType::Classifier, None, 0)
+                .unwrap();
+        let mut classifier_batch = batch();
+        classifier_batch.pooled_indices = vec![0, 1];
+        classifier_batch.raw_indices.clear();
+        let expected = candle.predict(classifier_batch.clone()).unwrap();
+        let actual = torch.predict(classifier_batch).unwrap();
+        for (row, values) in expected {
+            for (a, b) in actual[&row].iter().zip(values) {
+                assert!((a - b).abs() < 0.0001);
+            }
+        }
+        let mut token_batch = batch();
+        token_batch.pooled_indices.clear();
+        token_batch.raw_indices = vec![0, 1];
+        let expected = candle.predict_tokens(token_batch.clone()).unwrap();
+        let actual = torch.predict_tokens(token_batch).unwrap();
+        for (row, values) in expected {
+            for (a, b) in actual[&row].iter().flatten().zip(values.iter().flatten()) {
+                assert!((a - b).abs() < 0.0001);
+            }
+        }
+        let torch = LibtorchBackend::new(
+            &fixture.0,
+            "float32",
+            ModelType::Embedding(Pool::Splade),
+            "cpu",
+        )
+        .unwrap();
+        let candle = CandleBackend::new(
+            &fixture.0,
+            "float32".into(),
+            ModelType::Embedding(Pool::Splade),
+            None,
+            0,
+        )
+        .unwrap();
+        let actual = torch.embed(batch()).unwrap();
+        let expected = candle.embed(batch()).unwrap();
+        for (row, value) in expected {
+            let actual = values(&actual[&row]);
+            let expected = values(&value);
+            assert_eq!(actual.len(), expected.len());
+            for (a, b) in actual.iter().zip(expected) {
+                assert!((a - b).abs() < 0.0001);
+            }
+        }
+    }
     // Candle selects CUDA when compiled with it; CPU parity runs in the default feature build.
+    #[cfg(not(feature = "benchmark-cuda"))]
+    #[test]
+    fn roberta_aliases_match_candle_with_offset_positions_and_heads() {
+        for (family, prefix) in [
+            ("roberta", "roberta."),
+            ("xlm-roberta", "xlm-roberta."),
+            ("camembert", "camembert."),
+        ] {
+            let fixture = fixture(prefix, false);
+            let mut config: serde_json::Value =
+                serde_json::from_slice(&fs::read(fixture.0.join("config.json")).unwrap()).unwrap();
+            config["model_type"] = family.into();
+            config["pad_token_id"] = 1.into();
+            fs::write(
+                fixture.0.join("config.json"),
+                serde_json::to_vec(&config).unwrap(),
+            )
+            .unwrap();
+            let bytes = fs::read(fixture.0.join("model.safetensors")).unwrap();
+            let tensors = safetensors::SafeTensors::deserialize(&bytes).unwrap();
+            let mut weights = tensors
+                .tensors()
+                .into_iter()
+                .map(|(name, tensor)| (name, tensor.shape().to_vec(), tensor.data().to_vec()))
+                .collect::<Vec<_>>();
+            for (name, shape) in [
+                ("classifier.dense.weight", vec![16, 16]),
+                ("classifier.dense.bias", vec![16]),
+                ("classifier.out_proj.weight", vec![3, 16]),
+                ("classifier.out_proj.bias", vec![3]),
+                ("lm_head.dense.weight", vec![16, 16]),
+                ("lm_head.dense.bias", vec![16]),
+                ("lm_head.layer_norm.weight", vec![16]),
+                ("lm_head.layer_norm.bias", vec![16]),
+                ("lm_head.decoder.weight", vec![16, 16]),
+                ("lm_head.bias", vec![16]),
+            ] {
+                let data = (0..shape.iter().product())
+                    .map(|i| {
+                        let value = ((i * 13 % 79) as f32 - 39.) / 180.;
+                        if name.ends_with("layer_norm.weight") {
+                            1. + value
+                        } else {
+                            value
+                        }
+                    })
+                    .flat_map(f32::to_le_bytes)
+                    .collect::<Vec<_>>();
+                weights.push((name.to_owned(), shape, data));
+            }
+            let views = weights.iter().map(|(name, shape, data)| {
+                (
+                    name.clone(),
+                    TensorView::new(Dtype::F32, shape.clone(), data).unwrap(),
+                )
+            });
+            fs::write(
+                fixture.0.join("model.safetensors"),
+                serialize(views, None).unwrap(),
+            )
+            .unwrap();
+            let mut input = batch();
+            for position in &mut input.position_ids {
+                *position += 2;
+            }
+            for pool in [Pool::Cls, Pool::Mean, Pool::LastToken, Pool::Splade] {
+                let kind = ModelType::Embedding(pool);
+                let native =
+                    LibtorchBackend::new(&fixture.0, "float32", kind.clone(), "cpu").unwrap();
+                let candle =
+                    CandleBackend::new(&fixture.0, "float32".into(), kind, None, 0).unwrap();
+                let actual = native.embed(input.clone()).unwrap();
+                let expected = candle.embed(input.clone()).unwrap();
+                for (row, embedding) in actual {
+                    let got = values(&embedding);
+                    let want = values(&expected[&row]);
+                    assert_eq!(got.len(), want.len());
+                    assert!(
+                        got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0002),
+                        "{family} pooling mismatch"
+                    );
+                }
+            }
+            let native =
+                LibtorchBackend::new(&fixture.0, "float32", ModelType::Classifier, "cpu").unwrap();
+            let candle =
+                CandleBackend::new(&fixture.0, "float32".into(), ModelType::Classifier, None, 0)
+                    .unwrap();
+            input.pooled_indices = vec![0, 1];
+            input.raw_indices.clear();
+            let actual = native.predict(input.clone()).unwrap();
+            let expected = candle.predict(input.clone()).unwrap();
+            let embedding = LibtorchBackend::new(
+                &fixture.0,
+                "float32",
+                ModelType::Embedding(Pool::Cls),
+                "cpu",
+            )
+            .unwrap()
+            .embed(input.clone())
+            .unwrap();
+            let parameters = weights
+                .iter()
+                .map(|(name, _, data)| {
+                    (
+                        name.as_str(),
+                        data.chunks_exact(4)
+                            .map(|bytes| f32::from_le_bytes(bytes.try_into().unwrap()))
+                            .collect::<Vec<_>>(),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>();
+            for (&row, got) in &actual {
+                let hidden = values(&embedding[&row]);
+                let mid = (0..16)
+                    .map(|i| {
+                        (parameters["classifier.dense.bias"][i]
+                            + hidden
+                                .iter()
+                                .enumerate()
+                                .map(|(j, x)| x * parameters["classifier.dense.weight"][i * 16 + j])
+                                .sum::<f32>())
+                        .tanh()
+                    })
+                    .collect::<Vec<_>>();
+                let reference = (0..3)
+                    .map(|i| {
+                        parameters["classifier.out_proj.bias"][i]
+                            + mid
+                                .iter()
+                                .enumerate()
+                                .map(|(j, x)| {
+                                    x * parameters["classifier.out_proj.weight"][i * 16 + j]
+                                })
+                                .sum::<f32>()
+                    })
+                    .collect::<Vec<_>>();
+                assert!(got.iter().zip(&reference).all(|(a,b)| (a-b).abs()<0.0002), "Native head disagrees with independent scalar reference: {got:?} vs {reference:?}");
+            }
+            for (row, got) in actual {
+                assert!(
+                    got.iter()
+                        .zip(&expected[&row])
+                        .all(|(a, b)| (a - b).abs() < 0.0002),
+                    "{family} classifier mismatch for row {row}: {got:?} vs {:?}",
+                    expected[&row]
+                );
+            }
+            input.pooled_indices.clear();
+            input.raw_indices = vec![0, 1];
+            let actual = native.predict_tokens(input.clone()).unwrap();
+            let expected = candle.predict_tokens(input).unwrap();
+            for (row, got) in actual {
+                assert!(
+                    got.iter()
+                        .flatten()
+                        .zip(expected[&row].iter().flatten())
+                        .all(|(a, b)| (a - b).abs() < 0.0002),
+                    "{family} token classifier mismatch"
+                );
+            }
+        }
+    }
     #[cfg(not(feature = "benchmark-cuda"))]
     #[test]
     fn native_bert_matches_candle_for_ragged_pooled_and_raw_outputs() {

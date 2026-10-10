@@ -24,3 +24,11 @@ benchmark-cuda = ["text-embeddings-backend-candle/cuda", "text-embeddings-backen
 name = "compare_bert"
 required-features = ["benchmark-cuda"]
 
+
+[[example]]
+name = "compare_gemma"
+required-features = ["benchmark-cuda"]
+
+[[example]]
+name = "compare_decoders"
+required-features = ["benchmark-cuda"]

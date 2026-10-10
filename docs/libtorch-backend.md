@@ -11,7 +11,7 @@ distribution. There is no TorchScript export step.
 Token embeddings, projections, attention outputs and MLP activations use
 `[total_tokens, hidden_size]`, with Q/K/V shaped
 `[total_tokens, heads, head_dim]`. Sequence boundaries come directly from TEI's
-cumulative lengths. No token padding or dense attention mask is allocated.
+cumulative lengths. No token padding is allocated. Relative position bias paths use attention bias at each sequence's actual length.
 
 On CUDA, attention calls `aten::_flash_attention_forward` with device-resident
 INT32 cumulative lengths and maximum sequence length. This is the Flash
@@ -25,29 +25,37 @@ and attention uses SDPA on each sequence at its actual length. This is useful fo
 correctness testing; it is not a fused CPU varlen kernel. MPS and XPU are rejected
 in this prototype because this Torch varlen operator is exposed through CUDA.
 
-## Initial model support
+## Model support
 
-- Encoder BERT (`model_type: bert`) with absolute position embeddings.
-- Single-file or sharded safetensors; both bare and `bert.` weight prefixes.
-- CLS, mean and last-token pooling, and raw token embeddings.
-- FP32, FP16 and BF16 weights/activations. CUDA varlen requires FP16/BF16 and a
-  head dimension divisible by eight, at most 256. Auto uses FP32 on CPU and FP16
-  on CUDA. Mean pooling accumulates in FP32.
-- GELU, tanh GELU and ReLU. Standard `gelu` uses Torch's exact GELU; Candle's BERT
-  implementation uses approximate GELU, so small numerical differences are
-  expected. Parity tests select `gelu_pytorch_tanh` in both runtimes.
+Native implementations now cover BERT/RoBERTa, DistilBERT, GTE, ModernBERT,
+Nomic, Jina/JinaCode, Llama/Mistral, Qwen2/Qwen3 (including Qwen3 MoE), and the
+Gemma families. Model availability and numerical validation are tracked in the
+[coverage ledger](libtorch-model-coverage.md); source implementation alone does
+not establish production support or the latency target.
 
-Classifiers, decision models, multimodal models, SPLADE, radix folding, dynamic
-FP8 and Sentence Transformers Dense/custom modules are rejected explicitly.
-Other Hugging Face architectures require their own native model implementations.
+Single-file and sharded safetensors, CLS/mean/last-token pooling and raw token
+embeddings remain supported. Classification and SPLADE heads are being checked
+against their Candle counterparts. FP32, FP16 and BF16 are accepted; CUDA Flash
+requires FP16/BF16. Wider Gemma attention heads use native packed efficient
+attention. The installed Torch Flash build disables ALiBi, so Jina uses native
+efficient varlen attention independently at each actual sequence length.
+
+Typed decision heads have native implementations and synthetic parity checks;
+trained-checkpoint validation remains pending. Sentence Transformers Dense
+chains support identity/tanh projections of pooled outputs, retaining raw token
+widths. Dense modules require safetensors weights. Radix folding, dynamic FP8
+and other custom modules remain unsupported and are rejected explicitly. Image and
+audio towers have experimental implementations; trained-checkpoint numerical
+validation remains incomplete, including a known Gemma audio accuracy gap.
+BERT uses tanh GELU to match Candle's inference kernels. CUDA fuses bias and
+GELU into the intermediate projection; CPU uses the matching approximation.
 
 ## Build and run
 
 Install the [LibTorch C++ distribution](https://docs.pytorch.org/cppdocs/installing.html)
 for **2.14.1**, choosing CPU or a CUDA build compatible with your GPU driver.
 Set `LIBTORCH` to its root (containing `include/`, `lib/` and `share/`). Building
-requires CMake and a C++20 compiler. CUDA distributions may also require a CUDA
-toolkit during CMake configuration.
+requires CMake and a C++20 compiler. CUDA distributions require a CUDA toolkit to compile the native packed operators.
 
 ```bash
 export LIBTORCH=/opt/libtorch
@@ -95,10 +103,52 @@ sequence isolation, sharded checkpoints and weight prefixes. Error tests cover
 malformed batches and missing native weights. The GPU parity test exercises the
 actual packed CUDA varlen operator and moving a model onto the inference worker.
 
+Native model and kernel fixtures can also be built independently:
+
+```bash
+cmake -S backends/libtorch/cpp -B /tmp/tei-native-tests \
+  -DCMAKE_PREFIX_PATH="$LIBTORCH" -DCMAKE_BUILD_TYPE=Release \
+  -DTEI_BUILD_NATIVE_TESTS=ON -DTEI_RUN_CUDA_TESTS=ON
+cmake --build /tmp/tei-native-tests --parallel
+CUDA_VISIBLE_DEVICES=0 ctest --test-dir /tmp/tei-native-tests --output-on-failure
+```
+
+Omit `TEI_RUN_CUDA_TESTS` to register only CPU tests. Shared CUDA libraries must
+be discoverable by the linker and runtime when using a CUDA distribution.
+
 CUDA varlen parity has been validated on an H100. A10 throughput still needs
 hardware validation. Native C++
-avoids Python dispatch, but eager tensor operations still launch GPU kernels;
-this prototype does not use CUDA graphs. The initial
+avoids Python dispatch, but eager tensor operations still launch GPU kernels.
+Set `TEI_TORCH_CUDA_GRAPHS=1` to enable an experimental four-shape replay cache
+for eligible dense models. Cache keys include exact sequence boundaries; no
+tokens are padded. Capture cost and cache misses matter for serving latency.
+The default capture limit is 4096 tokens; `TEI_TORCH_CUDA_GRAPH_MAX_TOKENS` accepts
+a positive override. Unsupported capture operations run eagerly. Media capture
+requires the additional experimental flag described below.
+
+`TEI_TORCH_CUDNN_VARLEN=1` enables experimental packed cuDNN attention for eligible
+BERT and eligible decoder requests on supported GPUs and cuDNN versions.
+Restrictive sliding windows retain Flash attention. This option remains opt-in.
+`TEI_TORCH_FULL_PRECISION_GEMM=1` disables reduced-precision GEMM accumulation
+and TF32 for this process; experiments have not established a general accuracy
+or latency benefit.
+ModernBERT CUDA uses the Candle normalization kernel adapter by default, together
+with matching half-precision rotary arithmetic. The trained embedding checkpoint
+passes both official-token and arbitrary-ID mean parity checks.
+CUDA mean pooling uses Candle's exact model-dtype reduction tree in one packed
+launch over selected sequence spans; raw token outputs retain their original widths.
+`TEI_TORCH_EXACT_ENCODER_NORM=0` selects ATen normalization for diagnostics.
+`TEI_TORCH_MEDIA_CUDA_GRAPHS=1`, together with `TEI_TORCH_CUDA_GRAPHS=1`, enables
+experimental image/audio graph capture. The cache keys include exact media shapes
+and descriptors and copy media values and prepared audio indices on replay.
+Unsupported captures fall back to eager inference. Trained media accuracy and
+performance remain under evaluation.
+
+The [checkpoint comparison](benchmarks/libtorch-checkpoints-h100.md) records
+Qwen3, GTE, BERT, ModernBERT, Nomic, Mistral and Qwen vision workloads meeting the
+5% P50 target with the recorded options. ModernBERT still has a separate
+arbitrary-ID MLM parity failure; Gemma has trained-checkpoint accuracy gaps,
+and Jina has a batched latency gap. The initial
 [H100 BERT comparison](benchmarks/libtorch-bert-h100.md) shows Candle ahead,
 including when the GPU assignments are swapped.
 

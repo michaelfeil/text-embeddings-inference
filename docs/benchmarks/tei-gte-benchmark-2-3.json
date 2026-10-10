@@ -1,0 +1,276 @@
+{
+  "candle_gpu": 3,
+  "candle_load_seconds": 0.768180834,
+  "dtype": "float16",
+  "iterations_per_backend": 100,
+  "measurement_mode": "parallel separate GPUs",
+  "model_path": "/tmp/tei-gte-benchmark-model",
+  "pooling": "cls",
+  "torch_cuda_graph_count": 0,
+  "torch_gpu": 2,
+  "torch_load_seconds": 3.754724091,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 1.1493250000000002,
+        "p50_ms": 1.182034,
+        "p95_ms": 1.2903140000000002,
+        "tokens_per_second_at_p50": 27071.9793170078
+      },
+      "lengths": [
+        32
+      ],
+      "max_output_absolute_difference": 0.00390625,
+      "min_output_cosine": 0.9999993945810923,
+      "tokens": 32,
+      "torch": {
+        "min_ms": 1.0864379999999998,
+        "p50_ms": 1.117535,
+        "p95_ms": 1.218535,
+        "tokens_per_second_at_p50": 28634.449927742757
+      },
+      "torch_speedup": 1.0577154183090463,
+      "workload": "1x32"
+    },
+    {
+      "candle": {
+        "min_ms": 1.150402,
+        "p50_ms": 1.17551,
+        "p95_ms": 1.227294,
+        "tokens_per_second_at_p50": 108888.90779321315
+      },
+      "lengths": [
+        128
+      ],
+      "max_output_absolute_difference": 0.00341796875,
+      "min_output_cosine": 0.9999993405304871,
+      "tokens": 128,
+      "torch": {
+        "min_ms": 1.071465,
+        "p50_ms": 1.104439,
+        "p95_ms": 1.174626,
+        "tokens_per_second_at_p50": 115895.943551432
+      },
+      "torch_speedup": 1.0643503172198736,
+      "workload": "1x128"
+    },
+    {
+      "candle": {
+        "min_ms": 1.9746820000000003,
+        "p50_ms": 1.9871590000000001,
+        "p95_ms": 2.005613,
+        "tokens_per_second_at_p50": 515308.53847125464
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.0078125,
+      "min_output_cosine": 0.9999985388225724,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 1.259545,
+        "p50_ms": 1.284796,
+        "p95_ms": 1.303989,
+        "tokens_per_second_at_p50": 797013.6893327812
+      },
+      "torch_speedup": 1.5466727791805082,
+      "workload": "8x128"
+    },
+    {
+      "candle": {
+        "min_ms": 5.998443,
+        "p50_ms": 6.014144,
+        "p95_ms": 6.034284,
+        "tokens_per_second_at_p50": 681061.1784486703
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.0078125,
+      "min_output_cosine": 0.9999980837736417,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 3.397133,
+        "p50_ms": 3.4240160000000004,
+        "p95_ms": 3.5109350000000004,
+        "tokens_per_second_at_p50": 1196256.092261251
+      },
+      "torch_speedup": 1.7564590819669064,
+      "workload": "32x128"
+    },
+    {
+      "candle": {
+        "min_ms": 6.805140000000001,
+        "p50_ms": 6.8225940000000005,
+        "p95_ms": 6.8400609999999995,
+        "tokens_per_second_at_p50": 675402.9332538327
+      },
+      "lengths": [
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256
+      ],
+      "max_output_absolute_difference": 0.0078125,
+      "min_output_cosine": 0.999997952925542,
+      "tokens": 4608,
+      "torch": {
+        "min_ms": 3.86991,
+        "p50_ms": 3.8949990000000003,
+        "p95_ms": 3.918848,
+        "tokens_per_second_at_p50": 1183055.5027100134
+      },
+      "torch_speedup": 1.7516292045261115,
+      "workload": "32 ragged 32..256"
+    },
+    {
+      "candle": {
+        "min_ms": 6.127033,
+        "p50_ms": 6.141455,
+        "p95_ms": 6.153505,
+        "tokens_per_second_at_p50": 666942.9312760576
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.0078125,
+      "min_output_cosine": 0.9999981786975134,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 3.611831,
+        "p50_ms": 3.626922,
+        "p95_ms": 3.641276,
+        "tokens_per_second_at_p50": 1129332.2547328009
+      },
+      "torch_speedup": 1.693296685178231,
+      "workload": "8x512"
+    },
+    {
+      "candle": {
+        "min_ms": 22.664602,
+        "p50_ms": 22.68847,
+        "p95_ms": 22.71772,
+        "tokens_per_second_at_p50": 722128.9051222934
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.009765625,
+      "min_output_cosine": 0.9999980074454077,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 12.488092,
+        "p50_ms": 12.890992,
+        "p95_ms": 14.105537,
+        "tokens_per_second_at_p50": 1270965.0273617422
+      },
+      "torch_speedup": 1.7600251400357705,
+      "workload": "32x512"
+    }
+  ]
+}

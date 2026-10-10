@@ -3,6 +3,12 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBTORCH");
     println!("cargo:rerun-if-changed=cpp");
+    println!("cargo:rerun-if-changed=../candle/extensions/candle-layer-norm/kernels");
+    println!("cargo:rerun-if-changed=../candle/src/kernels/qwen35_gdn.cu");
+    println!("cargo:rerun-if-changed=../candle/src/kernels/qk_norm_rope.cu");
+    println!("cargo:rerun-if-changed=../candle/src/kernels/gemma_rms_norm.cu");
+    println!("cargo:rerun-if-changed=../candle/src/kernels/gated_activation.cu");
+    println!("cargo:rerun-if-changed=../candle/src/pooling_kernels/mean_pool.cu");
     let torch = PathBuf::from(env::var_os("LIBTORCH").expect(
         "Set LIBTORCH to the root of a LibTorch 2.14.1 C++ distribution (include/, lib/, share/)",
     ));

@@ -206,11 +206,9 @@ impl ClassificationHead for RobertaClassificationHead {
     fn forward(&self, hidden_states: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
 
-        let hidden_states = hidden_states.unsqueeze(1)?;
-        let hidden_states = self.intermediate.forward(&hidden_states)?;
+        let hidden_states = self.intermediate.forward(hidden_states)?;
         let hidden_states = hidden_states.tanh()?;
         let hidden_states = self.output.forward(&hidden_states)?;
-        let hidden_states = hidden_states.squeeze(1)?;
         Ok(hidden_states)
     }
 
@@ -347,6 +345,32 @@ mod classification_tests {
                 None,
                 None,
             )),
+            output: Linear::new(
+                Tensor::new(&[[0.4_f32, -0.3], [0.2, 0.7]], &device)?,
+                None,
+                None,
+            ),
+            span: tracing::Span::none(),
+        };
+        let input = Tensor::new(&[[0.5_f32, -1.], [1., 0.2]], &device)?;
+        let batch = head.forward(&input)?.to_vec2::<f32>()?;
+        for (i, row) in batch.iter().enumerate() {
+            let single = head.forward(&input.narrow(0, i, 1)?)?.to_vec2::<f32>()?;
+            for (&actual, &expected) in row.iter().zip(&single[0]) {
+                assert!((actual - expected).abs() < 1e-6);
+            }
+        }
+        Ok(())
+    }
+    #[test]
+    fn roberta_classification_batch_matches_independent_rows() -> Result<()> {
+        let device = Device::Cpu;
+        let head = RobertaClassificationHead {
+            intermediate: Linear::new(
+                Tensor::new(&[[1_f32, 2.], [3., 4.]], &device)?,
+                Some(Tensor::new(&[0.1_f32, -0.2], &device)?),
+                None,
+            ),
             output: Linear::new(
                 Tensor::new(&[[0.4_f32, -0.3], [0.2, 0.7]], &device)?,
                 None,

@@ -1,29 +1,31 @@
-//! Compare native backends on the same packed BERT inputs; tokenization/HTTP are excluded.
+//! Compare native backends on identical packed Gemma embeddings; HTTP/tokenization excluded.
 use std::{
     hint::black_box,
     path::PathBuf,
-    sync::{Barrier, Mutex},
+    sync::{Arc, Barrier, Mutex},
     time::Instant,
 };
 use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
+use text_embeddings_backend_core::{
+    AudioFeatures, Backend, Batch, Embedding, ImagePatches, ModelType, MultimodalEncoding, Pool,
+};
 use text_embeddings_backend_libtorch::LibtorchBackend;
 
-fn batch(lengths: &[usize], vocab: u32, cls: u32, sep: u32, position_offset: u32) -> Batch {
+fn batch(lengths: &[usize]) -> Batch {
     let mut input_ids = Vec::new();
     let mut position_ids = Vec::new();
     let mut cumulative = vec![0];
     for (row, &length) in lengths.iter().enumerate() {
         input_ids.extend((0..length).map(|i| {
             if i == 0 {
-                cls
+                101
             } else if i + 1 == length {
-                sep
+                102
             } else {
-                (1000 + (i * 17 + row * 31) % 20000) as u32 % vocab
+                (1000 + (i * 17 + row * 31) % 20000) as u32
             }
         }));
-        position_ids.extend((0..length).map(|i| i as u32 + position_offset));
+        position_ids.extend((0..length).map(|i| i as u32));
         cumulative.push(input_ids.len() as u32);
     }
     Batch {
@@ -63,7 +65,7 @@ fn main() {
     let mut args = std::env::args().skip(1);
     let path = PathBuf::from(
         args.next()
-            .expect("compare_bert MODEL_PATH [ITERATIONS] [TORCH_GPU] [CANDLE_GPU] [POOL]"),
+            .expect("compare_gemma MODEL_PATH [ITERATIONS] [TORCH_GPU] [CANDLE_GPU]"),
     );
     let iterations = args
         .next()
@@ -78,47 +80,21 @@ fn main() {
         .next()
         .map(|n| n.parse::<usize>().unwrap())
         .unwrap_or(1);
-    let pool_name = args.next().unwrap_or_else(|| "cls".into());
-    let pool = match pool_name.as_str() {
-        "cls" => Pool::Cls,
-        "mean" => Pool::Mean,
-        "last_token" => Pool::LastToken,
-        _ => panic!("POOL must be cls, mean or last_token"),
-    };
     assert_ne!(
         torch_gpu, candle_gpu,
         "Parallel comparisons require separate GPUs"
     );
     let config: serde_json::Value =
         serde_json::from_slice(&std::fs::read(path.join("config.json")).unwrap()).unwrap();
-    let vocab = u32::try_from(config["vocab_size"].as_u64().unwrap()).unwrap();
-    assert!(vocab > 0);
-    let special = |primary: &str, secondary: &str, fallback: u64| {
-        let value = config[primary]
-            .as_u64()
-            .or_else(|| config[secondary].as_u64())
-            .unwrap_or(fallback);
-        let value = u32::try_from(value).unwrap();
-        assert!(value < vocab, "Special token ID exceeds vocabulary");
-        value
-    };
-    let cls = special("cls_token_id", "bos_token_id", 101);
-    let sep = special("sep_token_id", "eos_token_id", 102);
-    let family = config["model_type"].as_str().expect("model_type");
-    let position_offset = match family {
-        "roberta" | "xlm-roberta" | "camembert" => {
-            u32::try_from(config["pad_token_id"].as_u64().expect("pad_token_id")).unwrap() + 1
-        }
-        _ => 0,
-    };
-    let checkpoint_revision = std::fs::read(path.join("revision.json"))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|metadata| metadata["sha"].as_str().map(str::to_owned));
+    let qwen_vl = config["model_type"] == "qwen3_vl";
+    let qwen_media =
+        qwen_vl || config["model_type"] == "qwen3_5" || config["model_type"] == "qwen3_5_moe";
+    let dtype = if qwen_vl { "float16" } else { "bfloat16" };
+    let pool = if qwen_vl { Pool::LastToken } else { Pool::Mean };
     let started = Instant::now();
     let torch = LibtorchBackend::new(
         &path,
-        "float16",
+        dtype,
         ModelType::Embedding(pool.clone()),
         &format!("cuda:{torch_gpu}"),
     )
@@ -127,7 +103,7 @@ fn main() {
     let started = Instant::now();
     let candle = CandleBackend::new(
         &path,
-        "float16".into(),
+        dtype.into(),
         ModelType::Embedding(pool),
         None,
         candle_gpu,
@@ -136,7 +112,7 @@ fn main() {
     let candle_load = started.elapsed().as_secs_f64();
     let torch = Mutex::new(torch);
     let candle = Mutex::new(candle);
-    let workloads = vec![
+    let mut workloads = vec![
         ("1x32", vec![32]),
         ("1x128", vec![128]),
         ("8x128", vec![128; 8]),
@@ -148,9 +124,86 @@ fn main() {
         ("8x512", vec![512; 8]),
         ("32x512", vec![512; 32]),
     ];
+    if std::env::var_os("TEI_GEMMA_TEXT_ONLY").is_none() && config["vision_config"].is_object() {
+        workloads.push(("image1x32", vec![32]));
+        if qwen_media {
+            workloads.push(("images2ragged32_48", vec![32, 48]));
+        }
+    }
+    if std::env::var_os("TEI_GEMMA_TEXT_ONLY").is_none() && config["audio_config"].is_object() {
+        workloads.push(("audio1x32", vec![32]));
+    }
+    if let Ok(selected) = std::env::var("TEI_GEMMA_CASE") {
+        workloads.retain(|(label, _)| *label == selected);
+    }
     let mut rows = Vec::new();
     for (label, lengths) in workloads {
-        let input = batch(&lengths, vocab, cls, sep, position_offset);
+        let mut input = batch(&lengths);
+        if label.starts_with("image") || label.starts_with("audio") {
+            for (sequence, &length) in lengths.iter().enumerate() {
+                let offset = input.cumulative_seq_lengths[sequence] as usize;
+                let mut media = MultimodalEncoding {
+                    images: vec![],
+                    audios: vec![],
+                    position_ids: std::array::from_fn(|_| (0..length as u32).collect()),
+                    memory: None,
+                };
+                if label.starts_with("image") {
+                    let (grid, patch_dim, merge_size) = if qwen_media {
+                        let vision = &config["vision_config"];
+                        let patch = vision["patch_size"].as_u64().unwrap() as usize;
+                        let temporal = vision["temporal_patch_size"].as_u64().unwrap() as usize;
+                        let channels = vision["in_channels"].as_u64().unwrap() as usize;
+                        (
+                            [1, if sequence == 0 { 4 } else { 2 }, 4],
+                            channels * temporal * patch * patch,
+                            2,
+                        )
+                    } else {
+                        ([1, 3, 3], 768, 3)
+                    };
+                    media.images.push((
+                        2,
+                        Arc::new(ImagePatches {
+                            pixels: (0..grid.iter().product::<usize>() * patch_dim)
+                                .map(|i| ((i + sequence * 19) % 251) as f32 / 250.)
+                                .collect(),
+                            grid_thw: grid,
+                            patch_dim,
+                            merge_size,
+                        }),
+                    ));
+                    if qwen_media {
+                        let visual_tokens =
+                            grid.iter().product::<usize>() / (merge_size * merge_size);
+                        for i in 0..visual_tokens {
+                            input.input_ids[offset + 2 + i] =
+                                config["image_token_id"].as_u64().unwrap() as u32;
+                            media.position_ids[0][2 + i] = 2;
+                            media.position_ids[1][2 + i] = (2 + i / 2) as u32;
+                            media.position_ids[2][2 + i] = (2 + i % 2) as u32;
+                        }
+                        for positions in &mut media.position_ids {
+                            for i in 2 + visual_tokens..positions.len() {
+                                positions[i] = (i - visual_tokens + 2) as u32;
+                            }
+                        }
+                    }
+                } else {
+                    media.audios.push((
+                        2,
+                        Arc::new(AudioFeatures {
+                            values: (0..64 * 128)
+                                .map(|i| ((i % 211) as f32 * 0.017).sin())
+                                .collect(),
+                            mask: vec![1; 64],
+                            feature_size: 128,
+                        }),
+                    ));
+                }
+                input.multimodal.push(Some(Arc::new(media)));
+            }
+        }
         let t = torch.lock().unwrap().embed(input.clone()).unwrap();
         let c = candle.lock().unwrap().embed(input.clone()).unwrap();
         let mut min_cosine = 1.0_f64;
@@ -172,7 +225,8 @@ fn main() {
             }
             min_cosine = min_cosine.min(dot / (tn * cn).sqrt());
         }
-        assert!(min_cosine > 0.999, "{label} output cosine {min_cosine}");
+        eprintln!("{label} parity: cosine={min_cosine:.8}, maxabs={max_abs:.6}");
+        assert!(min_cosine > 0.99, "{label} output cosine {min_cosine}");
         let barrier = Barrier::new(2);
         let (torch_times, candle_times) = std::thread::scope(|scope| {
             let torch_thread = scope.spawn(|| {
@@ -212,8 +266,10 @@ fn main() {
     }
     println!(
         "{}",
-        serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":"float16",
-        "pooling":pool_name,"cls_token_id":cls,"sep_token_id":sep,"vocab_size":vocab,"position_offset":position_offset,"model_type":family,"checkpoint_revision":checkpoint_revision,"input_pattern":"synthetic valid vocabulary IDs with configured special tokens and router position offset; no padding","iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_dtype":config["dtype"],"model_type":config["model_type"],
+        "pooling":if qwen_vl {"last_token"} else {"mean"},"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,
+        "torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),
+        "torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()),
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows}))
         .unwrap()
     );

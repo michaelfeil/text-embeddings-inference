@@ -1,4 +1,5 @@
-//! Compare native backends on the same packed BERT inputs; tokenization/HTTP are excluded.
+#![cfg(feature = "benchmark-cuda")]
+//! Compare native backends on the same packed decoder inputs; tokenization/HTTP are excluded.
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -9,21 +10,23 @@ use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 use text_embeddings_backend_libtorch::LibtorchBackend;
 
-fn batch(lengths: &[usize], vocab: u32, cls: u32, sep: u32, position_offset: u32) -> Batch {
+fn batch(lengths: &[usize], vocab_size: u32, bos: Option<u32>, eos: Option<u32>) -> Batch {
     let mut input_ids = Vec::new();
     let mut position_ids = Vec::new();
     let mut cumulative = vec![0];
     for (row, &length) in lengths.iter().enumerate() {
         input_ids.extend((0..length).map(|i| {
-            if i == 0 {
-                cls
-            } else if i + 1 == length {
-                sep
+            if i + 1 == length && eos.is_some() {
+                eos.unwrap()
+            } else if i == 0 && bos.is_some() {
+                bos.unwrap()
             } else {
-                (1000 + (i * 17 + row * 31) % 20000) as u32 % vocab
+                // Synthetic, valid vocabulary IDs; this measures backend parity/latency,
+                // not retrieval quality or tokenizer throughput.
+                (1000 + (i * 17 + row * 31) as u32) % vocab_size
             }
         }));
-        position_ids.extend((0..length).map(|i| i as u32 + position_offset));
+        position_ids.extend((0..length).map(|i| i as u32));
         cumulative.push(input_ids.len() as u32);
     }
     Batch {
@@ -61,10 +64,9 @@ fn stats(mut times: Vec<f64>, tokens: usize) -> serde_json::Value {
 }
 fn main() {
     let mut args = std::env::args().skip(1);
-    let path = PathBuf::from(
-        args.next()
-            .expect("compare_bert MODEL_PATH [ITERATIONS] [TORCH_GPU] [CANDLE_GPU] [POOL]"),
-    );
+    let path = PathBuf::from(args.next().expect(
+        "compare_decoders MODEL_PATH [ITERATIONS] [TORCH_GPU] [CANDLE_GPU] [DTYPE] [POOL]",
+    ));
     let iterations = args
         .next()
         .map(|n| n.parse::<usize>().unwrap())
@@ -73,52 +75,56 @@ fn main() {
     let torch_gpu = args
         .next()
         .map(|n| n.parse::<usize>().unwrap())
-        .unwrap_or(0);
+        .unwrap_or(6);
     let candle_gpu = args
         .next()
         .map(|n| n.parse::<usize>().unwrap())
-        .unwrap_or(1);
-    let pool_name = args.next().unwrap_or_else(|| "cls".into());
-    let pool = match pool_name.as_str() {
-        "cls" => Pool::Cls,
-        "mean" => Pool::Mean,
-        "last_token" => Pool::LastToken,
-        _ => panic!("POOL must be cls, mean or last_token"),
-    };
+        .unwrap_or(7);
     assert_ne!(
         torch_gpu, candle_gpu,
         "Parallel comparisons require separate GPUs"
     );
-    let config: serde_json::Value =
-        serde_json::from_slice(&std::fs::read(path.join("config.json")).unwrap()).unwrap();
-    let vocab = u32::try_from(config["vocab_size"].as_u64().unwrap()).unwrap();
-    assert!(vocab > 0);
-    let special = |primary: &str, secondary: &str, fallback: u64| {
-        let value = config[primary]
-            .as_u64()
-            .or_else(|| config[secondary].as_u64())
-            .unwrap_or(fallback);
-        let value = u32::try_from(value).unwrap();
-        assert!(value < vocab, "Special token ID exceeds vocabulary");
-        value
+    let config: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(path.join("config.json")).expect("checkpoint config.json"),
+    )
+    .unwrap();
+    let vocab_size = config["vocab_size"].as_u64().expect("vocab_size") as u32;
+    let token_id = |key: &str| {
+        config[key].as_u64().map(|id| {
+            assert!(id < vocab_size as u64, "{key} outside vocabulary");
+            id as u32
+        })
     };
-    let cls = special("cls_token_id", "bos_token_id", 101);
-    let sep = special("sep_token_id", "eos_token_id", 102);
-    let family = config["model_type"].as_str().expect("model_type");
-    let position_offset = match family {
-        "roberta" | "xlm-roberta" | "camembert" => {
-            u32::try_from(config["pad_token_id"].as_u64().expect("pad_token_id")).unwrap() + 1
-        }
-        _ => 0,
+    let bos = token_id("bos_token_id");
+    let eos = token_id("eos_token_id");
+    let pad = token_id("pad_token_id");
+    let dtype = args.next().unwrap_or_else(|| {
+        config["torch_dtype"]
+            .as_str()
+            .unwrap_or("float16")
+            .to_owned()
+    });
+    assert!(matches!(dtype.as_str(), "float16" | "bfloat16" | "float32"));
+    let pooling = args
+        .next()
+        .unwrap_or_else(|| match config["pooling"].as_str() {
+            Some("avg" | "mean") => "mean".into(),
+            _ => "last_token".into(),
+        });
+    let pool = match pooling.as_str() {
+        "last_token" => Pool::LastToken,
+        "mean" => Pool::Mean,
+        "cls" => Pool::Cls,
+        _ => panic!("POOL must be last_token, mean, or cls"),
     };
     let checkpoint_revision = std::fs::read(path.join("revision.json"))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-        .and_then(|metadata| metadata["sha"].as_str().map(str::to_owned));
+        .and_then(|meta| meta["sha"].as_str().map(str::to_owned));
     let started = Instant::now();
     let torch = LibtorchBackend::new(
         &path,
-        "float16",
+        &dtype,
         ModelType::Embedding(pool.clone()),
         &format!("cuda:{torch_gpu}"),
     )
@@ -127,8 +133,8 @@ fn main() {
     let started = Instant::now();
     let candle = CandleBackend::new(
         &path,
-        "float16".into(),
-        ModelType::Embedding(pool),
+        dtype.clone(),
+        ModelType::Embedding(pool.clone()),
         None,
         candle_gpu,
     )
@@ -150,7 +156,7 @@ fn main() {
     ];
     let mut rows = Vec::new();
     for (label, lengths) in workloads {
-        let input = batch(&lengths, vocab, cls, sep, position_offset);
+        let input = batch(&lengths, vocab_size, bos, eos);
         let t = torch.lock().unwrap().embed(input.clone()).unwrap();
         let c = candle.lock().unwrap().embed(input.clone()).unwrap();
         let mut min_cosine = 1.0_f64;
@@ -212,8 +218,8 @@ fn main() {
     }
     println!(
         "{}",
-        serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":"float16",
-        "pooling":pool_name,"cls_token_id":cls,"sep_token_id":sep,"vocab_size":vocab,"position_offset":position_offset,"model_type":family,"checkpoint_revision":checkpoint_revision,"input_pattern":"synthetic valid vocabulary IDs with configured special tokens and router position offset; no padding","iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),
+        serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_revision":checkpoint_revision,"vocab_size":vocab_size,"bos_token_id":bos,"eos_token_id":eos,"pad_token_id":pad,"input_pattern":"synthetic valid vocabulary IDs with configured BOS/EOS; no padding",
+        "pooling":pooling,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows}))
         .unwrap()
     );
