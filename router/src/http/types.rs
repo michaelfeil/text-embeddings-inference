@@ -599,22 +599,47 @@ impl TryFrom<OpenAICompatRequestBody> for OpenAICompatRequest {
 
 impl<'s> ToSchema<'s> for OpenAICompatRequest {
     fn schema() -> (&'s str, RefOr<Schema>) {
+        let RefOr::T(Schema::Object(mut completion)) = OpenAICompatRequestBody::schema().1 else {
+            unreachable!("request body is an object");
+        };
+        completion.properties.insert(
+            "input".into(),
+            utoipa::openapi::Ref::from_schema_name("EmbeddingInput").into(),
+        );
+        completion.properties.insert(
+            "messages".into(),
+            utoipa::openapi::ArrayBuilder::new()
+                .items(utoipa::openapi::Ref::from_schema_name("Message"))
+                .min_items(Some(1))
+                .build()
+                .into(),
+        );
+        let mut chat = completion.clone();
+        completion.required.push("input".into());
+        chat.required.push("messages".into());
         (
             "OpenAICompatRequest",
-            exclusive_input_schema(OpenAICompatRequestBody::schema().1),
+            utoipa::openapi::OneOfBuilder::new()
+                .item(completion)
+                .item(chat)
+                .description(Some(
+                    "Provide exactly one of input or messages; a message list is one conversation.",
+                ))
+                .into(),
         )
     }
 }
 
+// Share the property definitions once; oneOf only expresses exclusive required fields.
 pub(super) fn exclusive_input_schema(schema: RefOr<Schema>) -> RefOr<Schema> {
-    let RefOr::T(Schema::Object(mut completion)) = schema else {
+    let RefOr::T(Schema::Object(mut body)) = schema else {
         unreachable!("request body is an object");
     };
-    completion.properties.insert(
+    body.properties.insert(
         "input".into(),
         utoipa::openapi::Ref::from_schema_name("EmbeddingInput").into(),
     );
-    completion.properties.insert(
+    body.properties.insert(
         "messages".into(),
         utoipa::openapi::ArrayBuilder::new()
             .items(utoipa::openapi::Ref::from_schema_name("Message"))
@@ -622,12 +647,13 @@ pub(super) fn exclusive_input_schema(schema: RefOr<Schema>) -> RefOr<Schema> {
             .build()
             .into(),
     );
-    let mut chat = completion.clone();
-    completion.required.push("input".into());
-    chat.required.push("messages".into());
-    utoipa::openapi::OneOfBuilder::new()
-        .item(completion)
-        .item(chat)
+    utoipa::openapi::AllOfBuilder::new()
+        .item(body)
+        .item(
+            utoipa::openapi::OneOfBuilder::new()
+                .item(utoipa::openapi::ObjectBuilder::new().required("input"))
+                .item(utoipa::openapi::ObjectBuilder::new().required("messages")),
+        )
         .description(Some(
             "Provide exactly one of input or messages; a message list is one conversation.",
         ))

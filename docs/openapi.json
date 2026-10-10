@@ -2260,7 +2260,7 @@
         "additionalProperties": false
       },
       "ClassifyRequest": {
-        "oneOf": [
+        "allOf": [
           {
             "type": "object",
             "description": "SGLang-compatible classification, with native messages and truncation extensions.\nProvide exactly one of input or messages. String arrays are independent inputs.",
@@ -2305,58 +2305,22 @@
                 "type": "string",
                 "nullable": true
               }
-            },
-            "required": [
-              "input"
-            ]
+            }
           },
           {
-            "type": "object",
-            "description": "SGLang-compatible classification, with native messages and truncation extensions.\nProvide exactly one of input or messages. String arrays are independent inputs.",
-            "properties": {
-              "input": {
-                "$ref": "#/components/schemas/EmbeddingInput"
+            "oneOf": [
+              {
+                "type": "object",
+                "required": [
+                  "input"
+                ]
               },
-              "messages": {
-                "type": "array",
-                "items": {
-                  "$ref": "#/components/schemas/Message"
-                },
-                "minItems": 1
-              },
-              "model": {
-                "type": "string",
-                "description": "Advisory model name; this server serves one deployed model.",
-                "nullable": true
-              },
-              "priority": {
-                "type": "integer",
-                "format": "int32",
-                "description": "Only absent or zero priority is supported.",
-                "nullable": true
-              },
-              "rid": {
-                "allOf": [
-                  {
-                    "$ref": "#/components/schemas/ClassifyRequestId"
-                  }
-                ],
-                "nullable": true
-              },
-              "truncate": {
-                "type": "boolean",
-                "nullable": true
-              },
-              "truncation_direction": {
-                "$ref": "#/components/schemas/TruncationDirection"
-              },
-              "user": {
-                "type": "string",
-                "nullable": true
+              {
+                "type": "object",
+                "required": [
+                  "messages"
+                ]
               }
-            },
-            "required": [
-              "messages"
             ]
           }
         ],
