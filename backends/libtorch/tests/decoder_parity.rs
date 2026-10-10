@@ -244,7 +244,10 @@ fn candle_decoder_rope_and_windows_parity() {
                 "ntk" => cfg["rope_scaling"] = serde_json::json!({"type":"dynamic", "factor":2.}),
                 "window" => cfg["sliding_window"] = 3.into(),
                 "yarn" => {
-                    cfg["rope_parameters"] = serde_json::json!({"rope_type":"yarn", "rope_theta":10000., "factor":4., "beta_fast":32., "beta_slow":1., "original_max_position_embeddings":4, "mscale":1., "mscale_all_dim":0., "llama_4_scaling_beta":0.1})
+                    cfg["rope_parameters"] = serde_json::json!({"rope_type":"yarn", "rope_theta":10000., "factor":4., "beta_fast":32., "beta_slow":1., "original_max_position_embeddings":4, "mscale":1., "mscale_all_dim":0., "llama_4_scaling_beta":0.1});
+                    // Official Ministral3 omits the legacy root theta. The
+                    // four-position original context also exercises beta scaling.
+                    cfg.as_object_mut().unwrap().remove("rope_theta");
                 }
                 _ => unreachable!(),
             }

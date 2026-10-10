@@ -66,7 +66,7 @@ impl Weights {
 fn config_file(path: &std::path::Path, name: &str, value: serde_json::Value) {
     std::fs::write(path.join(name), serde_json::to_vec(&value).unwrap()).unwrap();
 }
-fn fixture(kind: &str, noncausal: bool) -> Fixture {
+fn fixture_with_heads(kind: &str, noncausal: bool, query_heads: usize) -> Fixture {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let path = std::env::temp_dir().join(format!(
         "tei-decision-{}-{}",
@@ -116,7 +116,7 @@ fn fixture(kind: &str, noncausal: bool) -> Fixture {
         config_file(
             &path,
             "config.json",
-            serde_json::json!({"model_type":"qwen3_5","hidden_size":H,"vocab_size":32,"num_attention_heads":2,"num_key_value_heads":1,"head_dim":8,"num_hidden_layers":1,"intermediate_size":24,"max_position_embeddings":32,"rms_norm_eps":1e-6,"hidden_act":"silu","layer_types":["full_attention"],"linear_num_key_heads":1,"linear_num_value_heads":1,"linear_key_head_dim":128,"linear_value_head_dim":128,"linear_conv_kernel_dim":4,"rope_parameters":{"rope_type":"default","rope_theta":10000.,"partial_rotary_factor":0.5}}),
+            serde_json::json!({"model_type":"qwen3_5","hidden_size":H,"vocab_size":32,"num_attention_heads":query_heads,"num_key_value_heads":1,"head_dim":8,"num_hidden_layers":1,"intermediate_size":24,"max_position_embeddings":32,"rms_norm_eps":1e-6,"hidden_act":"silu","layer_types":["full_attention"],"linear_num_key_heads":1,"linear_num_value_heads":1,"linear_key_head_dim":128,"linear_value_head_dim":128,"linear_conv_kernel_dim":4,"rope_parameters":{"rope_type":"default","rope_theta":10000.,"partial_rotary_factor":0.5}}),
         );
         w.add("model.embed_tokens.weight", &[32, H], false);
         w.add("model.norm.weight", &[H], true);
@@ -125,12 +125,17 @@ fn fixture(kind: &str, noncausal: bool) -> Fixture {
         w.add(&format!("{p}.input_layernorm.weight"), &[H], true);
         w.add(&format!("{p}.post_attention_layernorm.weight"), &[H], true);
         for (name, out) in [
-            ("q_proj", 2 * H),
+            ("q_proj", 2 * query_heads * 8),
             ("k_proj", 8),
             ("v_proj", 8),
             ("o_proj", H),
         ] {
-            w.linear(&format!("{p}.self_attn.{name}"), H, out, false);
+            w.linear(
+                &format!("{p}.self_attn.{name}"),
+                if name == "o_proj" { query_heads * 8 } else { H },
+                out,
+                false,
+            );
         }
         w.add(&format!("{p}.self_attn.q_norm.weight"), &[8], true);
         w.add(&format!("{p}.self_attn.k_norm.weight"), &[8], true);
@@ -198,6 +203,9 @@ fn fixture(kind: &str, noncausal: bool) -> Fixture {
     }
     w.save(path.join("model.safetensors"));
     Fixture(path)
+}
+fn fixture(kind: &str, noncausal: bool) -> Fixture {
+    fixture_with_heads(kind, noncausal, 2)
 }
 fn batch() -> Batch {
     Batch {
@@ -323,5 +331,63 @@ fn decision_cuda_matches_candle() {
             assert!(max < 0.006, "{kind} decision mismatch {max}");
             assert!((a.action_probability - e.action_probability).abs() < 0.001);
         }
+    }
+}
+
+#[test]
+fn qwen35_explicit_head_dimension_preserves_independent_attention_width() {
+    let f = fixture_with_heads("pplx", true, 3);
+    let model = LibtorchBackend::new(&f.0, "bfloat16", ModelType::Decision, "cpu").unwrap();
+    let actual = model.decide(batch(), requests("pplx")).unwrap();
+    assert_eq!(actual[0].logits.len(), 2);
+    assert!(actual
+        .iter()
+        .all(|o| o.logits.iter().all(|x| x.is_finite())));
+    let config_path = f.0.join("config.json");
+    let original: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&config_path).unwrap()).unwrap();
+    let mut invalid = original.clone();
+    invalid["head_dim"] = 0.into();
+    std::fs::write(&config_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    let reject_dimensions =
+        |model_type, dtype| match LibtorchBackend::new(&f.0, dtype, model_type, "cpu") {
+            Err(error) => assert!(
+                error.to_string().contains("Invalid model dimensions"),
+                "Wrong validation failure: {error}"
+            ),
+            Ok(_) => panic!("Invalid model dimensions accepted"),
+        };
+    reject_dimensions(ModelType::Decision, "bfloat16");
+    invalid = original;
+    invalid["model_type"] = "bert".into();
+    std::fs::write(&config_path, serde_json::to_vec(&invalid).unwrap()).unwrap();
+    reject_dimensions(
+        ModelType::Embedding(text_embeddings_backend_core::Pool::Cls),
+        "float32",
+    );
+}
+#[cfg(feature = "benchmark-cuda")]
+#[test]
+#[ignore = "Requires two CUDA GPUs: independent Candle reference for Q width != hidden width"]
+fn qwen35_independent_attention_width_matches_candle() {
+    use text_embeddings_backend_candle::CandleBackend;
+    let f = fixture_with_heads("pplx", true, 3);
+    let torch = LibtorchBackend::new(&f.0, "bfloat16", ModelType::Decision, "cuda:0").unwrap();
+    let candle = CandleBackend::new(&f.0, "bfloat16".into(), ModelType::Decision, None, 1).unwrap();
+    let actual = torch.decide(batch(), requests("pplx")).unwrap();
+    let expected = candle.decide(batch(), requests("pplx")).unwrap();
+    for (a, b) in actual.iter().zip(expected) {
+        assert_eq!(a.logits.len(), b.logits.len());
+        let maximum = a
+            .logits
+            .iter()
+            .zip(b.logits)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0f32, f32::max);
+        assert!(
+            maximum < 0.006,
+            "Independent Qwen3.5 attention width mismatch {maximum}"
+        );
+        assert!((a.action_probability - b.action_probability).abs() < 0.001);
     }
 }

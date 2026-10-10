@@ -69,13 +69,29 @@ uses one packed efficient-attention call per layer. Its backing storage is
 `O(B*H*M*M + T*M)`, where `B` is the number of sequences; unused bias positions
 are never read. Neither Q/K/V nor token activations are padded.
 
-Typed decision heads have native implementations and synthetic parity checks;
-trained-checkpoint validation remains pending. Sentence Transformers Dense
+Typed decision heads have native implementations and synthetic parity checks.
+Trained BF16 text decisions for Laya, Clef and Qwen3.5 option-token heads now
+pass the strict accuracy gates and the 5% P50 latency target in both H100
+assignments. Laya covers the published three-question fixture and extended
+states through 256 tokens; its combined Q/K/V projection preserves all tested
+native outputs bitwise. All tested trained Laya actions saturate at probability
+1.0, while the synthetic fixture covers nonconstant actions. Clef covers joint
+choice/noul/three-level-score schemas; a separate scalar score passes an
+explicit BF16 magnitude gate without using scalar cosine as fidelity evidence.
+Option-token Qwen3.5 covers real
+choice prompts with actual token IDs. Laya enables `TEI_TORCH_CUDA_GRAPHS=true`;
+Clef/option-token runs additionally enable `TEI_TORCH_MEDIA_CUDA_GRAPHS=true`,
+with verified graph counts 1–4. [Exact decision coverage and reports](libtorch-model-coverage.md)
+retain historical latency misses. Trained Pplx 27B qualification is pending;
+its explicit attention-head geometry now has a scoped startup fix and an
+independent CUDA regression. The subsequent public-checkpoint visual prefix
+mismatch remains open; trained Pplx scores and latency are not yet qualified. Sentence Transformers Dense
 chains support identity/tanh projections of pooled outputs, retaining raw token
 widths. Dense modules require safetensors weights. Radix folding, dynamic FP8
 and other custom modules remain unsupported and are rejected explicitly. Image and
-audio towers have experimental implementations; trained-checkpoint numerical
-validation remains incomplete, including a known Gemma audio accuracy gap.
+audio towers have native implementations. EmbeddingGemma2 text, image and audio
+match Candle bitwise and meet the measured P50 target in both GPU assignments;
+Gemma4 trained image/audio and routed-model qualification remain incomplete.
 BERT uses tanh GELU to match Candle's inference kernels. CUDA fuses bias and
 GELU into the intermediate projection; CPU uses the matching approximation.
 
@@ -181,8 +197,9 @@ The [checkpoint comparison](benchmarks/libtorch-checkpoints-h100.md) records
 Qwen3, GTE, BERT, RoBERTa, DistilBERT, ModernBERT, Nomic, Jina/JinaCode, Mistral and
 Qwen vision workloads meeting the
 5% P50 target with the recorded options. Gemma3, including both learned Dense
-heads, matches Candle bitwise and meets the measured target. Gemma2 audio
-accuracy and additional checkpoint qualifications remain open.
+heads, matches Candle bitwise and meets the measured target. EmbeddingGemma2
+text/image/audio and Nemotron Llama 1B now also match bitwise and meet the
+measured target. Additional checkpoint qualifications remain open.
 The Jina/JinaCode packed Torch bias implementation resolves the previously
 recorded batched latency gap. The initial
 [H100 BERT comparison](benchmarks/libtorch-bert-h100.md) shows Candle ahead,

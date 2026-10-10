@@ -268,7 +268,7 @@ impl DebertaModel {
         }
         if c.num_attention_heads == 0
             || c.hidden_size == 0
-            || c.hidden_size % c.num_attention_heads != 0
+            || !c.hidden_size.is_multiple_of(c.num_attention_heads)
             || c.attention_head_size
                 .unwrap_or(c.hidden_size / c.num_attention_heads)
                 != 64
@@ -372,9 +372,9 @@ impl DebertaModel {
             }
         };
         let conv = if c.conv_kernel_size > 0 {
-            if c.conv_kernel_size % 2 == 0
+            if c.conv_kernel_size.is_multiple_of(2)
                 || c.conv_groups == 0
-                || c.hidden_size % c.conv_groups != 0
+                || !c.hidden_size.is_multiple_of(c.conv_groups)
             {
                 candle::bail!("invalid DeBERTa convolution geometry")
             }

@@ -24,16 +24,25 @@ struct Norm {
  at::Tensor operator()(const at::Tensor& x) const{return at::layer_norm(x,{w.numel()},w,b,1e-5);}
 };
 struct Attention {
- at::Tensor qkv,bias;Linear out;int64_t heads;
- Attention(const Weights& weights,const std::string& name,int64_t width,int64_t count)
-  :qkv(weight(weights,name+".in_proj_weight")),bias(weight(weights,name+".in_proj_bias")),out(weights,name+".out_proj",width,width),heads(count) {
+ at::Tensor qkv,bias;Linear out;int64_t heads;bool fuse_self_qkv;
+ Attention(const Weights& weights,const std::string& name,int64_t width,int64_t count,bool fuse=false)
+  :qkv(weight(weights,name+".in_proj_weight")),bias(weight(weights,name+".in_proj_bias")),out(weights,name+".out_proj",width,width),heads(count),fuse_self_qkv(fuse) {
   TORCH_CHECK(qkv.sizes()==at::IntArrayRef({3*width,width})&&bias.numel()==3*width&&count>0&&width%count==0,"Invalid decision attention geometry");
  }
  at::Tensor operator()(const at::Tensor& query,const at::Tensor& memory) const {
   auto n=query.size(0),m=memory.size(0),width=query.size(1),dim=width/heads;
-  auto q=at::linear(query,qkv.narrow(0,0,width),bias.narrow(0,0,width)).view({n,heads,dim});
-  auto k=at::linear(memory,qkv.narrow(0,width,width),bias.narrow(0,width,width)).view({m,heads,dim});
-  auto v=at::linear(memory,qkv.narrow(0,2*width,width),bias.narrow(0,2*width,width)).view({m,heads,dim});
+  at::Tensor q,k,v;
+  // Laya's published TransformerEncoderLayer projects Q/K/V together. Exact
+  // tensor identity guarantees self-attention; Clef's separate projections
+  // retain their existing contract, including cross-attention memories.
+  if(fuse_self_qkv&&query.unsafeGetTensorImpl()==memory.unsafeGetTensorImpl()) {
+   auto projected=at::linear(query,qkv,bias).view({n,3,heads,dim});
+   q=projected.select(1,0);k=projected.select(1,1);v=projected.select(1,2);
+  }else{
+   q=at::linear(query,qkv.narrow(0,0,width),bias.narrow(0,0,width)).view({n,heads,dim});
+   k=at::linear(memory,qkv.narrow(0,width,width),bias.narrow(0,width,width)).view({m,heads,dim});
+   v=at::linear(memory,qkv.narrow(0,2*width,width),bias.narrow(0,2*width,width)).view({m,heads,dim});
+  }
   at::Tensor attended;
   if(query.is_cuda()) {
    TORCH_CHECK((query.scalar_type()==at::kHalf||query.scalar_type()==at::kBFloat16)&&dim%8==0&&dim<=256,"CUDA decision varlen attention requires FP16/BF16 and supported head dimension");
@@ -97,7 +106,7 @@ struct OptionHead final:DecisionHead {
 };
 struct LayaLayer {
  Norm n1,n2;Attention attention;Linear ff1,ff2;
- LayaLayer(const Weights& w,const std::string& p,int64_t h):n1(w,p+".norm1",h),n2(w,p+".norm2",h),attention(w,p+".self_attn",h,std::max(int64_t(1),h/64)),ff1(w,p+".linear1",h,4*h),ff2(w,p+".linear2",4*h,h){}
+ LayaLayer(const Weights& w,const std::string& p,int64_t h):n1(w,p+".norm1",h),n2(w,p+".norm2",h),attention(w,p+".self_attn",h,std::max(int64_t(1),h/64),true),ff1(w,p+".linear1",h,4*h),ff2(w,p+".linear2",4*h,h){}
  at::Tensor operator()(const at::Tensor& x)const{auto n=n1(x);auto y=x+attention(n,n);return y+ff2(at::relu(ff1(n2(y))));}
 };
 struct LayaHead final:DecisionHead {

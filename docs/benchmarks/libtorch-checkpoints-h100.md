@@ -8,17 +8,17 @@ FP16 with last-token pooling, 200 measured iterations and 20 warmups per backend
 
 | Workload | Torch / Candle P50, ms | Swapped Torch / Candle P50, ms | Worst slowdown |
 |---|---:|---:|---:|
-| 1x32 | 1.321 / 2.315 | 1.323 / 2.247 | -41.11% |
-| 1x128 | 1.627 / 2.458 | 1.628 / 2.512 | -33.81% |
-| 8x128 | 2.850 / 3.921 | 2.862 / 3.958 | -27.32% |
-| 32x128 | 9.090 / 9.842 | 9.207 / 9.781 | -5.86% |
-| 32 ragged 32..256 | 11.237 / 12.244 | 11.381 / 12.181 | -6.57% |
-| 8x512 | 9.391 / 11.447 | 9.639 / 11.419 | -15.59% |
-| 32x512 | 36.225 / 42.144 | 36.845 / 41.725 | -11.69% |
+| 1x32 | 1.383 / 2.695 | 1.380 / 2.329 | -40.75% |
+| 1x128 | 1.619 / 2.693 | 1.614 / 2.516 | -35.85% |
+| 8x128 | 2.889 / 3.989 | 2.868 / 3.926 | -26.96% |
+| 32x128 | 9.026 / 9.778 | 9.079 / 9.764 | -7.02% |
+| 32 ragged 32..256 | 11.144 / 12.173 | 11.238 / 12.160 | -7.58% |
+| 8x512 | 9.445 / 11.375 | 9.497 / 11.335 | -16.22% |
+| 32x512 | 36.219 / 41.827 | 36.289 / 41.862 | -13.31% |
 
 Minimum embedding cosine across both assignments: 0.999992935. All seven workloads meet the 5% P50 target on both assignments. Reports record immutable binary and native-library identities.
 
-Raw measurements: [0/1](tei-qwen3-v6-graphs-0-1.json), [1/0](tei-qwen3-v6-graphs-1-0.json).
+Raw measurements: [6/7](tei-qwen3-integrated-gate8-6-7.json), [7/6](tei-qwen3-integrated-gate8-7-6.json). Earlier results: [0/1](tei-qwen3-v6-graphs-0-1.json), [1/0](tei-qwen3-v6-graphs-1-0.json).
 
 ## GTE-base-en-v1.5
 
@@ -66,17 +66,17 @@ FP16 with last-token pooling, 200 measured iterations and 20 warmups per backend
 
 | Workload | Torch / Candle P50, ms | Swapped Torch / Candle P50, ms | Worst slowdown |
 |---|---:|---:|---:|
-| 1x32 | 6.562 / 6.730 | 6.510 / 6.732 | -2.50% |
-| 1x128 | 7.280 / 7.997 | 7.301 / 7.998 | -8.72% |
-| 8x128 | 25.314 / 26.164 | 25.732 / 25.904 | -0.66% |
-| 32x128 | 100.997 / 101.696 | 102.782 / 100.237 | +2.54% |
-| 32 ragged 32..256 | 115.288 / 117.393 | 117.070 / 115.719 | +1.17% |
-| 8x512 | 100.726 / 105.608 | 102.497 / 103.897 | -1.35% |
-| 32x512 | 392.202 / 410.233 | 398.047 / 402.780 | -1.17% |
+| 1x32 | 6.537 / 6.720 | 6.549 / 6.696 | -2.19% |
+| 1x128 | 7.308 / 8.008 | 7.293 / 8.012 | -8.74% |
+| 8x128 | 25.543 / 26.055 | 25.352 / 26.491 | -1.97% |
+| 32x128 | 102.034 / 100.490 | 100.985 / 101.920 | +1.54% |
+| 32 ragged 32..256 | 116.549 / 116.608 | 115.058 / 118.533 | -0.05% |
+| 8x512 | 102.259 / 104.551 | 100.883 / 106.177 | -2.19% |
+| 32x512 | 394.982 / 404.996 | 391.284 / 411.326 | -2.47% |
 
 Minimum embedding cosine across both assignments: 0.999998900. All seven workloads meet the 5% P50 target on both assignments. Reports record immutable binary and native-library identities.
 
-Raw measurements: [0/1](tei-mistral-v6-graphs-0-1.json), [1/0](tei-mistral-v6-graphs-1-0.json).
+Raw measurements: [6/7](tei-mistral-integrated-gate8-6-7.json), [7/6](tei-mistral-integrated-gate8-7-6.json). Earlier results: [0/1](tei-mistral-v6-graphs-0-1.json), [1/0](tei-mistral-v6-graphs-1-0.json).
 
 ## Additional trained families and remaining gaps
 
@@ -87,9 +87,10 @@ These runs use exact packed mean pooling, except DistilBERT and ModernBERT MLM (
 | DistilBERT base uncased | 7 | +3.82% | 0.999997784 | Meets measured target |
 | ModernBERT embed base (private Torch FMA) | 7 | -9.99% | 1.0 (bitwise) | Meets measured target |
 | ModernBERT base MLM CLS (private Torch FMA) | 7 | -11.10% | 1.0 (bitwise) | Meets measured target |
-| EmbeddingGemma2 text and image only | 8 | +2.27% | 1.0 (bitwise) | Meets measured target; audio fails |
+| EmbeddingGemma2 text, image and audio | 9 | +2.43% | 1.0 (bitwise) | Meets measured target |
 | EmbeddingGemma 300M plus both Dense heads | 7 | +1.20% | 1.0 (bitwise) | Meets measured target |
-| Qwen3-30B-A3B BF16 MoE | 7 | +1.75% | 1.0 (bitwise) | Meets measured target |
+| Nemotron Llama 1B BF16 mean | 7 | +4.79% | 1.0 (bitwise, including arbitrary IDs) | Meets measured target |
+| Qwen3-30B-A3B BF16 MoE | 7 | -2.27% | 1.0 (bitwise) | Meets measured target |
 | Nomic embed text v2 MoE | 7 | -62.84% | 0.999239679 (including arbitrary IDs) | Meets measured target |
 | Nomic embed text v1.5 | 7 | -44.68% | 0.999998367 | Meets measured target |
 | Qwen3-VL embedding 2B | 9 | +1.49% | 0.999994471 | Meets measured target |
@@ -115,7 +116,7 @@ Raw paired measurements:
 - Jina v2 base en: [tei-jina-mean-packedalibi-final-graphs-benchmark-2-3.json](tei-jina-mean-packedalibi-final-graphs-benchmark-2-3.json), [tei-jina-mean-packedalibi-final-graphs-benchmark-3-2.json](tei-jina-mean-packedalibi-final-graphs-benchmark-3-2.json).
 - Jina v2 base code: [tei-jina-code-mean-packedalibi-final-graphs-benchmark-2-3.json](tei-jina-code-mean-packedalibi-final-graphs-benchmark-2-3.json), [tei-jina-code-mean-packedalibi-final-graphs-benchmark-3-2.json](tei-jina-code-mean-packedalibi-final-graphs-benchmark-3-2.json).
 
-EmbeddingGemma2 remains partly unqualified: all seven text workloads and the image workload now match Candle bitwise and meet the P50 target in both GPU assignments (worst +2.27%). The image path preserves the grouped model-dtype position sum, exact vision norm arithmetic and sequential spatial-pool accumulation. These integrated 40-iteration reports use the production library without preload: [4/5](embeddinggemma2-private-torch-fma-vision-full-graphs-4-5.json), [5/4](embeddinggemma2-private-torch-fma-vision-full-graphs-5-4.json). Audio still fails accuracy at cosine 0.998591809, despite substantially faster measured execution, and is explicitly unqualified. Earlier text/image/audio failures are retained in [the historical full Gemma run](tei-gemma-exact-pool-full-graphs-4-5.json).
+EmbeddingGemma2 now passes the complete measured text/image/audio set: all nine workloads match Candle bitwise and meet the P50 target in both GPU assignments (worst +2.43%, 40 iterations and 20 warmups). The production audio path matches three proven Candle contracts: im2col/FP32 GEMM convolution, shared-tree reduction with runtime powf, and BF16 matmul rounding before bias addition. Audio measures approximately 7.2–7.3ms versus Candle 330–335ms on this fixture; this does not establish quality on arbitrary real audio. Integrated immutable-library reports: [4/5](embeddinggemma2-private-torch-fma-audio-full-graphs-4-5.json), [5/4](embeddinggemma2-private-torch-fma-audio-full-graphs-5-4.json). Historical [vision-only qualification](embeddinggemma2-private-torch-fma-vision-full-graphs-4-5.json) and [earlier failures](tei-gemma-exact-pool-full-graphs-4-5.json) remain available.
 
 Historical Jina per-sequence Torch attention reports: [Jina 2/3](tei-jina-mean-packedpool-graphs-benchmark-2-3.json), [Jina 3/2](tei-jina-mean-packedpool-graphs-benchmark-3-2.json), [JinaCode 2/3](tei-jina-code-mean-packedpool-graphs-benchmark-2-3.json), [JinaCode 3/2](tei-jina-code-mean-packedpool-graphs-benchmark-3-2.json). Updated Jina/JinaCode artifacts use accepted native library SHA256 `3a97963f4ca9b50757be1ecf7db08f24f6f5ad8293812c3b3bfede271c928793`, FP16 mean pooling, 100 iterations, 20 warmups, graphs enabled and a 16384-token graph cap.
 
@@ -141,4 +142,6 @@ including classifier logits, without padded Q/K/V tokens.
 
 GTE Qwen2 1.5B now passes accuracy and the 5% P50 latency target for all seven workloads in both GPU assignments: 500 measured iterations per backend, minimum cosine 0.999965304, worst slowdown +3.88%. Aligned eight-lane FP16 loads improve gated MLP memory traffic while retaining the scalar arithmetic; narrower and unaligned inputs retain bounded fallbacks. Paired rotary preserves the original model-dtype rounding. Integrated immutable-library reports: [6/7](tei-qwen2-trained-integrated-gate8-6-7.json), [7/6](tei-qwen2-trained-integrated-gate8-7-6.json). Earlier paired-operator reports retain the swapped 32x128 +11.20% miss: [6/7](tei-qwen2-trained-paired-operators-6-7.json), [7/6](tei-qwen2-trained-paired-operators-7-6.json).
 
-Qwen3 MoE originally failed the trained accuracy gate. An independent full 48-layer trace isolates two numerical causes: unfused Torch softmax arithmetic and a different residual RMS reduction. Correcting both matches all hidden states and expert routing bitwise; correcting either alone does not. The [numerical trace evidence](tei-qwen3-moe-numerical-trace-evidence.json) is distinct from full integrated accuracy and latency qualification, which now passes: all seven workloads in both GPU assignments match bitwise and meet the 5% P50 target. These 200-iteration reports use eager execution (actual graph count 0) and private Torch Flash attention; cuDNN being requested does not mean it ran on this configuration. Raw results: [0/1](tei-qwen3-moe-private-torch-fma-eager-0-1.json), [1/0](tei-qwen3-moe-private-torch-fma-eager-1-0.json).
+Qwen3 MoE originally failed the trained accuracy gate. An independent full 48-layer trace isolates two numerical causes: unfused Torch softmax arithmetic and a different residual RMS reduction. Correcting both matches all hidden states and expert routing bitwise; correcting either alone does not. The [numerical trace evidence](tei-qwen3-moe-numerical-trace-evidence.json) is distinct from full integrated accuracy and latency qualification, which now passes: all seven workloads in both GPU assignments match bitwise and meet the 5% P50 target. The completed 200-iteration graph-enabled comparisons have four resident graphs and are at least 2.27% faster on all seven workloads in both assignments: [0/1](tei-qwen3-moe-v7-graphs-0-1.json), [1/0](tei-qwen3-moe-v7-graphs-1-0.json). Startup allocator mapping warnings recovered; the largest eager shape completed with those graphs resident. Memory headroom remains a qualification limit on these 80GB GPUs. Historical eager results: [0/1](tei-qwen3-moe-private-torch-fma-eager-0-1.json), [1/0](tei-qwen3-moe-private-torch-fma-eager-1-0.json).
+
+Nemotron Llama 1B BF16 mean pooling now matches Candle bitwise and meets the P50 target in both corrected 200-iteration comparisons (worst +4.79%): [0/1](tei-llama-nemotron-v8-corrected-0-1.json), [1/0](tei-llama-nemotron-v8-corrected-1-0.json). All seven [arbitrary valid boundary-ID workloads](tei-llama-arbitrary-ids-v8-corrected-0-1.json) also match bitwise. Learned layer traces isolate the attention arithmetic and later residual RMS differences; both corrections are required. The exact RMS adapter currently selects BF16 width 2048 bidirectional Llama; other widths and causal paths retain existing kernels. The [earlier arbitrary-ID failure](tei-llama-nemotron-v7-arbitrary-ids-failed.json) and [configured-token-only results](tei-llama-nemotron-v7-graphs-0-1.json) remain historical evidence.

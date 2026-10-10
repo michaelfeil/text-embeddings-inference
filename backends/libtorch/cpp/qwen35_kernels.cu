@@ -76,7 +76,7 @@ at::Tensor gemma_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double ep
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output;
 }
-// Adapted from Candle rmsnorm_f32_math and scatter_add at revision
+// Adapted from Candle rmsnorm_f32_math, fast_sum, upowf and scatter_add at revision
 // 036f39e44015e78ba18d716d73dfdc2e78730c44. Their complete MIT notice:
 // Permission is hereby granted, free of charge, to any
 // person obtaining a copy of this software and associated
@@ -114,6 +114,21 @@ __global__ void exact_vision_norm(const __nv_bfloat16*x,const float*alpha,__nv_b
 at::Tensor gemma_vision_norm_cuda(const at::Tensor&x,const at::Tensor&scale,double eps){
  c10::cuda::CUDAGuard guard(x.device());TORCH_CHECK(x.scalar_type()==at::kBFloat16&&scale.scalar_type()==at::kFloat&&x.is_contiguous()&&scale.is_contiguous()&&scale.device()==x.device()&&x.dim()>=2&&x.dim()<=3&&x.size(-1)>0&&x.size(-1)<=8192&&scale.numel()==x.size(-1)&&x.numel()>0&&x.numel()<=INT32_MAX,"Invalid packed Gemma vision FP32 norm geometry");auto out=at::empty_like(x);int w=x.size(-1),threads=1;while(threads<w&&threads<1024)threads*=2;
  exact_vision_norm<<<x.numel()/w,threads,0,at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),scale.const_data_ptr<float>(),reinterpret_cast<__nv_bfloat16*>(out.mutable_data_ptr()),w,eps);C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
+
+// Audio uses runtime powf(-.5), unlike the vision sqrt/divide normalization.
+// Keep the exponent a launch argument to preserve the unfused powf contract.
+__global__ void exact_audio_norm(const __nv_bfloat16*x,const float*alpha,__nv_bfloat16*out,int width,float eps,float exponent){
+ int row=blockIdx.x,tid=threadIdx.x;__shared__ float sums[1024];float sum=0;
+ for(int col=tid;col<width;col+=blockDim.x){float v=float(x[row*width+col]);sum=__fadd_rn(sum,__fmul_rn(v,v));}
+ sums[tid]=sum;
+ for(int stride=blockDim.x/2;stride>0;stride>>=1){__syncthreads();if(tid<stride)sums[tid]=__fadd_rn(sums[tid],sums[tid+stride]);}
+ __syncthreads();float variance=__fadd_rn(__fmul_rn(sums[0],float(1./double(width))),eps);float inverse=powf(variance,exponent);
+ for(int col=tid;col<width;col+=blockDim.x){float normalized=__fmul_rn(float(x[row*width+col]),inverse);out[row*width+col]=__float2bfloat16_rn(__fmul_rn(normalized,alpha[col]));}
+}
+at::Tensor gemma_audio_norm_cuda(const at::Tensor&x,const at::Tensor&scale,double eps){
+ c10::cuda::CUDAGuard guard(x.device());TORCH_CHECK(x.scalar_type()==at::kBFloat16&&scale.scalar_type()==at::kFloat&&x.is_contiguous()&&scale.is_contiguous()&&scale.device()==x.device()&&x.dim()>=2&&x.dim()<=3&&x.size(-1)>0&&x.size(-1)<=8192&&scale.numel()==x.size(-1)&&x.numel()>0&&x.numel()<=INT32_MAX,"Invalid packed Gemma audio FP32 norm geometry");auto out=at::empty_like(x);int w=x.size(-1),threads=1;while(threads<w&&threads<1024)threads*=2;
+ exact_audio_norm<<<x.numel()/w,threads,0,at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),scale.const_data_ptr<float>(),reinterpret_cast<__nv_bfloat16*>(out.mutable_data_ptr()),w,eps,-.5f);C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
 }
 
 __global__ void exact_vision_pool(const __nv_bfloat16*x,float*out,int height,int width,int hidden,int kernel,float inv,float scale){

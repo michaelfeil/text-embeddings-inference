@@ -56,16 +56,19 @@ class Decoder final : public Model {
     return at::rms_norm(x, {w.numel()}, w, epsilon);
   }
 #ifdef TEI_TORCH_CUDA_KERNELS
-  bool exact_routed_math() const {
-    // Learned Qwen3-30B-A3B needs both the fork's Welford residual RMS
-    // reduction and fused Torch softmax arithmetic to avoid amplified BF16
-    // rounding changes in expert routing. Other geometries retain their path.
-    return family=="qwen3_moe"&&dtype==at::kBFloat16&&hidden==2048
-      &&options.integer("num_experts",0)==128&&top_k==8;
+  bool exact_decoder_math() const {
+    // Learned Qwen3-30B-A3B and bidirectional Llama-Nemotron need both the
+    // fork's Welford residual RMS and fused Torch softmax arithmetic. Learned
+    // layer traces isolate rounding differences before they amplify in routed
+    // or deep dense layers. The exact RMS adapter is compiled for BF16 width
+    // 2048; other widths and causal Llama retain their existing path.
+    return dtype==at::kBFloat16&&hidden==2048
+      &&((family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
+        ||(family=="llama"&&!causal));
   }
   std::pair<at::Tensor,at::Tensor> residual_norm(const at::Tensor& x,
     const at::Tensor& residual,const at::Tensor& weight) const {
-    if(exact_routed_math())return decoder_exact_rms_norm(x,residual,weight,epsilon);
+    if(exact_decoder_math())return decoder_exact_rms_norm(x,residual,weight,epsilon);
     return fused_add_rms_norm(x,residual,weight,epsilon);
   }
 #endif
@@ -143,7 +146,7 @@ class Decoder final : public Model {
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input) const {
     if (device.is_cuda()) {
 #ifdef TEI_TORCH_CUDA_KERNELS
-      if(exact_routed_math()&&torch_flash_fma_supported(q,k,v))
+      if(exact_decoder_math()&&torch_flash_fma_supported(q,k,v))
         return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
           1./std::sqrt(static_cast<double>(head_dim)),causal,left_window,right_window);
 #endif

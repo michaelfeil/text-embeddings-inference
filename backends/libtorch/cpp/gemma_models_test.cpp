@@ -57,9 +57,36 @@ PackedInput input(const std::vector<int64_t>& ids, const std::vector<int32_t>& o
   auto pos = at::from_blob(positions.data(), {static_cast<int64_t>(positions.size())}, at::TensorOptions().dtype(at::kLong)).clone();
   return {tokens,at::zeros_like(tokens),pos,at::from_blob(const_cast<int32_t*>(offsets.data()), {static_cast<int64_t>(offsets.size())}, at::TensorOptions().dtype(at::kInt)).clone(),offsets.data(),static_cast<int64_t>(offsets.size()-1),maximum};
 }
+void audio_operations(const c10::Device& device) {
+  // Natural odd/even frame counts and feature widths: evaluate the scalar
+  // convolution at each true output location, with only filter boundaries zero.
+  for(int64_t height:{7,8})for(int64_t width:{5,6}) {
+    auto input=(at::arange(2*3*height*width,at::kFloat).remainder(7)-3).reshape({2,3,height,width});
+    auto filter=(at::arange(4*3*3*3,at::kFloat).remainder(5)-2).reshape({4,3,3,3})/8.;
+    const int64_t oh=(height+1)/2,ow=(width+1)/2;
+    auto expected=at::zeros({2,4,oh,ow},at::kFloat);
+    auto x=input.accessor<float,4>(),w=filter.accessor<float,4>(),y=expected.accessor<float,4>();
+    for(int64_t b=0;b<2;++b)for(int64_t c=0;c<4;++c)for(int64_t row=0;row<oh;++row)for(int64_t col=0;col<ow;++col)
+      for(int64_t src=0;src<3;++src)for(int64_t ky=0;ky<3;++ky)for(int64_t kx=0;kx<3;++kx) {
+        auto iy=2*row+ky-1,ix=2*col+kx-1;
+        if(iy>=0&&iy<height&&ix>=0&&ix<width)y[b][c][row][col]+=x[b][src][iy][ix]*w[c][src][ky][kx];
+      }
+    auto actual=gemma_audio_conv2d(input.to(device),filter.to(device),2);
+    TORCH_CHECK(actual.sizes()==expected.sizes()&&at::equal(actual.cpu(),expected),"Audio convolution changed true frame geometry or scalar boundary semantics");
+  }
+  // Both sums land exactly on a BF16 midpoint. Rounding GEMM and bias separately
+  // yields 1; a fused bias epilogue would yield 1 + 1/128 instead.
+  auto input=at::ones({1,2},at::TensorOptions().device(device).dtype(at::kBFloat16));
+  auto matrix=at::tensor({1.f,1.f/256},at::kFloat).reshape({1,2}).to(device,at::kBFloat16);
+  auto bias=at::full({1},1./256,input.options());
+  TORCH_CHECK(gemma_audio_linear(input,matrix,bias).item<float>()==1.f,"Audio linear fused bias before BF16 GEMM rounding");
+  std::cout<<"Audio natural-frame convolution and staged BF16 bias passed on "<<device<<"\n";
+}
 }
 int main(int argc,char** argv) {
   at::manual_seed(418);
+  audio_operations(c10::Device("cpu"));
+  if(argc>1)audio_operations(c10::Device(argv[1]));
   for (const auto& family : {"gemma3","gemma4","embedding_gemma2"}) {
     Fixture f(family);
     auto model = create_gemma(f.cfg,f.weights,c10::Device("cpu"),at::kFloat);

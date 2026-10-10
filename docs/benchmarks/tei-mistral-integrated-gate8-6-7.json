@@ -1,0 +1,306 @@
+{
+  "bos_token_id": 1,
+  "candle_gpu": 1,
+  "candle_load_seconds": 3.243152016,
+  "checkpoint_revision": "d62cc4417be0e3289c03dd459d1ef2d137e2554e",
+  "dtype": "float16",
+  "eos_token_id": 2,
+  "input_pattern": "synthetic valid vocabulary IDs with configured BOS/EOS; no padding",
+  "iterations_per_backend": 200,
+  "measurement_mode": "parallel separate GPUs",
+  "model_path": "/tmp/tei-e5-mistral-benchmark-model",
+  "pad_token_id": 2,
+  "pooling": "last_token",
+  "torch_cuda_graph_count": 4,
+  "torch_cuda_graph_max_tokens": "4096",
+  "torch_cuda_graphs_requested": true,
+  "torch_cudnn_varlen_requested": true,
+  "torch_gpu": 0,
+  "torch_load_seconds": 19.618847225,
+  "vocab_size": 32000,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 6.6700040000000005,
+        "p50_ms": 6.719937,
+        "p95_ms": 6.7509570000000005,
+        "tokens_per_second_at_p50": 4761.949405180436
+      },
+      "lengths": [
+        32
+      ],
+      "max_output_absolute_difference": 0.0625,
+      "min_output_cosine": 0.9999990586207439,
+      "tokens": 32,
+      "torch": {
+        "min_ms": 6.515334999999999,
+        "p50_ms": 6.536823,
+        "p95_ms": 6.572973,
+        "tokens_per_second_at_p50": 4895.3444203705685
+      },
+      "torch_speedup": 1.0280126905684916,
+      "workload": "1x32"
+    },
+    {
+      "candle": {
+        "min_ms": 7.978259999999999,
+        "p50_ms": 8.007525,
+        "p95_ms": 8.031356,
+        "tokens_per_second_at_p50": 15984.964143102896
+      },
+      "lengths": [
+        128
+      ],
+      "max_output_absolute_difference": 0.140625,
+      "min_output_cosine": 0.9999990409626444,
+      "tokens": 128,
+      "torch": {
+        "min_ms": 7.28532,
+        "p50_ms": 7.307575,
+        "p95_ms": 7.334027,
+        "tokens_per_second_at_p50": 17516.070652713108
+      },
+      "torch_speedup": 1.0957841691669261,
+      "workload": "1x128"
+    },
+    {
+      "candle": {
+        "min_ms": 23.536726,
+        "p50_ms": 26.055090999999997,
+        "p95_ms": 27.478631,
+        "tokens_per_second_at_p50": 39301.34037912207
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.125,
+      "min_output_cosine": 0.9999990533564307,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 23.775193,
+        "p50_ms": 25.543057,
+        "p95_ms": 26.759888999999998,
+        "tokens_per_second_at_p50": 40089.17178550711
+      },
+      "torch_speedup": 1.0200459169785354,
+      "workload": "8x128"
+    },
+    {
+      "candle": {
+        "min_ms": 91.72220300000001,
+        "p50_ms": 100.490004,
+        "p95_ms": 102.94316,
+        "tokens_per_second_at_p50": 40760.27303173359
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.125,
+      "min_output_cosine": 0.9999990180959819,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 95.358467,
+        "p50_ms": 102.033947,
+        "p95_ms": 116.28959599999999,
+        "tokens_per_second_at_p50": 40143.502436497925
+      },
+      "torch_speedup": 0.9848683399457242,
+      "workload": "32x128"
+    },
+    {
+      "candle": {
+        "min_ms": 110.81291399999999,
+        "p50_ms": 116.608201,
+        "p95_ms": 117.504862,
+        "tokens_per_second_at_p50": 39516.946153727215
+      },
+      "lengths": [
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256
+      ],
+      "max_output_absolute_difference": 0.125,
+      "min_output_cosine": 0.9999989163611156,
+      "tokens": 4608,
+      "torch": {
+        "min_ms": 108.269825,
+        "p50_ms": 116.548523,
+        "p95_ms": 121.595715,
+        "tokens_per_second_at_p50": 39537.180578427404
+      },
+      "torch_speedup": 1.0005120442410067,
+      "workload": "32 ragged 32..256"
+    },
+    {
+      "candle": {
+        "min_ms": 101.654737,
+        "p50_ms": 104.551477,
+        "p95_ms": 105.34629199999999,
+        "tokens_per_second_at_p50": 39176.87360839484
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.109375,
+      "min_output_cosine": 0.9999989777870602,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 95.30682,
+        "p50_ms": 102.258691,
+        "p95_ms": 103.839417,
+        "tokens_per_second_at_p50": 40055.275106152105
+      },
+      "torch_speedup": 1.0224214291966636,
+      "workload": "8x512"
+    },
+    {
+      "candle": {
+        "min_ms": 400.598363,
+        "p50_ms": 404.995542,
+        "p95_ms": 408.589239,
+        "tokens_per_second_at_p50": 40454.76628974844
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.109375,
+      "min_output_cosine": 0.9999988995506505,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 376.38714699999997,
+        "p50_ms": 394.982112,
+        "p95_ms": 402.439478,
+        "tokens_per_second_at_p50": 41480.35949536874
+      },
+      "torch_speedup": 1.0253516037708563,
+      "workload": "32x512"
+    }
+  ],
+  "checkpoint_repository": "intfloat/e5-mistral-7b-instruct",
+  "environment": {
+    "TORCH_BLAS_PREFER_CUBLASLT": "1",
+    "CUBLASLT_WORKSPACE_SIZE": "32768",
+    "TEI_TORCH_CUDNN_VARLEN": "1",
+    "TEI_TORCH_CUDA_GRAPHS": "true",
+    "TEI_TORCH_CUDA_GRAPH_MAX_TOKENS": "4096",
+    "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True",
+    "LD_PRELOAD": ""
+  },
+  "torch_attention_implementation": "native Torch cuDNN packed varlen attention",
+  "decoder_rms_implementation": "shared fused unrounded residual RMS; private MoE exact adapter not selected",
+  "qualification": "both 200-iteration GPU assignments pass all seven configured-BOS/EOS synthetic valid-ID workloads with min cosine above .999 and p50 no more than 5% behind Candle",
+  "latency_summary_statistic": "p50; binary does not emit arithmetic mean",
+  "physical_torch_gpu": 6,
+  "physical_candle_gpu": 7,
+  "cuda_visible_devices": "6,7",
+  "benchmark_binary_sha256": "a1e63f5f3d06caac01a73480534a59f3bb775a2c70220feb4986dc986fcea484",
+  "native_library_sha256": "8da17a85ad5d87bbeb7427f69ae30623f8d23096c319855f477549a8dc1f216c",
+  "native_library_path": "/tmp/tei-gate8-vision-moe-runtime/libtei_torch.so",
+  "worst_p50_slowdown_percent": 1.5364145074568736
+}

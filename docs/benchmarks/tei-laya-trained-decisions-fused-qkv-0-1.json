@@ -1,0 +1,1880 @@
+{
+  "candle_gpu": 1,
+  "cases": [
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 3,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 3,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "minimum_logit_cosine": 1.0,
+        "sequences": 3
+      },
+      "actual_tokens": 114,
+      "candle": {
+        "p50_ms": 4.075553,
+        "p95_ms": 4.200368,
+        "tokens_per_second_at_p50": 27971.664213420852
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        }
+      ],
+      "case": "official-three-question-fixture",
+      "cuda_graph_count": 1,
+      "latency_delta_percent": -23.929881417319308,
+      "lengths": [
+        32,
+        39,
+        43
+      ],
+      "torch": {
+        "p50_ms": 3.1002780000000003,
+        "p95_ms": 3.2279750000000003,
+        "tokens_per_second_at_p50": 36770.89602932382
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 1.0,
+        "argmax_agreement": 3,
+        "fields": 3,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "minimum_logit_cosine": 1.0,
+        "sequences": 1
+      },
+      "actual_tokens": 32,
+      "candle": {
+        "p50_ms": 2.774579,
+        "p95_ms": 2.926476,
+        "tokens_per_second_at_p50": 11533.281265373953
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8828125,
+            -0.94140625
+          ]
+        }
+      ],
+      "case": "1x-official-ragged",
+      "cuda_graph_count": 2,
+      "latency_delta_percent": -35.11603021575526,
+      "lengths": [
+        32
+      ],
+      "torch": {
+        "p50_ms": 1.800257,
+        "p95_ms": 1.878842,
+        "tokens_per_second_at_p50": 17775.239868529883
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8828125,
+            -0.94140625
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 1.0,
+        "argmax_agreement": 1,
+        "fields": 1,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 8,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 8,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "minimum_logit_cosine": 1.0,
+        "sequences": 8
+      },
+      "actual_tokens": 299,
+      "candle": {
+        "p50_ms": 6.075094,
+        "p95_ms": 7.310545,
+        "tokens_per_second_at_p50": 49217.34544354375
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        }
+      ],
+      "case": "8x-official-ragged",
+      "cuda_graph_count": 3,
+      "latency_delta_percent": -14.282297524943633,
+      "lengths": [
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39
+      ],
+      "torch": {
+        "p50_ms": 5.207431000000001,
+        "p95_ms": 5.641509,
+        "tokens_per_second_at_p50": 57417.94754457619
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 1.0,
+        "argmax_agreement": 8,
+        "fields": 8,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 32,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 32,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "minimum_logit_cosine": 1.0,
+        "sequences": 32
+      },
+      "actual_tokens": 1211,
+      "candle": {
+        "p50_ms": 21.754824,
+        "p95_ms": 22.985871000000003,
+        "tokens_per_second_at_p50": 55665.81462575841
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        }
+      ],
+      "case": "32x-official-ragged",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -10.543997046356235,
+      "lengths": [
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39,
+        43,
+        32,
+        39
+      ],
+      "torch": {
+        "p50_ms": 19.460996,
+        "p95_ms": 19.982364,
+        "tokens_per_second_at_p50": 62227.030928941145
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.1982421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.875,
+            -0.953125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.76953125,
+            0.466796875,
+            2.046875
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 1.0,
+        "argmax_agreement": 32,
+        "fields": 32,
+        "maximum_uncalibrated_option_probability_error": 0.0,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 1,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 1,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0078125,
+        "maximum_uncalibrated_option_probability_error": 0.0012848802415319494,
+        "minimum_logit_cosine": 0.9999997736724504,
+        "sequences": 1
+      },
+      "actual_tokens": 128,
+      "candle": {
+        "p50_ms": 2.816256,
+        "p95_ms": 3.282209,
+        "tokens_per_second_at_p50": 45450.41359876375
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.546875,
+            0.2109375
+          ]
+        }
+      ],
+      "case": "1x128-valid-extended-state",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -31.09145617443869,
+      "lengths": [
+        128
+      ],
+      "torch": {
+        "p50_ms": 1.9406409999999998,
+        "p95_ms": 2.062393,
+        "tokens_per_second_at_p50": 65957.58824017426
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.5546875,
+            0.2109375
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 0.9999997736724504,
+        "argmax_agreement": 1,
+        "fields": 1,
+        "maximum_uncalibrated_option_probability_error": 0.0012848802415319494,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 8,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 8,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0078125,
+        "maximum_uncalibrated_option_probability_error": 0.0012848802415319494,
+        "minimum_logit_cosine": 0.9999987009243996,
+        "sequences": 8
+      },
+      "actual_tokens": 1024,
+      "candle": {
+        "p50_ms": 6.600534,
+        "p95_ms": 7.1600340000000005,
+        "tokens_per_second_at_p50": 155138.96299905432
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.546875,
+            0.2109375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.1015625,
+            0.357421875,
+            1.375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.75,
+            0.224609375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.984375,
+            0.03271484375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.54296875,
+            0.83984375,
+            1.46875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.015625,
+            0.2890625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.21875,
+            0.318359375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.87890625,
+            0.6015625,
+            1.6875
+          ]
+        }
+      ],
+      "case": "8x128-valid-extended-state",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": 1.5337698434702451,
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "torch": {
+        "p50_ms": 6.701771,
+        "p95_ms": 7.205731,
+        "tokens_per_second_at_p50": 152795.43272964715
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.5546875,
+            0.2109375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.1015625,
+            0.357421875,
+            1.375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.75,
+            0.224609375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.98828125,
+            0.03125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.54296875,
+            0.83984375,
+            1.46875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.015625,
+            0.2890625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.21875,
+            0.318359375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.87890625,
+            0.6015625,
+            1.6875
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 0.9999987009243996,
+        "argmax_agreement": 8,
+        "fields": 8,
+        "maximum_uncalibrated_option_probability_error": 0.0012848802415319494,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 8,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 8,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.00244140625,
+        "maximum_uncalibrated_option_probability_error": 0.000319201975351735,
+        "minimum_logit_cosine": 0.9999994318797292,
+        "sequences": 8
+      },
+      "actual_tokens": 2048,
+      "candle": {
+        "p50_ms": 8.400458,
+        "p95_ms": 8.838332000000001,
+        "tokens_per_second_at_p50": 243796.2311102561
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8046875,
+            0.455078125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.07666015625,
+            0.8125,
+            1.5703125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.609375,
+            0.21484375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.6171875,
+            0.263671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.203125,
+            0.94140625,
+            1.2890625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.25,
+            0.39453125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.390625,
+            0.86328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.07568359375,
+            1.4921875,
+            1.734375
+          ]
+        }
+      ],
+      "case": "8x256-valid-extended-state",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -2.5584081248903434,
+      "lengths": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256
+      ],
+      "torch": {
+        "p50_ms": 8.18554,
+        "p95_ms": 8.485714999999999,
+        "tokens_per_second_at_p50": 250197.29913970246
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8046875,
+            0.453125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.0771484375,
+            0.8125,
+            1.5703125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.609375,
+            0.21484375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.6171875,
+            0.263671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.203125,
+            0.94140625,
+            1.2890625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.25,
+            0.39453125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.390625,
+            0.86328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.0732421875,
+            1.4921875,
+            1.734375
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 0.9999994318797292,
+        "argmax_agreement": 8,
+        "fields": 8,
+        "maximum_uncalibrated_option_probability_error": 0.000319201975351735,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    },
+    {
+      "accuracy": {
+        "action_gate_pass": true,
+        "argmax_agreement": 32,
+        "argmax_gate_pass": true,
+        "cosine_gate_pass": true,
+        "fields": 32,
+        "maximum_action_probability_error": 0.0,
+        "maximum_logit_absolute_error": 0.0078125,
+        "maximum_uncalibrated_option_probability_error": 0.0018678038961453813,
+        "minimum_logit_cosine": 0.9999967870283477,
+        "sequences": 32
+      },
+      "actual_tokens": 8192,
+      "candle": {
+        "p50_ms": 30.807773,
+        "p95_ms": 33.268242,
+        "tokens_per_second_at_p50": 265906.919010342
+      },
+      "candle_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8046875,
+            0.455078125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.07666015625,
+            0.8125,
+            1.5703125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.609375,
+            0.21484375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.6171875,
+            0.263671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.203125,
+            0.94140625,
+            1.2890625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.25,
+            0.39453125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.390625,
+            0.86328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.07568359375,
+            1.4921875,
+            1.734375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.53125,
+            0.197265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.6328125,
+            0.7109375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.30078125,
+            1.0,
+            1.296875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7734375,
+            0.22265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8359375,
+            0.84375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.0279541015625,
+            0.96484375,
+            1.40625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.8125,
+            0.2138671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.265625,
+            0.5859375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.2177734375,
+            0.80859375,
+            1.3828125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.8046875,
+            0.2412109375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.96875,
+            1.6640625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.392578125,
+            0.8046875,
+            1.1328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.734375,
+            0.2421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.33984375,
+            1.09375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.421875,
+            0.84765625,
+            1.515625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.2138671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.796875,
+            0.5859375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.033203125,
+            1.1171875,
+            1.421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.53125,
+            0.197265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.078125,
+            1.0
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.0556640625,
+            0.98828125,
+            1.625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.6796875,
+            0.22265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.671875,
+            0.58203125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.036865234375,
+            0.7890625,
+            1.25
+          ]
+        }
+      ],
+      "case": "32x256-valid-extended-state",
+      "cuda_graph_count": 4,
+      "latency_delta_percent": -5.223136381847526,
+      "lengths": [
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256,
+        256
+      ],
+      "torch": {
+        "p50_ms": 29.198641000000002,
+        "p95_ms": 31.016856999999998,
+        "tokens_per_second_at_p50": 280561.00282201485
+      },
+      "torch_outputs": [
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8046875,
+            0.453125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.0771484375,
+            0.8125,
+            1.5703125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.609375,
+            0.21484375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.6171875,
+            0.263671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.203125,
+            0.94140625,
+            1.2890625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -2.25,
+            0.39453125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.390625,
+            0.86328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.0732421875,
+            1.4921875,
+            1.734375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.5390625,
+            0.197265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.6328125,
+            0.7109375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.30078125,
+            1.0,
+            1.296875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7734375,
+            0.22265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.8359375,
+            0.84375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.028076171875,
+            0.96484375,
+            1.40625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.8125,
+            0.21484375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.265625,
+            0.5859375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.2177734375,
+            0.80859375,
+            1.3828125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.8046875,
+            0.2421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.96875,
+            1.6640625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.392578125,
+            0.80859375,
+            1.1328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.734375,
+            0.2421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.33984375,
+            1.09375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.421875,
+            0.84765625,
+            1.5234375
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.7265625,
+            0.2138671875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.7890625,
+            0.58203125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            0.033203125,
+            1.1171875,
+            1.421875
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.53125,
+            0.197265625
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.078125,
+            1.0
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.05322265625,
+            0.98828125,
+            1.6328125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -1.6796875,
+            0.220703125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            1.671875,
+            0.58203125
+          ]
+        },
+        {
+          "action_probability": 1.0,
+          "logits": [
+            -0.039306640625,
+            0.7890625,
+            1.25
+          ]
+        }
+      ],
+      "individual_schema_field_audit": {
+        "minimum_logit_cosine": 0.9999967870283477,
+        "argmax_agreement": 32,
+        "fields": 32,
+        "maximum_uncalibrated_option_probability_error": 0.0018678038961453813,
+        "cosine_gate_pass": true,
+        "argmax_gate_pass": true
+      }
+    }
+  ],
+  "checkpoint_metadata": {
+    "model_id": "convaiinnovations/laya-typed-decisions",
+    "model_revision": "e929ae5cf69bc34259cd2f95c9e91145b818b1f0",
+    "siblings": [
+      {
+        "blobId": "a6344aac8c09253b3b630fb776ae94478aa0275b",
+        "rfilename": ".gitattributes",
+        "size": 1519
+      },
+      {
+        "blobId": "2b451c266604ff847868a34e06ebfdfcdd2aa50f",
+        "rfilename": "README.md",
+        "size": 6343
+      },
+      {
+        "blobId": "7b4305a11f6d6936882e99492abe8e34d8ae6e3a",
+        "rfilename": "config.json",
+        "size": 160
+      },
+      {
+        "blobId": "d4be4829750fb04c0aa8b9897c3ea827f76c0109",
+        "rfilename": "encoder/config.json",
+        "size": 2084
+      },
+      {
+        "blobId": "3fb9c9678050815e76d0c847115919d7871ace3e",
+        "lfs": {
+          "pointerSize": 134,
+          "sha256": "4fa56de72383a9d3efa9cfa78955733c81b9fc8067a587ca4beb82c78107a24e",
+          "size": 842609220
+        },
+        "rfilename": "model.safetensors",
+        "size": 842609220
+      },
+      {
+        "blobId": "5f0e1d5f2366fe8ba2ff330dffaeed53b469e97e",
+        "rfilename": "rl_agent_config.json",
+        "size": 847
+      },
+      {
+        "blobId": "2f4d8583e507b7466d2490e2d6c045647a822698",
+        "rfilename": "tokenizer/tokenizer.json",
+        "size": 3583228
+      },
+      {
+        "blobId": "ed1ffabc2ce11120754705709569e365e46da71a",
+        "rfilename": "tokenizer/tokenizer_config.json",
+        "size": 337
+      }
+    ]
+  },
+  "dtype": "bfloat16",
+  "iterations": 100,
+  "model_path": "/tmp/tei-laya-benchmark-model",
+  "native_library_path": "/tmp/tei-laya-fused-qkv-runtime:/tmp/tei-encoder-relative-packed-runtime:/tmp/tei-fa4-deberta-aot:/root/.cache/uv/archive-v0/nnFsn6Sm1ln--Idv/torch/lib:/root/.cache/uv/archive-v0/NrK-u166YHY1V8g9/nvidia/cusparselt/lib:/root/.cache/uv/archive-v0/o7SNPtRUqcI6fYd-/nvidia/nvshmem/lib:/root/.cache/uv/archive-v0/bEgBdSzZhf2YYCK7/nvidia/nccl/lib:/root/.cache/uv/archive-v0/KZaHSRMKwudKYcy2/nvidia/cudnn/lib:/usr/local/cuda/lib64",
+  "no_token_padding": true,
+  "torch_gpu": 0,
+  "model_id": "convaiinnovations/laya-typed-decisions",
+  "model_revision": "e929ae5cf69bc34259cd2f95c9e91145b818b1f0",
+  "native_library_sha256": "c64cfe07f34acfe586e8dd82fb3974e4ee7c5ae978930e03c165f5edb8fe887b",
+  "native_library": "/tmp/tei-laya-fused-qkv-runtime/libtei_torch.so",
+  "benchmark_binary_sha256": "5a56b5ef44b9c1e84715ee50922f893ee9a2dd2855257c6a8afa57eb8e0154d0",
+  "benchmark_binary": "compare_decisions_v2",
+  "warmup_iterations": 20,
+  "candle_source_revision": "036f39e44015e78ba18d716d73dfdc2e78730c44",
+  "torch_version": "2.14.1+cu130",
+  "native_torch_varlen_attention": true,
+  "python_inference_runtime": false,
+  "fixture": "fixtures/tei-laya-trained-decision-inputs.json",
+  "qualification_status": "qualified_tested_trained_inputs",
+  "all_tested_field_cosines_pass": true,
+  "all_tested_field_argmax_pass": true,
+  "all_tested_action_probabilities_pass": true,
+  "all_tested_latency_deltas_within_five_percent": true,
+  "physical_gpu_assignment": {
+    "torch": 0,
+    "candle": 1
+  },
+  "cuda_graphs_enabled": true,
+  "media_cuda_graphs_enabled": false
+}

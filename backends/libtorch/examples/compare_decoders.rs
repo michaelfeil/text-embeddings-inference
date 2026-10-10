@@ -82,10 +82,16 @@ fn main() {
         torch_gpu, candle_gpu,
         "Parallel comparisons require separate GPUs"
     );
-    let config: serde_json::Value = serde_json::from_slice(
+    let root_config: serde_json::Value = serde_json::from_slice(
         &std::fs::read(path.join("config.json")).expect("checkpoint config.json"),
     )
     .unwrap();
+    // Multimodal checkpoints retain their authoritative composite config;
+    // text-only packed inputs use the nested text vocabulary and boundaries.
+    let config = root_config
+        .get("text_config")
+        .filter(|value| value.is_object())
+        .unwrap_or(&root_config);
     let vocab_size = config["vocab_size"].as_u64().expect("vocab_size") as u32;
     let token_id = |key: &str| {
         config[key].as_u64().map(|id| {
@@ -99,6 +105,8 @@ fn main() {
     let dtype = args.next().unwrap_or_else(|| {
         config["torch_dtype"]
             .as_str()
+            .or_else(|| config["dtype"].as_str())
+            .or_else(|| root_config["dtype"].as_str())
             .unwrap_or("float16")
             .to_owned()
     });

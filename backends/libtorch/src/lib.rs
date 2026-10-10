@@ -464,11 +464,22 @@ impl LibtorchBackend {
                 "BERT requires an encoder with absolute position embeddings",
             ));
         }
+        // Qwen3.5 projects independently sized attention heads: the trained
+        // 27B model has hidden_size=5120 but 24 heads of dimension 256.
+        // Encoder families still require hidden_size to divide into heads.
+        let independent_attention_width = matches!(
+            config.model_type.as_str(),
+            "qwen3_5" | "qwen3_5_text" | "qwen3_5_moe" | "qwen3_5_moe_text"
+        ) && text
+            .get("head_dim")
+            .and_then(serde_json::Value::as_i64)
+            .is_some_and(|head_dim| head_dim > 0);
         if config.hidden_size <= 0
             || config.vocab_size <= 0
             || config.num_attention_heads <= 0
             || config.num_hidden_layers <= 0
-            || config.hidden_size % config.num_attention_heads != 0
+            || (!independent_attention_width
+                && config.hidden_size % config.num_attention_heads != 0)
         {
             return Err(start("Invalid model dimensions"));
         }

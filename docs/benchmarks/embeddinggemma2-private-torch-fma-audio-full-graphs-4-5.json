@@ -1,0 +1,389 @@
+{
+  "candle_gpu": 5,
+  "candle_load_seconds": 1.390142058,
+  "checkpoint_dtype": "bfloat16",
+  "dense_paths": [],
+  "dtype": "bfloat16",
+  "iterations_per_backend": 40,
+  "measurement_mode": "parallel separate GPUs",
+  "model_path": "/tmp/embeddinggemma-2",
+  "model_type": "embedding_gemma2",
+  "pooling": "mean",
+  "torch_cuda_graph_count": 4,
+  "torch_cuda_graph_max_tokens": "16384",
+  "torch_gpu": 4,
+  "torch_load_seconds": 5.353440368,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 4.409385,
+        "p50_ms": 4.4589479999999995,
+        "p95_ms": 5.41533,
+        "tokens_per_second_at_p50": 7176.580664318131
+      },
+      "lengths": [
+        32
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 32,
+      "torch": {
+        "min_ms": 2.692276,
+        "p50_ms": 2.7099469999999997,
+        "p95_ms": 2.772764,
+        "tokens_per_second_at_p50": 11808.349019371966
+      },
+      "torch_speedup": 1.6454004451009558,
+      "workload": "1x32"
+    },
+    {
+      "candle": {
+        "min_ms": 4.549812,
+        "p50_ms": 4.635401,
+        "p95_ms": 4.895441,
+        "tokens_per_second_at_p50": 27613.5764737506
+      },
+      "lengths": [
+        128
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 128,
+      "torch": {
+        "min_ms": 2.904706,
+        "p50_ms": 2.92568,
+        "p95_ms": 2.9752530000000004,
+        "tokens_per_second_at_p50": 43750.512701320724
+      },
+      "torch_speedup": 1.5843841431735528,
+      "workload": "1x128"
+    },
+    {
+      "candle": {
+        "min_ms": 4.9297070000000005,
+        "p50_ms": 5.593962,
+        "p95_ms": 6.831296,
+        "tokens_per_second_at_p50": 183054.51485011875
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 4.252332999999999,
+        "p50_ms": 4.278419,
+        "p95_ms": 4.41393,
+        "tokens_per_second_at_p50": 239340.7471311248
+      },
+      "torch_speedup": 1.3074834418975794,
+      "workload": "8x128"
+    },
+    {
+      "candle": {
+        "min_ms": 11.848691,
+        "p50_ms": 11.868439,
+        "p95_ms": 11.880791,
+        "tokens_per_second_at_p50": 345116.99474547576
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 10.437378,
+        "p50_ms": 10.456174,
+        "p95_ms": 10.567139,
+        "tokens_per_second_at_p50": 391730.2829887873
+      },
+      "torch_speedup": 1.1350651777600487,
+      "workload": "32x128"
+    },
+    {
+      "candle": {
+        "min_ms": 13.516914,
+        "p50_ms": 13.549197000000001,
+        "p95_ms": 13.57277,
+        "tokens_per_second_at_p50": 340093.95538348134
+      },
+      "lengths": [
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 4608,
+      "torch": {
+        "min_ms": 12.064101,
+        "p50_ms": 12.085901,
+        "p95_ms": 12.136273,
+        "tokens_per_second_at_p50": 381270.7054277542
+      },
+      "torch_speedup": 1.1210746306791692,
+      "workload": "32 ragged 32..256"
+    },
+    {
+      "candle": {
+        "min_ms": 12.573632,
+        "p50_ms": 12.601207,
+        "p95_ms": 12.616202,
+        "tokens_per_second_at_p50": 325048.2275229666
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 11.195363,
+        "p50_ms": 11.216333,
+        "p95_ms": 11.269419,
+        "tokens_per_second_at_p50": 365181.73987879994
+      },
+      "torch_speedup": 1.123469408406473,
+      "workload": "8x512"
+    },
+    {
+      "candle": {
+        "min_ms": 42.919923999999995,
+        "p50_ms": 42.967659999999995,
+        "p95_ms": 43.018503,
+        "tokens_per_second_at_p50": 381310.0364320515
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 40.116125000000004,
+        "p50_ms": 40.139581,
+        "p95_ms": 40.168092,
+        "tokens_per_second_at_p50": 408175.66082715214
+      },
+      "torch_speedup": 1.0704561166196527,
+      "workload": "32x512"
+    },
+    {
+      "candle": {
+        "min_ms": 4.485904,
+        "p50_ms": 4.659971,
+        "p95_ms": 5.502915,
+        "tokens_per_second_at_p50": 6866.995524221074
+      },
+      "lengths": [
+        32
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 32,
+      "torch": {
+        "min_ms": 4.750504,
+        "p50_ms": 4.773055,
+        "p95_ms": 4.845037,
+        "tokens_per_second_at_p50": 6704.301542722637
+      },
+      "torch_speedup": 0.976307836385711,
+      "workload": "image1x32"
+    },
+    {
+      "candle": {
+        "min_ms": 325.877222,
+        "p50_ms": 334.892517,
+        "p95_ms": 378.279606,
+        "tokens_per_second_at_p50": 95.55304575527437
+      },
+      "lengths": [
+        32
+      ],
+      "max_output_absolute_difference": 0.0,
+      "min_output_cosine": 1.0,
+      "tokens": 32,
+      "torch": {
+        "min_ms": 7.174253,
+        "p50_ms": 7.288752,
+        "p95_ms": 7.4536560000000005,
+        "tokens_per_second_at_p50": 4390.326354909593
+      },
+      "torch_speedup": 45.946482607722146,
+      "workload": "audio1x32"
+    }
+  ],
+  "checkpoint_repository": "google/embeddinggemma-2",
+  "checkpoint_revision": "914f7f89142e33e77833254d9c9b90c3cef7303b",
+  "checkpoint_files_sha256": {
+    "1_Pooling/config.json": "8759bdf7c77efc7df7723f64856a593c8943b71ee38baf2a88771fbaf78438f9",
+    "chat_template.jinja": "4b852efc0b9960283e735363331e6f325b33bc74bdbaa076f595bc4e9b94d85e",
+    "config.json": "b8f1e9931b57fbc054acdb445c41765d55b0074c58d145fa82839941ad1b5bb3",
+    "config_sentence_transformers.json": "031e56a498d33c349ab489a21885bcfe25b4fcba841149dc99e1e90d4a7c28f5",
+    "model.safetensors": "197a32965d4b1105faf060417baa899e193fb73cd401f42ec9295234d5553d79",
+    "modules.json": "3d02572a0455b832de67fb8e63a54981bc7e8b46e337c95e917bd8122a533bfd",
+    "preprocessor_config.json": "ea2ae257e901064abdd98dceb19f2b0da06af600bed15e0f99f5c85c37ee9d78",
+    "processor_config.json": "168f6a08522f3ce5dea596d94d003af2fd691742d4f41fe1f9d8cce76bfbf69c",
+    "sentence_bert_config.json": "b1bcd9f2dce3ae863b359e87d0710b5dbc3314a59ecb4e2f97c7778fc8e4b228",
+    "tokenizer.json": "4d777ef5bdc1aa36227abdfb77c3e49e7b9c892d16e1b6bda41c393504828be4",
+    "tokenizer.model": "e594c8a90eb08d8bda498ff4747977dc827ae0c3c56b5c0d41a605a22d02ef03",
+    "tokenizer_config.json": "17bd5d6e9364ca49a534e1502076593317c298d4a663623091ed45388f004874"
+  },
+  "checkpoint_identity_proof": "All local checkpoint files match Hugging Face commit Git blob IDs or LFS SHA256 values, including model.safetensors.",
+  "benchmark_binary_sha256": "c989e64c46ee518102b617bd948be62c83f44f486ed8576e38e89d8a99ad37f3",
+  "native_runtime_sha256": "4a15b743f7d1a0438ec1a98c1f9eaed592e72e2bdf6811c57c69f83d127016ba",
+  "torch_version": "2.14.1+cu130",
+  "torch_git": "5c4886908584029761b579af026dcfb627c84070",
+  "torch_flash_revision": "14c377950125c70b7a9dabf9c561fca53715ac7d",
+  "integration_status": "Production native Torch private attention and source-proven vision/audio operations; clean comparator and original Candle dependency; no preload.",
+  "environment": {
+    "TEI_TORCH_CUDA_GRAPHS": "1",
+    "TEI_TORCH_MEDIA_CUDA_GRAPHS": "1",
+    "TEI_TORCH_CUDA_GRAPH_MAX_TOKENS": "16384",
+    "LD_PRELOAD": null
+  },
+  "input_note": "Identical synthetic token IDs, nine natural image patches in a3x3 grid at token2,64 actual audio frames with128 features at token2; exact packed sequence lengths, no token/frame padding.",
+  "hardware": "NVIDIA H100; simultaneous separate GPUs; assignments swapped",
+  "token_padding": false,
+  "audio_source_contracts": {
+    "candle_revision": "036f39e44015e78ba18d716d73dfdc2e78730c44",
+    "convolution": "True-output im2col then FP32 GEMM; intrinsic filter boundary zeros only; no appended audio frames.",
+    "rms_norm": "Candle FP32 square/sum tree, reciprocal width multiply, dynamic powf(-0.5), two rounded FP32 products, final BF16 rounding.",
+    "output_projection": "BF16 GEMM output rounds before separate BF16 bias addition.",
+    "same_operand_proof": {
+      "second_sscp_conv": {
+        "old_cudnn_changed_elements": 21,
+        "element_count": 16384,
+        "new_torch_im2col_changed_elements": 0
+      },
+      "layer1_ff1_pre_rms": {
+        "old_aten_changed_elements": 1,
+        "element_count": 16384,
+        "new_native_runtime_pow_changed_elements": 0
+      },
+      "output_projection": {
+        "old_fused_linear_changed_elements": 6452,
+        "element_count": 24576,
+        "new_staged_bias_changed_elements": 0
+      },
+      "all_twelve_conformer_layer_outputs": "bitwise exact after correcting SSCP and audio RMS",
+      "bare_projection_rms": "bitwise exact on corrected operands; retained original implementation"
+    }
+  },
+  "qualification_summary": {
+    "accuracy_minimum_cosine_gate": 0.999,
+    "latency_maximum_regression_percent": 5,
+    "all_nine_accuracy_pass": true,
+    "all_nine_bitwise_exact": true,
+    "all_nine_worst_latency_regression_percent": 2.4267103808156776,
+    "text_image_audio_support_status": "qualified for these trained workloads; unrounded packed input lengths, no token or frame padding"
+  }
+}

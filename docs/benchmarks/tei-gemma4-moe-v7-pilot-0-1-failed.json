@@ -1,0 +1,18 @@
+{
+  "checkpoint_repository": "google/gemma-4-26B-A4B-it",
+  "checkpoint_revision": "4d7ae4984b7db7de8f8457170b3f1a419ee76d52",
+  "dtype": "bfloat16",
+  "pooling": "last_token",
+  "bos_token_id": 2,
+  "eos_token_id": 1,
+  "physical_torch_gpu": 0,
+  "physical_candle_gpu": 1,
+  "benchmark_binary_sha256": "e01defe500f3b7673864c393a81e59c2a9552751c1815deba64185b8fe352353",
+  "native_library_sha256": "8da17a85ad5d87bbeb7427f69ae30623f8d23096c319855f477549a8dc1f216c",
+  "workload": "1x32",
+  "min_output_cosine": 0.9367789220283438,
+  "qualification": "FAILS unchanged .999 accuracy gate before benchmark timings",
+  "log": "/tmp/tei-gemma4-moe-v7-pilot-0-1.log",
+  "log_sha256": "31074e5a09a898016504be3781929325d7651ff2c9e01804a7a9e5a466307e13",
+  "log_content": "\nthread 'main' (3244645) panicked at backends/libtorch/examples/compare_decoders.rs:187:9:\n1x32 output cosine 0.9367789220283438\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n"
+}

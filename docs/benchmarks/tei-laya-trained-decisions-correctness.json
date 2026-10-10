@@ -1,0 +1,59 @@
+{
+  "model_id": "convaiinnovations/laya-typed-decisions",
+  "model_revision": "e929ae5cf69bc34259cd2f95c9e91145b818b1f0",
+  "native_library_sha256": "c64cfe07f34acfe586e8dd82fb3974e4ee7c5ae978930e03c165f5edb8fe887b",
+  "cpu_upstream_oracle": {
+    "dtype": "float32",
+    "passed": true,
+    "reference_source": "router/tests/fixtures/laya-systemone.json",
+    "upstream_implementation_revision": "9d955671415fc19f069b9cc998928075c1f255ec",
+    "logit_absolute_tolerance": 0.025,
+    "action_probability_absolute_tolerance": 0.01,
+    "native_gpu_padding": false,
+    "test": "trained_laya_cpu_matches_published_upstream_fixture",
+    "output": "\nrunning 1 test\ntest trained_laya_cpu_matches_published_upstream_fixture ... ok\n\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 1.59s\n\n"
+  },
+  "full_trained_before_after_output_equality": [
+    {
+      "case": "official-three-question-fixture",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "1x-official-ragged",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "8x-official-ragged",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "32x-official-ragged",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "1x128-valid-extended-state",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "8x128-valid-extended-state",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "8x256-valid-extended-state",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    },
+    {
+      "case": "32x256-valid-extended-state",
+      "all_logits_and_action_probabilities_bitwise_equal": true
+    }
+  ],
+  "optimization": "One combined trained Laya in_proj GEMM when query and memory have identical TensorImpl; Clef and cross-attention keep separate projections. Packed native Torch attention uses only actual tokens.",
+  "qualification_limitations": [
+    "The saved reference questions and all tested extended-state inputs produce saturated action_probability=1.0; the existing synthetic decision fixture separately covers nonconstant learned-action features.",
+    "Performance was qualified on two H100 GPUs in both assignments; historical slower separate-QKV results are retained."
+  ],
+  "reports": [
+    "tei-laya-trained-decisions-fused-qkv-0-1.json",
+    "tei-laya-trained-decisions-fused-qkv-1-0.json"
+  ]
+}

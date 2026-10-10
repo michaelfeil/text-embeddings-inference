@@ -6,6 +6,7 @@
 #include "moe_kernels.h"
 #include "fast_kernels.h"
 #include "torch_flash_fma.h"
+#include <ATen/ops/im2col.h>
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <ATen/ops/_cudnn_attention_forward.h>
@@ -89,11 +90,15 @@ class Gemma final : public Model {
       if(!weights.count(key))key=base+".linear.weight";
       std::optional<at::Tensor> bias;
       if(weights.count(base+".bias"))bias=weight(weights,base+".bias");
-      auto output=at::linear(input.to(weight(weights,key).scalar_type()),weight(weights,key),bias);
+      auto output=gemma_audio_linear(input.to(weight(weights,key).scalar_type()),weight(weights,key),bias.value_or(at::Tensor{}));
       if(bounds!=audio_bounds.end())output=output.clamp(bounds->second[2],bounds->second[3]);
       return output;
     };
     auto an=[&](const at::Tensor& x,const std::string& name) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(device.is_cuda()&&x.scalar_type()==at::kBFloat16)
+        return gemma_audio_norm_cuda(x.contiguous(),weight(norm_scales,root+name+".weight"),eps);
+#endif
       auto f=x.to(at::kFloat);
       return (f*at::pow(f.square().mean(-1,true)+eps,-.5)*weight(norm_scales,root+name+".weight")).to(x.scalar_type());
     };
@@ -105,7 +110,7 @@ class Gemma final : public Model {
       auto stride=cfg.integer("audio_config.sscp_conv_stride_size."+std::to_string(block)+".0",2);
       // Convolution's mathematical zero boundary is intrinsic to the filter;
       // actual audio frame lengths are never rounded up or padded into batches.
-      states=at::conv2d((states*valid.view({1,1,-1,1})).to(at::kFloat),filter,std::nullopt,{stride,stride},{filter.size(2)/2,1},{1,1},1).to(dtype);
+      states=gemma_audio_conv2d((states*valid.view({1,1,-1,1})).to(at::kFloat),filter,stride).to(dtype);
       auto ix=at::arange(states.size(2),valid.options().dtype(at::kLong))*stride;
       valid=valid.index_select(0,ix.clamp_max(valid.size(0)-1));
       auto x=states.permute({0,2,3,1}).to(at::kFloat);
@@ -672,6 +677,22 @@ class Gemma final : public Model {
     return output;
   }
 };
+}
+// The actual Candle audio backend lowers convolution to row-major im2col and
+// FP32 GEMM. cuDNN chooses a different accumulation order at BF16 boundaries.
+// im2col represents only intrinsic filter boundaries, without appending frames.
+at::Tensor gemma_audio_conv2d(const at::Tensor& input,const at::Tensor& filter,int64_t stride) {
+  TORCH_CHECK(input.dim()==4&&filter.dim()==4&&input.scalar_type()==at::kFloat&&filter.scalar_type()==at::kFloat&&input.device()==filter.device()&&input.size(1)==filter.size(1)&&stride>0,"Invalid Gemma audio convolution geometry");
+  const int64_t height=(input.size(2)+2*(filter.size(2)/2)-filter.size(2))/stride+1;
+  const int64_t width=(input.size(3)+2-filter.size(3))/stride+1;
+  TORCH_CHECK(input.size(0)>0&&height>0&&width>0,"Empty Gemma audio convolution output");
+  auto columns=at::im2col(input,{filter.size(2),filter.size(3)},{1,1},{filter.size(2)/2,1},{stride,stride}).transpose(1,2).contiguous().reshape({input.size(0)*height*width,-1});
+  return at::matmul(columns,filter.flatten(1).transpose(0,1)).reshape({input.size(0),height,width,filter.size(0)}).permute({0,3,1,2}).contiguous();
+}
+at::Tensor gemma_audio_linear(const at::Tensor& input,const at::Tensor& matrix,const at::Tensor& bias) {
+  // Candle rounds the low-precision GEMM before adding its learned bias.
+  auto output=at::linear(input,matrix);
+  return bias.defined()?output+bias:output;
 }
 std::unique_ptr<Model> create_gemma(const Options& cfg, Weights& weights, c10::Device device, at::ScalarType dtype) {
   auto family = cfg.string("model_type", "");
