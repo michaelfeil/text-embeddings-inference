@@ -314,6 +314,129 @@ pub(crate) struct PredictRequest {
     pub raw_scores: bool,
 }
 
+/// SGLang-compatible classification, with native messages and truncation extensions.
+/// Provide exactly one of input or messages. String arrays are independent inputs.
+#[derive(Deserialize, ToSchema)]
+pub(crate) struct ClassifyRequest {
+    #[serde(default, deserialize_with = "present_input")]
+    pub input: Option<EmbeddingInput>,
+    #[serde(default, deserialize_with = "present_input")]
+    pub messages: Option<Vec<Message>>,
+    /// Advisory model name; this server serves one deployed model.
+    #[allow(dead_code)]
+    pub model: Option<String>,
+    #[allow(dead_code)]
+    pub user: Option<String>,
+    pub rid: Option<ClassifyRequestId>,
+    /// Only absent or zero priority is supported.
+    pub priority: Option<i32>,
+    pub truncate: Option<bool>,
+    #[serde(default)]
+    pub truncation_direction: TruncationDirection,
+}
+
+#[derive(Deserialize, ToSchema)]
+#[serde(untagged)]
+pub(crate) enum ClassifyRequestId {
+    Single(String),
+    Batch(Vec<String>),
+}
+
+impl ClassifyRequest {
+    pub fn into_predict(self) -> Result<PredictRequest, &'static str> {
+        if self.priority.is_some_and(|priority| priority != 0) {
+            return Err("Nonzero classification priority is not supported");
+        }
+        let input = match (self.input, self.messages) {
+            (Some(input), None) => input,
+            (None, Some(messages)) => EmbeddingInput::Messages(messages),
+            _ => return Err("Provide exactly one of `input` or `messages`"),
+        };
+        let sequence = |input| match input {
+            EncodingInput::Single(text) => Sequence::Single(text),
+            EncodingInput::Ids(ids) => Sequence::Ids(ids),
+            EncodingInput::Messages(messages) => Sequence::Messages(MessageInput { messages }),
+            EncodingInput::Dual(_, _) => unreachable!("embedding inputs cannot contain pairs"),
+        };
+        let inputs = match InputBatch::from(input) {
+            InputBatch::Single(input) => PredictInput::Single(sequence(input)),
+            InputBatch::Batch(inputs) => {
+                if inputs.is_empty() {
+                    return Err("Input cannot be empty");
+                }
+                PredictInput::Batch(inputs.into_iter().map(sequence).collect())
+            }
+        };
+        let empty = |input: &Sequence| match input {
+            Sequence::Single(text) => text.trim().is_empty(),
+            Sequence::Ids(ids) => ids.is_empty(),
+            Sequence::Messages(input) => input.messages.is_empty(),
+            Sequence::Pair(_, _) => false,
+        };
+        if match &inputs {
+            PredictInput::Single(input) => empty(input),
+            PredictInput::Batch(inputs) => inputs.iter().any(empty),
+        } {
+            return Err("Input cannot be empty or whitespace only");
+        }
+        let count = match &inputs {
+            PredictInput::Single(_) => 1,
+            PredictInput::Batch(inputs) => inputs.len(),
+        };
+        // Request IDs are accepted as metadata; response IDs are independently generated.
+        match self.rid {
+            Some(ClassifyRequestId::Batch(ids)) if ids.len() != count => {
+                return Err("rid batch length must match the input batch")
+            }
+            Some(ClassifyRequestId::Single(id)) => drop(id),
+            _ => (),
+        }
+        Ok(PredictRequest {
+            inputs,
+            truncate: self.truncate,
+            truncation_direction: self.truncation_direction,
+            // SGLang applies softmax even to one-label classifiers.
+            raw_scores: true,
+        })
+    }
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub(crate) struct ClassifyData {
+    pub index: usize,
+    pub label: String,
+    pub probs: Vec<f32>,
+    pub num_classes: usize,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ClassifyUsage {
+    pub prompt_tokens: usize,
+    pub completion_tokens: usize,
+    pub total_tokens: usize,
+    pub prompt_tokens_details: Option<serde_json::Value>,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ClassifyResponse {
+    pub id: String,
+    pub object: &'static str,
+    pub created: u64,
+    pub model: String,
+    pub data: Vec<ClassifyData>,
+    pub usage: ClassifyUsage,
+}
+
+#[derive(Serialize, ToSchema)]
+pub(crate) struct ClassifyErrorResponse {
+    pub object: &'static str,
+    pub message: String,
+    #[serde(rename = "type")]
+    pub error_type: String,
+    pub param: Option<&'static str>,
+    pub code: u16,
+}
+
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct PredictTokensRequest {
     pub inputs: Vec<String>,
@@ -505,6 +628,36 @@ impl<'s> ToSchema<'s> for OpenAICompatRequest {
                 .into(),
         )
     }
+}
+
+// Share the property definitions once; oneOf only expresses exclusive required fields.
+pub(super) fn exclusive_input_schema(schema: RefOr<Schema>) -> RefOr<Schema> {
+    let RefOr::T(Schema::Object(mut body)) = schema else {
+        unreachable!("request body is an object");
+    };
+    body.properties.insert(
+        "input".into(),
+        utoipa::openapi::Ref::from_schema_name("EmbeddingInput").into(),
+    );
+    body.properties.insert(
+        "messages".into(),
+        utoipa::openapi::ArrayBuilder::new()
+            .items(utoipa::openapi::Ref::from_schema_name("Message"))
+            .min_items(Some(1))
+            .build()
+            .into(),
+    );
+    utoipa::openapi::AllOfBuilder::new()
+        .item(body)
+        .item(
+            utoipa::openapi::OneOfBuilder::new()
+                .item(utoipa::openapi::ObjectBuilder::new().required("input"))
+                .item(utoipa::openapi::ObjectBuilder::new().required("messages")),
+        )
+        .description(Some(
+            "Provide exactly one of input or messages; a message list is one conversation.",
+        ))
+        .into()
 }
 
 #[derive(Serialize, ToSchema)]
@@ -981,6 +1134,78 @@ mod embedding_input_tests {
                 value["properties"][field]["$ref"],
                 "#/components/schemas/EmbeddingInput"
             );
+        }
+    }
+}
+
+#[cfg(test)]
+mod classify_request_tests {
+    use super::*;
+
+    fn parse(value: serde_json::Value) -> Result<PredictRequest, String> {
+        serde_json::from_value::<ClassifyRequest>(value)
+            .map_err(|error| error.to_string())?
+            .into_predict()
+            .map_err(str::to_owned)
+    }
+
+    #[test]
+    fn sglang_string_arrays_are_batches_not_pairs() {
+        let request = parse(json!({"model":"model","input":["first","second"],"user":"client","rid":["a","b"],"priority":0})).unwrap();
+        assert!(request.raw_scores);
+        let PredictInput::Batch(batch) = request.inputs else {
+            panic!("string arrays are batches");
+        };
+        assert!(matches!(&batch[0], Sequence::Single(text) if text == "first"));
+        assert!(matches!(&batch[1], Sequence::Single(text) if text == "second"));
+        assert_eq!(batch.len(), 2);
+        assert!(matches!(
+            parse(json!({"input":"single","rid":"a"})).unwrap().inputs,
+            PredictInput::Single(Sequence::Single(_))
+        ));
+    }
+
+    #[test]
+    fn token_ids_and_native_chat_use_existing_inference_inputs() {
+        assert!(
+            matches!(parse(json!({"input":[101,42,102]})).unwrap().inputs, PredictInput::Single(Sequence::Ids(ids)) if ids == vec![101,42,102])
+        );
+        assert!(
+            matches!(parse(json!({"input":[[101,42],[101,43]]})).unwrap().inputs, PredictInput::Batch(inputs) if inputs.len() == 2)
+        );
+        let messages =
+            json!([{"role":"system","content":"instructions"},{"role":"user","content":"hello"}]);
+        for request in [json!({"messages":messages}), json!({"input":messages})] {
+            assert!(
+                matches!(parse(request).unwrap().inputs, PredictInput::Single(Sequence::Messages(input)) if input.messages.len() == 2)
+            );
+        }
+        let request =
+            parse(json!({"input":"hello","truncate":true,"truncation_direction":"left"})).unwrap();
+        assert_eq!(request.truncate, Some(true));
+        assert_eq!(request.truncation_direction, TruncationDirection::Left);
+    }
+
+    #[test]
+    fn invalid_inputs_are_rejected_before_inference() {
+        let messages = json!([{"role":"user","content":"hello"}]);
+        for value in [
+            json!({}),
+            json!({"input":null}),
+            json!({"input":[]}),
+            json!({"input":" "}),
+            json!({"input":["hello"," "]}),
+            json!({"input":[[]]}),
+            json!({"messages":[]}),
+            json!({"input":"hello","messages":messages}),
+            json!({"input":"hello","messages":null}),
+            json!({"input":null,"messages":messages}),
+            json!({"input":[-1]}),
+            json!({"input":[1.5]}),
+            json!({"input":"hello","priority":1}),
+            json!({"input":["hello","world"],"rid":["a"]}),
+        ] {
+            assert!(parse(value.clone()).is_err(), "{value}");
         }
     }
 }

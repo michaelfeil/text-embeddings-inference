@@ -40,6 +40,7 @@ tracing = { workspace = true }
 tracing-opentelemetry = "0.24.0"
 tracing-subscriber = { version = "0.3.16", features = ["json", "env-filter"] }
 veil = "0.1.6"
+uuid = { version = "1", features = ["v4"] }
 
 # HTTP dependencies
 axum = { version = "0.7.4", features = ["json"], optional = true }

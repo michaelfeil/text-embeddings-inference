@@ -4792,6 +4792,7 @@ dependencies = [
  "tracing-subscriber",
  "utoipa",
  "utoipa-swagger-ui",
+ "uuid",
  "veil",
  "vergen",
 ]
