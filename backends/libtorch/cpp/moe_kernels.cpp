@@ -21,6 +21,15 @@ extern "C" int hopper_gemma4_moe_forward_bf16(const float*,const float*,const vo
 #endif
 #endif
 namespace tei {
+bool native_hopper_moe_available(const c10::Device& device) {
+#if defined(TEI_TORCH_MOE_KERNELS) && defined(TEI_TORCH_MOE_HOPPER)
+ if(!device.is_cuda())return false;
+ auto props=device.has_index()?at::cuda::getDeviceProperties(device.index()):at::cuda::getCurrentDeviceProperties();
+ return props->major==9;
+#else
+ return false;
+#endif
+}
 at::Tensor routed_moe_cuda(const at::Tensor& x,const at::Tensor& logits,
  const at::Tensor& gu,const at::Tensor& down,bool renormalize,const at::Tensor& scales) {
 #ifdef TEI_TORCH_MOE_KERNELS

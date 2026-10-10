@@ -18,19 +18,29 @@ namespace tei_torch_flash {
 void launch_64(Flash_fwd_params&,cudaStream_t);
 void launch_128(Flash_fwd_params&,cudaStream_t);
 void launch_256(Flash_fwd_params&,cudaStream_t);
+void launch_512(Flash_fwd_params&,cudaStream_t);
 }
 namespace tei {
 bool torch_flash_fma_supported(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v) {
-  return q.is_cuda() && q.dim()==3 && k.dim()==3 && v.dim()==3
+  return torch_flash_fma_supported(q,k,v,false,-1,-1);
+}
+bool torch_flash_fma_supported(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,
+                               bool causal,int64_t window_left,int64_t window_right) {
+  if(!(q.is_cuda() && q.dim()==3 && k.dim()==3 && v.dim()==3
     && (q.scalar_type()==at::kHalf || q.scalar_type()==at::kBFloat16)
-    && (q.size(2)==64 || q.size(2)==128 || q.size(2)==256)
     && k.size(2)==q.size(2) && v.size(2)==q.size(2)
-    && q.stride(2)==1 && k.stride(2)==1 && v.stride(2)==1;
+    && q.stride(2)==1 && k.stride(2)==1 && v.stride(2)==1))return false;
+  if(q.size(2)==64 || q.size(2)==128 || q.size(2)==256)return true;
+  if(q.size(2)!=512 || q.scalar_type()!=at::kBFloat16 || causal || window_left!=-1 || window_right!=-1)return false;
+  // The proven wide-head launch uses128KiB dynamic shared memory on SM90.
+  // Other architectures/dtypes/masks retain their native efficient fallback.
+  const auto* properties=at::cuda::getDeviceProperties(q.device().index());
+  return properties->major==9 && properties->minor==0 && properties->sharedMemPerBlockOptin>=128*1024;
 }
 at::Tensor torch_flash_fma(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,
                           const at::Tensor& cumulative,int64_t max_sequence,
                           double scale,bool causal,int64_t window_left,int64_t window_right) {
-  TORCH_CHECK(torch_flash_fma_supported(q,k,v),"Unsupported packed Torch FMA attention shape or dtype");
+  TORCH_CHECK(torch_flash_fma_supported(q,k,v,causal,window_left,window_right),"Unsupported packed Torch FMA attention shape or dtype");
   TORCH_CHECK(k.device()==q.device() && v.device()==q.device()
     && k.scalar_type()==q.scalar_type() && v.scalar_type()==q.scalar_type()
     && k.size(0)==q.size(0) && v.sizes()==k.sizes()
@@ -70,7 +80,8 @@ at::Tensor torch_flash_fma(const at::Tensor& q,const at::Tensor& k,const at::Ten
   const auto stream=at::cuda::getCurrentCUDAStream();
   if(p.d==64)tei_torch_flash::launch_64(p,stream);
   else if(p.d==128)tei_torch_flash::launch_128(p,stream);
-  else tei_torch_flash::launch_256(p,stream);
+  else if(p.d==256)tei_torch_flash::launch_256(p,stream);
+  else tei_torch_flash::launch_512(p,stream);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return out;
 }

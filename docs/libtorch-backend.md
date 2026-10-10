@@ -20,7 +20,8 @@ Attention operator behind
 The C++ call uses zero dropout and full bidirectional attention for BERT. Kernel
 errors propagate to Rust; there is no padded fallback.
 
-ModernBERT and Gemma3 additionally use privately compiled forward kernels from
+ModernBERT, Gemma3, Nomic MoE and validated Gemma2 paths additionally use
+privately compiled forward kernels from
 the Flash source pinned by Torch 2.14.1. The upstream headers remain unchanged;
 compiling without Torch's `UNFUSE_FMA` definition preserves fused softmax
 arithmetic needed for Candle parity. This path uses actual packed token counts,
@@ -39,7 +40,7 @@ Native routed MoE CUDA kernels reuse Candle’s retained MIT sources and the sam
 pinned CUTLASS revision `e406c186f510a15091cce01f782020ceb7ba8eb5`.
 Set `CUTLASS_ROOT` for an offline checkout; otherwise CMake reuses the Candle
 cache or downloads that pinned revision. Installation includes the retained
-CUTLASS BSD notice under `share/licenses/tei_torch`. Kernel-level exact routing
+CUTLASS BSD and Candle kernel MIT notices under `share/licenses/tei_torch`. Kernel-level exact routing
 tests do not establish trained checkpoint accuracy.
 
 ## Model support
@@ -55,8 +56,9 @@ embeddings remain supported. BERT supports tanh GELU, ReLU and SiLU; other
 BERT activation names fail at startup instead of silently selecting GELU.
 Classification and SPLADE heads are being checked
 against their Candle counterparts. FP32, FP16 and BF16 are accepted; CUDA Flash
-requires FP16/BF16. Wider Gemma attention heads use native packed efficient
-attention. The installed Torch Flash build disables ALiBi, so Jina uses native
+requires FP16/BF16. Gemma width-512 global attention uses a restricted native
+Torch Flash specialization for BF16 on SM90 with 128 KiB opt-in shared memory;
+other configurations use native packed efficient attention. The installed Torch Flash build disables ALiBi, so Jina uses native
 efficient varlen attention in one packed call per layer. A shared sequence-local
 ALiBi tile uses overlapping read-only strides with bounded backing storage:
 `O(T*M + H*M*M)` elements for total tokens `T`, maximum actual sequence length
@@ -147,7 +149,8 @@ CUDA varlen parity has been validated on an H100. A10 throughput still needs
 hardware validation. Native C++
 avoids Python dispatch, but eager tensor operations still launch GPU kernels.
 Set `TEI_TORCH_CUDA_GRAPHS=1` to enable an experimental four-shape replay cache
-for eligible dense models. Cache keys include exact sequence boundaries; no
+for eligible dense models and the validated Hopper BF16 Qwen3 MoE geometry.
+Other routed configurations run eagerly. Cache keys include exact sequence boundaries; no
 tokens are padded. Capture cost and cache misses matter for serving latency.
 The default capture limit is 4096 tokens; `TEI_TORCH_CUDA_GRAPH_MAX_TOKENS` accepts
 a positive override. Unsupported capture operations run eagerly. Media capture
@@ -161,7 +164,10 @@ and TF32 for this process; experiments have not established a general accuracy
 or latency benefit.
 ModernBERT CUDA uses the Candle normalization kernel adapter by default, together
 with matching half-precision rotary arithmetic. The trained embedding checkpoint
-passes both official-token and arbitrary-ID mean parity checks.
+matches Candle bitwise for both trained embedding mean and MLM CLS checkpoints,
+including official and arbitrary token IDs, with private Torch-pinned fused-softmax
+attention. Nomic v2 MoE uses exact model-dtype GELU and beta LayerNorm with
+unrounded residual statistics; its official and arbitrary-ID checks pass.
 CUDA mean pooling uses Candle's exact model-dtype reduction tree in one packed
 launch over selected sequence spans; raw token outputs retain their original widths.
 `TEI_TORCH_EXACT_ENCODER_NORM=0` selects ATen normalization for diagnostics.
@@ -174,8 +180,9 @@ performance remain under evaluation.
 The [checkpoint comparison](benchmarks/libtorch-checkpoints-h100.md) records
 Qwen3, GTE, BERT, RoBERTa, DistilBERT, ModernBERT, Nomic, Jina/JinaCode, Mistral and
 Qwen vision workloads meeting the
-5% P50 target with the recorded options. ModernBERT still has a separate
-arbitrary-ID MLM parity failure; Gemma has trained-checkpoint accuracy gaps.
+5% P50 target with the recorded options. Gemma3, including both learned Dense
+heads, matches Candle bitwise and meets the measured target. Gemma2 audio
+accuracy and additional checkpoint qualifications remain open.
 The Jina/JinaCode packed Torch bias implementation resolves the previously
 recorded batched latency gap. The initial
 [H100 BERT comparison](benchmarks/libtorch-bert-h100.md) shows Candle ahead,

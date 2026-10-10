@@ -8,6 +8,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_64.cu");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_128.cu");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_256.cu");
+    println!("cargo:rerun-if-changed=cpp/torch_flash_fma_512.cu");
     println!("cargo:rerun-if-changed=../candle/extensions/candle-layer-norm/kernels");
     println!("cargo:rerun-if-changed=../candle/src/kernels/qwen35_gdn.cu");
     println!("cargo:rerun-if-changed=../candle/src/kernels/qk_norm_rope.cu");

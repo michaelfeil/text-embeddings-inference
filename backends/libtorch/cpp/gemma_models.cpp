@@ -220,7 +220,7 @@ class Gemma final : public Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
       if(device.is_cuda()&&dtype==at::kBFloat16) {
         auto scale=name.empty()?norm_ones.at(x.size(-1)):weight(norm_scales,root+name+".weight");
-        return gemma_norm_cuda(x.contiguous(),scale,eps,true);
+        return gemma_vision_norm_cuda(x.contiguous(),scale,eps);
       }
 #endif
       auto f=x.to(at::kFloat)/at::sqrt(x.to(at::kFloat).square().mean(-1,true)+eps);
@@ -232,7 +232,7 @@ class Gemma final : public Model {
     auto table=vw("vision_tower.patch_embedder.position_embedding_table");
     // Normalize source pixels in FP32 before the projection's activation cast.
     auto states=vl(((image.pixels.to(at::kFloat)-.5)*2.).to(dtype),"vision_tower.patch_embedder.input_proj")+
-      table.select(0,0).index_select(0,columns)+table.select(0,1).index_select(0,rows);
+      (table.select(0,0).index_select(0,columns)+table.select(0,1).index_select(0,rows));
     auto col_angles=columns.to(at::kFloat).unsqueeze(1)*vision_frequency,row_angles=rows.to(at::kFloat).unsqueeze(1)*vision_frequency;
     auto cos=at::cat({col_angles.cos(),row_angles.cos()},-1).to(dtype).unsqueeze(1);
     auto sin=at::cat({col_angles.sin(),row_angles.sin()},-1).to(dtype).unsqueeze(1);
@@ -254,7 +254,14 @@ class Gemma final : public Model {
       auto q=rotate2d(vn(vl(normalized,p+"self_attn.q_proj").view({height*width,nh,dim}),p+"self_attn.q_norm"));
       auto k=rotate2d(vn(vl(normalized,p+"self_attn.k_proj").view({height*width,nk,dim}),p+"self_attn.k_norm"));
       auto v=vn(vl(normalized,p+"self_attn.v_proj").view({height*width,nk,dim}),"");
-      auto output=packed_attention(q,k,v,input,1.).reshape({height*width,nh*dim});
+      at::Tensor attention_output;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(device.is_cuda()&&dtype==at::kBFloat16&&torch_flash_fma_supported(q,k,v,false,-1,-1))
+        attention_output=torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,1.,false,-1,-1);
+      else
+#endif
+      attention_output=packed_attention(q,k,v,input,1.);
+      auto output=attention_output.reshape({height*width,nh*dim});
       states=states+vn(vl(output,p+"self_attn.o_proj"),p+"post_attention_layernorm");
       normalized=vn(states,p+"pre_feedforward_layernorm");
       auto gate=vl(normalized,p+"mlp.gate_proj");
@@ -267,10 +274,17 @@ class Gemma final : public Model {
       auto mlp=vl(gate*vl(normalized,p+"mlp.up_proj"),p+"mlp.down_proj");
       states=states+vn(mlp,p+"post_feedforward_layernorm");
     }
-    auto bins=at::floor_divide(columns,pool)+at::floor_divide(rows,pool)*(width/pool);
-    auto pooled=at::zeros({height*width/(pool*pool),vh},states.options().dtype(at::kFloat));
-    pooled.index_add_(0,bins,states.to(at::kFloat)/(pool*pool));
-    pooled=pooled.to(dtype).to(at::kFloat)*std::sqrt(static_cast<double>(vh));
+    at::Tensor pooled;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(device.is_cuda()&&dtype==at::kBFloat16)pooled=gemma_vision_pool_cuda(states.contiguous(),height,width,pool);
+    else
+#endif
+    {
+      auto bins=at::floor_divide(columns,pool)+at::floor_divide(rows,pool)*(width/pool);
+      pooled=at::zeros({height*width/(pool*pool),vh},states.options().dtype(at::kFloat));
+      pooled.index_add_(0,bins,states.to(at::kFloat)/(pool*pool));
+      pooled=pooled.to(dtype).to(at::kFloat)*std::sqrt(static_cast<double>(vh));
+    }
     if(cfg.boolean("vision_config.standardize",false)) pooled=(pooled-vw("vision_tower.std_bias").to(at::kFloat))*vw("vision_tower.std_scale").to(at::kFloat);
     pooled=pooled.to(dtype);
     auto f=pooled.to(at::kFloat);
@@ -336,6 +350,10 @@ class Gemma final : public Model {
     auto right = layer.sliding ? (causal ? 0 : layer.window / 2) : -1;
     auto scale = legacy ? 1.0 / std::sqrt(real("query_pre_attn_scalar", layer.dim)) : 1.0;
     if (device.is_cuda()) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(embedding2 && layer.dim>256 && torch_flash_fma_supported(q,k,v,causal,left,right))
+        return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,scale,causal,left,right);
+#endif
       if(layer.dim>256) {
         TORCH_CHECK(!layer.sliding,"Torch512-head packed sliding attention requires a specialized kernel");
         // cuDNN's long-sequence varlen path accepts head512, but mixed-length
@@ -348,7 +366,7 @@ class Gemma final : public Model {
       }
       at::Tensor output;
 #ifdef TEI_TORCH_CUDA_KERNELS
-      if(legacy && torch_flash_fma_supported(q,k,v))
+      if((legacy || embedding2) && torch_flash_fma_supported(q,k,v,causal,left,right))
         output=torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,scale,causal,left,right);
       else
 #endif

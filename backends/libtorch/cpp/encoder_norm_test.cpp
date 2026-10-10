@@ -6,6 +6,17 @@
 int main(int argc,char** argv) {
   c10::InferenceMode inference;
   for(auto dtype:{at::kHalf,at::kBFloat16}) {
+    auto opts=at::TensorOptions().device(c10::Device(argc>1?argv[1]:"cuda:0")).dtype(dtype);
+    auto base=at::full({2,768},32,opts);
+    auto delta=(at::arange(768,opts.dtype(at::kFloat)).remainder(2)*.008-.004).to(dtype).repeat({2,1});
+    auto gamma=at::ones({768},opts),beta=at::full({768},.25,opts);
+    auto exact=tei::encoder_layer_norm(base,gamma,1e-5,delta,beta,false);
+    auto unrounded=base.to(at::kFloat)+delta.to(at::kFloat);
+    auto oracle=at::layer_norm(unrounded,{768},gamma.to(at::kFloat),beta.to(at::kFloat),1e-5).to(dtype);
+    TORCH_CHECK((exact.first-oracle).abs().max().item<float>()<=(dtype==at::kHalf?.003:.03125),"Unrounded residual statistics or beta differs");
+    TORCH_CHECK(at::equal(exact.second,base+delta),"Returned residual sum must retain model dtype");
+    auto rounded=tei::encoder_layer_norm(base,gamma,1e-5,delta,beta,true);
+    TORCH_CHECK((exact.first-rounded.first).abs().max().item<float>()>.5,"Rounding discriminator did not exercise distinct normalization contracts");
     for(int64_t width:{8,32,40,256,768,1024,1152,1536,2048}) {
       auto options=at::TensorOptions().device(c10::Device(argc>1?argv[1]:"cuda:0")).dtype(dtype);
       auto x=at::randn({7,width},options),residual=at::randn_like(x);

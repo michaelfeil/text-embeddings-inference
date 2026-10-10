@@ -76,15 +76,20 @@ template<class T> void dispatch(layer_norm::FwdParams& p,cudaStream_t stream) {
   }
 }
 }
-std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual) {
+std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual) {
   TORCH_CHECK(x.is_cuda()&&x.is_contiguous()&&x.dim()>=2&&x.size(-1)>0,"Exact encoder norm requires contiguous CUDA token rows");
   TORCH_CHECK(weight.device()==x.device()&&weight.scalar_type()==x.scalar_type()&&weight.is_contiguous()&&weight.numel()==x.size(-1),"Encoder normalization weight mismatch");
   if(residual.defined())TORCH_CHECK(residual.device()==x.device()&&residual.scalar_type()==x.scalar_type()&&residual.is_contiguous()&&residual.sizes()==x.sizes(),"Encoder normalization residual mismatch");
+  if(bias.defined())TORCH_CHECK(bias.device()==x.device()&&bias.scalar_type()==x.scalar_type()&&bias.is_contiguous()&&bias.numel()==x.size(-1),"Encoder normalization bias mismatch");
   c10::cuda::CUDAGuard guard(x.device());
   auto normalized=at::empty_like(x),sum=residual.defined()?at::empty_like(x):at::Tensor();
   if(x.size(-1)>1536) {
     if(residual.defined())sum=x+residual;
-    return {at::layer_norm(residual.defined()?sum:x,{x.size(-1)},weight,at::Tensor(),epsilon),sum};
+    if(residual.defined()&&!round_residual) {
+      auto stats=x.to(at::kFloat)+residual.to(at::kFloat);
+      return {at::layer_norm(stats,{x.size(-1)},weight.to(at::kFloat),bias.defined()?bias.to(at::kFloat):at::Tensor(),epsilon).to(x.scalar_type()),sum};
+    }
+    return {at::layer_norm(residual.defined()?sum:x,{x.size(-1)},weight,bias,epsilon),sum};
   }
   layer_norm::FwdParams p;
   p.rows=x.numel()/x.size(-1);p.cols=x.size(-1);
@@ -92,8 +97,8 @@ std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at
   p.residual=residual.defined()?const_cast<void*>(residual.const_data_ptr()):nullptr;
   p.x=sum.defined()?sum.mutable_data_ptr():nullptr;p.z=normalized.mutable_data_ptr();
   p.dmask=nullptr;p.dmask1=nullptr;p.x0_subset=nullptr;p.z_subset=nullptr;
-  p.gamma=const_cast<void*>(weight.const_data_ptr());p.epsilon=epsilon;
-  p.inverse_cols=1.f/p.cols;p.dropout_keep_p=1.f;p.dropout_scale=1.f;p.rowscale_const=1.f;p.round_residual=true;
+  p.gamma=const_cast<void*>(weight.const_data_ptr());p.beta=bias.defined()?const_cast<void*>(bias.const_data_ptr()):nullptr;p.epsilon=epsilon;
+  p.inverse_cols=1.f/p.cols;p.dropout_keep_p=1.f;p.dropout_scale=1.f;p.rowscale_const=1.f;p.round_residual=round_residual;
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
   if(x.scalar_type()==at::kHalf)dispatch<half>(p,stream);
   else if(x.scalar_type()==at::kBFloat16)dispatch<nv_bfloat16>(p,stream);

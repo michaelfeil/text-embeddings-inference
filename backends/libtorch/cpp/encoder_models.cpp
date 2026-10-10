@@ -2,6 +2,7 @@
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
 #include "encoder_norm.h"
+#include "encoder_activation.h"
 #include "torch_flash_fma.h"
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
@@ -23,6 +24,7 @@ struct Encoder final : Model {
   double eps;
   std::string prefix, activation;
   bool exact_norm = false;
+  bool exact_moe = false;
   struct Layer {
     at::Tensor qkv_weight, qkv_bias;
     at::Tensor gate_weight, gate_bias;
@@ -39,6 +41,7 @@ struct Encoder final : Model {
     layers = o.integer(distil ? "n_layers" : nomic ? "n_layer" : "num_hidden_layers", 12);
     eps = o.real(distil ? "unused" : nomic ? "layer_norm_epsilon" : f == Family::Modern ? "norm_eps" : "layer_norm_eps", 1e-12);
     activation = o.string(distil ? "activation" : nomic ? "activation_function" : f == Family::Modern ? "hidden_activation" : "hidden_act", "gelu");
+    exact_moe=nomic&&o.integer("num_experts",0)>0;
     const char* norm_mode=std::getenv("TEI_TORCH_EXACT_ENCODER_NORM");
     // Preserve Candle normalization and rounded residuals for deep rotary encoders.
     // An explicit zero opts into the ATen diagnostic path.
@@ -70,12 +73,14 @@ struct Encoder final : Model {
   }
   at::Tensor norm(const at::Tensor& x, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,at::Tensor(),bias(n),false).first;
     if(exact_norm&&family==Family::Modern&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps).first;
 #endif
     return at::layer_norm(x, {hidden}, w(n + (has(n + ".weight") ? ".weight" : ".gamma")), family == Family::Modern ? at::Tensor() : bias(n), eps);
   }
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,residual,bias(n),false).first;
     if (x.is_cuda()) return fused_add_layer_norm(x, residual,
       w(n + (has(n + ".weight") ? ".weight" : ".gamma")),
       family == Family::Modern ? at::Tensor() : bias(n), eps);
@@ -219,7 +224,14 @@ struct Encoder final : Model {
       auto matches = at::nonzero(experts == e);
       if (!matches.size(0)) continue;
       auto rows = matches.select(1, 0), slots = matches.select(1, 1);
-      auto contribution = at::matmul(act(at::linear(h.index_select(0, rows), first[e])), second[e]);
+      auto expert_hidden=at::linear(h.index_select(0,rows),first[e]);
+      at::Tensor expert_act;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(expert_hidden.is_cuda()&&activation=="gelu")expert_act=encoder_gelu(expert_hidden);
+      else
+#endif
+      expert_act=act(expert_hidden);
+      auto contribution=at::matmul(expert_act,second[e]);
       auto selected = scores.index_select(0, rows).gather(1, slots.unsqueeze(1));
       output.index_add_(0, rows, contribution * selected);
     }
@@ -227,7 +239,7 @@ struct Encoder final : Model {
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if(family==Family::Modern && !bias && torch_flash_fma_supported(q,k,v))
+    if((family==Family::Modern||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
       return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
 #endif

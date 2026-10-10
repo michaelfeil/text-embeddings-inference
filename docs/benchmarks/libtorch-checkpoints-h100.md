@@ -4,23 +4,21 @@ Measured on 2026-10-10 with Torch 2.14.1. Each runtime loads the same checkpoint
 
 ## Qwen3-Embedding-0.6B
 
-FP16 with last-token pooling and CUDA graphs enabled. Capture cost is excluded after warmup. The cache matches exact sequence boundaries and holds four shapes; variable production batches can miss it.
+FP16 with last-token pooling, 200 measured iterations and 20 warmups per backend. These integrated regressions use the private-FMA accepted runtime, with native attention and RMS selectors unchanged for this configuration. CUDA graphs are enabled with a 4096-token cap and four captured shapes; larger batches run eagerly. BLAS settings are `TORCH_BLAS_PREFER_CUBLASLT=1` and `CUBLASLT_WORKSPACE_SIZE=32768` (KiB). Capture cost is excluded after warmup.
 
 | Workload | Torch / Candle P50, ms | Swapped Torch / Candle P50, ms | Worst slowdown |
 |---|---:|---:|---:|
-| 1x32 | 1.332 / 2.203 | 1.346 / 2.115 | -36.4% |
-| 1x128 | 1.610 / 2.494 | 1.517 / 2.418 | -35.5% |
-| 8x128 | 3.047 / 3.964 | 3.047 / 3.955 | -22.9% |
-| 32x128 | 9.883 / 9.783 | 9.868 / 9.750 | +1.2% |
-| 32 ragged 32..256 | 12.100 / 12.160 | 12.126 / 12.130 | -0.0% |
-| 8x512 | 11.017 / 11.437 | 11.040 / 11.403 | -3.2% |
-| 32x512 | 42.467 / 41.656 | 42.293 / 41.658 | +1.9% |
+| 1x32 | 1.321 / 2.315 | 1.323 / 2.247 | -41.11% |
+| 1x128 | 1.627 / 2.458 | 1.628 / 2.512 | -33.81% |
+| 8x128 | 2.850 / 3.921 | 2.862 / 3.958 | -27.32% |
+| 32x128 | 9.090 / 9.842 | 9.207 / 9.781 | -5.86% |
+| 32 ragged 32..256 | 11.237 / 12.244 | 11.381 / 12.181 | -6.57% |
+| 8x512 | 9.391 / 11.447 | 9.639 / 11.419 | -15.59% |
+| 32x512 | 36.225 / 42.144 | 36.845 / 41.725 | -11.69% |
 
-Minimum embedding cosine across both runs: 0.999992093. Inputs use the checkpoint-configured BOS/EOS token IDs. The 5% P50 target is met for all seven measured workloads. Other checkpoints and latency percentiles need separate validation.
+Minimum embedding cosine across both assignments: 0.999992935. All seven workloads meet the 5% P50 target on both assignments. Reports record immutable binary and native-library identities.
 
-Raw measurements: [tei-qwen3-graphs-6-7.json](tei-qwen3-graphs-6-7.json).
-
-Raw measurements: [tei-qwen3-graphs-7-6.json](tei-qwen3-graphs-7-6.json).
+Raw measurements: [0/1](tei-qwen3-v6-graphs-0-1.json), [1/0](tei-qwen3-v6-graphs-1-0.json).
 
 ## GTE-base-en-v1.5
 
@@ -64,21 +62,21 @@ Raw measurements: [tei-bert-fused-final-graphs-1-0.json](tei-bert-fused-final-gr
 
 ## E5-Mistral-7B-Instruct
 
-FP16 and last-token pooling, 200 iterations per backend. These paired H100 results require `TEI_TORCH_CUDA_GRAPHS=1`, eligible packed `TEI_TORCH_CUDNN_VARLEN=1`, `TORCH_BLAS_PREFER_CUBLASLT=1` and `CUBLASLT_WORKSPACE_SIZE=32768` (KiB). The graph cap is 4096 tokens; larger batches execute eagerly. Packed cuDNN is bypassed when a configured sliding window restricts attention.
+FP16 with last-token pooling, 200 measured iterations and 20 warmups per backend. These integrated regressions use the private-FMA accepted runtime, with native attention and RMS selectors unchanged for this configuration. CUDA graphs are enabled with a 4096-token cap and four captured shapes; larger batches run eagerly. BLAS settings are `TORCH_BLAS_PREFER_CUBLASLT=1` and `CUBLASLT_WORKSPACE_SIZE=32768` (KiB). Capture cost is excluded after warmup.
 
 | Workload | Torch / Candle P50, ms | Swapped Torch / Candle P50, ms | Worst slowdown |
 |---|---:|---:|---:|
-| 1x32 | 6.616 / 6.660 | 6.561 / 6.728 | -0.7% |
-| 1x128 | 7.372 / 7.934 | 7.360 / 7.970 | -7.1% |
-| 8x128 | 25.970 / 26.177 | 26.409 / 25.834 | +2.2% |
-| 32x128 | 103.373 / 101.395 | 104.763 / 100.309 | +4.4% |
-| 32 ragged 32..256 | 117.831 / 117.583 | 119.946 / 115.791 | +3.6% |
-| 8x512 | 103.123 / 105.482 | 105.131 / 104.115 | +1.0% |
-| 32x512 | 400.851 / 410.000 | 406.746 / 402.375 | +1.1% |
+| 1x32 | 6.562 / 6.730 | 6.510 / 6.732 | -2.50% |
+| 1x128 | 7.280 / 7.997 | 7.301 / 7.998 | -8.72% |
+| 8x128 | 25.314 / 26.164 | 25.732 / 25.904 | -0.66% |
+| 32x128 | 100.997 / 101.696 | 102.782 / 100.237 | +2.54% |
+| 32 ragged 32..256 | 115.288 / 117.393 | 117.070 / 115.719 | +1.17% |
+| 8x512 | 100.726 / 105.608 | 102.497 / 103.897 | -1.35% |
+| 32x512 | 392.202 / 410.233 | 398.047 / 402.780 | -1.17% |
 
-Minimum embedding cosine across both runs: 0.999998713. All measured workloads meet the 5% P50 target with these settings.
+Minimum embedding cosine across both assignments: 0.999998900. All seven workloads meet the 5% P50 target on both assignments. Reports record immutable binary and native-library identities.
 
-Raw measurements: [tei-mistral-lt32-v2-graphs-0-1.json](tei-mistral-lt32-v2-graphs-0-1.json), [tei-mistral-lt32-v2-graphs-1-0.json](tei-mistral-lt32-v2-graphs-1-0.json).
+Raw measurements: [0/1](tei-mistral-v6-graphs-0-1.json), [1/0](tei-mistral-v6-graphs-1-0.json).
 
 ## Additional trained families and remaining gaps
 
@@ -89,8 +87,10 @@ These runs use exact packed mean pooling, except DistilBERT and ModernBERT MLM (
 | DistilBERT base uncased | 7 | +3.82% | 0.999997784 | Meets measured target |
 | ModernBERT embed base (private Torch FMA) | 7 | -9.99% | 1.0 (bitwise) | Meets measured target |
 | ModernBERT base MLM CLS (private Torch FMA) | 7 | -11.10% | 1.0 (bitwise) | Meets measured target |
+| EmbeddingGemma2 text and image only | 8 | +2.27% | 1.0 (bitwise) | Meets measured target; audio fails |
 | EmbeddingGemma 300M plus both Dense heads | 7 | +1.20% | 1.0 (bitwise) | Meets measured target |
 | Qwen3-30B-A3B BF16 MoE | 7 | +1.75% | 1.0 (bitwise) | Meets measured target |
+| Nomic embed text v2 MoE | 7 | -62.84% | 0.999239679 (including arbitrary IDs) | Meets measured target |
 | Nomic embed text v1.5 | 7 | -44.68% | 0.999998367 | Meets measured target |
 | Qwen3-VL embedding 2B | 9 | +1.49% | 0.999994471 | Meets measured target |
 | Qwen3.5 0.8B | 9 | -24.68% | 0.999961894 | Meets measured target |
@@ -107,6 +107,7 @@ Raw paired measurements:
 - ModernBERT embedding: [private Torch FMA 2/3](tei-modernbert-embedding-mean-private-torch-fma-2-3.json), [private Torch FMA 3/2](tei-modernbert-embedding-mean-private-torch-fma-3-2.json).
 - ModernBERT MLM CLS: [private Torch FMA 2/3](tei-modernbert-mlm-cls-private-torch-fma-2-3.json), [private Torch FMA 3/2](tei-modernbert-mlm-cls-private-torch-fma-3-2.json), [official and arbitrary-ID correctness](tei-modernbert-private-torch-fma-correctness.json).
 - Gemma3 embedding plus both Dense heads: [private Torch FMA 4/5](gemma3-private-torch-fma-full-graphs-4-5.json), [private Torch FMA 5/4](gemma3-private-torch-fma-full-graphs-5-4.json).
+- Nomic embed text v2 MoE: [integrated 2/3](tei-nomic-v2-moe-integrated-mean-2-3.json), [integrated 3/2](tei-nomic-v2-moe-integrated-mean-3-2.json), [official and arbitrary-ID accuracy](tei-nomic-v2-moe-integrated-correctness.json), [exhaustive actual Candle unary oracle](tei-nomic-expert-gelu-candle-unary-oracle.json). All eight accuracy cases and both paired latency comparisons pass; graphs remain disabled for the data-dependent routing path.
 - Nomic embed text v1.5: [tei-nomic-mean-packedpool-graphs-benchmark-2-3.json](tei-nomic-mean-packedpool-graphs-benchmark-2-3.json), [tei-nomic-mean-packedpool-graphs-benchmark-3-2.json](tei-nomic-mean-packedpool-graphs-benchmark-3-2.json).
 - Qwen3-VL embedding 2B: [tei-qwen3vl-full-graphs-4-5-metadata.json](tei-qwen3vl-full-graphs-4-5-metadata.json), [tei-qwen3vl-full-graphs-5-4-metadata.json](tei-qwen3vl-full-graphs-5-4-metadata.json).
 - Qwen3.5 0.8B: [tei-qwen35-full-graphs-fixed-4-5-metadata.json](tei-qwen35-full-graphs-fixed-4-5-metadata.json), [tei-qwen35-full-graphs-fixed-5-4-metadata.json](tei-qwen35-full-graphs-fixed-5-4-metadata.json).
@@ -114,14 +115,14 @@ Raw paired measurements:
 - Jina v2 base en: [tei-jina-mean-packedalibi-final-graphs-benchmark-2-3.json](tei-jina-mean-packedalibi-final-graphs-benchmark-2-3.json), [tei-jina-mean-packedalibi-final-graphs-benchmark-3-2.json](tei-jina-mean-packedalibi-final-graphs-benchmark-3-2.json).
 - Jina v2 base code: [tei-jina-code-mean-packedalibi-final-graphs-benchmark-2-3.json](tei-jina-code-mean-packedalibi-final-graphs-benchmark-2-3.json), [tei-jina-code-mean-packedalibi-final-graphs-benchmark-3-2.json](tei-jina-code-mean-packedalibi-final-graphs-benchmark-3-2.json).
 
-EmbeddingGemma2 remains unqualified. Its latest exact-pooling run has minimum text cosine 0.995607, image cosine 0.993262 and audio cosine 0.998332. The image P50 is 4.877 ms versus Candle 4.603 ms. These failures are retained in [the full Gemma run](tei-gemma-exact-pool-full-graphs-4-5.json).
+EmbeddingGemma2 remains partly unqualified: all seven text workloads and the image workload now match Candle bitwise and meet the P50 target in both GPU assignments (worst +2.27%). The image path preserves the grouped model-dtype position sum, exact vision norm arithmetic and sequential spatial-pool accumulation. These integrated 40-iteration reports use the production library without preload: [4/5](embeddinggemma2-private-torch-fma-vision-full-graphs-4-5.json), [5/4](embeddinggemma2-private-torch-fma-vision-full-graphs-5-4.json). Audio still fails accuracy at cosine 0.998591809, despite substantially faster measured execution, and is explicitly unqualified. Earlier text/image/audio failures are retained in [the historical full Gemma run](tei-gemma-exact-pool-full-graphs-4-5.json).
 
 Historical Jina per-sequence Torch attention reports: [Jina 2/3](tei-jina-mean-packedpool-graphs-benchmark-2-3.json), [Jina 3/2](tei-jina-mean-packedpool-graphs-benchmark-3-2.json), [JinaCode 2/3](tei-jina-code-mean-packedpool-graphs-benchmark-2-3.json), [JinaCode 3/2](tei-jina-code-mean-packedpool-graphs-benchmark-3-2.json). Updated Jina/JinaCode artifacts use accepted native library SHA256 `3a97963f4ca9b50757be1ecf7db08f24f6f5ad8293812c3b3bfede271c928793`, FP16 mean pooling, 100 iterations, 20 warmups, graphs enabled and a 16384-token graph cap.
 
-Current decoder failures are retained separately: trained BF16 mean-pooled
+Earlier decoder failures are retained separately: trained BF16 mean-pooled
 [Nemotron Llama 1B](tei-llama-nemotron-lt32-v5-graphs-6-7.json) passes the
 cosine gate but misses latency by up to 8.59% in a single GPU assignment.
-[Qwen3-30B-A3B](tei-qwen3-moe-v5-failed-0-1.json) stops at the unchanged
+The historical [Qwen3-30B-A3B](tei-qwen3-moe-v5-failed-0-1.json) run stopped at the unchanged
 accuracy gate on the first 1x32 workload (cosine 0.998809860); that run does
 not establish latency across the remaining workloads. Correct routing-kernel
 oracles alone do not qualify these complete models.
@@ -138,6 +139,6 @@ including classifier logits, without padded Q/K/V tokens.
 
 ## Qwen2 and routed decoder qualification in progress
 
-GTE Qwen2 1.5B passes accuracy across seven workloads, with minimum cosine 0.999965304. Paired rotary and 32-bit gated indexing pass the latency target on the first GPU assignment, but swapped 32x128 remains +11.20%; qualification is incomplete. Both reports retain all measured results: [6/7](tei-qwen2-trained-paired-operators-6-7.json), [7/6](tei-qwen2-trained-paired-operators-7-6.json).
+GTE Qwen2 1.5B now passes accuracy and the 5% P50 latency target for all seven workloads in both GPU assignments: 500 measured iterations per backend, minimum cosine 0.999965304, worst slowdown +3.88%. Aligned eight-lane FP16 loads improve gated MLP memory traffic while retaining the scalar arithmetic; narrower and unaligned inputs retain bounded fallbacks. Paired rotary preserves the original model-dtype rounding. Integrated immutable-library reports: [6/7](tei-qwen2-trained-integrated-gate8-6-7.json), [7/6](tei-qwen2-trained-integrated-gate8-7-6.json). Earlier paired-operator reports retain the swapped 32x128 +11.20% miss: [6/7](tei-qwen2-trained-paired-operators-6-7.json), [7/6](tei-qwen2-trained-paired-operators-7-6.json).
 
 Qwen3 MoE originally failed the trained accuracy gate. An independent full 48-layer trace isolates two numerical causes: unfused Torch softmax arithmetic and a different residual RMS reduction. Correcting both matches all hidden states and expert routing bitwise; correcting either alone does not. The [numerical trace evidence](tei-qwen3-moe-numerical-trace-evidence.json) is distinct from full integrated accuracy and latency qualification, which now passes: all seven workloads in both GPU assignments match bitwise and meet the 5% P50 target. These 200-iteration reports use eager execution (actual graph count 0) and private Torch Flash attention; cuDNN being requested does not mean it ran on this configuration. Raw results: [0/1](tei-qwen3-moe-private-torch-fma-eager-0-1.json), [1/0](tei-qwen3-moe-private-torch-fma-eager-1-0.json).

@@ -167,17 +167,19 @@ template<class T> __global__ void gated_kernel(const T* x,T* out,int64_t count,i
   auto row=i/width,col=i%width;
   out[i]=gated_value<T>(float(x[row*2*width+col+(gate_first?0:width)]),float(x[row*2*width+col+(gate_first?width:0)]),activation);
 }
-template<class T> struct alignas(sizeof(T)*4) GatedVector4 {T value[4];};
-template<class T,class Index> __global__ void gated_vector4_kernel(const T* x,T* out,Index count,Index width,int activation,bool gate_first) {
-  Index index=Index(blockIdx.x)*blockDim.x+threadIdx.x;if(index>=count/4)return;
-  auto vectors_per_row=width/4,row=index/vectors_per_row,col=index%vectors_per_row;
-  const auto* input=reinterpret_cast<const GatedVector4<T>*>(x);
+// Eight model-dtype lanes use one aligned 128-bit load for FP16/BF16.
+// The four-lane and scalar fallbacks preserve exact arithmetic for other views.
+template<class T,int Lanes> struct alignas(sizeof(T)*Lanes) GatedVector {T value[Lanes];};
+template<class T,class Index,int Lanes> __global__ void gated_vector_kernel(const T* x,T* out,Index count,Index width,int activation,bool gate_first) {
+  Index index=Index(blockIdx.x)*blockDim.x+threadIdx.x;if(index>=count/Lanes)return;
+  auto vectors_per_row=width/Lanes,row=index/vectors_per_row,col=index%vectors_per_row;
+  const auto* input=reinterpret_cast<const GatedVector<T,Lanes>*>(x);
   const auto gate=input[row*2*vectors_per_row+col+(gate_first?0:vectors_per_row)];
   const auto up=input[row*2*vectors_per_row+col+(gate_first?vectors_per_row:0)];
-  GatedVector4<T> result;
+  GatedVector<T,Lanes> result;
 #pragma unroll
-  for(int lane=0;lane<4;++lane)result.value[lane]=gated_value<T>(float(gate.value[lane]),float(up.value[lane]),activation);
-  reinterpret_cast<GatedVector4<T>*>(out)[index]=result;
+  for(int lane=0;lane<Lanes;++lane)result.value[lane]=gated_value<T>(float(gate.value[lane]),float(up.value[lane]),activation);
+  reinterpret_cast<GatedVector<T,Lanes>*>(out)[index]=result;
 }
 template<class T> __device__ __forceinline__ T encoder_rotary_fma(T a,T b,T c) {
   return T(fmaf(float(a),float(b),float(c)));
@@ -296,9 +298,13 @@ at::Tensor fused_gated_activation(const at::Tensor& x,int32_t activation,bool ga
   c10::cuda::CUDAGuard guard(x.device());auto shape=x.sizes().vec();shape.back()/=2;auto output=at::empty(shape,x.options());if(output.numel()==0)return output;
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
 #define TEI_GATE(T) do { \
-  if(shape.back()%4==0 && reinterpret_cast<uintptr_t>(x.const_data_ptr())%(4*x.element_size())==0) { \
-    if(x.numel()<=UINT32_MAX) gated_vector4_kernel<T,uint32_t><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
-    else gated_vector4_kernel<T,int64_t><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+  if(x.element_size()==2 && shape.back()%8==0 && reinterpret_cast<uintptr_t>(x.const_data_ptr())%16==0) { \
+    if(x.numel()<=UINT32_MAX) gated_vector_kernel<T,uint32_t,8><<<(output.numel()/8+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+    else gated_vector_kernel<T,int64_t,8><<<(output.numel()/8+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+  } \
+  else if(shape.back()%4==0 && reinterpret_cast<uintptr_t>(x.const_data_ptr())%(4*x.element_size())==0) { \
+    if(x.numel()<=UINT32_MAX) gated_vector_kernel<T,uint32_t,4><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+    else gated_vector_kernel<T,int64_t,4><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
   } \
   else gated_kernel<T><<<(output.numel()+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
 } while(false)

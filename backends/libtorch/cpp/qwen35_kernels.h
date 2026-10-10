@@ -1,6 +1,8 @@
 #pragma once
 #include "model.h"
 namespace tei {
+at::Tensor gemma_vision_norm_cuda(const at::Tensor&,const at::Tensor&,double);
+at::Tensor gemma_vision_pool_cuda(const at::Tensor&,int64_t,int64_t,int64_t);
 at::Tensor gemma_norm_cuda(const at::Tensor&,const at::Tensor&,double,bool);
 at::Tensor gemma_gated_cuda(const at::Tensor&,bool);
 at::Tensor gemma_activation_cuda(const at::Tensor&,bool);

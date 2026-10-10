@@ -132,6 +132,21 @@ int main(int argc,char** argv) {
       auto rounded=batch;rounded.images[0].pixels=batch.images[0].pixels.to(at::kBFloat16).to(at::kFloat);
       TORCH_CHECK(!at::equal(precise,bf16_visual->forward(rounded)),family," vision pixel precision regression fixture was insensitive to premature BF16 conversion");
       std::cout<<family<<": FP32 image normalization before BF16 projection passed\n";
+      // Preadding a constant row-position table to every column table is
+      // equivalent only when the two position embeddings round before the
+      // projected patches are added (the authoritative Candle grouping).
+      const std::string table_key="vision_tower.patch_embedder.position_embedding_table";
+      Weights position_weights=bf16_weights;
+      position_weights[table_key]=bf16_weights.at(table_key).clone();
+      position_weights[table_key].select(0,1).fill_(1./3.);
+      Weights grouped_position_weights=position_weights;
+      auto table=position_weights.at(table_key);
+      grouped_position_weights[table_key]=at::stack({table.select(0,0)+table.select(0,1).select(0,0),at::zeros_like(table.select(0,1))});
+      auto original_positions=create_gemma(f.cfg,position_weights,c10::Device("cpu"),at::kBFloat16);
+      auto preadded_positions=create_gemma(f.cfg,grouped_position_weights,c10::Device("cpu"),at::kBFloat16);
+      original_positions->ready();preadded_positions->ready();
+      TORCH_CHECK(at::equal(original_positions->forward(batch),preadded_positions->forward(batch)),family," vision added position embeddings after projected patches rather than grouping the BF16 position sum first");
+      std::cout<<family<<": BF16 position-table addition grouping passed\n";
       if(f.embedding2) {
         f.cfg.values["audio_config.hidden_size"]="8";f.cfg.values["audio_config.num_attention_heads"]="2";
         f.cfg.values["audio_config.num_hidden_layers"]="1";f.cfg.values["audio_config.attention_chunk_size"]="2";

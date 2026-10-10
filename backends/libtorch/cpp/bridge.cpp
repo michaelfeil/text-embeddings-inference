@@ -7,6 +7,7 @@
 #include <ATen/detail/CUDAHooksInterface.h>
 #endif
 #include "decoder_models.h"
+#include "moe_kernels.h"
 #include "decision_models.h"
 #include "dense_models.h"
 #include "encoder_models.h"
@@ -273,8 +274,19 @@ struct Engine {
     TORCH_CHECK(model->output_width() > 0, "Model must declare a positive output width");
     dense->output_width(options.string("_pooling") == "splade" ? config.vocab : model->output_width());
     media_graphs=options.boolean("_media_cuda_graphs",false);
+    // Only the trained Hopper BF16 geometry with device-only routing has
+    // qualified capture/replay. Other MoE geometries retain eager execution.
+    bool native_moe_graphs=false;
+#if defined(TEI_TORCH_MOE_KERNELS) && defined(TEI_TORCH_MOE_HOPPER)
+    if(device.is_cuda()&&dtype==at::kBFloat16&&family=="qwen3_moe"
+      &&options.integer("hidden_size",0)==2048&&options.integer("num_experts",0)==128
+      &&options.integer("num_experts_per_tok",0)==8&&options.integer("moe_intermediate_size",0)==768
+      &&options.integer("head_dim",0)==128&&options.integer("num_attention_heads",0)==32
+      &&options.integer("num_key_value_heads",0)==4)
+      native_moe_graphs=tei::native_hopper_moe_available(device);
+#endif
     if (device.is_cuda() && options.boolean("_cuda_graphs", false)
-        && options.integer("num_experts", options.integer("text_config.num_experts", 0)) == 0
+        && (native_moe_graphs || (options.integer("num_experts", options.integer("text_config.num_experts", 0)) == 0
         && options.integer("moe_every_n_layers", options.integer("text_config.moe_every_n_layers", 0)) == 0
         && !options.boolean("enable_moe_block", options.boolean("text_config.enable_moe_block", false))
         && (family == "bert" || family == "roberta"
@@ -282,7 +294,7 @@ struct Engine {
         || family == "mpnet" || family == "deberta-v2" || family == "gte" || family == "nomic_bert" || family == "llama" || family == "mistral"
         || family == "qwen2" || family == "qwen3" || family == "gemma3" || family == "gemma3_text"
         || family == "gemma4" || family == "gemma4_text" || family == "embedding_gemma2"
-        || (media_graphs && (family == "qwen3_vl" || family == "qwen3_vl_text" || family == "qwen3_5" || family == "qwen3_5_text")))) graphs = std::make_unique<tei::CudaGraphCache>(4, options.integer("_cuda_graph_max_tokens", 4096));
+        || (media_graphs && (family == "qwen3_vl" || family == "qwen3_vl_text" || family == "qwen3_5" || family == "qwen3_5_text")))))) graphs = std::make_unique<tei::CudaGraphCache>(4, options.integer("_cuda_graph_max_tokens", 4096));
   }
 };
 tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* types,

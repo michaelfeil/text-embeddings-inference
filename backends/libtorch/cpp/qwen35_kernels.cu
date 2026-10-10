@@ -76,6 +76,54 @@ at::Tensor gemma_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double ep
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output;
 }
+// Adapted from Candle rmsnorm_f32_math and scatter_add at revision
+// 036f39e44015e78ba18d716d73dfdc2e78730c44. Their complete MIT notice:
+// Permission is hereby granted, free of charge, to any
+// person obtaining a copy of this software and associated
+// documentation files (the "Software"), to deal in the
+// Software without restriction, including without
+// limitation the rights to use, copy, modify, merge,
+// publish, distribute, sublicense, and/or sell copies of
+// the Software, and to permit persons to whom the Software
+// is furnished to do so, subject to the following
+// conditions:
+//
+// The above copyright notice and this permission notice
+// shall be included in all copies or substantial portions
+// of the Software.
+//
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+// ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+// TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+// PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+// SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+// CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+// OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+// IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+// DEALINGS IN THE SOFTWARE.
+// The spatial gather visits each real pooling bin in the original sequential
+// row-major scatter order, without synthetic image patches or token padding.
+__global__ void exact_vision_norm(const __nv_bfloat16*x,const float*alpha,__nv_bfloat16*out,int width,float eps){
+ int row=blockIdx.x,tid=threadIdx.x;__shared__ float sums[1024];float sum=0;
+ for(int col=tid;col<width;col+=blockDim.x){float v=float(x[row*width+col]);sum=__fadd_rn(sum,__fmul_rn(v,v));}
+ sums[tid]=sum;
+ for(int stride=blockDim.x/2;stride>0;stride>>=1){__syncthreads();if(tid<stride)sums[tid]=__fadd_rn(sums[tid],sums[tid+stride]);}
+ __syncthreads();float variance=__fadd_rn(__fmul_rn(sums[0],float(1./double(width))),eps);float denominator=__fsqrt_rn(variance);
+ for(int col=tid;col<width;col+=blockDim.x){float normalized=__fdiv_rn(float(x[row*width+col]),denominator);out[row*width+col]=__float2bfloat16_rn(__fmul_rn(normalized,alpha[col]));}
+}
+at::Tensor gemma_vision_norm_cuda(const at::Tensor&x,const at::Tensor&scale,double eps){
+ c10::cuda::CUDAGuard guard(x.device());TORCH_CHECK(x.scalar_type()==at::kBFloat16&&scale.scalar_type()==at::kFloat&&x.is_contiguous()&&scale.is_contiguous()&&scale.device()==x.device()&&x.dim()>=2&&x.dim()<=3&&x.size(-1)>0&&x.size(-1)<=8192&&scale.numel()==x.size(-1)&&x.numel()>0&&x.numel()<=INT32_MAX,"Invalid packed Gemma vision FP32 norm geometry");auto out=at::empty_like(x);int w=x.size(-1),threads=1;while(threads<w&&threads<1024)threads*=2;
+ exact_vision_norm<<<x.numel()/w,threads,0,at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),scale.const_data_ptr<float>(),reinterpret_cast<__nv_bfloat16*>(out.mutable_data_ptr()),w,eps);C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
+
+__global__ void exact_vision_pool(const __nv_bfloat16*x,float*out,int height,int width,int hidden,int kernel,float inv,float scale){
+ int i=blockIdx.x*blockDim.x+threadIdx.x;int bins=(height/kernel)*(width/kernel);if(i>=bins*hidden)return;
+ int bin=i/hidden,column=i%hidden,by=bin/(width/kernel),bx=bin%(width/kernel);float sum=0;
+ for(int y=0;y<kernel;++y)for(int xcol=0;xcol<kernel;++xcol){int patch=(by*kernel+y)*width+bx*kernel+xcol;sum=__fadd_rn(sum,__fmul_rn(float(x[patch*hidden+column]),inv));}
+ float rounded=float(__float2bfloat16_rn(sum));out[i]=__fmul_rn(rounded,scale);
+}
+at::Tensor gemma_vision_pool_cuda(const at::Tensor&x,int64_t height,int64_t width,int64_t kernel){c10::cuda::CUDAGuard guard(x.device());TORCH_CHECK(x.scalar_type()==at::kBFloat16&&x.is_contiguous()&&x.dim()==2&&height>0&&width>0&&kernel>0&&height<=INT32_MAX/width&&height*width==x.size(0)&&height%kernel==0&&width%kernel==0&&x.size(1)>0&&x.numel()<=INT32_MAX,"Invalid packed Gemma vision spatial pool geometry");auto out=at::empty({height*width/(kernel*kernel),x.size(1)},x.options().dtype(at::kFloat));exact_vision_pool<<<(out.numel()+255)/256,256,0,at::cuda::getCurrentCUDAStream()>>>(reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),out.mutable_data_ptr<float>(),height,width,x.size(1),kernel,float(1./double(kernel*kernel)),float(sqrt(double(x.size(1)))));C10_CUDA_KERNEL_LAUNCH_CHECK();return out;}
+
 at::Tensor qwen35_delta_cuda(const at::Tensor& qkv, const at::Tensor& z,
   const at::Tensor& ab, const at::Tensor& conv, const at::Tensor& a_log,
   const at::Tensor& dt_bias, const at::Tensor& norm, const PackedInput& input,

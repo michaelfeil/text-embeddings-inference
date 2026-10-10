@@ -64,11 +64,13 @@ int main(){c10::InferenceMode guard;
     close(tei::fused_gated_activation(both,5,gate_first),(gate/denominator)*up,tol,"Candle precise gated SiLU");
    }
    if(width%4==0) {
-    auto storage=at::empty({both.numel()+1},opts);
-    auto unaligned=storage.narrow(0,1,both.numel()).view_as(both);
-    unaligned.copy_(both);
-    for(int code=0;code<=5;++code)for(bool gate_first:{false,true})
-      close(tei::fused_gated_activation(both,code,gate_first),tei::fused_gated_activation(unaligned,code,gate_first),0,"vector4/scalar gated activation parity");
+    for(int offset:{1,4}) {
+      auto storage=at::empty({both.numel()+offset},opts);
+      auto unaligned=storage.narrow(0,offset,both.numel()).view_as(both);
+      unaligned.copy_(both);
+      for(int code=0;code<=5;++code)for(bool gate_first:{false,true})
+        close(tei::fused_gated_activation(both,code,gate_first),tei::fused_gated_activation(unaligned,code,gate_first),0,"aligned/misaligned gated activation parity");
+    }
    }
    for(bool approx:{false,true}) {
     close(tei::fused_gelu(x,approx),at::gelu(x,approx?"tanh":"none"),tol,"GELU");

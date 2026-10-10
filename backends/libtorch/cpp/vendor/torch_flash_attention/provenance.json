@@ -31,5 +31,14 @@
     "FLASHATTENTION_DISABLE_SOFTCAP",
     "FLASHATTENTION_DISABLE_UNEVEN_K"
   ],
-  "private_compile_scope": "Forward inference only; zero dropout; no ALiBi/softcap; exact head widths64/128/256. Ragged actual token lengths and local attention remain enabled."
+  "private_compile_scope": "Forward inference only; zero dropout; no ALiBi/softcap; exact head widths64/128/256, plus restricted SM90 BF16 noncausal global width512. Ragged actual token lengths and local attention remain enabled for64/128/256.",
+  "head512_specialization": {
+    "traits": "Flash_fwd_kernel_traits<512,64,32,4,false,false,cutlass::bfloat16_t>",
+    "dynamic_shared_memory_bytes": 131072,
+    "architecture": "SM90 with sufficient optin shared memory",
+    "dtype": "BF16",
+    "mask": "noncausal global only",
+    "fallback": "unsupported geometry/dtype/architecture retains native efficient attention",
+    "token_padding": false
+  }
 }
