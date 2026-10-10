@@ -1,0 +1,292 @@
+{
+  "candle_gpu": 3,
+  "candle_load_seconds": 0.545580942,
+  "checkpoint_revision": "322d4d7e2f35e84137961a65af894fda0385eb7a",
+  "cls_token_id": 101,
+  "dtype": "float16",
+  "input_pattern": "synthetic valid vocabulary IDs with configured special tokens and router position offset; no padding",
+  "iterations_per_backend": 100,
+  "measurement_mode": "parallel separate GPUs",
+  "model_path": "/tmp/tei-jina-benchmark-model",
+  "model_type": "bert",
+  "pooling": "mean",
+  "position_offset": 0,
+  "sep_token_id": 102,
+  "torch_cuda_graph_count": 4,
+  "torch_cuda_graph_max_tokens": "16384",
+  "torch_cuda_graphs_requested": true,
+  "torch_cudnn_varlen_requested": false,
+  "torch_gpu": 2,
+  "torch_load_seconds": 3.402111645,
+  "vocab_size": 30528,
+  "warmup_per_backend": 20,
+  "workloads": [
+    {
+      "candle": {
+        "min_ms": 1.0670320000000002,
+        "p50_ms": 1.09538,
+        "p95_ms": 1.152239,
+        "tokens_per_second_at_p50": 29213.60623710493
+      },
+      "lengths": [
+        32
+      ],
+      "max_output_absolute_difference": 0.001953125,
+      "min_output_cosine": 0.9999996860080291,
+      "tokens": 32,
+      "torch": {
+        "min_ms": 0.56672,
+        "p50_ms": 0.577836,
+        "p95_ms": 0.606268,
+        "tokens_per_second_at_p50": 55379.03488186959
+      },
+      "torch_speedup": 1.8956589759031974,
+      "workload": "1x32"
+    },
+    {
+      "candle": {
+        "min_ms": 1.077027,
+        "p50_ms": 1.113135,
+        "p95_ms": 1.171271,
+        "tokens_per_second_at_p50": 114990.54472278744
+      },
+      "lengths": [
+        128
+      ],
+      "max_output_absolute_difference": 0.001953125,
+      "min_output_cosine": 0.9999994498901367,
+      "tokens": 128,
+      "torch": {
+        "min_ms": 0.682141,
+        "p50_ms": 0.6891160000000001,
+        "p95_ms": 0.7349249999999999,
+        "tokens_per_second_at_p50": 185745.21560956354
+      },
+      "torch_speedup": 1.6153085982621211,
+      "workload": "1x128"
+    },
+    {
+      "candle": {
+        "min_ms": 1.927073,
+        "p50_ms": 1.945818,
+        "p95_ms": 1.96234,
+        "tokens_per_second_at_p50": 526256.8236083745
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.00439453125,
+      "min_output_cosine": 0.9999969639295938,
+      "tokens": 1024,
+      "torch": {
+        "min_ms": 1.050117,
+        "p50_ms": 1.057779,
+        "p95_ms": 1.082493,
+        "tokens_per_second_at_p50": 968066.1083269756
+      },
+      "torch_speedup": 1.8395316980200969,
+      "workload": "8x128"
+    },
+    {
+      "candle": {
+        "min_ms": 5.841019,
+        "p50_ms": 5.970259,
+        "p95_ms": 5.997650999999999,
+        "tokens_per_second_at_p50": 686067.3883662333
+      },
+      "lengths": [
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128,
+        128
+      ],
+      "max_output_absolute_difference": 0.00439453125,
+      "min_output_cosine": 0.9999969639295938,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 2.7453,
+        "p50_ms": 2.764604,
+        "p95_ms": 2.8126879999999996,
+        "tokens_per_second_at_p50": 1481586.5129327746
+      },
+      "torch_speedup": 2.15953496413953,
+      "workload": "32x128"
+    },
+    {
+      "candle": {
+        "min_ms": 6.732552999999999,
+        "p50_ms": 6.7491080000000006,
+        "p95_ms": 6.768972,
+        "tokens_per_second_at_p50": 682756.8917255435
+      },
+      "lengths": [
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256,
+        32,
+        64,
+        96,
+        128,
+        160,
+        192,
+        224,
+        256
+      ],
+      "max_output_absolute_difference": 0.00390625,
+      "min_output_cosine": 0.9999989314601473,
+      "tokens": 4608,
+      "torch": {
+        "min_ms": 3.2935820000000002,
+        "p50_ms": 3.335813,
+        "p95_ms": 3.357817,
+        "tokens_per_second_at_p50": 1381372.3970738167
+      },
+      "torch_speedup": 2.0232273211957628,
+      "workload": "32 ragged 32..256"
+    },
+    {
+      "candle": {
+        "min_ms": 6.167649,
+        "p50_ms": 6.178478999999999,
+        "p95_ms": 6.1911249999999995,
+        "tokens_per_second_at_p50": 662946.3335555564
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.0020751953125,
+      "min_output_cosine": 0.999999203245197,
+      "tokens": 4096,
+      "torch": {
+        "min_ms": 3.506632,
+        "p50_ms": 3.528346,
+        "p95_ms": 3.5503869999999997,
+        "tokens_per_second_at_p50": 1160883.881569438
+      },
+      "torch_speedup": 1.7510978231726706,
+      "workload": "8x512"
+    },
+    {
+      "candle": {
+        "min_ms": 22.321229000000002,
+        "p50_ms": 22.356203,
+        "p95_ms": 22.380896,
+        "tokens_per_second_at_p50": 732861.47920557
+      },
+      "lengths": [
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512,
+        512
+      ],
+      "max_output_absolute_difference": 0.0020751953125,
+      "min_output_cosine": 0.999999203245197,
+      "tokens": 16384,
+      "torch": {
+        "min_ms": 12.026738,
+        "p50_ms": 12.664591,
+        "p95_ms": 13.871006999999999,
+        "tokens_per_second_at_p50": 1293685.6784399906
+      },
+      "torch_speedup": 1.765252663903635,
+      "workload": "32x512"
+    }
+  ],
+  "model_repository": "jinaai/jina-embeddings-v2-base-en",
+  "model_revision": "322d4d7e2f35e84137961a65af894fda0385eb7a",
+  "physical_gpu_assignment": "2-3",
+  "pooling_implementation": "Candle exact model-dtype packed reduction tree",
+  "native_library_sha256": "3a97963f4ca9b50757be1ecf7db08f24f6f5ad8293812c3b3bfede271c928793",
+  "alibi_attention_implementation": "single Torch packed efficient-attention call; bounded overlapping-strided shared local bias"
+}

@@ -10,7 +10,7 @@ use text_embeddings_backend_core::Backend as CoreBackend;
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{instrument, Span};
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 use serde::Deserialize;
 
 pub use crate::dtype::DType;
@@ -21,6 +21,63 @@ pub use text_embeddings_backend_core::{
 
 #[cfg(feature = "candle")]
 use text_embeddings_backend_candle::CandleBackend;
+
+/// Select an inference runtime explicitly when more than one is compiled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum BackendKind {
+    #[default]
+    Candle,
+    Libtorch,
+}
+
+/// LibTorch accelerator family; availability depends on the installed C++ distribution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum TorchDevice {
+    #[default]
+    Auto,
+    Cpu,
+    Cuda,
+}
+impl TorchDevice {
+    pub fn resolved(self) -> Result<Self, BackendError> {
+        if self != Self::Auto {
+            return Ok(self);
+        }
+        #[cfg(feature = "libtorch")]
+        {
+            Ok(
+                if text_embeddings_backend_libtorch::device_count("cuda").unwrap_or(0) > 0 {
+                    Self::Cuda
+                } else {
+                    Self::Cpu
+                },
+            )
+        }
+        #[cfg(not(feature = "libtorch"))]
+        Err(BackendError::Start(
+            "LibTorch was not compiled; build with --features libtorch".into(),
+        ))
+    }
+    pub fn count(self) -> Result<usize, BackendError> {
+        #[cfg(feature = "libtorch")]
+        {
+            text_embeddings_backend_libtorch::device_count(&self.name(0))
+        }
+        #[cfg(not(feature = "libtorch"))]
+        Err(BackendError::Start(
+            "LibTorch was not compiled; build with --features libtorch".into(),
+        ))
+    }
+    pub fn name(self, index: usize) -> String {
+        match self {
+            Self::Auto => "auto".into(),
+            Self::Cpu => "cpu".into(),
+            Self::Cuda => format!("cuda:{index}"),
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Backend {
@@ -80,6 +137,32 @@ impl Backend {
         device_id: usize,
         enable_fp8_dynamic: bool,
     ) -> Result<Self, BackendError> {
+        Self::new_selected(
+            model_path,
+            api_repo,
+            dtype,
+            model_type,
+            dense_path,
+            device_id,
+            enable_fp8_dynamic,
+            BackendKind::Candle,
+            TorchDevice::Auto,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_selected(
+        model_path: PathBuf,
+        api_repo: Option<Arc<ApiRepo>>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        device_id: usize,
+        enable_fp8_dynamic: bool,
+        kind: BackendKind,
+        torch_device: TorchDevice,
+    ) -> Result<Self, BackendError> {
         let (backend_sender, backend_receiver) = mpsc::channel(8);
 
         let backend = init_backend(
@@ -90,6 +173,8 @@ impl Backend {
             dense_path,
             device_id,
             enable_fp8_dynamic,
+            kind,
+            torch_device,
         )
         .await?;
         let radix_mlp_supported = backend.supports_radix_mlp();
@@ -294,7 +379,70 @@ async fn init_backend(
     dense_path: Option<String>,
     device_id: usize,
     enable_fp8_dynamic: bool,
+    kind: BackendKind,
+    torch_device: TorchDevice,
 ) -> Result<Box<dyn CoreBackend + Send>, BackendError> {
+    if model_type == ModelType::Decision {
+        if let Some(repo) = api_repo.as_ref() {
+            download_decision_sidecars(repo)
+                .await
+                .map_err(|error| BackendError::WeightsNotFound(error.to_string()))?;
+        }
+    }
+    if kind == BackendKind::Libtorch {
+        #[cfg(feature = "libtorch")]
+        {
+            if enable_fp8_dynamic {
+                return Err(BackendError::Start(
+                    "LibTorch does not support dynamic FP8 yet".into(),
+                ));
+            }
+            let dense_paths = if let Some(repo) = api_repo.as_ref() {
+                let paths = download_dense_modules(repo, dense_path)
+                    .await
+                    .map_err(|e| BackendError::WeightsNotFound(e.to_string()))?;
+                download_safetensors(repo.clone())
+                    .await
+                    .map_err(|e| BackendError::WeightsNotFound(e.to_string()))?;
+                Some(paths)
+            } else if let Some(override_path) = dense_path {
+                let modules = model_path.join("modules.json");
+                if modules.exists() {
+                    let paths = parse_dense_paths_from_modules(&modules)
+                        .await
+                        .map_err(|e| BackendError::Start(e.to_string()))?;
+                    if paths.len() > 1 {
+                        Some(paths)
+                    } else {
+                        Some(vec![override_path])
+                    }
+                } else {
+                    Some(vec![override_path])
+                }
+            } else {
+                None
+            };
+            let device = torch_device.resolved()?.name(device_id);
+            let model = tokio::task::spawn_blocking(move || {
+                text_embeddings_backend_libtorch::LibtorchBackend::new_with_dense_paths(
+                    &model_path,
+                    &dtype.to_string(),
+                    model_type,
+                    &device,
+                    dense_paths,
+                )
+            })
+            .await
+            .map_err(|e| {
+                BackendError::Start(format!("LibTorch initialization worker failed: {e}"))
+            })??;
+            return Ok(Box::new(model));
+        }
+        #[cfg(not(feature = "libtorch"))]
+        return Err(BackendError::Start(
+            "LibTorch was not compiled; build with --features libtorch".into(),
+        ));
+    }
     if enable_fp8_dynamic && !cfg!(feature = "experimental-fp8") {
         return Err(BackendError::Start(
             "Dynamic FP8 requires an experimental-fp8 build".into(),
@@ -491,6 +639,28 @@ enum BackendCommand {
     ),
 }
 
+async fn download_decision_sidecars(api: &ApiRepo) -> Result<(), ApiError> {
+    async fn optional(api: &ApiRepo, file: &str) -> Result<bool, ApiError> {
+        match api.get(file).await {
+            Ok(_) => Ok(true),
+            Err(ApiError::RequestError(error))
+                if error.status().is_some_and(|status| status.as_u16() == 404) =>
+            {
+                Ok(false)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    if optional(api, "rl_agent_config.json").await? {
+        api.get("encoder/config.json").await?;
+    } else if optional(api, "decision_config.json").await? {
+        api.get("readout.safetensors").await?;
+    } else if optional(api, "joint_head_config.json").await? {
+        api.get("joint_head.safetensors").await?;
+    }
+    Ok(())
+}
+
 async fn download_safetensors(api: Arc<ApiRepo>) -> Result<Vec<PathBuf>, ApiError> {
     // Single file
     tracing::info!("Downloading `model.safetensors`");
@@ -542,10 +712,13 @@ async fn download_safetensors(api: Arc<ApiRepo>) -> Result<Vec<PathBuf>, ApiErro
     Ok(safetensors_files)
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 #[derive(Debug, Clone, Deserialize, PartialEq)]
 enum ModuleType {
-    #[serde(rename = "sentence_transformers.models.Dense")]
+    #[serde(
+        rename = "sentence_transformers.models.Dense",
+        alias = "sentence_transformers.base.modules.dense.Dense"
+    )]
     Dense,
     #[serde(
         rename = "sentence_transformers.models.Normalize",
@@ -564,25 +737,27 @@ enum ModuleType {
     Transformer,
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 #[derive(Debug, Clone, Deserialize)]
 struct ModuleConfig {
     #[allow(dead_code)]
+    #[serde(default)]
     idx: usize,
     #[allow(dead_code)]
+    #[serde(default)]
     name: String,
     path: String,
     #[serde(rename = "type")]
     module_type: ModuleType,
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 async fn download_file(api: &ApiRepo, file_path: &str) -> Result<PathBuf, ApiError> {
     tracing::info!("Downloading `{}`", file_path);
     api.get(file_path).await
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 async fn parse_dense_paths_from_modules(
     modules_path: &PathBuf,
 ) -> Result<Vec<String>, std::io::Error> {
@@ -597,7 +772,7 @@ async fn parse_dense_paths_from_modules(
         .collect::<Vec<String>>())
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 #[instrument(skip_all)]
 pub async fn download_dense_modules(
     api: &ApiRepo,
@@ -670,11 +845,16 @@ pub async fn download_dense_modules(
         }
         // NOTE: if `modules.json` is not there, then no modules will be downloaded, which most
         // likely means that the model is not a Sentence Transformer model
-        Err(_) => Ok(vec![]),
+        Err(ApiError::RequestError(error))
+            if error.status().is_some_and(|status| status.as_u16() == 404) =>
+        {
+            Ok(vec![])
+        }
+        Err(error) => Err(error),
     }
 }
 
-#[cfg(feature = "candle")]
+#[cfg(any(feature = "candle", feature = "libtorch"))]
 async fn download_dense_module(api: &ApiRepo, dense_path: &str) -> Result<PathBuf, ApiError> {
     // Download `config.json` for the Dense module
     let config_file = format!("{}/config.json", dense_path);

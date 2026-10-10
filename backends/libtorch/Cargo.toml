@@ -1,0 +1,34 @@
+[package]
+name = "text-embeddings-backend-libtorch"
+version.workspace = true
+edition.workspace = true
+license = "Apache-2.0"
+links = "tei_torch"
+
+[dependencies]
+text-embeddings-backend-core = { path = "../core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+safetensors = "0.8"
+
+[build-dependencies]
+cmake = "0.1"
+
+[dev-dependencies]
+text-embeddings-backend-candle = { path = "../candle" }
+
+[features]
+benchmark-cuda = ["text-embeddings-backend-candle/cuda", "text-embeddings-backend-candle/flash-attn", "text-embeddings-backend-candle/cuda-dynamic-linking"]
+
+[[example]]
+name = "compare_bert"
+required-features = ["benchmark-cuda"]
+
+
+[[example]]
+name = "compare_gemma"
+required-features = ["benchmark-cuda"]
+
+[[example]]
+name = "compare_decoders"
+required-features = ["benchmark-cuda"]

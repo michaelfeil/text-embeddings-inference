@@ -17,7 +17,21 @@ where
         .collect()
 }
 
-pub(crate) fn resolve_devices(value: Option<&str>, device: Option<usize>) -> Result<Vec<usize>> {
+pub(crate) fn resolve_devices(
+    value: Option<&str>,
+    device: Option<usize>,
+    kind: text_embeddings_backend::BackendKind,
+    torch: text_embeddings_backend::TorchDevice,
+) -> Result<Vec<usize>> {
+    use text_embeddings_backend::{BackendKind, TorchDevice};
+    if kind == BackendKind::Libtorch {
+        if torch == TorchDevice::Cpu {
+            ensure!(device.is_none_or(|id| id == 0), "CPU uses device index 0");
+        }
+        return resolve_devices_with(value, device, torch == TorchDevice::Cuda, || {
+            Ok(torch.count()?)
+        });
+    }
     resolve_devices_with(
         value,
         device,
@@ -35,7 +49,7 @@ fn resolve_devices_with(
     if !replication {
         ensure!(
             value.is_none(),
-            "backend-device-ids requires the Candle CUDA backend"
+            "backend-device-ids requires a CUDA backend"
         );
         return Ok(vec![device.unwrap_or(0)]);
     }

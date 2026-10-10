@@ -1,0 +1,21 @@
+{
+  "model_id": "Qwen/Qwen3-30B-A3B",
+  "checkpoint_revision": "ad44e777bcd18fa416d9da3bd8f70d33ebb85d39",
+  "dtype": "bfloat16",
+  "pooling": "last_token",
+  "physical_cuda_visible_devices": [
+    0,
+    1
+  ],
+  "binary_sha256": "a1e63f5f3d06caac01a73480534a59f3bb775a2c70220feb4986dc986fcea484",
+  "native_library_sha256": "882fb599c1ea25f581c22236278f96464a9e1c700253e5f85a8eaacf55fa6c86",
+  "status": "accuracy_gate_failed",
+  "workload": "1x32",
+  "cosine": 0.998809860392561,
+  "required_cosine": 0.999,
+  "startup": "loaded after allocator memory-mapping OOM retry",
+  "allocator_configuration": "expandable_segments:True",
+  "torch_blas_prefer_cublaslt": true,
+  "cublaslt_workspace_size_kib": 32768,
+  "latency_qualified": false
+}

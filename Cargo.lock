@@ -4672,6 +4672,7 @@ dependencies = [
  "serde_json",
  "text-embeddings-backend-candle",
  "text-embeddings-backend-core",
+ "text-embeddings-backend-libtorch",
  "tokio",
  "tracing",
 ]
@@ -4721,6 +4722,18 @@ dependencies = [
  "serde",
  "thiserror 1.0.69",
  "tokio",
+]
+
+[[package]]
+name = "text-embeddings-backend-libtorch"
+version = "1.8.18-rc.0"
+dependencies = [
+ "cmake",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "text-embeddings-backend-candle",
+ "text-embeddings-backend-core",
 ]
 
 [[package]]
