@@ -50,6 +50,14 @@ struct Args {
     #[clap(long, env, value_enum, default_value = "auto")]
     dtype: Option<DType>,
 
+    /// Inference runtime (requires the matching Cargo feature).
+    #[clap(long, env, value_enum, default_value = "candle")]
+    backend: text_embeddings_backend::BackendKind,
+
+    /// LibTorch accelerator family. Auto selects CUDA when available, otherwise CPU.
+    #[clap(long, env, value_enum, default_value = "auto")]
+    torch_device: text_embeddings_backend::TorchDevice,
+
     /// Optionally control the pooling method for embedding models.
     ///
     /// If `pooling` is not set, the pooling configuration will be parsed from the
@@ -163,7 +171,7 @@ struct Args {
     #[clap(long, env)]
     dense_path: Option<String>,
 
-    /// Use one explicit CUDA device. Candle CUDA otherwise uses all visible GPUs.
+    /// Use one explicit accelerator device. CUDA otherwise uses all visible devices.
     #[clap(long, env)]
     device_id: Option<usize>,
 
@@ -296,6 +304,8 @@ async fn main() -> Result<()> {
         args.cors_allow_origin,
         args.device_id,
         args.backend_device_ids,
+        args.backend,
+        args.torch_device,
         text_embeddings_core::multimodal::MultimodalConfig {
             allowed_image_hosts: args.image_allowed_hosts,
             memory_budget_bytes: args

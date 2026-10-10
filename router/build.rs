@@ -2,6 +2,14 @@ use std::error::Error;
 use vergen::EmitBuilder;
 
 fn main() -> Result<(), Box<dyn Error>> {
+    #[cfg(feature = "libtorch")]
+    {
+        let bridge = std::env::var("DEP_TEI_BACKEND_TORCH_LIB_DIR")?;
+        if std::env::var("CARGO_CFG_TARGET_FAMILY").as_deref() == Ok("unix") {
+            println!("cargo:rustc-link-arg=-Wl,-rpath,{bridge}");
+            println!("cargo:rustc-link-arg=-Wl,-rpath,$ORIGIN");
+        }
+    }
     // Try to get the git sha from the local git repository
     if EmitBuilder::builder()
         .fail_on_error()

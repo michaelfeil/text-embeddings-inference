@@ -22,6 +22,63 @@ pub use text_embeddings_backend_core::{
 #[cfg(feature = "candle")]
 use text_embeddings_backend_candle::CandleBackend;
 
+/// Select an inference runtime explicitly when more than one is compiled.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum BackendKind {
+    #[default]
+    Candle,
+    Libtorch,
+}
+
+/// LibTorch accelerator family; availability depends on the installed C++ distribution.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "clap", derive(clap::ValueEnum))]
+pub enum TorchDevice {
+    #[default]
+    Auto,
+    Cpu,
+    Cuda,
+}
+impl TorchDevice {
+    pub fn resolved(self) -> Result<Self, BackendError> {
+        if self != Self::Auto {
+            return Ok(self);
+        }
+        #[cfg(feature = "libtorch")]
+        {
+            Ok(
+                if text_embeddings_backend_libtorch::device_count("cuda").unwrap_or(0) > 0 {
+                    Self::Cuda
+                } else {
+                    Self::Cpu
+                },
+            )
+        }
+        #[cfg(not(feature = "libtorch"))]
+        Err(BackendError::Start(
+            "LibTorch was not compiled; build with --features libtorch".into(),
+        ))
+    }
+    pub fn count(self) -> Result<usize, BackendError> {
+        #[cfg(feature = "libtorch")]
+        {
+            text_embeddings_backend_libtorch::device_count(&self.name(0))
+        }
+        #[cfg(not(feature = "libtorch"))]
+        Err(BackendError::Start(
+            "LibTorch was not compiled; build with --features libtorch".into(),
+        ))
+    }
+    pub fn name(self, index: usize) -> String {
+        match self {
+            Self::Auto => "auto".into(),
+            Self::Cpu => "cpu".into(),
+            Self::Cuda => format!("cuda:{index}"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Backend {
     /// Channel to communicate with the background thread
@@ -80,6 +137,32 @@ impl Backend {
         device_id: usize,
         enable_fp8_dynamic: bool,
     ) -> Result<Self, BackendError> {
+        Self::new_selected(
+            model_path,
+            api_repo,
+            dtype,
+            model_type,
+            dense_path,
+            device_id,
+            enable_fp8_dynamic,
+            BackendKind::Candle,
+            TorchDevice::Auto,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn new_selected(
+        model_path: PathBuf,
+        api_repo: Option<Arc<ApiRepo>>,
+        dtype: DType,
+        model_type: ModelType,
+        dense_path: Option<String>,
+        device_id: usize,
+        enable_fp8_dynamic: bool,
+        kind: BackendKind,
+        torch_device: TorchDevice,
+    ) -> Result<Self, BackendError> {
         let (backend_sender, backend_receiver) = mpsc::channel(8);
 
         let backend = init_backend(
@@ -90,6 +173,8 @@ impl Backend {
             dense_path,
             device_id,
             enable_fp8_dynamic,
+            kind,
+            torch_device,
         )
         .await?;
         let radix_mlp_supported = backend.supports_radix_mlp();
@@ -294,7 +379,45 @@ async fn init_backend(
     dense_path: Option<String>,
     device_id: usize,
     enable_fp8_dynamic: bool,
+    kind: BackendKind,
+    torch_device: TorchDevice,
 ) -> Result<Box<dyn CoreBackend + Send>, BackendError> {
+    if kind == BackendKind::Libtorch {
+        #[cfg(feature = "libtorch")]
+        {
+            if enable_fp8_dynamic || dense_path.is_some() {
+                return Err(BackendError::Start(
+                    "LibTorch does not support dynamic FP8 or dense modules yet".into(),
+                ));
+            }
+            if let Some(repo) = api_repo {
+                // Inspect optional Sentence Transformers modules so unsupported dense heads
+                // are rejected instead of silently returning the encoder's embeddings.
+                let _ = repo.get("modules.json").await;
+                download_safetensors(repo)
+                    .await
+                    .map_err(|e| BackendError::WeightsNotFound(e.to_string()))?;
+            }
+            let device = torch_device.resolved()?.name(device_id);
+            let model = tokio::task::spawn_blocking(move || {
+                text_embeddings_backend_libtorch::LibtorchBackend::new(
+                    &model_path,
+                    &dtype.to_string(),
+                    model_type,
+                    &device,
+                )
+            })
+            .await
+            .map_err(|e| {
+                BackendError::Start(format!("LibTorch initialization worker failed: {e}"))
+            })??;
+            return Ok(Box::new(model));
+        }
+        #[cfg(not(feature = "libtorch"))]
+        return Err(BackendError::Start(
+            "LibTorch was not compiled; build with --features libtorch".into(),
+        ));
+    }
     if enable_fp8_dynamic && !cfg!(feature = "experimental-fp8") {
         return Err(BackendError::Start(
             "Dynamic FP8 requires an experimental-fp8 build".into(),
