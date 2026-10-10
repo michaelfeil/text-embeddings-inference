@@ -1222,6 +1222,7 @@
           "max_client_batch_size",
           "auto_truncate",
           "tokenization_workers",
+          "tokenization_queue_capacity",
           "version"
         ],
         "properties": {
@@ -1282,6 +1283,12 @@
             "type": "string",
             "example": "null",
             "nullable": true
+          },
+          "tokenization_queue_capacity": {
+            "type": "integer",
+            "description": "Maximum waiting tokenizer jobs (individual inputs, not HTTP requests).",
+            "example": 1024,
+            "minimum": 0
           },
           "tokenization_workers": {
             "type": "integer",

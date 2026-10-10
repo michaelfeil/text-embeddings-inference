@@ -49,13 +49,17 @@ pub async fn start_server(model_id: String, revision: Option<String>, dtype: DTy
             model_id,
             revision,
             Some(1),
+            std::num::NonZeroUsize::new(1024).unwrap(),
             Some(dtype),
-            None,
+            None, // pooling
+            None, // decision protocol
             4,
             1024,
             None,
             0.0,
+            false, // dynamic FP8
             32,
+            32, // decision question limit
             false,
             None,
             None,
@@ -64,14 +68,13 @@ pub async fn start_server(model_id: String, revision: Option<String>, dtype: DTy
             None,
             8090,
             None,
-            None,
             2_000_000,
             None,
-            None,
-            "text-embeddings-inference.server".to_owned(),
             9000,
             None,
-            0, // device_id
+            Some(0),            // device_id
+            None,               // backend device IDs
+            Default::default(), // multimodal configuration
         )
     });
 

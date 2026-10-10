@@ -42,9 +42,14 @@ struct Args {
 
     /// Optionally control the number of tokenizer workers used for payload tokenization, validation
     /// and truncation.
-    /// Default to the number of CPU cores on the machine.
+    /// Defaults to CPU cores minus one. Values are clamped to 1–16.
     #[clap(long, env)]
     tokenization_workers: Option<usize>,
+
+    /// Maximum waiting tokenizer jobs, independent of worker count. Counts individual inputs,
+    /// not HTTP requests. When full, producers wait for space.
+    #[clap(long, env, default_value = "1024")]
+    tokenization_queue_capacity: std::num::NonZeroUsize,
 
     /// Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default.
     #[clap(long, env, value_enum, default_value = "auto")]
@@ -272,6 +277,7 @@ async fn main() -> Result<()> {
         args.model_id,
         args.revision,
         args.tokenization_workers,
+        args.tokenization_queue_capacity,
         args.dtype,
         args.pooling,
         args.decision_protocol,
