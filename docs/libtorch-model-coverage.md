@@ -139,6 +139,7 @@ H100 assignments. All five workloads meet the target, with 20.12–26.04%
 lower P50 latency. The 8x2048 batch takes 585.06/586.86 ms versus Candle's
 791.01/789.74 ms; no input padding is used. Graph-requested runs retain eager execution for this MoE geometry;
 CUDA graph performance is unqualified.
+[Graph-requested eager-fallback pilot](benchmarks/tei-qwen35-moe-long-context-20-graphs1-0-1.json).
 [0/1 eager evidence](benchmarks/tei-qwen35-moe-long-context-200-graphs0-0-1.json),
 [1/0 eager evidence](benchmarks/tei-qwen35-moe-long-context-200-graphs0-1-0.json).
 
