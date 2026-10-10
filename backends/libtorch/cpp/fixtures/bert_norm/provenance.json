@@ -1,0 +1,10 @@
+{
+  "model_id": "BAAI/bge-base-en-v1.5",
+  "model_revision": "a5beb1e3e68b9ab74eb54cfd186867f64f240e1a",
+  "model_card_url": "https://huggingface.co/BAAI/bge-base-en-v1.5/raw/a5beb1e3e68b9ab74eb54cfd186867f64f240e1a/README.md",
+  "model_license_from_pinned_card": "mit",
+  "upstream_project_license_url": "https://raw.githubusercontent.com/FlagOpen/FlagEmbedding/c086741f5e117b7b8ce1745ea00b6c262f281a01/LICENSE",
+  "license_commit": "c086741f5e117b7b8ce1745ea00b6c262f281a01",
+  "license_sha256": "587a673933425dbc36ec61268d3b954051b2d3ef3c9b322ede357976055ffdd5",
+  "scope": "Official model card declares MIT and links FlagEmbedding; checkpoint has no separate LICENSE file, so retain pinned model-card evidence plus original project MIT notice."
+}

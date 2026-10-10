@@ -1,0 +1,23 @@
+{
+  "scope": "Whole native futureintegration qualification; no currentPRsourcechanges",
+  "native_sha256": "a981b9b5043aa0bb2a338ee1de8729a483314484b18a95b9f2e75df00e96bc66",
+  "binary_sha256": "4b3305cda87c34e864c9b92164af03a039b2e51a3016af41f4d350e7797d3562",
+  "checkpoint_repository": "TinyLlama/TinyLlama-1.1B-Chat-v1.0",
+  "checkpoint_revision": "fe8a4ea1ffedaf415f4da2f062534de366a451e6",
+  "token_padding": false,
+  "python_serving_runtime": false,
+  "cublaslt_workspace_kib": 32768,
+  "private_preload": false,
+  "reports": [
+    {"path": "tei-tinyllama-causal-whole-a981-default-eager-radix-200-4096-6-7.json", "sha256": "7665bd03645e2605b9375ddc118912b994b29d8e485336b43f05697d1d79a59a", "mode": "default BF16", "graphs_requested": false, "actual_graph_count": 0, "physical_torch_gpu": 6, "physical_candle_gpu": 7, "bitwise": true, "latency_within_5_percent": true, "worst_slowdown_percent": -0.25474845995894224, "actual_loaded_native_identity_verified": true},
+    {"path": "tei-tinyllama-causal-whole-a981-default-eager-radix-200-4096-7-6.json", "sha256": "ba9098239f6c58e8285811fd06aac333983acf6238b287e2c13dd82f3b46dff1", "mode": "default BF16", "graphs_requested": false, "actual_graph_count": 0, "physical_torch_gpu": 7, "physical_candle_gpu": 6, "bitwise": true, "latency_within_5_percent": true, "worst_slowdown_percent": -1.2091682161669892, "actual_loaded_native_identity_verified": true},
+    {"path": "tei-tinyllama-causal-whole-a981-fp8-eager-radix-200-4096-6-7.json", "sha256": "aa32f775584e45330f2521a0a84710acf751fd4a78a3a12f511f1888847938ae", "mode": "FP8", "graphs_requested": false, "actual_graph_count": 0, "physical_torch_gpu": 6, "physical_candle_gpu": 7, "bitwise": true, "latency_within_5_percent": true, "worst_slowdown_percent": -3.099810560032701, "actual_loaded_native_identity_verified": true},
+    {"path": "tei-tinyllama-causal-whole-a981-fp8-eager-radix-200-4096-7-6.json", "sha256": "4c3442edfa53cfab429fd7e2d089b843e5d539c1788b23b9377feef3852a5516", "mode": "FP8", "graphs_requested": false, "actual_graph_count": 0, "physical_torch_gpu": 7, "physical_candle_gpu": 6, "bitwise": true, "latency_within_5_percent": true, "worst_slowdown_percent": -0.6643552789700413, "actual_loaded_native_identity_verified": true},
+    {"path": "tei-tinyllama-causal-whole-a981-fp8-graphs-radix-200-4096-6-7.json", "sha256": "6089470f28496975db5ae7f28bcaaf1f09c501e825d86b8d2e91277897f434b2", "mode": "FP8", "graphs_requested": true, "actual_graph_count": 4, "physical_torch_gpu": 6, "physical_candle_gpu": 7, "bitwise": true, "latency_within_5_percent": true, "worst_slowdown_percent": -8.431341167440875, "actual_loaded_native_identity_verified": true},
+    {"path": "tei-tinyllama-causal-whole-a981-fp8-graphs-radix-200-4096-7-6.json", "sha256": "36ebf3f96cb2e784de98f52d3a412eba5de8b8d0fd90d771576a187fa8905fae", "mode": "FP8", "graphs_requested": true, "actual_graph_count": 4, "physical_torch_gpu": 7, "physical_candle_gpu": 6, "bitwise": true, "latency_within_5_percent": true, "worst_slowdown_percent": -6.503069163214348, "actual_loaded_native_identity_verified": true}
+  ],
+  "historical_failure_preserved": {"report": "tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-7-6.json", "sha256": "cfa6aa88a1f32a6415156f87e27a7d3bb6f669429f569f41537d0cd007a8fed6", "scope": "Earlier a4bc production eager FP8 swapped8x128 +8.877930102%; superseded latency only for the separately qualified a981 whole runtime."},
+  "graph_scope": "Graphmode report records actualcachecount. Graphcap4096 remains unchanged; larger shapes can fall back to eager and remain covered by whole-workload latency gate.",
+  "source_math_evidence": {"report": "tei-tinyllama-causal-fp8-source-math-proof.json", "sha256": "55c6ed0751b16dc73d02287a8556aad1adcb518cc8dcbd6f4b437d2bab99d70f", "scope": "Source-proven original norm, attention and FP8 math; exact-copy QKV launch fusion does not change arithmetic."},
+  "artifact_paths": "All report paths resolve relative to this included manifest in docs/benchmarks."
+}

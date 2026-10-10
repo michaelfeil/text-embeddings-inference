@@ -195,7 +195,8 @@ class Decoder final : public Model {
   }
   at::Tensor attend(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input) const {
     if(!radix_enabled(input))return attend_full(q,k,v,input);
-    auto full=attend_full(radix_unfold(q,input),radix_unfold(k,input),radix_unfold(v,input),input);
+    auto unfolded=radix_unfold_qkv(q,k,v,input);
+    auto full=attend_full(unfolded[0],unfolded[1],unfolded[2],input);
     return radix_fold(full,input);
   }
   at::Tensor mlp(const at::Tensor& x, const DecoderLayer& layer) const {

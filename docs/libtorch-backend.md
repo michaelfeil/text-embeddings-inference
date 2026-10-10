@@ -104,11 +104,17 @@ uses native rowwise E4M3 for dense BERT/RoBERTa/ModernBERT and
 Llama/Mistral/Qwen2/Qwen3 MLP projections only. It requires a supported CUDA
 device, FP16/BF16 and an unquantized checkpoint; unsupported matrix dimensions
 are rejected without padding. Attention, normalization and heads retain their
-original dtype. Trained causal TinyLlama BF16 FP8 inference passes strict
-raw/full/folded/last-token pooled accuracy bitwise and the P50 latency target
-in both H100 assignments with CUDA graphs enabled. Eager accuracy is bitwise,
-but one swapped workload remains +8.88% slower. Trained encoder and other
-FP8 checkpoint qualifications remain open;
+original dtype. The integrated a981 whole library qualifies trained causal
+TinyLlama BF16 FP8 inference in eager and graph modes: every raw/full/folded
+and last-token pooled output is bitwise equal to Candle, and all five P50
+workloads meet the unchanged +5% target in both 200-iteration H100 assignments.
+Default BF16 eager regressions also pass both assignments. Exact QKV copies
+combine three radix gathers into one CUDA launch without changing arithmetic.
+The earlier eager +8.88% miss remains recorded. BGE FP16 CLS dynamic MLP-only
+FP8 also meets the target on seven packed workloads in both 200-iteration
+assignments, eager and graph modes, with bitwise pooled outputs;
+[BGE scope](benchmarks/libtorch-bert-fp8-h100.md). Other checkpoint, head and
+precision scopes require their own trained qualification;
 [scope and evidence](libtorch-model-coverage.md) include the retained failures.
 Both comparison tools accept `TEI_BENCHMARK_FP8=1` when built
 with `benchmark-fp8`, enabling the same requested mode in both backends. Other custom

@@ -1,6 +1,7 @@
 #include "encoder_activation.h"
 #include <ATen/ATen.h>
 #include <ATen/Parallel.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -49,6 +50,18 @@ int main() {
     bool rejected=false;
     try {tei::encoder_gelu(at::ones({3,4},options).transpose(0,1));}catch(const c10::Error&){rejected=true;}
     if(!rejected)throw std::runtime_error("GELU accepted strided input");
+  }
+  for(auto dtype:{at::kHalf,at::kBFloat16,at::kFloat})for(int64_t width:{31,768,3072}) {
+    auto device=at::Device(at::kCUDA,c10::cuda::device_count()>1?1:0);
+    auto options=at::TensorOptions().device(device).dtype(dtype);
+    auto x=(at::randn({32,width},options)*20).contiguous(),bias=(at::randn({width},options)*.25).contiguous();
+    // Same-input original GELU already has an exhaustive independent oracle.
+    // This checks the additional separate model-dtype bias-rounding boundary.
+    auto reference=tei::encoder_gelu(x+bias);
+    c10::cuda::set_device(0);
+    auto result=tei::encoder_bias_gelu(x,bias);
+    TORCH_CHECK(c10::cuda::current_device()==0,"Fused bias/GELU changed caller device");
+    TORCH_CHECK(at::equal(result.view(at::kByte),reference.view(at::kByte)),"Fused bias/GELU changed model-dtype arithmetic");
   }
   std::cout<<"Exact encoder GELU regression passed\n";
 }

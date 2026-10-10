@@ -6,6 +6,7 @@
 #include <ATen/ops/_flash_attention_forward.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
+#include <cuda_runtime_api.h>
 using namespace tei;
 class Dense final:public Model {
 public:
@@ -91,7 +92,71 @@ void radix_graph_test(Model& model) {
  TORCH_CHECK(at::equal(cache.forward(model,input).clone(),model.forward(input)),"Different compact token count reused stale graph");
  TORCH_CHECK(cache.size()==2,"Compact token count missing from radix graph key");
 }
-int main(){c10::InferenceMode guard;Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8);
+// This copy-only model isolates raw Q/K/V bytes from attention arithmetic.
+// The actual decoder graph above independently covers full/folded semantics.
+class RadixQkvCopy final:public Model {
+public:
+ at::Tensor bits,q,k,v;
+ explicit RadixQkvCopy(at::ScalarType dtype,int64_t dimension) {
+  auto options=at::TensorOptions().device(at::kCUDA,0).dtype(at::kLong);
+  // Includes every 16-bit pattern, including NaNs/infinities and signed zero.
+  bits=at::arange(352*40*dimension,options).remainder(65536).to(at::kShort).view({352,40,dimension});
+  auto packed=bits.view(dtype);q=packed.narrow(1,0,32);k=packed.narrow(1,32,4);v=packed.narrow(1,36,4);
+ }
+ void ready() override{}
+ at::Tensor reference(const PackedInput& input) const {
+  return at::cat({q.index_select(0,input.scatter_unfold).flatten(1).view(at::kShort),
+   k.index_select(0,input.scatter_unfold).flatten(1).view(at::kShort),
+   v.index_select(0,input.scatter_unfold).flatten(1).view(at::kShort)},1);
+ }
+ at::Tensor forward(const PackedInput& input) const override {
+  auto output=radix_unfold_qkv(q,k,v,input);
+  return at::cat({output[0].flatten(1).view(at::kShort),output[1].flatten(1).view(at::kShort),
+   output[2].flatten(1).view(at::kShort)},1);
+ }
+};
+void radix_qkv_copy_graph_test() {
+ auto options=at::TensorOptions().device(at::kCUDA,0).dtype(at::kLong);
+ std::vector<int32_t> offsets;std::vector<int64_t> scatter,gather,positions,compact_positions;
+ for(int64_t row=0;row<8;++row){
+  offsets.push_back(row*128);
+  for(int64_t token=0;token<128;++token){
+   auto index=token<96?token:96+row*32+token-96;
+   scatter.push_back(index);positions.push_back(token);
+   if(row==0||token>=96){gather.push_back(row*128+token);compact_positions.push_back(token);}
+  }
+ }
+ offsets.push_back(1024);
+ auto tensor=[&](const std::vector<int64_t>& values){return at::tensor(values,options);};
+ PackedInput input{tensor(scatter),at::zeros({1024},options),tensor(positions),
+  at::tensor(offsets,options.dtype(at::kInt)),offsets.data(),8,128};
+ input.compact_ids=at::arange(352,options);input.compact_types=at::zeros({352},options);
+ input.compact_positions=tensor(compact_positions);input.scatter_unfold=tensor(scatter);input.fold_gather=tensor(gather);
+ for(auto dtype:{at::kHalf,at::kBFloat16})for(int64_t dimension:{7,64}) {
+  RadixQkvCopy model(dtype,dimension);auto request=input;
+  // Dimension 7 intentionally takes the unsupported vector-copy fallback.
+  int devices=0;cudaGetDeviceCount(&devices);
+  if(devices>1){
+   cudaSetDevice(1);auto actual=model.forward(request);int current=-1;cudaGetDevice(&current);
+   TORCH_CHECK(current==1,"QKV unfolding changed the caller's CUDA device");
+   TORCH_CHECK(at::equal(actual,model.reference(request)),"QKV unfolding used another-device stream");
+   cudaSetDevice(0);
+  }
+  CudaGraphCache cache(2,2048);
+  for(int run=0;run<3;++run){
+   if(run==1){
+    request.compact_ids=request.compact_ids.flip({0});request.compact_positions=request.compact_positions.flip({0});
+    request.fold_gather=request.fold_gather.flip({0});request.scatter_unfold=351-request.scatter_unfold;
+    model.bits.copy_(model.bits.flip({0}));
+   }
+   if(run==2)model.bits.bitwise_xor_(255);
+   auto expected=model.reference(request),actual=cache.forward(model,request).clone();
+   TORCH_CHECK(at::equal(actual,expected),"QKV unfolding changed raw bits or replayed stale maps/values");
+  }
+  TORCH_CHECK(cache.size()==1,"Same QKV/map shapes did not reuse the graph");
+ }
+}
+int main(){c10::InferenceMode guard;radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);

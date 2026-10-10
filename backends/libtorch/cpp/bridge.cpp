@@ -85,6 +85,14 @@ struct Bert : tei::Model {
   }
   at::Tensor activated_linear(const at::Tensor& x,const std::string& name) const {
     if(fp8_mlp.count(name)) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(private_flash_embedding && options.boolean("_fp8_dynamic",false)
+          && config.activation!=2 && config.activation!=3) {
+        // Preserve model-dtype GEMM rounding, then model-dtype bias rounding,
+        // then Candle unary GELU, without a separate bias launch.
+        return tei::encoder_bias_gelu(fp8_mlp.at(name).forward(x),w(name+".bias"));
+      }
+#endif
       auto projected=linear(x,name);
 #ifdef TEI_TORCH_CUDA_KERNELS
       if(config.activation!=2 && config.activation!=3)return tei::encoder_gelu(projected);
@@ -102,7 +110,7 @@ struct Bert : tei::Model {
   }
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& name) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (x.is_cuda() && config.hidden == 384)
+    if (x.is_cuda() && (config.hidden == 384 || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
       return tei::encoder_layer_norm_only(x, w(name + ".weight"), config.epsilon, residual, w(name + ".bias"), false);
     if (x.is_cuda()) return tei::fused_add_layer_norm(x, residual, w(name + ".weight"), w(name + ".bias"), config.epsilon);
 #endif
@@ -220,7 +228,10 @@ struct Bert : tei::Model {
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
     at::Tensor h;
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (word.is_cuda() && config.hidden == 384)
+    if (word.is_cuda() && private_flash_embedding && options.boolean("_fp8_dynamic", false))
+      h = tei::encoder_layer_norm_only(word + token_type,
+        w("embeddings.LayerNorm.weight"), config.epsilon, position, w("embeddings.LayerNorm.bias"), false);
+    else if (word.is_cuda() && config.hidden == 384)
       h = tei::encoder_layer_norm_only(word + token_type + position,
         w("embeddings.LayerNorm.weight"), config.epsilon, at::Tensor(), w("embeddings.LayerNorm.bias"), false);
     else if (word.is_cuda()) h = tei::fused_add_layer_norm(word, token_type,
@@ -242,8 +253,10 @@ struct Bert : tei::Model {
         // ragged batches with maximum length 256, despite a similar token total.
 #ifdef TEI_TORCH_CUDA_KERNELS
         // Native Torch packed Flash avoids cuDNN setup overhead for moderate
-        // token totals. Larger totals retain the measured cuDNN advantage.
-        if (private_flash_embedding && tokens <= 4096
+        // token totals. FP8 needs the fused Torch arithmetic at every total
+        // to preserve quantization inputs; normal FP16 larger totals retain
+        // the measured cuDNN advantage.
+        if (private_flash_embedding && (tokens <= 4096 || options.boolean("_fp8_dynamic", false))
             && tei::torch_flash_fma_supported(q, k, v)) {
           attended = tei::torch_flash_fma(q, k, v, cumulative, max_sequence,
             1.0 / std::sqrt(static_cast<double>(head)), false);

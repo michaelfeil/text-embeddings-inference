@@ -17,7 +17,7 @@ attention where the installed Flash build lacks bias support.
 | ModernBERT | Packed local/global rotary attention, gated MLP and heads | Private Torch-pinned fused-softmax kernels match Candle bitwise for both trained embedding mean and MLM CLS checkpoints, including official and arbitrary IDs. All seven workloads pass both GPU assignments with graphs (at least 9.99% faster). The earlier MLM arbitrary-ID CLS failure is retained as historical evidence. |
 | Nomic BERT | Packed rotary encoder, dense/MoE MLP | Dense/gated/MoE Candle parity fixtures pass. Trained Nomic v1.5 mean pooling meets the target in both GPU assignments with graphs, approximately 1.8–2.1x faster; Nomic v2 MoE now passes official and arbitrary-ID accuracy (minimum cosine 0.999239679) and all seven paired latency workloads on both assignments (at least 2.69x faster). Dedicated model-dtype GELU matches all finite FP16/BF16 values against the actual Candle unary kernel; exact beta LayerNorm preserves unrounded residual statistics. The earlier arbitrary-ID failure is retained as historical evidence. |
 | Jina BERT / JinaCode | Packed encoder, one Torch efficient varlen ALiBi call per layer | Trained mean parity passes both checkpoints, with cosine >=0.999996964 / >=0.999987606. Shared local bias uses bounded overlapping read-only strides, with actual packed Q/K/V and no total-token-squared allocation. Both checkpoints meet the 5% P50 target on seven workloads in both GPU assignments (at least 1.61x / 1.74x faster). Independent attention, sequence isolation and NaN-unused-storage CUDA tests pass for FP16/BF16. |
-| Llama / Llama bidirectional | Packed GQA, RoPE, RMSNorm, fused projections | CUDA Candle fixtures include Llama3/NTK scaling and bidirectional attention. Trained Nemotron Llama 1B BF16 mean pooling now matches Candle bitwise across all seven workloads in both 200-iteration GPU assignments and meets the P50 target (worst +4.79%). Separate valid boundary IDs 101/102 also match bitwise across all seven workloads. Learned layer traces prove both fused Torch attention arithmetic and the original Welford residual RMS are needed; the exact RMS adapter covers the registered BF16 width 2048 geometry for causal and bidirectional Llama. Trained causal TinyLlama now matches Candle bitwise; its default eager and FP8 graph qualifications are described below. [Paired evidence](benchmarks/tei-llama-nemotron-v8-corrected-0-1.json), [swapped evidence](benchmarks/tei-llama-nemotron-v8-corrected-1-0.json), [arbitrary IDs](benchmarks/tei-llama-arbitrary-ids-v8-corrected-0-1.json). The prior arbitrary-ID accuracy failure and earlier latency misses are retained. |
+| Llama / Llama bidirectional | Packed GQA, RoPE, RMSNorm, fused projections | CUDA Candle fixtures include Llama3/NTK scaling and bidirectional attention. Trained Nemotron Llama 1B BF16 mean pooling now matches Candle bitwise across all seven workloads in both 200-iteration GPU assignments and meets the P50 target (worst +4.79%). Separate valid boundary IDs 101/102 also match bitwise across all seven workloads. Learned layer traces prove both fused Torch attention arithmetic and the original Welford residual RMS are needed; the exact RMS adapter covers the registered BF16 width 2048 geometry for causal and bidirectional Llama. Trained causal TinyLlama now matches Candle bitwise; its default eager and FP8 eager/graph qualifications are described below. [Paired evidence](benchmarks/tei-llama-nemotron-v8-corrected-0-1.json), [swapped evidence](benchmarks/tei-llama-nemotron-v8-corrected-1-0.json), [arbitrary IDs](benchmarks/tei-llama-arbitrary-ids-v8-corrected-0-1.json). The prior arbitrary-ID accuracy failure and earlier latency misses are retained. |
 | Mistral / Ministral3 | Packed GQA, sliding windows, YaRN | CUDA Candle parity fixtures, including sliding windows and Ministral3 scaling. Trained E5 Mistral meets the 5% P50 target in both GPU assignments with graphs, eligible cuDNN and 32 MiB cuBLASLt workspace (worst +1.54%, minimum cosine 0.999998900; [integrated result](benchmarks/tei-mistral-integrated-gate8-6-7.json), [swapped result](benchmarks/tei-mistral-integrated-gate8-7-6.json)). Derived trained Ministral3 3B text-only BF16 last-token pooling passes all seven workloads on both GPU assignments (200 iterations, minimum cosine 0.999153403, at least 6.97% faster); separate arbitrary boundary-ID cases pass too. [Paired evidence](benchmarks/tei-ministral3-trained-integrated-6-7.json), [swapped evidence](benchmarks/tei-ministral3-trained-integrated-7-6.json), [byte-exact extraction scope](benchmarks/tei-ministral3-text-checkpoint-derivation.json). This qualifies the Ministral3 text tower, excluding the source composite checkpoint’s Pixtral vision tower. |
 | Qwen2 | Packed GQA with projection biases | Trained GTE Qwen2 1.5B meets accuracy and latency on all seven workloads in both GPU assignments (500 iterations, minimum cosine 0.999965304, worst P50 slowdown +3.88%). Paired rotary and aligned eight-lane gated loads retain exact scalar arithmetic and actual token counts. The earlier swapped 32x128 latency miss is retained as historical evidence. |
 | Qwen3 / Qwen3 MoE | Packed Q/K norm, GQA, dense/routed MLP and optional projection | CUDA Candle parity over dense and fused/unfused MoE layouts. BF16 grouped routing tested. Trained dense Qwen3 meets the 5% P50 target on seven workloads with graphs in both GPU assignments; the earlier trained Qwen3-30B-A3B run failed accuracy (cosine 0.998809860). Private Torch fused-softmax attention plus exact Welford residual RMS now matches every hidden state and routing decision in an independent 48-layer trace. Integrated trained Qwen3-30B-A3B is bitwise identical on all seven workloads in both GPU assignments and meets the latency target with four resident graphs (at least 2.27% faster; 200 iterations; [results](benchmarks/tei-qwen3-moe-v7-graphs-0-1.json), [swapped results](benchmarks/tei-qwen3-moe-v7-graphs-1-0.json)). Recovered allocator mapping warnings occurred at startup; the largest eager workload still completed with graphs resident. These measurements do not establish a general memory guarantee on smaller GPUs. |
@@ -103,13 +103,13 @@ source-proven normalization correction (worst +3.99% and +3.56%). Earlier
 32x512 latency misses remain in the historical reports.
 [2/3 evidence](benchmarks/tei-minilm-trained-heads-integrated-norm-2-3.json),
 [3/2 evidence](benchmarks/tei-minilm-trained-heads-integrated-norm-3-2.json).
-Authentic trained TinyLlama causal shared-prefix inference now matches Candle
-bitwise across all five workloads in both 200-iteration assignments, with
-CUDA graphs disabled. Every measured P50 latency meets the unchanged +5%
-target (at least 0.26% faster). The registered BF16 width2048 RMS and native
-Torch fused-softmax contracts remove the earlier cross-backend cosine gap.
-[6/7 default evidence](benchmarks/tei-tinyllama-causal-trained-default-eager-radix-200-4096-6-7.json),
-[7/6 default evidence](benchmarks/tei-tinyllama-causal-trained-default-eager-radix-200-4096-7-6.json),
+Authentic trained TinyLlama causal shared-prefix inference matches Candle
+bitwise across all five workloads in both 200-iteration assignments. Default
+BF16 eager regressions on the integrated a981 whole library meet the unchanged
++5% P50 target (worst slowdown −0.255% / −1.209%). The registered BF16 width2048
+RMS and native Torch fused-softmax contracts remove the earlier cosine gap.
+[6/7 whole-library default evidence](benchmarks/tei-tinyllama-causal-whole-a981-default-eager-radix-200-4096-6-7.json),
+[7/6 evidence](benchmarks/tei-tinyllama-causal-whole-a981-default-eager-radix-200-4096-7-6.json),
 [source proof](benchmarks/tei-tinyllama-causal-fp8-source-math-proof.json),
 [checkpoint verification](benchmarks/tei-tinyllama-causal-checkpoint-verification.json).
 Earlier graph-enabled comparisons with minimum cosine 0.999391257 remain in
@@ -153,18 +153,20 @@ not establish raw-token accuracy or A10 performance.
 Experimental dynamic FP8 dense-MLP paths are implemented for
 BERT/RoBERTa/ModernBERT and dense Llama/Mistral/Qwen2/Qwen3. Native dense
 decoder fixtures and ragged BERT Rust FP16/BF16 integration tests pass.
-Authentic trained TinyLlama BF16 causal shared-prefix inference matches Candle
-bitwise for every full/raw/folded/last-token pooled output in both 200-iteration
-H100 assignments. With CUDA graphs enabled (four resident graphs, 4096-token
-cap), all five P50 workloads meet the target and are at least 6.11% faster,
-with gains up to 33.44%.
-[6/7 FP8 graph evidence](benchmarks/tei-tinyllama-causal-trained-fp8-graphs-radix-200-4096-6-7.json),
-[7/6 FP8 graph evidence](benchmarks/tei-tinyllama-causal-trained-fp8-graphs-radix-200-4096-7-6.json).
-Eager FP8 outputs are also bitwise in both assignments, but the swapped
-8x128 prefix96 case misses the latency target by +8.88%; eager paired
-performance remains unqualified.
-[6/7 eager evidence](benchmarks/tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-6-7.json),
-[7/6 eager latency failure](benchmarks/tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-7-6.json).
+The integrated a981 whole library qualifies TinyLlama BF16 dynamic FP8 causal
+shared-prefix inference in eager and graph modes, with no preload. All five
+workloads match Candle bitwise for every full/raw/folded/last-token pooled
+output, changed-map replay and suffix isolation in both 200-iteration H100
+assignments. Worst P50 slowdown is −3.100% / −0.664% eager and −8.431% / −6.503%
+with graphs requested (four resident graphs; unchanged 4096-token cap).
+Larger shapes retain eager fallback and remain included in the latency gate.
+Exact QKV unfolding removes two copy launches per layer without changing
+values, attention layout, FP8 arithmetic or actual token counts.
+[Whole-library manifest and all six reports](benchmarks/tei-tinyllama-causal-whole-a981-qualification.json).
+The earlier swapped eager 8x128 prefix96 +8.88% miss remains in
+[historical failure evidence](benchmarks/tei-tinyllama-causal-trained-fp8-eager-radix-200-4096-7-6.json).
+Its qualification is superseded only for the measured a981 runtime/checkpoint
+scope; historical graph and default reports are retained.
 Direct original Candle norm and attention entrypoints on identical learned
 operands prove the upstream arithmetic correction. The native FP8 GEMMs
 match the independently translated original cuBLASLt recipe bitwise on live
@@ -174,10 +176,15 @@ boundaries before that correction. The prior
 is retained. This qualification covers hidden-state inference and last-token
 pooling on synthetic valid IDs, without token padding or a Python runtime;
 it does not establish text-generation quality or A10 performance.
-Trained FP8 encoder qualification remains pending: the first BGE pilot fails
-1x32 accuracy at cosine 0.9812788464430842.
-[BGE failure evidence](benchmarks/tei-bert-trained-fp8-pilot-failure.json).
-Other decoder checkpoints and precisions still require trained FP8 validation.
+The same whole library qualifies trained BGE FP16 CLS with dynamic MLP-only
+FP8 enabled in both backends: all seven packed workloads match bitwise in both
+200-iteration assignments, eager and graph modes. Worst P50 slowdown is +2.03%
+eager; every graph workload is at least 44.59% faster.
+[BGE scope and paired evidence](benchmarks/libtorch-bert-fp8-h100.md).
+The initial 1x32 cosine 0.9812788464430842
+[BGE accuracy failure](benchmarks/tei-bert-trained-fp8-pilot-failure.json) remains
+historical evidence. Other encoder checkpoints, heads and dtypes, and other
+decoder checkpoints and precisions, still require trained FP8 validation.
 [Component evidence](benchmarks/tei-native-fp8-component-validation.json).
 
 The BERT eager private-attention hybrid candidate meets the +5% target in

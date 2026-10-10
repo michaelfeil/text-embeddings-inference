@@ -13,7 +13,7 @@ install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_to
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
-  target_sources(tei_torch PRIVATE qwen35_reference.cu qwen35_kernels.cu fast_kernels.cu fp8_quant.cu encoder_activation.cu encoder_norm.cu decoder_norm.cu packed_pool.cu
+  target_sources(tei_torch PRIVATE radix_qkv.cu qwen35_reference.cu qwen35_kernels.cu fast_kernels.cu fp8_quant.cu encoder_activation.cu encoder_norm.cu decoder_norm.cu packed_pool.cu
     torch_flash_fma.cpp torch_flash_fma_64.cu torch_flash_fma_128.cu torch_flash_fma_256.cu torch_flash_fma_512.cu)
   set_source_files_properties(qwen35_reference.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--expt-relaxed-constexpr")
   set_source_files_properties(encoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")

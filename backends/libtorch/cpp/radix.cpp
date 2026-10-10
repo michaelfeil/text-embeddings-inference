@@ -2,6 +2,9 @@
 // Compact/unfold contract adapted from Candle's RadixMLP by Michael Feil.
 // Copyright (c) 2025 michaelfeil
 #include "radix.h"
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include "radix_qkv.h"
+#endif
 #include <vector>
 namespace tei {
 bool radix_enabled(const PackedInput& p) {
@@ -16,6 +19,17 @@ at::Tensor radix_unfold(const at::Tensor& x,const PackedInput& p) {
  TORCH_CHECK(x.dim()>0&&x.size(0)==p.compact_ids.numel(),"Radix unfold requires compact token rows");
  TORCH_CHECK(p.scatter_unfold.defined()&&p.scatter_unfold.scalar_type()==at::kLong&&p.scatter_unfold.device()==x.device(),"Radix unfold requires matching on-device indices");
  return x.index_select(0,p.scatter_unfold);
+}
+std::array<at::Tensor,3> radix_unfold_qkv(const at::Tensor& q,const at::Tensor& k,
+ const at::Tensor& v,const PackedInput& p) {
+ if(!radix_enabled(p))return {q,k,v};
+#ifdef TEI_TORCH_CUDA_KERNELS
+ if(radix_qkv_cuda_supported(q,k,v,p.scatter_unfold)) {
+  TORCH_CHECK(q.size(0)==p.compact_ids.numel(),"Radix QKV requires compact token rows");
+  return radix_unfold_qkv_cuda(q,k,v,p.scatter_unfold);
+ }
+#endif
+ return {radix_unfold(q,p),radix_unfold(k,p),radix_unfold(v,p)};
 }
 at::Tensor radix_fold(const at::Tensor& x,const PackedInput& p) {
  if(!radix_enabled(p))return x;
