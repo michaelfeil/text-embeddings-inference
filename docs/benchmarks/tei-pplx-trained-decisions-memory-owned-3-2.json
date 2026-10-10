@@ -28,37 +28,21 @@
       "candle_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.375, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         }
       ],
       "case": "three-real-choice-prompts",
       "cuda_graph_count": 1,
       "latency_delta_percent": -18.43593030658619,
-      "lengths": [
-        108,
-        111,
-        113
-      ],
+      "lengths": [108, 111, 113],
       "torch": {
         "p50_ms": 53.502613,
         "p95_ms": 54.713406,
@@ -67,27 +51,15 @@
       "torch_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            12.9375,
-            7.6875,
-            18.625
-          ]
+          "logits": [12.9375, 7.6875, 18.625]
         }
       ]
     },
@@ -118,19 +90,13 @@
       "candle_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.3125
-          ]
+          "logits": [8.8125, 19.375, 9.3125]
         }
       ],
       "case": "1x-choice-prompts",
       "cuda_graph_count": 2,
       "latency_delta_percent": -17.244809838212717,
-      "lengths": [
-        108
-      ],
+      "lengths": [108],
       "torch": {
         "p50_ms": 33.513731,
         "p95_ms": 33.785762,
@@ -139,11 +105,7 @@
       "torch_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         }
       ]
     },
@@ -174,82 +136,41 @@
       "candle_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         }
       ],
       "case": "8x-choice-prompts",
       "cuda_graph_count": 3,
       "latency_delta_percent": -17.663401046277627,
-      "lengths": [
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111
-      ],
+      "lengths": [108, 111, 113, 108, 111, 113, 108, 111],
       "torch": {
         "p50_ms": 123.248634,
         "p95_ms": 125.921714,
@@ -258,67 +179,35 @@
       "torch_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         }
       ]
     },
@@ -349,297 +238,139 @@
       "candle_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.5,
-            8.5,
-            9.0625
-          ]
+          "logits": [19.5, 8.5, 9.0625]
         }
       ],
       "case": "32x-choice-prompts",
       "cuda_graph_count": 4,
       "latency_delta_percent": -16.779255835437457,
       "lengths": [
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111,
-        113,
-        108,
-        111
+        108, 111, 113, 108, 111, 113, 108, 111, 113, 108, 111, 113, 108, 111, 113, 108, 111, 113, 108, 111, 113, 108,
+        111, 113, 108, 111, 113, 108, 111, 113, 108, 111
       ],
       "torch": {
         "p50_ms": 478.242426,
@@ -649,259 +380,131 @@
       "torch_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            13.0,
-            7.6875,
-            18.625
-          ]
+          "logits": [13.0, 7.6875, 18.625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.8125,
-            19.375,
-            9.25
-          ]
+          "logits": [8.8125, 19.375, 9.25]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            19.375,
-            8.5,
-            9.0
-          ]
+          "logits": [19.375, 8.5, 9.0]
         }
       ]
     },
@@ -932,82 +535,41 @@
       "candle_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         }
       ],
       "case": "8x512-real-choice-prompts",
       "cuda_graph_count": 4,
       "latency_delta_percent": -16.82823743597679,
-      "lengths": [
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512
-      ],
+      "lengths": [512, 512, 512, 512, 512, 512, 512, 512],
       "torch": {
         "p50_ms": 542.925714,
         "p95_ms": 546.392521,
@@ -1016,67 +578,35 @@
       "torch_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         }
       ]
     },
@@ -1107,297 +637,139 @@
       "candle_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.0625
-          ]
+          "logits": [8.625, 18.375, 9.0625]
         }
       ],
       "case": "32x512-real-choice-prompts",
       "cuda_graph_count": 4,
       "latency_delta_percent": -17.096152530441554,
       "lengths": [
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512,
-        512
+        512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512, 512,
+        512, 512, 512, 512, 512, 512, 512, 512, 512, 512
       ],
       "torch": {
         "p50_ms": 2171.80645,
@@ -1407,259 +779,131 @@
       "torch_outputs": [
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         },
         {
           "action_probability": 1.0,
-          "logits": [
-            8.625,
-            18.375,
-            9.125
-          ]
+          "logits": [8.625, 18.375, 9.125]
         }
       ]
     }
