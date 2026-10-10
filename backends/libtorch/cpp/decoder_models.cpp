@@ -2,6 +2,8 @@
 #include "moe_kernels.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
+#include "decoder_norm.h"
+#include "torch_flash_fma.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/detail/CUDAHooksInterface.h>
 #endif
@@ -53,6 +55,20 @@ class Decoder final : public Model {
     if (x.is_cuda()) return std::get<0>(at::_fused_rms_norm(x.contiguous(), {w.numel()}, w, epsilon));
     return at::rms_norm(x, {w.numel()}, w, epsilon);
   }
+#ifdef TEI_TORCH_CUDA_KERNELS
+  bool exact_routed_math() const {
+    // Learned Qwen3-30B-A3B needs both the fork's Welford residual RMS
+    // reduction and fused Torch softmax arithmetic to avoid amplified BF16
+    // rounding changes in expert routing. Other geometries retain their path.
+    return family=="qwen3_moe"&&dtype==at::kBFloat16&&hidden==2048
+      &&options.integer("num_experts",0)==128&&top_k==8;
+  }
+  std::pair<at::Tensor,at::Tensor> residual_norm(const at::Tensor& x,
+    const at::Tensor& residual,const at::Tensor& weight) const {
+    if(exact_routed_math())return decoder_exact_rms_norm(x,residual,weight,epsilon);
+    return fused_add_rms_norm(x,residual,weight,epsilon);
+  }
+#endif
   at::Tensor activate(const at::Tensor& x) const {
     if (activation == "silu" || activation == "swish") return at::silu(x);
     if (activation == "relu") return at::relu(x);
@@ -126,6 +142,11 @@ class Decoder final : public Model {
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input) const {
     if (device.is_cuda()) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(exact_routed_math()&&torch_flash_fma_supported(q,k,v))
+        return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
+          1./std::sqrt(static_cast<double>(head_dim)),causal,left_window,right_window);
+#endif
       // cuDNN packed attention cannot express the local window here. It is
       // equivalent only when every sequence fits inside the configured window.
       const bool window_inactive=(left_window<0||left_window>=input.max_sequence-1)
@@ -399,7 +420,7 @@ public:
       at::Tensor normalized;
 #ifdef TEI_TORCH_CUDA_KERNELS
       if (h.is_cuda()) {
-        auto pair=fused_add_rms_norm(h,residual,layer.input_norm,epsilon);
+        auto pair=residual_norm(h,residual,layer.input_norm);
         normalized=pair.first;residual=pair.second;
       } else
 #endif
@@ -427,7 +448,7 @@ public:
       auto projected=at::linear(attended,layer.out,layer.out_bias);
 #ifdef TEI_TORCH_CUDA_KERNELS
       if (h.is_cuda()) {
-        auto pair=fused_add_rms_norm(projected,residual,layer.post_norm,epsilon);
+        auto pair=residual_norm(projected,residual,layer.post_norm);
         residual=pair.second;h=mlp(pair.first,layer);
       } else
 #endif
@@ -444,7 +465,7 @@ public:
       ++layer_index;
     }
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (h.is_cuda()) h=fused_add_rms_norm(h,residual,final_norm,epsilon).first;
+    if (h.is_cuda()) h=residual_norm(h,residual,final_norm).first;
     else
 #endif
     h = norm(h, final_norm);

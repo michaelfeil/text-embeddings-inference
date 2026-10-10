@@ -12,8 +12,19 @@ install(TARGETS tei_torch LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
-  target_sources(tei_torch PRIVATE qwen35_kernels.cu fast_kernels.cu encoder_norm.cu packed_pool.cu)
+  target_sources(tei_torch PRIVATE qwen35_kernels.cu fast_kernels.cu encoder_norm.cu decoder_norm.cu packed_pool.cu
+    torch_flash_fma.cpp torch_flash_fma_64.cu torch_flash_fma_128.cu torch_flash_fma_256.cu)
   set_source_files_properties(encoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
+  set_source_files_properties(decoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
+  # Exact Torch-pinned Flash forward source, with private kernel symbols and
+  # fused softmax arithmetic. This operates on actual packed tokens.
+  set_source_files_properties(torch_flash_fma_64.cu torch_flash_fma_128.cu torch_flash_fma_256.cu
+    PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
+    COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_ALIBI;FLASHATTENTION_DISABLE_SOFTCAP;FLASHATTENTION_DISABLE_UNEVEN_K")
+  install(FILES vendor/torch_flash_attention/LICENSE vendor/torch_flash_attention/AUTHORS
+    vendor/torch_flash_attention/provenance.json DESTINATION share/licenses/tei_torch/torch_flash_attention)
+  install(FILES ../../candle/extensions/candle-layer-norm/LICENSE
+    DESTINATION share/licenses/tei_torch/candle-layer-norm)
   target_include_directories(tei_torch PRIVATE ../../candle/extensions/candle-layer-norm/kernels)
   find_package(CUDAToolkit REQUIRED)
   target_link_directories(tei_torch PRIVATE "${CUDAToolkit_LIBRARY_DIR}")
@@ -62,7 +73,7 @@ if(TEI_BUILD_NATIVE_TESTS)
     add_test(NAME ${test}_cpu COMMAND ${test}_test)
   endforeach()
   if(TARGET torch_cuda AND TEI_RUN_CUDA_TESTS)
-    foreach(test fast_kernels encoder_norm cuda_graph packed_pool packed_alibi moe_kernels)
+    foreach(test fast_kernels encoder_norm decoder_norm cuda_graph packed_pool packed_alibi packed_relative_bias moe_kernels torch_flash_fma)
       add_executable(${test}_test ${test}_test.cpp)
       target_compile_features(${test}_test PRIVATE cxx_std_20)
       target_link_libraries(${test}_test PRIVATE tei_torch "${TORCH_LIBRARIES}")

@@ -82,25 +82,31 @@ Raw measurements: [tei-mistral-lt32-v2-graphs-0-1.json](tei-mistral-lt32-v2-grap
 
 ## Additional trained families and remaining gaps
 
-These runs use exact packed mean pooling, except DistilBERT (CLS). Graph-enabled model execution is warmed; capture and cache misses are excluded. Visual inputs are synthetic patches with valid geometry, so these results validate checkpoint consumption and backend parity rather than real-image retrieval quality.
+These runs use exact packed mean pooling, except DistilBERT and ModernBERT MLM (CLS), and Qwen3 MoE (last-token). Graph-enabled model execution is warmed; capture and cache misses are excluded. Visual inputs are synthetic patches with valid geometry, so these results validate checkpoint consumption and backend parity rather than real-image retrieval quality.
 
 | Checkpoint | Workloads per assignment | Worst P50 slowdown | Minimum cosine | Result |
 |---|---:|---:|---:|---|
 | DistilBERT base uncased | 7 | +3.82% | 0.999997784 | Meets measured target |
-| ModernBERT embed base | 7 | -8.82% | 0.999893990 | Meets measured target |
+| ModernBERT embed base (private Torch FMA) | 7 | -9.99% | 1.0 (bitwise) | Meets measured target |
+| ModernBERT base MLM CLS (private Torch FMA) | 7 | -11.10% | 1.0 (bitwise) | Meets measured target |
+| EmbeddingGemma 300M plus both Dense heads | 7 | +1.20% | 1.0 (bitwise) | Meets measured target |
+| Qwen3-30B-A3B BF16 MoE | 7 | +1.75% | 1.0 (bitwise) | Meets measured target |
 | Nomic embed text v1.5 | 7 | -44.68% | 0.999998367 | Meets measured target |
 | Qwen3-VL embedding 2B | 9 | +1.49% | 0.999994471 | Meets measured target |
 | Qwen3.5 0.8B | 9 | -24.68% | 0.999961894 | Meets measured target |
+| DeBERTa v3 base NLI (CLS) | 7 | −8.58% | 0.999995064 | Meets measured target |
 | DistilRoBERTa v1 | 7 | +4.75% | 0.999997893 | Meets measured target |
 | Jina v2 base en | 7 | -38.09% | 0.999996964 | Meets measured target |
 | Jina v2 base code | 7 | -42.61% | 0.999987606 | Meets measured target |
 
-ModernBERT still has a separate arbitrary-ID MLM checkpoint parity failure; its embedding checkpoint passes the retained arbitrary-ID mean regression (cosine >=0.999552693). Qwen3-VL uses FP16 last-token pooling; Qwen3.5 uses BF16 mean pooling. Media graph capture was verified in isolated image and ragged-image runs. Jina now preserves ALiBi in a single packed Torch efficient-attention call per layer. Its shared local bias uses bounded overlapping read-only strides; Q/K/V retain actual token counts. Independent FP16/BF16 attention, sequence-isolation and NaN-unused-storage tests pass. Both checkpoints retain the same trained parity as the earlier per-sequence implementation. The previous 32–117% batched slowdowns are retained as historical reports below.
+ModernBERT now matches Candle bitwise for both its embedding and MLM checkpoints, including the formerly failing arbitrary-ID CLS regression. Private forward kernels use the exact Flash source pinned by Torch, compiled with fused softmax arithmetic. Gemma3 uses the same private Torch arithmetic and in-place contracted rotary; its full Transformer, mean pooling and both Dense heads match bitwise. Gemma3 reports use 40 measured iterations and 20 warmups, and record both Dense paths and complete checkpoint identities. Qwen3-VL uses FP16 last-token pooling; Qwen3.5 uses BF16 mean pooling. Media graph capture was verified in isolated image and ragged-image runs. Jina now preserves ALiBi in a single packed Torch efficient-attention call per layer. Its shared local bias uses bounded overlapping read-only strides; Q/K/V retain actual token counts. Independent FP16/BF16 attention, sequence-isolation and NaN-unused-storage tests pass. Both checkpoints retain the same trained parity as the earlier per-sequence implementation. The previous 32–117% batched slowdowns are retained as historical reports below.
 
 Raw paired measurements:
 
 - DistilBERT base uncased: [tei-distilbert-packedalibi-final-graphs-benchmark-2-3.json](tei-distilbert-packedalibi-final-graphs-benchmark-2-3.json), [tei-distilbert-fused-graphs-benchmark-3-2.json](tei-distilbert-fused-graphs-benchmark-3-2.json).
-- ModernBERT embed base: [tei-modernbert-embed-mean-packedpool-graphs-benchmark-2-3.json](tei-modernbert-embed-mean-packedpool-graphs-benchmark-2-3.json), [tei-modernbert-embed-mean-packedpool-graphs-benchmark-3-2.json](tei-modernbert-embed-mean-packedpool-graphs-benchmark-3-2.json).
+- ModernBERT embedding: [private Torch FMA 2/3](tei-modernbert-embedding-mean-private-torch-fma-2-3.json), [private Torch FMA 3/2](tei-modernbert-embedding-mean-private-torch-fma-3-2.json).
+- ModernBERT MLM CLS: [private Torch FMA 2/3](tei-modernbert-mlm-cls-private-torch-fma-2-3.json), [private Torch FMA 3/2](tei-modernbert-mlm-cls-private-torch-fma-3-2.json), [official and arbitrary-ID correctness](tei-modernbert-private-torch-fma-correctness.json).
+- Gemma3 embedding plus both Dense heads: [private Torch FMA 4/5](gemma3-private-torch-fma-full-graphs-4-5.json), [private Torch FMA 5/4](gemma3-private-torch-fma-full-graphs-5-4.json).
 - Nomic embed text v1.5: [tei-nomic-mean-packedpool-graphs-benchmark-2-3.json](tei-nomic-mean-packedpool-graphs-benchmark-2-3.json), [tei-nomic-mean-packedpool-graphs-benchmark-3-2.json](tei-nomic-mean-packedpool-graphs-benchmark-3-2.json).
 - Qwen3-VL embedding 2B: [tei-qwen3vl-full-graphs-4-5-metadata.json](tei-qwen3vl-full-graphs-4-5-metadata.json), [tei-qwen3vl-full-graphs-5-4-metadata.json](tei-qwen3vl-full-graphs-5-4-metadata.json).
 - Qwen3.5 0.8B: [tei-qwen35-full-graphs-fixed-4-5-metadata.json](tei-qwen35-full-graphs-fixed-4-5-metadata.json), [tei-qwen35-full-graphs-fixed-5-4-metadata.json](tei-qwen35-full-graphs-fixed-5-4-metadata.json).
@@ -119,3 +125,19 @@ cosine gate but misses latency by up to 8.59% in a single GPU assignment.
 accuracy gate on the first 1x32 workload (cosine 0.998809860); that run does
 not establish latency across the remaining workloads. Correct routing-kernel
 oracles alone do not qualify these complete models.
+
+DeBERTa’s [2/3](tei-deberta-trained-cls-packed-graphs-2-3.json) and
+[3/2](tei-deberta-trained-cls-packed-graphs-3-2.json) runs use distinct
+sequence-local relative bias tiles and one packed Torch attention call per layer.
+Both report four cached CUDA graphs; the historical
+[eager 2/3](tei-deberta-trained-cls-eager-baseline-2-3.json) and
+[eager 3/2](tei-deberta-trained-cls-eager-baseline-3-2.json) runs requested graphs
+but captured none, and had substantial medium-batch latency gaps. The new path
+preserves [independent trained Transformers parity](tei-deberta-trained-packed-hf-cuda-parity.json),
+including classifier logits, without padded Q/K/V tokens.
+
+## Qwen2 and routed decoder qualification in progress
+
+GTE Qwen2 1.5B passes accuracy across seven workloads, with minimum cosine 0.999965304. Paired rotary and 32-bit gated indexing pass the latency target on the first GPU assignment, but swapped 32x128 remains +11.20%; qualification is incomplete. Both reports retain all measured results: [6/7](tei-qwen2-trained-paired-operators-6-7.json), [7/6](tei-qwen2-trained-paired-operators-7-6.json).
+
+Qwen3 MoE originally failed the trained accuracy gate. An independent full 48-layer trace isolates two numerical causes: unfused Torch softmax arithmetic and a different residual RMS reduction. Correcting both matches all hidden states and expert routing bitwise; correcting either alone does not. The [numerical trace evidence](tei-qwen3-moe-numerical-trace-evidence.json) is distinct from full integrated accuracy and latency qualification, which now passes: all seven workloads in both GPU assignments match bitwise and meet the 5% P50 target. These 200-iteration reports use eager execution (actual graph count 0) and private Torch Flash attention; cuDNN being requested does not mean it ran on this configuration. Raw results: [0/1](tei-qwen3-moe-private-torch-fma-eager-0-1.json), [1/0](tei-qwen3-moe-private-torch-fma-eager-1-0.json).

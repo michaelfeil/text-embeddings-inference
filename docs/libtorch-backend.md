@@ -20,6 +20,16 @@ Attention operator behind
 The C++ call uses zero dropout and full bidirectional attention for BERT. Kernel
 errors propagate to Rust; there is no padded fallback.
 
+ModernBERT and Gemma3 additionally use privately compiled forward kernels from
+the Flash source pinned by Torch 2.14.1. The upstream headers remain unchanged;
+compiling without Torch's `UNFUSE_FMA` definition preserves fused softmax
+arithmetic needed for Candle parity. This path uses actual packed token counts,
+strides and cumulative offsets, with no Python or Candle attention runtime.
+The same arithmetic is selected for the validated Qwen3 MoE BF16 configuration,
+alongside its exact residual normalization. The vendor directory records the
+Torch and Flash revisions and source hashes; installation retains the complete
+BSD license, authors and provenance under `share/licenses/tei_torch`.
+
 CPU has an unpadded reference implementation: all projections/MLPs stay packed,
 and attention uses SDPA on each sequence at its actual length. This is useful for
 correctness testing; it is not a fused CPU varlen kernel. MPS and XPU are rejected
@@ -52,6 +62,10 @@ ALiBi tile uses overlapping read-only strides with bounded backing storage:
 `O(T*M + H*M*M)` elements for total tokens `T`, maximum actual sequence length
 `M`, and heads `H`. Q/K/V contain only actual tokens. Jina reuses the bias across
 all layers within each request; no mutable cross-request cache is used.
+DeBERTa constructs distinct relative-bias tiles for each actual sequence and
+uses one packed efficient-attention call per layer. Its backing storage is
+`O(B*H*M*M + T*M)`, where `B` is the number of sequences; unused bias positions
+are never read. Neither Q/K/V nor token activations are padded.
 
 Typed decision heads have native implementations and synthetic parity checks;
 trained-checkpoint validation remains pending. Sentence Transformers Dense

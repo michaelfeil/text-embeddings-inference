@@ -70,6 +70,23 @@ fn fixture(family: &str) -> Fixture {
         }
         .into();
     }
+    if family == "nomic_bert" {
+        // Published Nomic configurations use GPT-style dimension names.
+        // Exercise the complete loader without duplicate generic aliases.
+        for key in [
+            "hidden_size",
+            "dim",
+            "num_attention_heads",
+            "n_heads",
+            "num_hidden_layers",
+            "n_layers",
+            "intermediate_size",
+            "hidden_dim",
+            "max_position_embeddings",
+        ] {
+            cfg.as_object_mut().unwrap().remove(key);
+        }
+    }
     fs::write(path.join("config.json"), serde_json::to_vec(&cfg).unwrap()).unwrap();
     let mut data: Vec<(String, Vec<usize>, Vec<u8>)> = vec![];
     let mut add = |name: String, shape: Vec<usize>| {
@@ -553,6 +570,14 @@ fn mpnet_cuda_varlen_matches_cpu() {
     .unwrap();
     let expected = cpu.embed(batch()).unwrap();
     let got = gpu.embed(batch()).unwrap();
+    if std::env::var("TEI_TORCH_CUDA_GRAPHS")
+        .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    {
+        assert!(
+            gpu.cuda_graph_count() > 0,
+            "MPNet CUDA graph was not captured"
+        );
+    }
     for row in [0, 1] {
         for (a, b) in values(&got[&row]).iter().zip(values(&expected[&row])) {
             assert!((a - b).abs() < 0.008, "MPNet varlen {a} != {b}");

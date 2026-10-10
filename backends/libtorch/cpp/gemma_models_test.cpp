@@ -171,16 +171,43 @@ int main(int argc,char** argv) {
   }
   if(argc>1) {
     const c10::Device device(argv[1]);
-    for(const auto& family:{"gemma4","embedding_gemma2"}) {
-      Fixture f(family,512);
+    for(const auto& family:{"gemma3","gemma4","embedding_gemma2"}) {
+      const int64_t head_dim=std::string(family)=="gemma3"?256:512;
+      Fixture f(family,head_dim);
       f.cfg.values["num_hidden_layers"]="1";
       f.cfg.values["num_kv_shared_layers"]="0";
       f.cfg.values["hidden_size_per_layer_input"]="0";
+      if(f.legacy) {
+        // Retain the original unit Q/K scales separately: the hidden width16
+        // norm requires a full warp, and packed requests must remain isolated.
+        Weights original_weights;
+        for(const auto& [key,value]:f.weights)original_weights[key]=value.to(device,at::kBFloat16);
+        auto original=create_gemma(f.cfg,original_weights,device,at::kBFloat16);original->ready();
+        auto on_device=[&](PackedInput in) {
+          in.ids=in.ids.to(device);in.types=in.types.to(device);
+          in.positions=in.positions.to(device);in.cumulative=in.cumulative.to(device);return in;
+        };
+        for(int64_t length:{5,129}) {
+          std::vector<int64_t> first;for(int64_t i=0;i<length;++i)first.push_back(i%63+1);
+          const std::vector<int64_t> second={17,31};
+          auto ids=first;ids.insert(ids.end(),second.begin(),second.end());
+          const std::vector<int32_t> offsets={0,int32_t(length),int32_t(length+2)},one={0,int32_t(length)},two={0,2};
+          auto packed=original->forward(on_device(input(ids,offsets)));
+          auto separate=at::cat({original->forward(on_device(input(first,one))),original->forward(on_device(input(second,two)))},0);
+          TORCH_CHECK(at::isfinite(packed).all().item<bool>(),"Gemma3 unit-scale CUDA normalization produced nonfinite output");
+          // Unit final RMSNorm bounds each component by sqrt(hidden_size),
+          // allowing one BF16 rounding step. This catches invalid warp sums.
+          TORCH_CHECK(packed.abs().max().item<float>()<=4.03125f,"Gemma3 unit-scale CUDA RMSNorm violated its component bound");
+          TORCH_CHECK(at::allclose(packed,separate,.04,.04),"Gemma3 unit-scale packed CUDA sequence isolation failed");
+        }
+        std::cout<<"gemma3: original unit Q/K scales, tiny-width CUDA norm and packed isolation passed\n";
+      }
       // Keep the synthetic attention well conditioned: untrained unit Q/K
       // norms at scale1 otherwise amplify BF16 reduction differences across4
       // random layers into unstable argmax decisions.
       for(auto& [key,value]:f.weights) {
-        if(key.ends_with("q_norm.weight") || key.ends_with("k_norm.weight")) value=value*.05;
+        if(key.ends_with("q_norm.weight") || key.ends_with("k_norm.weight"))
+          value=f.legacy?at::full_like(value,-.95):value*.05;
       }
       for(auto& [key,value]:f.weights) value=value.to(at::kBFloat16);
       auto cpu=create_gemma(f.cfg,f.weights,c10::Device("cpu"),at::kBFloat16);cpu->ready();
@@ -194,8 +221,8 @@ int main(int argc,char** argv) {
         auto host=input(ids,offsets),dev=host;
         dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);
         auto reference=cpu->forward(host).to(at::kFloat),actual=gpu->forward(dev).cpu().to(at::kFloat);
-        TORCH_CHECK(at::allclose(reference,actual,.04,.04),family," Torch varlen512-vs-CPU mismatch max_length",length," maxabs=",(reference-actual).abs().max().item<float>());
-        std::cout<<family<<" Torch512 GPU/CPU parity max_length="<<length<<" maxabs="<<(reference-actual).abs().max().item<float>()<<"\n";
+        TORCH_CHECK(at::allclose(reference,actual,.04,.04),family," Torch varlen-vs-CPU mismatch max_length",length," maxabs=",(reference-actual).abs().max().item<float>());
+        std::cout<<family<<" Torch"<<head_dim<<" GPU/CPU parity max_length="<<length<<" maxabs="<<(reference-actual).abs().max().item<float>()<<"\n";
       }
     }
   }

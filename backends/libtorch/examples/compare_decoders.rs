@@ -16,15 +16,13 @@ fn batch(lengths: &[usize], vocab_size: u32, bos: Option<u32>, eos: Option<u32>)
     let mut cumulative = vec![0];
     for (row, &length) in lengths.iter().enumerate() {
         input_ids.extend((0..length).map(|i| {
-            if i + 1 == length && eos.is_some() {
-                eos.unwrap()
-            } else if i == 0 && bos.is_some() {
-                bos.unwrap()
-            } else {
-                // Synthetic, valid vocabulary IDs; this measures backend parity/latency,
-                // not retrieval quality or tokenizer throughput.
-                (1000 + (i * 17 + row * 31) as u32) % vocab_size
-            }
+            (if i + 1 == length { eos } else { None })
+                .or(if i == 0 { bos } else { None })
+                .unwrap_or_else(|| {
+                    // Synthetic, valid vocabulary IDs; this measures backend parity/latency,
+                    // not retrieval quality or tokenizer throughput.
+                    (1000 + (i * 17 + row * 31) as u32) % vocab_size
+                })
         }));
         position_ids.extend((0..length).map(|i| i as u32));
         cumulative.push(input_ids.len() as u32);

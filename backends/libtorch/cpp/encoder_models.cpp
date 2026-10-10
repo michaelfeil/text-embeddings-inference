@@ -2,6 +2,7 @@
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "fast_kernels.h"
 #include "encoder_norm.h"
+#include "torch_flash_fma.h"
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_addmm_activation.h>
@@ -225,6 +226,11 @@ struct Encoder final : Model {
     return output + w(p + "mlp.experts.bias");
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(family==Family::Modern && !bias && torch_flash_fma_supported(q,k,v))
+      return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
+        1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
+#endif
     return packed_attention(q, k, v, input, 1.0 / std::sqrt(hidden / heads), false, window, window, alibi, bias);
   }
   at::Tensor forward(const PackedInput& input) const override {
@@ -535,22 +541,39 @@ struct Deberta final : Model {
       auto qkv=at::linear(h,qkv_weight[layer],qkv_bias[layer]).view({h.size(0),3*heads,dim});
       auto q=qkv.narrow(1,0,heads),k=qkv.narrow(1,heads,heads),v=qkv.narrow(1,2*heads,heads);
       auto keys=k/scale;
-      std::vector<at::Tensor> result;
-      for(int64_t row=0;row<input.batch;++row) {
-        const int64_t start=input.offsets[row],n=input.offsets[row+1]-start;
-        auto qlocal=q.narrow(0,start,n).transpose(0,1),klocal=k.narrow(0,start,n).transpose(0,1);
-        auto bias=at::zeros({heads,n,n},h.options());
-        if(position_key[layer].defined())bias=bias+(at::matmul(qlocal,position_key[layer])/scale).gather(2,indices[row].unsqueeze(0).expand({heads,n,n}));
-        if(position_query[layer].defined())bias=bias+(at::matmul(klocal,position_query[layer])/scale).gather(2,indices[row].transpose(0,1).unsqueeze(0).expand({heads,n,n})).transpose(1,2);
-        auto slice=[&](const at::Tensor& t){return t.narrow(0,start,n).unsqueeze(0);};
-        if(device.is_cuda()) {
-          const int64_t stride=((n+7)/8)*8;
-          auto aligned=at::empty_strided({1,heads,n,n},{heads*n*stride,n*stride,stride,1},h.options());aligned.copy_(bias.unsqueeze(0));
-          auto cu=input.cumulative.narrow(0,row,2)-start;
-          result.push_back(std::get<0>(at::_efficient_attention_forward(slice(q),slice(keys),slice(v),aligned,cu,cu,n,n,0.,0,false,1.)).squeeze(0));
-        } else result.push_back(at::scaled_dot_product_attention(slice(q).transpose(1,2),slice(keys).transpose(1,2),slice(v).transpose(1,2),bias.unsqueeze(0),0.,false,1.).squeeze(0).transpose(0,1));
+      at::Tensor attended;
+      if(device.is_cuda()) {
+        // The packed Torch kernel addresses bias with local query/key coordinates
+        // and advances stride(0) per sequence, independently of packed QKV offsets.
+        // Bound storage for both these actual tiles and the logical tensor view.
+        const int64_t nmax=input.max_sequence,stride=((nmax+7)/8)*8;
+        const int64_t tile=nmax*stride,batch_stride=heads*tile;
+        auto packed_bias=packed_sequence_bias(q,input);
+        at::Tensor content_key,position_content;
+        if(position_key[layer].defined())content_key=at::matmul(q.transpose(0,1),position_key[layer])/scale;
+        if(position_query[layer].defined())position_content=at::matmul(k.transpose(0,1),position_query[layer])/scale;
+        for(int64_t row=0;row<input.batch;++row) {
+          const int64_t start=input.offsets[row],n=input.offsets[row+1]-start;
+          auto bias=at::zeros({heads,n,n},h.options());
+          if(content_key.defined())bias=bias+content_key.narrow(1,start,n).gather(2,indices[row].unsqueeze(0).expand({heads,n,n}));
+          if(position_content.defined())bias=bias+position_content.narrow(1,start,n).gather(2,indices[row].transpose(0,1).unsqueeze(0).expand({heads,n,n})).transpose(1,2);
+          packed_bias.as_strided({heads,n,n},{tile,stride,1},row*batch_stride).copy_(bias);
+        }
+        attended=std::get<0>(at::_efficient_attention_forward(q.unsqueeze(0),keys.unsqueeze(0),v.unsqueeze(0),packed_bias,input.cumulative,input.cumulative,nmax,nmax,0.,0,false,1.)).squeeze(0);
+      } else {
+        std::vector<at::Tensor> result;
+        for(int64_t row=0;row<input.batch;++row) {
+          const int64_t start=input.offsets[row],n=input.offsets[row+1]-start;
+          auto qlocal=q.narrow(0,start,n).transpose(0,1),klocal=k.narrow(0,start,n).transpose(0,1);
+          auto bias=at::zeros({heads,n,n},h.options());
+          if(position_key[layer].defined())bias=bias+(at::matmul(qlocal,position_key[layer])/scale).gather(2,indices[row].unsqueeze(0).expand({heads,n,n}));
+          if(position_query[layer].defined())bias=bias+(at::matmul(klocal,position_query[layer])/scale).gather(2,indices[row].transpose(0,1).unsqueeze(0).expand({heads,n,n})).transpose(1,2);
+          auto slice=[&](const at::Tensor& t){return t.narrow(0,start,n).unsqueeze(0);};
+          result.push_back(at::scaled_dot_product_attention(slice(q).transpose(1,2),slice(keys).transpose(1,2),slice(v).transpose(1,2),bias.unsqueeze(0),0.,false,1.).squeeze(0).transpose(0,1));
+        }
+        attended=at::cat(result,0);
       }
-      h=norm(h+linear(at::cat(result,0).contiguous().view({h.size(0),heads*dim}),p+"attention.output.dense"),p+"attention.output.LayerNorm");
+      h=norm(h+linear(attended.contiguous().view({h.size(0),heads*dim}),p+"attention.output.dense"),p+"attention.output.LayerNorm");
       h=norm(h+linear(activation(linear(h,p+"intermediate.dense"),o.string("hidden_act","gelu")),p+"output.dense"),p+"output.LayerNorm");
       if(layer==0&&o.integer("conv_kernel_size",0)>0) {
         std::vector<at::Tensor> pieces;

@@ -1,0 +1,35 @@
+{
+  "torch_repository_revision": "5c4886908584029761b579af026dcfb627c84070",
+  "flash_attention_submodule_revision": "14c377950125c70b7a9dabf9c561fca53715ac7d",
+  "compile_contract": "UNFUSE_FMA undefined; --use_fast_math; nativeTorch source, actual packed tokens",
+  "files": {
+    "alibi.h": "ba61a17e2d3a22d81a27e6f69302d27c887f79f369b288ab1fa1c6ff8a02450d",
+    "block_info.h": "89cb30fd392372f0313db50cde8a93632ae8dc8c02a5902a245d985fc3fa609b",
+    "dropout.h": "a1d14c0c10227d67bfd36bada415565f4deefa604e6eb1863d7dcc0fd8f12098",
+    "flash.h": "44cf722b1913873b3e5cd0700ddfc3db4714e3e1c10039f21885fd17225c6b2a",
+    "flash_fwd_kernel.h": "9b31cdff4009fcd0e1bc52f9b97907d226442db24e0a150d8dfed0711ee64dda",
+    "flash_fwd_launch_template.h": "ff0695a64800db7ba75056170ec68417bb4d03d915c1016df03eee0ef2fd703d",
+    "hardware_info.h": "deef803b86266ec3f3c6f3f3a4c414ad91cc92d637ba9be02eec520db712cfe3",
+    "kernel_traits.h": "880a6f432613dc01979a605d304da75985f9ed34ff66f1f4ded85fc90b7047ac",
+    "mask.h": "4ea99928f81a7861894a6fbeb9ab127abccce49fdb81fdca0b8e570b3f6f1a22",
+    "namespace_config.h": "2f50a22748285224426a7d374715fc63123ad4b4153e1f46b455a87a8a07f4a5",
+    "philox.cuh": "81ef706f740783b4e035b8a78d7f579ee5750d4defdb2068781b3b7cb027abee",
+    "philox_unpack.cuh": "6ba5317ef1f8956983ec83e1d5cbca70aec3446e290ca7f24896c670af9d24d8",
+    "rotary.h": "f000eba29dade79f629849ed5dbce654d475d61826142a0f94011506be3d2427",
+    "softmax.h": "77e70b8d0dbe72f459ced29199a554a0d1e0559cad2370a2e5b5f1fa5faf73f1",
+    "static_switch.h": "52da74dec74f8b9a26ef34bf4a311950c28c0c77b73eab8b9a169f8e65ae1616",
+    "utils.h": "abc6d4c73522af35f6c31be3938830b9474f620d7c8083168d80dab226a0fdc9",
+    "LICENSE": "8c9ccb96c065e706135b6cbad279b721da6156e51f3a5f27c6b3329af9416d73",
+    "AUTHORS": "f3bf4144826a62841b7f9aebc5057f75da2d32a652a573edc67250ec94a377a7"
+  },
+  "license": "BSD-3-Clause",
+  "torch_build_contract_difference": "Torch sets UNFUSE_FMA; these unmodified upstream headers are compiled without it to retain fused softmax arithmetic.",
+  "private_compile_definitions": [
+    "FLASHATTENTION_DISABLE_DROPOUT",
+    "FLASHATTENTION_DISABLE_BACKWARD",
+    "FLASHATTENTION_DISABLE_ALIBI",
+    "FLASHATTENTION_DISABLE_SOFTCAP",
+    "FLASHATTENTION_DISABLE_UNEVEN_K"
+  ],
+  "private_compile_scope": "Forward inference only; zero dropout; no ALiBi/softcap; exact head widths64/128/256. Ragged actual token lengths and local attention remain enabled."
+}

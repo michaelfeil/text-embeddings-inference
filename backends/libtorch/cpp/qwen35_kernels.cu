@@ -65,6 +65,9 @@ at::Tensor gemma_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double ep
   TORCH_CHECK(width>0 && width<=8192 && scale.numel()==width,"Invalid Gemma CUDA norm width");
   auto output=at::empty(x.sizes(),x.options());
   int threads=1;while(threads<width && threads<(reference?1024:256))threads*=2;
+  // The optimized legacy reduction uses a full-warp shuffle mask.
+  // Widths below32 still need32 participating lanes (extra lanes sum zero).
+  if(!reference && threads<32)threads=32;
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
   auto source=reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr());
   auto destination=reinterpret_cast<__nv_bfloat16*>(output.mutable_data_ptr());

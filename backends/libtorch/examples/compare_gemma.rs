@@ -89,7 +89,26 @@ fn main() {
     let qwen_vl = config["model_type"] == "qwen3_vl";
     let qwen_media =
         qwen_vl || config["model_type"] == "qwen3_5" || config["model_type"] == "qwen3_5_moe";
-    let dtype = if qwen_vl { "float16" } else { "bfloat16" };
+    let override_dtype = std::env::var("TEI_COMPARE_DTYPE").ok();
+    let dtype = override_dtype
+        .as_deref()
+        .unwrap_or(if qwen_vl { "float16" } else { "bfloat16" });
+    assert!(
+        matches!(dtype, "float16" | "bfloat16"),
+        "TEI_COMPARE_DTYPE must be float16 or bfloat16"
+    );
+    let dense_paths = std::fs::read(path.join("modules.json")).ok().map(|bytes| {
+        serde_json::from_slice::<Vec<serde_json::Value>>(&bytes)
+            .unwrap()
+            .into_iter()
+            .filter(|module| {
+                module["type"]
+                    .as_str()
+                    .is_some_and(|name| name.rsplit('.').next() == Some("Dense"))
+            })
+            .map(|module| module["path"].as_str().unwrap().to_owned())
+            .collect::<Vec<_>>()
+    });
     let pool = if qwen_vl { Pool::LastToken } else { Pool::Mean };
     let started = Instant::now();
     let torch = LibtorchBackend::new(
@@ -105,7 +124,7 @@ fn main() {
         &path,
         dtype.into(),
         ModelType::Embedding(pool),
-        None,
+        dense_paths.clone(),
         candle_gpu,
     )
     .unwrap();
@@ -184,8 +203,10 @@ fn main() {
                             media.position_ids[2][2 + i] = (2 + i % 2) as u32;
                         }
                         for positions in &mut media.position_ids {
-                            for i in 2 + visual_tokens..positions.len() {
-                                positions[i] = (i - visual_tokens + 2) as u32;
+                            for (i, position) in
+                                positions.iter_mut().enumerate().skip(2 + visual_tokens)
+                            {
+                                *position = (i - visual_tokens + 2) as u32;
                             }
                         }
                     }
@@ -267,7 +288,7 @@ fn main() {
     println!(
         "{}",
         serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_dtype":config["dtype"],"model_type":config["model_type"],
-        "pooling":if qwen_vl {"last_token"} else {"mean"},"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,
+        "pooling":if qwen_vl {"last_token"} else {"mean"},"dense_paths":dense_paths,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,
         "torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),
         "torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()),
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows}))

@@ -387,8 +387,23 @@ impl LibtorchBackend {
         }
         let text = options.get("text_config").unwrap_or(&options);
         let integer = |key: &str, alias: &str, fallback: i64| {
+            let nomic_alias = match key {
+                "hidden_size" => "n_embd",
+                "num_attention_heads" => "n_head",
+                "num_hidden_layers" => "n_layer",
+                "intermediate_size" => "n_inner",
+                "max_position_embeddings" => "n_positions",
+                _ => key,
+            };
             text.get(key)
                 .or_else(|| text.get(alias))
+                .or_else(|| {
+                    if family == "nomic_bert" {
+                        text.get(nomic_alias)
+                    } else {
+                        None
+                    }
+                })
                 .and_then(serde_json::Value::as_i64)
                 .unwrap_or(fallback)
         };

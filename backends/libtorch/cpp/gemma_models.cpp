@@ -4,6 +4,8 @@
 #include "decoder_models.h"
 #include "qwen35_kernels.h"
 #include "moe_kernels.h"
+#include "fast_kernels.h"
+#include "torch_flash_fma.h"
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <ATen/ops/_cudnn_attention_forward.h>
@@ -344,7 +346,13 @@ class Gemma final : public Model {
         return std::get<0>(at::_efficient_attention_forward(q.unsqueeze(0),keys.unsqueeze(0),values.unsqueeze(0),
           std::nullopt,input.cumulative,input.cumulative,input.max_sequence,input.max_sequence,0.,causal?1:0,false,scale)).squeeze(0);
       }
-      auto output=std::get<0>(at::_flash_attention_forward(q, k, v, input.cumulative,
+      at::Tensor output;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(legacy && torch_flash_fma_supported(q,k,v))
+        output=torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,scale,causal,left,right);
+      else
+#endif
+      output=std::get<0>(at::_flash_attention_forward(q, k, v, input.cumulative,
         input.cumulative, input.max_sequence, input.max_sequence, 0., causal,
         false, scale, left, right));
       if(causal && layer.sliding) {
@@ -586,12 +594,28 @@ class Gemma final : public Model {
           v = layer.k_equals_v ? k : linear(normalized, p + "self_attn.v_proj").view({input.ids.size(0), layer.kv, layer.dim});
         }
       }
-      q = rotate(norm(q, p + "self_attn.q_norm"), layer, input.positions);
+      q = norm(q, p + "self_attn.q_norm");
       if (layer.shared) {
+        q = rotate(q, layer, input.positions);
         k = shared[layer.sliding].first; v = shared[layer.sliding].second;
         TORCH_CHECK(k.defined(), "Missing shared Gemma KV states at layer ", i);
       } else {
-        k = rotate(norm(k, p + "self_attn.k_norm"), layer, input.positions);
+        k = norm(k, p + "self_attn.k_norm");
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if (legacy && device.is_cuda()) {
+          // The fork's packed Gemma3 rotary contracts the first product in
+          // BF16/Half. Gemma4's composed rotary retains separate rounding.
+          auto cos = layer.cos.index_select(0, input.positions).contiguous();
+          auto sin = layer.sin.index_select(0, input.positions).contiguous();
+          // Both norms own fresh contiguous buffers, so rotation can reuse
+          // them exactly as Candle does, without extra Q/K allocations.
+          encoder_rotary_inplace(q,k,cos,sin);
+        } else
+#endif
+        {
+          q = rotate(q, layer, input.positions);
+          k = rotate(k, layer, input.positions);
+        }
         if (!legacy) v = norm(v, "", true);
         if (layer.store) shared[layer.sliding] = {k,v};
       }

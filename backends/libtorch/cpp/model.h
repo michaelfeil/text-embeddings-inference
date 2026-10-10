@@ -67,6 +67,18 @@ inline const at::Tensor& weight(const Weights& weights, const std::string& name)
   TORCH_CHECK(it != weights.end(), "Missing model weight: ", name);
   return it->second;
 }
+// Per-sequence bias tiles for the native packed efficient attention operator.
+// Its bias indexing uses local Q/K positions and stride(0) for each sequence,
+// while public tensor metadata requires logical batch=1 and total-token axes.
+// Allocate enough storage for BOTH the bounded logical view and actual tiles.
+inline at::Tensor packed_sequence_bias(const at::Tensor& q,const PackedInput& input) {
+  const int64_t total=q.size(0),heads=q.size(1),nmax=input.max_sequence;
+  TORCH_CHECK(total>0 && heads>0 && input.batch>0 && nmax>0 && nmax<=total,"Invalid packed sequence bias dimensions");
+  const int64_t stride=((nmax+7)/8)*8,tile=nmax*stride,batch_stride=heads*tile;
+  const int64_t size=std::max(input.batch*batch_stride,(heads-1)*tile+(total-1)*stride+total);
+  return at::empty({size},q.options()).as_strided({1,heads,total,total},{batch_stride,tile,stride,1});
+}
+
 // PyTorch 2.14.1 validates a bias with logical total-token dimensions, while
 // its varlen efficient-attention kernel reads sequence-local query/key offsets.
 // Overlapping read-only strides express one shared ALiBi tile per head. The

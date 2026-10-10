@@ -3,6 +3,11 @@ use std::{env, path::PathBuf};
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBTORCH");
     println!("cargo:rerun-if-changed=cpp");
+    println!("cargo:rerun-if-changed=cpp/vendor/torch_flash_attention");
+    println!("cargo:rerun-if-changed=cpp/torch_flash_fma.cpp");
+    println!("cargo:rerun-if-changed=cpp/torch_flash_fma_64.cu");
+    println!("cargo:rerun-if-changed=cpp/torch_flash_fma_128.cu");
+    println!("cargo:rerun-if-changed=cpp/torch_flash_fma_256.cu");
     println!("cargo:rerun-if-changed=../candle/extensions/candle-layer-norm/kernels");
     println!("cargo:rerun-if-changed=../candle/src/kernels/qwen35_gdn.cu");
     println!("cargo:rerun-if-changed=../candle/src/kernels/qk_norm_rope.cu");

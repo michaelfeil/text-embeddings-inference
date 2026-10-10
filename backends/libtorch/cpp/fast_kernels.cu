@@ -7,6 +7,7 @@
 #include <c10/cuda/CUDAException.h>
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
+#include <cstdint>
 // Candle emits PTX directly and guards its BF16 kernel by __CUDA_ARCH__.
 // LibTorch builds a host CUDA translation unit, which also needs the declaration.
 extern "C" __global__ void qk_norm_rope_bf16(const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int, int, int, int, int, float);
@@ -167,8 +168,8 @@ template<class T> __global__ void gated_kernel(const T* x,T* out,int64_t count,i
   out[i]=gated_value<T>(float(x[row*2*width+col+(gate_first?0:width)]),float(x[row*2*width+col+(gate_first?width:0)]),activation);
 }
 template<class T> struct alignas(sizeof(T)*4) GatedVector4 {T value[4];};
-template<class T> __global__ void gated_vector4_kernel(const T* x,T* out,int64_t count,int64_t width,int activation,bool gate_first) {
-  int64_t index=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;if(index>=count/4)return;
+template<class T,class Index> __global__ void gated_vector4_kernel(const T* x,T* out,Index count,Index width,int activation,bool gate_first) {
+  Index index=Index(blockIdx.x)*blockDim.x+threadIdx.x;if(index>=count/4)return;
   auto vectors_per_row=width/4,row=index/vectors_per_row,col=index%vectors_per_row;
   const auto* input=reinterpret_cast<const GatedVector4<T>*>(x);
   const auto gate=input[row*2*vectors_per_row+col+(gate_first?0:vectors_per_row)];
@@ -201,6 +202,24 @@ template<class T> __global__ void rotary_kernel(const T* q,const T* k,const T* c
     output[i]=upper?encoder_rotary_fma(T(b),T(c),T(a*s)):encoder_rotary_fma(T(a),T(c),T(-float(T(b*s))));
   else
     output[i]=upper?T(float(T(b*c))+float(T(a*s))):T(float(T(a*c))-float(T(b*s)));
+}
+// Each thread owns both rotated lanes. This shares input/frequency loads and
+// uses 32-bit division for ordinary tensor sizes without changing rounding.
+template<class T> __global__ void paired_rotary_kernel(const T* q,const T* k,const T* cosine,const T* sine,T* output,
+ uint32_t count,uint32_t qrows,uint32_t qheads,uint32_t kheads,uint32_t qstride,uint32_t kstride,uint32_t half,bool contract_first_product) {
+  const uint32_t index=blockIdx.x*blockDim.x+threadIdx.x;if(index>=count)return;
+  const uint32_t row=index/half,lane=index%half;const bool isq=row<qrows;
+  const uint32_t r=isq?row:row-qrows,heads=isq?qheads:kheads,token=r/heads,head=r%heads;
+  const uint32_t dim=half*2,offset=token*(isq?qstride:kstride)+head*dim+lane;
+  const T* x=isq?q:k;
+  const float a=float(x[offset]),b=float(x[offset+half]),c=float(cosine[token*half+lane]),s=float(sine[token*half+lane]);
+  if(contract_first_product) {
+    output[row*dim+lane]=encoder_rotary_fma(T(a),T(c),T(-float(T(b*s))));
+    output[row*dim+lane+half]=encoder_rotary_fma(T(b),T(c),T(a*s));
+  } else {
+    output[row*dim+lane]=T(float(T(a*c))-float(T(b*s)));
+    output[row*dim+lane+half]=T(float(T(b*c))+float(T(a*s)));
+  }
 }
 template<class T> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const T* cosine,const T* sine,
  int64_t qheads,int64_t kheads,int64_t qstride,int64_t kstride,int64_t tokens,int64_t dim,int64_t half) {
@@ -277,7 +296,10 @@ at::Tensor fused_gated_activation(const at::Tensor& x,int32_t activation,bool ga
   c10::cuda::CUDAGuard guard(x.device());auto shape=x.sizes().vec();shape.back()/=2;auto output=at::empty(shape,x.options());if(output.numel()==0)return output;
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
 #define TEI_GATE(T) do { \
-  if(shape.back()%4==0 && reinterpret_cast<uintptr_t>(x.const_data_ptr())%(4*x.element_size())==0) gated_vector4_kernel<T><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+  if(shape.back()%4==0 && reinterpret_cast<uintptr_t>(x.const_data_ptr())%(4*x.element_size())==0) { \
+    if(x.numel()<=UINT32_MAX) gated_vector4_kernel<T,uint32_t><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+    else gated_vector4_kernel<T,int64_t><<<(output.numel()/4+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
+  } \
   else gated_kernel<T><<<(output.numel()+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(x.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel(),shape.back(),activation,gate_first); \
 } while(false)
   if(x.scalar_type()==at::kHalf){TEI_GATE(__half);}else if(x.scalar_type()==at::kBFloat16){TEI_GATE(__nv_bfloat16);}else if(x.scalar_type()==at::kFloat){TEI_GATE(float);}else TORCH_CHECK(false,"Unsupported gated activation dtype");
@@ -291,8 +313,13 @@ std::pair<at::Tensor,at::Tensor> fused_rotary(const at::Tensor& q,const at::Tens
   for(const auto& t:{cosine,sine})TORCH_CHECK(t.device()==q.device()&&t.scalar_type()==q.scalar_type()&&t.is_contiguous(),"Rotary frequencies must be contiguous and match Q/K device/dtype");
   c10::cuda::CUDAGuard guard(q.device());auto qr=q.size(0)*q.size(1),kr=k.size(0)*k.size(1),dim=q.size(-1);
   auto output=at::empty({qr+kr,dim},q.options());auto stream=at::cuda::getCurrentCUDAStream(q.device().index());
+  // Keep the existing path for partial rotary, F32 contraction behavior, or
+  // dimensions/strides that cannot be represented by the faster indexing.
+  const bool paired=q.scalar_type()!=at::kFloat && dim==2*cosine.size(-1)
+    && output.numel()<=UINT32_MAX && q.size(0)*q.stride(0)<=UINT32_MAX
+    && k.size(0)*k.stride(0)<=UINT32_MAX;
   if(output.numel()>0){
-#define TEI_ROPE(T) rotary_kernel<T><<<(output.numel()+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(q.const_data_ptr()),reinterpret_cast<const T*>(k.const_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),qr,kr,q.size(1),k.size(1),q.stride(0),k.stride(0),dim,cosine.size(-1),contract_first_product)
+#define TEI_ROPE(T) if(paired) paired_rotary_kernel<T><<<(output.numel()/2+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(q.const_data_ptr()),reinterpret_cast<const T*>(k.const_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),output.numel()/2,qr,q.size(1),k.size(1),q.stride(0),k.stride(0),cosine.size(-1),contract_first_product); else rotary_kernel<T><<<(output.numel()+255)/256,256,0,stream>>>(reinterpret_cast<const T*>(q.const_data_ptr()),reinterpret_cast<const T*>(k.const_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),reinterpret_cast<T*>(output.mutable_data_ptr()),qr,kr,q.size(1),k.size(1),q.stride(0),k.stride(0),dim,cosine.size(-1),contract_first_product)
     if(q.scalar_type()==at::kHalf){TEI_ROPE(__half);}else if(q.scalar_type()==at::kBFloat16){TEI_ROPE(__nv_bfloat16);}else if(q.scalar_type()==at::kFloat){TEI_ROPE(float);}else TORCH_CHECK(false,"Unsupported rotary dtype");
 #undef TEI_ROPE
     C10_CUDA_KERNEL_LAUNCH_CHECK();
