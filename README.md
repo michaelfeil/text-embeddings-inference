@@ -539,6 +539,38 @@ checkpoint's `choice:11+` temperature is outside this range; confidence for that
 bucket is not verified as calibrated. ModernBERT uses approximate (tanh) GELU;
 the custom head retains ReLU and exact scorer/action GELU.
 
+### Chat inputs for embeddings and classification
+
+`/v1/embeddings` accepts a top-level `messages` array as an alternative to `input`:
+
+```json
+{"messages":[{"role":"system","content":"Represent the conversation for retrieval."},{"role":"user","content":"How do I reset my password?"}]}
+```
+
+Provide exactly one of `input` or `messages`. A conversation produces one embedding;
+`encoding_format` and `dimensions` work as they do for ordinary embedding inputs.
+The existing `input` message-array format remains supported.
+
+`/predict` accepts a conversation under `inputs`:
+
+```json
+{"inputs":{"messages":[{"role":"system","content":"Classify the user's sentiment."},{"role":"user","content":"I love this!"}]},"raw_scores":false}
+```
+
+For independent conversations, pass an array of `{"messages": [...]}` objects as
+`inputs`. Responses retain `/predict`'s existing label/score arrays. Text, text
+pairs and token-ID requests retain their existing behavior.
+
+Text conversations use the deployed model's `chat_template.jinja` or the template
+in `tokenizer_config.json`. System, developer, user and assistant roles are passed
+to that template; the template determines which roles it accepts. Text content
+blocks are joined in order. Classification conversations support text only.
+Missing templates and unsupported media are rejected. Rendering uses
+`add_generation_prompt=false`, adds no extra tokenizer special tokens and skips
+plain-text default prompts. Request-level template overrides and template keyword
+arguments are not supported. This expands request compatibility; the Candle
+backend must still support the deployed model's architecture.
+
 ### Pretokenized embeddings
 
 `/v1/embeddings` accepts one final token-ID sequence as `input: [101, 42, 102]`,
