@@ -383,6 +383,7 @@ pub async fn run(
     let chat = if matches!(
         &backend_model_type,
         text_embeddings_backend::ModelType::Embedding(_)
+            | text_embeddings_backend::ModelType::Classifier
     ) {
         text_embeddings_core::chat::ChatProcessor::load(&model_root).unwrap_or_else(|error| {
             tracing::warn!("Native conversations disabled: {error}");

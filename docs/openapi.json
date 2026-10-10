@@ -1399,40 +1399,95 @@
         }
       },
       "OpenAICompatRequest": {
-        "type": "object",
-        "required": [
-          "input"
-        ],
-        "properties": {
-          "dimensions": {
-            "type": "integer",
-            "default": "null",
-            "example": "null",
-            "nullable": true,
-            "minimum": 0
-          },
-          "encoding_format": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/EncodingFormat"
-              }
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "input"
             ],
-            "default": "float"
+            "properties": {
+              "dimensions": {
+                "type": "integer",
+                "default": "null",
+                "example": "null",
+                "nullable": true,
+                "minimum": 0
+              },
+              "encoding_format": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EncodingFormat"
+                  }
+                ],
+                "default": "float"
+              },
+              "input": {
+                "$ref": "#/components/schemas/EmbeddingInput"
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                },
+                "minItems": 1
+              },
+              "model": {
+                "type": "string",
+                "example": "null",
+                "nullable": true
+              },
+              "user": {
+                "type": "string",
+                "example": "null",
+                "nullable": true
+              }
+            }
           },
-          "input": {
-            "$ref": "#/components/schemas/EmbeddingInput"
-          },
-          "model": {
-            "type": "string",
-            "example": "null",
-            "nullable": true
-          },
-          "user": {
-            "type": "string",
-            "example": "null",
-            "nullable": true
+          {
+            "type": "object",
+            "required": [
+              "messages"
+            ],
+            "properties": {
+              "dimensions": {
+                "type": "integer",
+                "default": "null",
+                "example": "null",
+                "nullable": true,
+                "minimum": 0
+              },
+              "encoding_format": {
+                "allOf": [
+                  {
+                    "$ref": "#/components/schemas/EncodingFormat"
+                  }
+                ],
+                "default": "float"
+              },
+              "input": {
+                "$ref": "#/components/schemas/EmbeddingInput"
+              },
+              "messages": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/Message"
+                },
+                "minItems": 1
+              },
+              "model": {
+                "type": "string",
+                "example": "null",
+                "nullable": true
+              },
+              "user": {
+                "type": "string",
+                "example": "null",
+                "nullable": true
+              }
+            }
           }
-        }
+        ],
+        "description": "Provide exactly one of input or messages; a message list is one conversation."
       },
       "OpenAICompatResponse": {
         "type": "object",
@@ -1521,9 +1576,45 @@
               ]
             },
             "description": "A batch"
+          },
+          {
+            "$ref": "#/components/schemas/MessageInput"
+          },
+          {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MessageInput"
+            },
+            "description": "A batch of independent conversations",
+            "minItems": 1
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "integer",
+              "maximum": 4294967295,
+              "minimum": 0
+            },
+            "description": "A final, unpadded token-ID sequence; segment IDs are zero",
+            "minItems": 1
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "maximum": 4294967295,
+                "minimum": 0
+              },
+              "description": "A final, unpadded token-ID sequence; segment IDs are zero",
+              "minItems": 1
+            },
+            "description": "A batch of independent final token-ID sequences",
+            "minItems": 1
           }
         ],
-        "description": "Model input. Can be either a single string, a pair of strings or a batch of mixed single and pairs of strings.",
+        "description": "Model input: a string, a string pair, a batch of single strings and pairs, conversations, or final token IDs and batches of final token IDs.",
         "example": "What is Deep Learning?"
       },
       "PredictRequest": {
@@ -2068,6 +2159,21 @@
         "properties": {
           "url": {
             "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "MessageInput": {
+        "type": "object",
+        "required": [
+          "messages"
+        ],
+        "properties": {
+          "messages": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Message"
+            }
           }
         },
         "additionalProperties": false

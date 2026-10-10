@@ -52,9 +52,6 @@ impl ChatProcessor {
         }
         let mut text_messages = Vec::with_capacity(messages.len());
         for message in messages {
-            if !matches!(message.role, MessageRole::User | MessageRole::Assistant) {
-                return Err("Text conversations support only user and assistant roles".into());
-            }
             let text = match message.content {
                 MessageContent::Text(text) => text,
                 MessageContent::Parts(parts) => {
@@ -225,6 +222,11 @@ mod tests {
                 assert_eq!(output.input_ids, expected);
                 assert_eq!(output.input_ids.iter().filter(|&&id| id == bos).count(), 1);
                 assert_eq!(output.input_ids.iter().filter(|&&id| id == eos).count(), 1);
+                let output = workers
+                    .encode(messages(), false, TruncationDirection::Right, None)
+                    .await
+                    .unwrap();
+                assert_eq!(output.input_ids, expected);
                 let (rendered, output) = workers.tokenize(messages(), true, None).await.unwrap();
                 assert_eq!(rendered.as_deref(), Some("<s>hello world</s>"));
                 assert_eq!(output.get_ids(), expected);
@@ -259,12 +261,14 @@ mod tests {
             &json!({"bos_token": {"content": "<bos>"}, "eos_token": "<eos>"}),
         ).unwrap();
         let messages = serde_json::from_value(json!([
+            {"role": "system", "content": "instructions"},
+            {"role": "developer", "content": "policy"},
             {"role": "user", "content": [{"type":"text", "text":"one"}, {"type":"text", "text":" two"}]},
             {"role": "assistant", "content": "three"}
         ])).unwrap();
         assert_eq!(
             processor.render(messages).unwrap(),
-            "<bos>user:one two<eos>assistant:three<eos>"
+            "<bos>system:instructions<eos>developer:policy<eos>user:one two<eos>assistant:three<eos>"
         );
     }
 
@@ -279,8 +283,6 @@ mod tests {
         let processor = ChatProcessor::new("constant", &Value::Null).unwrap();
         for value in [
             json!([]),
-            json!([{"role":"developer", "content":"do not drop"}]),
-            json!([{"role":"system", "content":"do not drop"}]),
             json!([{"role":"assistant", "content":[{"type":"image_url", "image_url":{"url":"https://example.com/?secret=hidden"}}]}]),
             json!([{"role":"user", "content":[{"type":"input_audio", "input_audio":{"data":"AA==", "format":"wav"}}]}]),
         ] {
@@ -289,6 +291,23 @@ mod tests {
                 .unwrap_err();
             assert!(!error.contains("hidden"));
         }
+    }
+
+    #[test]
+    fn template_owns_text_role_validation() {
+        let processor = ChatProcessor::new(
+            "{% for m in messages %}{% if m.role != 'user' %}{{ raise_exception('private template detail') }}{% endif %}{{ m.content }}{% endfor %}",
+            &Value::Null,
+        ).unwrap();
+        let messages = serde_json::from_value(json!([
+            {"role": "system", "content": "private request detail"},
+            {"role": "user", "content": "hello"}
+        ]))
+        .unwrap();
+        assert_eq!(
+            processor.render(messages).unwrap_err(),
+            "The model's chat template rejected this conversation"
+        );
     }
 
     #[test]
