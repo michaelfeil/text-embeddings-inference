@@ -4,8 +4,10 @@ repos:
     hooks:
     -   id: check-yaml
     -   id: end-of-file-fixer
+        # Preserve upstream bytes recorded in retained source provenance.
+        exclude: ^backends/libtorch/cpp/(vendor/torch_flash_attention/|fixtures/[^/]+/LICENSE(?:[.-][^/]+)?$)
     -   id: trailing-whitespace
-        exclude: docs/source/basic_tutorials/launcher.md
+        exclude: ^(docs/source/basic_tutorials/launcher\.md$|backends/libtorch/cpp/vendor/torch_flash_attention/)
 -   repo: https://github.com/doublify/pre-commit-rust
     rev: v1.0
     hooks:
