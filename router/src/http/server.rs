@@ -1,15 +1,14 @@
 use crate::http::ner::apply_aggregation;
 /// HTTP Server logic
 use crate::http::types::{
-    ClassifyData, ClassifyErrorResponse, ClassifyRequest, ClassifyRequestId, ClassifyResponse,
-    ClassifyUsage, DecodeRequest, DecodeResponse, EmbedAllRequest, EmbedAllResponse, EmbedRequest,
-    EmbedResponse, EmbedSparseRequest, EmbedSparseResponse, Embedding, EmbeddingInput,
-    EncodingFormat, InputBatch, InputIds, OpenAICompatEmbedding, OpenAICompatErrorResponse,
-    OpenAICompatRequest, OpenAICompatResponse, OpenAICompatUsage, PredictInput, PredictRequest,
-    PredictResponse, PredictTokensRequest, Prediction, Rank, RerankRequest, RerankResponse,
-    Sequence, SimilarityInput, SimilarityParameters, SimilarityRequest, SimilarityResponse,
-    SimpleToken, SparseValue, TokenPredictResponse, TokenizeInput, TokenizeRequest,
-    TokenizeResponse, TruncationDirection, VertexPrediction, VertexRequest, VertexResponse,
+    DecodeRequest, DecodeResponse, EmbedAllRequest, EmbedAllResponse, EmbedRequest, EmbedResponse,
+    EmbedSparseRequest, EmbedSparseResponse, Embedding, EmbeddingInput, EncodingFormat, InputBatch,
+    InputIds, OpenAICompatEmbedding, OpenAICompatErrorResponse, OpenAICompatRequest,
+    OpenAICompatResponse, OpenAICompatUsage, PredictInput, PredictRequest, PredictResponse,
+    PredictTokensRequest, Prediction, Rank, RerankRequest, RerankResponse, Sequence,
+    SimilarityInput, SimilarityParameters, SimilarityRequest, SimilarityResponse, SimpleToken,
+    SparseValue, TokenPredictResponse, TokenizeInput, TokenizeRequest, TokenizeResponse,
+    TruncationDirection, VertexPrediction, VertexRequest, VertexResponse,
 };
 use crate::{
     logging, shutdown, ClassifierModel, EmbeddingModel, ErrorResponse, ErrorType, Info, ModelType,
@@ -32,7 +31,7 @@ use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use simsimd::SpatialSimilarity;
 use std::net::SocketAddr;
 use std::sync::{atomic::AtomicUsize, Arc};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use text_embeddings_backend::BackendError;
 use text_embeddings_core::infer::{
     AllEmbeddingsInferResponse, Infer, InferMetadata, PooledEmbeddingsInferResponse,
@@ -80,7 +79,7 @@ async fn health(infer: Extension<Infer>) -> Result<(), (StatusCode, Json<ErrorRe
     }
 }
 
-/// Deprecated: use /v1/classify. This route retains the legacy label/score response.
+/// Get Predictions. Returns a 424 status code if the model is not a Sequence Classification model
 #[utoipa::path(
 post,
 tag = "Text Embeddings Inference",
@@ -110,56 +109,6 @@ async fn predict(
     Extension(context): Extension<Option<opentelemetry::Context>>,
     Json(req): Json<PredictRequest>,
 ) -> Result<(HeaderMap, Json<PredictResponse>), (StatusCode, Json<ErrorResponse>)> {
-    let single = matches!(&req.inputs, PredictInput::Single(_));
-    let labels = classifier_labels(&info.model_type)?;
-    let (scores, metadata) = run_classification(infer, info, Extension(context), req).await?;
-    let predictions = scores
-        .into_iter()
-        .map(|scores| {
-            let mut predictions: Vec<_> = scores
-                .into_iter()
-                .enumerate()
-                .map(|(index, score)| Prediction {
-                    score,
-                    label: labels
-                        .get(&index.to_string())
-                        .cloned()
-                        .unwrap_or_else(|| format!("LABEL_{index}")),
-                })
-                .collect();
-            predictions.sort_by(|a, b| a.score.total_cmp(&b.score));
-            predictions.reverse();
-            predictions
-        })
-        .collect::<Vec<_>>();
-    let response = if single {
-        PredictResponse::Single(predictions.into_iter().next().unwrap())
-    } else {
-        PredictResponse::Batch(predictions)
-    };
-    Ok((HeaderMap::from(metadata), Json(response)))
-}
-
-fn classifier_labels(
-    model_type: &ModelType,
-) -> Result<std::collections::HashMap<String, String>, ErrorResponse> {
-    match model_type {
-        ModelType::Classifier(classifier) | ModelType::Reranker(classifier) => {
-            Ok(classifier.id2label.clone())
-        }
-        _ => Err(ErrorResponse {
-            error: "Model is not a classifier model".into(),
-            error_type: ErrorType::Backend,
-        }),
-    }
-}
-
-async fn run_classification(
-    infer: Extension<Infer>,
-    info: Extension<Info>,
-    Extension(context): Extension<Option<opentelemetry::Context>>,
-    req: PredictRequest,
-) -> Result<(Vec<Vec<f32>>, ResponseMetadata), ErrorResponse> {
     let span = tracing::Span::current();
     if let Some(context) = context {
         span.set_parent(context);
@@ -171,6 +120,7 @@ async fn run_classification(
     let predict_inner = move |inputs: Sequence,
                               truncate: bool,
                               infer: Infer,
+                              info: Info,
                               permit: Option<OwnedSemaphorePermit>,
                               _batch_counter: Option<Arc<AtomicUsize>>| async move {
         let permit = match permit {
@@ -190,19 +140,37 @@ async fn run_classification(
             .await
             .map_err(ErrorResponse::from)?;
 
-        if response.results.is_empty() || response.results.iter().any(|score| !score.is_finite()) {
-            return Err(ErrorResponse {
-                error: "Classifier returned empty or non-finite scores".into(),
-                error_type: ErrorType::Backend,
+        let id2label = match &info.model_type {
+            ModelType::Classifier(classifier) => &classifier.id2label,
+            ModelType::Reranker(classifier) => &classifier.id2label,
+            _ => panic!(),
+        };
+
+        let mut predictions = Vec::with_capacity(response.results.len());
+        for (i, s) in response.results.into_iter().enumerate() {
+            // Check that s is not NaN or the partial_cmp below will panic
+            if s.is_nan() {
+                return Err(ErrorResponse {
+                    error: "score is NaN".to_string(),
+                    error_type: ErrorType::Backend,
+                });
+            }
+            // Map score to label
+            predictions.push(Prediction {
+                score: s,
+                label: id2label.get(&i.to_string()).unwrap().clone(),
             });
         }
+        // Reverse sort
+        predictions.sort_by(|x, y| x.score.partial_cmp(&y.score).unwrap());
+        predictions.reverse();
 
-        Ok::<(usize, Duration, Duration, Duration, Vec<f32>), ErrorResponse>((
+        Ok::<(usize, Duration, Duration, Duration, Vec<Prediction>), ErrorResponse>((
             response.metadata.prompt_tokens,
             response.metadata.tokenization,
             response.metadata.queue,
             response.metadata.inference,
-            response.results,
+            predictions,
         ))
     };
 
@@ -216,13 +184,13 @@ async fn run_classification(
             let compute_chars = inputs.count_chars();
             let permit = infer.try_acquire_permit().map_err(ErrorResponse::from)?;
             let (prompt_tokens, tokenization, queue, inference, predictions) =
-                predict_inner(inputs, truncate, infer.0, Some(permit), None).await?;
+                predict_inner(inputs, truncate, infer.0, info.0, Some(permit), None).await?;
 
             let counter = metrics::counter!("te_request_count", "method" => "single");
             counter.increment(1);
 
             (
-                vec![predictions],
+                PredictResponse::Single(predictions),
                 ResponseMetadata::new(
                     compute_chars,
                     prompt_tokens,
@@ -238,12 +206,6 @@ async fn run_classification(
             counter.increment(1);
 
             let batch_size = inputs.len();
-            if batch_size == 0 {
-                return Err(ErrorResponse {
-                    error: "Input cannot be empty".into(),
-                    error_type: ErrorType::Empty,
-                });
-            }
             if batch_size > info.max_client_batch_size {
                 let message = format!(
                     "batch size {batch_size} > maximum allowed batch size {}",
@@ -270,17 +232,19 @@ async fn run_classification(
             for input in inputs {
                 compute_chars += input.count_chars();
                 let local_infer = infer.clone();
+                let local_info = info.clone();
                 let local_batch_counter = batch_counter.clone();
                 futures.push(predict_inner(
                     input,
                     truncate,
                     local_infer.0,
+                    local_info.0,
                     None,
                     local_batch_counter,
                 ))
             }
             let results = join_all(futures).await.into_iter().collect::<Result<
-                Vec<(usize, Duration, Duration, Duration, Vec<f32>)>,
+                Vec<(usize, Duration, Duration, Duration, Vec<Prediction>)>,
                 ErrorResponse,
             >>()?;
 
@@ -303,7 +267,7 @@ async fn run_classification(
             counter.increment(1);
 
             (
-                predictions,
+                PredictResponse::Batch(predictions),
                 ResponseMetadata::new(
                     compute_chars,
                     total_compute_tokens,
@@ -319,151 +283,11 @@ async fn run_classification(
     metadata.record_span(&span);
     metadata.record_metrics();
 
+    let headers = HeaderMap::from(metadata);
+
     tracing::info!("Success");
 
-    Ok((response, metadata))
-}
-
-#[utoipa::path(
-    post, tag = "Text Embeddings Inference", path = "/v1/classify",
-    request_body = ClassifyRequest,
-    responses(
-        (status = 200, description = "Classification probabilities and token usage", body = ClassifyResponse),
-        (status = 400, description = "Invalid classification input", body = ClassifyErrorResponse),
-        (status = 422, description = "Invalid JSON or tokenization", body = ClassifyErrorResponse),
-        (status = 424, description = "Classification backend failure", body = ClassifyErrorResponse),
-        (status = 429, description = "Model is overloaded", body = ClassifyErrorResponse),
-        (status = 413, description = "Batch or token limit exceeded", body = ClassifyErrorResponse),
-    )
-)]
-#[instrument(skip_all)]
-async fn classify(
-    infer: Extension<Infer>,
-    info: Extension<Info>,
-    context: Extension<Option<opentelemetry::Context>>,
-    request: Result<Json<ClassifyRequest>, axum::extract::rejection::JsonRejection>,
-) -> Result<(HeaderMap, Json<ClassifyResponse>), (StatusCode, Json<ClassifyErrorResponse>)> {
-    let Json(request) = request.map_err(|error| {
-        classify_error(error.status(), error.body_text(), "invalid_request_error")
-    })?;
-    let labels = classifier_labels(&info.model_type).map_err(classify_inference_error)?;
-    let model = info.model_id.clone();
-    let request = request.into_predict().map_err(|message| {
-        classify_error(
-            StatusCode::BAD_REQUEST,
-            message.into(),
-            "invalid_request_error",
-        )
-    })?;
-    let (scores, metadata) = run_classification(infer, info, context, request)
-        .await
-        .map_err(classify_inference_error)?;
-    let response = classification_response(scores, &labels, model, metadata.compute_tokens);
-    Ok((HeaderMap::from(metadata), Json(response)))
-}
-
-fn classification_response(
-    scores: Vec<Vec<f32>>,
-    labels: &std::collections::HashMap<String, String>,
-    model: String,
-    prompt_tokens: usize,
-) -> ClassifyResponse {
-    ClassifyResponse {
-        id: format!("classify-{}", uuid::Uuid::new_v4().simple()),
-        object: "list",
-        created: SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs(),
-        model,
-        data: classification_data(scores, labels),
-        usage: ClassifyUsage {
-            prompt_tokens,
-            completion_tokens: 0,
-            total_tokens: prompt_tokens,
-            prompt_tokens_details: None,
-        },
-    }
-}
-
-fn classification_data(
-    scores: Vec<Vec<f32>>,
-    labels: &std::collections::HashMap<String, String>,
-) -> Vec<ClassifyData> {
-    scores
-        .into_iter()
-        .enumerate()
-        .map(|(index, mut logits)| {
-            // Scores have been validated by the shared inference path. Keep class-ID order
-            // and select the first maximum, as SGLang's torch.argmax does.
-            let mut best = 0;
-            for class in 1..logits.len() {
-                if logits[class] > logits[best] {
-                    best = class;
-                }
-            }
-            let max = logits[best];
-            let sum: f32 = logits
-                .iter_mut()
-                .map(|score| {
-                    *score = (*score - max).exp();
-                    *score
-                })
-                .sum();
-            for score in &mut logits {
-                *score /= sum;
-            }
-            ClassifyData {
-                index,
-                label: labels
-                    .get(&best.to_string())
-                    .cloned()
-                    .unwrap_or_else(|| format!("LABEL_{best}")),
-                num_classes: logits.len(),
-                probs: logits,
-            }
-        })
-        .collect()
-}
-
-fn classify_error(
-    status: StatusCode,
-    message: String,
-    error_type: &str,
-) -> (StatusCode, Json<ClassifyErrorResponse>) {
-    (
-        status,
-        Json(ClassifyErrorResponse {
-            object: "error",
-            message,
-            error_type: error_type.into(),
-            param: None,
-            code: status.as_u16(),
-        }),
-    )
-}
-
-fn classify_inference_error(error: ErrorResponse) -> (StatusCode, Json<ClassifyErrorResponse>) {
-    let (status, Json(error)): (StatusCode, Json<ErrorResponse>) = error.into();
-    let error_type = match status {
-        StatusCode::TOO_MANY_REQUESTS => "overloaded_error",
-        StatusCode::BAD_REQUEST
-        | StatusCode::UNPROCESSABLE_ENTITY
-        | StatusCode::PAYLOAD_TOO_LARGE => "invalid_request_error",
-        _ => "server_error",
-    };
-    classify_error(status, error.error, error_type)
-}
-
-async fn deprecate_predict(mut response: axum::response::Response) -> axum::response::Response {
-    response
-        .headers_mut()
-        .insert("deprecation", HeaderValue::from_static("@1791590400"));
-    response.headers_mut().append(
-        "link",
-        HeaderValue::from_static("</v1/classify>; rel=\"successor-version\""),
-    );
-    response
+    Ok((headers, Json(response)))
 }
 
 /// Get Token Predictions. Returns a 424 status code if the model is not a Sequence Classification model
@@ -2018,7 +1842,18 @@ async fn metrics(prom_handle: Extension<PrometheusHandle>) -> String {
     prom_handle.render()
 }
 
-fn api_doc() -> utoipa::openapi::OpenApi {
+/// Serving method
+#[allow(clippy::too_many_arguments)]
+pub async fn run(
+    infer: Infer,
+    info: Info,
+    addr: SocketAddr,
+    prom_builder: PrometheusBuilder,
+    payload_limit: usize,
+    api_key: Option<String>,
+    cors_allow_origin: Option<Vec<String>>,
+    systemone: Option<std::sync::Arc<super::systemone::SystemOne>>,
+) -> Result<(), anyhow::Error> {
     // OpenAPI documentation
     #[derive(OpenApi)]
     #[openapi(
@@ -2027,7 +1862,6 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     super::systemone::systemone,
     health,
     predict,
-    classify,
     rerank,
     embed,
     embed_all,
@@ -2060,12 +1894,6 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     Embedding,
     EncodingFormat,
     EmbeddingModel,
-    ClassifyRequest,
-    ClassifyRequestId,
-    ClassifyResponse,
-    ClassifyData,
-    ClassifyUsage,
-    ClassifyErrorResponse,
     PredictRequest,
     Prediction,
     PredictResponse,
@@ -2113,61 +1941,6 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     )]
     struct ApiDoc;
 
-    // Define VertextApiDoc conditionally only if the "google" feature is enabled
-    let doc = {
-        // avoid `mut` if possible
-        #[cfg(feature = "google")]
-        {
-            #[derive(OpenApi)]
-            #[openapi(
-                paths(vertex_compatibility),
-                components(schemas(VertexRequest, VertexResponse, VertexPrediction))
-            )]
-            struct VertextApiDoc;
-
-            // limiting mutability to the smallest scope necessary
-            let mut doc = ApiDoc::openapi();
-            doc.merge(VertextApiDoc::openapi());
-            doc
-        }
-        #[cfg(not(feature = "google"))]
-        ApiDoc::openapi()
-    };
-
-    let mut doc = doc;
-    if let Some(operation) = doc.paths.paths.get_mut("/predict").and_then(|path| {
-        path.operations
-            .get_mut(&utoipa::openapi::path::PathItemType::Post)
-    }) {
-        operation.deprecated = Some(utoipa::openapi::Deprecated::True);
-    }
-
-    // Optional wire fields are mutually exclusive in the actual request contract.
-    if let Some(components) = doc.components.as_mut() {
-        if let Some(schema) = components.schemas.get("ClassifyRequest").cloned() {
-            components.schemas.insert(
-                "ClassifyRequest".into(),
-                super::types::exclusive_input_schema(schema),
-            );
-        }
-    }
-    doc
-}
-
-/// Serving method
-#[allow(clippy::too_many_arguments)]
-pub async fn run(
-    infer: Infer,
-    info: Info,
-    addr: SocketAddr,
-    prom_builder: PrometheusBuilder,
-    payload_limit: usize,
-    api_key: Option<String>,
-    cors_allow_origin: Option<Vec<String>>,
-    systemone: Option<std::sync::Arc<super::systemone::SystemOne>>,
-) -> Result<(), anyhow::Error> {
-    let doc = api_doc();
-
     // CORS allowed origins
     // map to go inside the option and then map to parse from String to HeaderValue
     // Finally, convert to AllowOrigin
@@ -2197,16 +1970,34 @@ pub async fn run(
         .allow_headers([http::header::CONTENT_TYPE])
         .allow_origin(allow_origin);
 
+    // Define VertextApiDoc conditionally only if the "google" feature is enabled
+    let doc = {
+        // avoid `mut` if possible
+        #[cfg(feature = "google")]
+        {
+            #[derive(OpenApi)]
+            #[openapi(
+                paths(vertex_compatibility),
+                components(schemas(VertexRequest, VertexResponse, VertexPrediction))
+            )]
+            struct VertextApiDoc;
+
+            // limiting mutability to the smallest scope necessary
+            let mut doc = ApiDoc::openapi();
+            doc.merge(VertextApiDoc::openapi());
+            doc
+        }
+        #[cfg(not(feature = "google"))]
+        ApiDoc::openapi()
+    };
+
     let mut routes = Router::new()
         // Base routes
         .route("/info", get(get_model_info))
         .route("/embed", post(embed))
         .route("/embed_all", post(embed_all))
         .route("/embed_sparse", post(embed_sparse))
-        .route(
-            "/predict",
-            post(predict).layer(axum::middleware::map_response(deprecate_predict)),
-        )
+        .route("/predict", post(predict))
         .route("/predict_tokens", post(predict_tokens))
         .route("/rerank", post(rerank))
         .route("/similarity", post(similarity))
@@ -2215,7 +2006,6 @@ pub async fn run(
         // OpenAI compat route
         .route("/embeddings", post(openai_embed))
         .route("/v1/embeddings", post(openai_embed))
-        .route("/v1/classify", post(classify))
         .route("/v1/systemone", post(super::systemone::systemone))
         // Vertex compat route
         .route("/vertex", post(vertex_compatibility));
@@ -2254,15 +2044,9 @@ pub async fn run(
                 .route("/invocations", post(super::systemone::systemone)),
             ModelType::Classifier(_) => {
                 routes
-                    .route(
-                        "/",
-                        post(predict).layer(axum::middleware::map_response(deprecate_predict)),
-                    )
+                    .route("/", post(predict))
                     // AWS Sagemaker route
-                    .route(
-                        "/invocations",
-                        post(predict).layer(axum::middleware::map_response(deprecate_predict)),
-                    )
+                    .route("/invocations", post(predict))
             }
             ModelType::Reranker(_) => {
                 routes
@@ -2385,129 +2169,5 @@ impl From<serde_json::Error> for ErrorResponse {
             error: err.to_string(),
             error_type: ErrorType::Validation,
         }
-    }
-}
-
-#[cfg(test)]
-mod classify_tests {
-    use super::*;
-    use serde_json::json;
-    use std::collections::HashMap;
-
-    #[test]
-    fn sglang_response_preserves_class_order_batch_order_and_usage() {
-        let labels = HashMap::from([
-            ("0".into(), "negative".into()),
-            ("1".into(), "positive".into()),
-        ]);
-        let response = classification_response(
-            vec![vec![10000.0, 10002.0], vec![2.0, 2.0]],
-            &labels,
-            "model".into(),
-            120,
-        );
-        assert!(response.id.starts_with("classify-"));
-        assert!(uuid::Uuid::parse_str(response.id.strip_prefix("classify-").unwrap()).is_ok());
-        assert!(response.created > 0);
-        assert_eq!(response.data[0].label, "positive");
-        assert_eq!(response.data[0].index, 0);
-        assert_eq!(response.data[0].num_classes, 2);
-        assert!((response.data[0].probs[0] - 0.11920292).abs() < 1e-6);
-        assert!((response.data[0].probs[1] - 0.88079708).abs() < 1e-6);
-        assert_eq!(response.data[1].label, "negative");
-        assert_eq!(response.data[1].index, 1);
-        assert_eq!(response.data[1].probs, vec![0.5, 0.5]);
-        let value = serde_json::to_value(response).unwrap();
-        assert_eq!(value["object"], "list");
-        assert_eq!(value["model"], "model");
-        assert_eq!(
-            value["usage"],
-            json!({"prompt_tokens":120,"total_tokens":120,"completion_tokens":0,"prompt_tokens_details":null})
-        );
-    }
-
-    #[test]
-    fn one_label_classifier_matches_sglang_softmax_and_labels_fall_back() {
-        let data = classification_data(vec![vec![-20.0], vec![0.0, 1.0]], &HashMap::new());
-        assert_eq!(data[0].probs, vec![1.0]);
-        assert_eq!(data[0].label, "LABEL_0");
-        assert_eq!(data[1].label, "LABEL_1");
-    }
-
-    #[test]
-    fn classify_errors_have_sglang_wire_shape_and_status() {
-        let (status, Json(error)) = classify_error(
-            StatusCode::BAD_REQUEST,
-            "bad input".into(),
-            "invalid_request_error",
-        );
-        assert_eq!(status, StatusCode::BAD_REQUEST);
-        assert_eq!(
-            serde_json::to_value(error).unwrap(),
-            json!({"object":"error","message":"bad input","type":"invalid_request_error","param":null,"code":400})
-        );
-        let (status, Json(error)) = classify_inference_error(ErrorResponse {
-            error: "busy".into(),
-            error_type: ErrorType::Overloaded,
-        });
-        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(error.code, 429);
-    }
-
-    #[tokio::test]
-    async fn deprecation_preserves_success_and_error_bodies() {
-        for status in [
-            StatusCode::OK,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            StatusCode::TOO_MANY_REQUESTS,
-        ] {
-            let response = axum::response::Response::builder()
-                .status(status)
-                .body(axum::body::Body::from("unchanged"))
-                .unwrap();
-            let response = deprecate_predict(response).await;
-            assert_eq!(response.status(), status);
-            assert_eq!(response.headers()["deprecation"], "@1791590400");
-            assert_eq!(
-                response.headers()["link"],
-                "</v1/classify>; rel=\"successor-version\""
-            );
-            assert_eq!(
-                axum::body::to_bytes(response.into_body(), 100)
-                    .await
-                    .unwrap(),
-                "unchanged"
-            );
-        }
-    }
-
-    #[test]
-    fn classify_openapi_and_predict_deprecation_are_documented() {
-        let doc = serde_json::to_value(api_doc()).unwrap();
-        let checked_in: serde_json::Value =
-            serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap();
-        for path in ["/predict", "/v1/classify"] {
-            assert_eq!(doc["paths"][path], checked_in["paths"][path], "{path}");
-        }
-        for schema in [
-            "ClassifyRequest",
-            "ClassifyRequestId",
-            "ClassifyResponse",
-            "ClassifyData",
-            "ClassifyUsage",
-            "ClassifyErrorResponse",
-        ] {
-            assert_eq!(
-                doc["components"]["schemas"][schema], checked_in["components"]["schemas"][schema],
-                "{schema}"
-            );
-        }
-
-        assert_eq!(doc["paths"]["/predict"]["post"]["deprecated"], true);
-        assert_eq!(
-            doc["paths"]["/v1/classify"]["post"]["responses"]["200"]["content"]["application/json"]
-                ["schema"]["$ref"],
-            "#/components/schemas/ClassifyResponse"
-        );
     }
 }
