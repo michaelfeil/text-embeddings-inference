@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include <ATen/ATen.h>
+#include <algorithm>
 #include <array>
 #include <condition_variable>
 #include <cstring>
@@ -69,11 +70,13 @@ public:
     pool->available.notify_one();
   }
   void allocate() {
+    // Keep wait() non-null even when no output rows were requested.
+    const auto capacity = static_cast<int64_t>(std::max(size, size_t{1}));
     if (!slot->host.defined() || static_cast<size_t>(slot->host.numel()) < size)
-      slot->host = at::empty({static_cast<int64_t>(size)},
+      slot->host = at::empty({capacity},
           at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
     if (!slot->device_output.defined() || static_cast<size_t>(slot->device_output.numel()) < size)
-      slot->device_output = at::empty({static_cast<int64_t>(size)},
+      slot->device_output = at::empty({capacity},
           at::TensorOptions().dtype(at::kFloat).device(device));
   }
   at::Tensor upload(const at::Tensor& host) {

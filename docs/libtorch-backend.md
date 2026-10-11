@@ -215,15 +215,17 @@ eight-sequence batches, and ragged 1024/1536/2048/1280 inputs. Report the
 observed graph count alongside timings; graph requests can fall back to eager
 execution. `TEI_BENCHMARK_LONG_CONTEXT=1` appends these to the short suite.
 
-CUDA embedding and classifier outputs of at least 256 KiB use one persistent CPU completion thread per
+CUDA embedding and classifier outputs use one persistent CPU completion thread per
 replica. Submission returns either a ready result or an owned completion handle,
 after enqueuing D2H into reusable pinned storage and handing work to the completion
 thread. Completion waits for the CUDA event and allocates
 the final Rust result vectors directly from that storage, avoiding an intermediate
-flat host copy. Smaller outputs and CPU inference complete inline.
+flat host copy. CPU inference completes inline.
 
-Two output leases bound pending bulk work per replica. Pinned storage, FP32
-device staging, and tensor-retention vector capacity are reused after warmup. Each lease owns its pinned
+Two output leases bound pending CUDA work per replica; submission waits if both
+are busy. Buffer capacities grow to the largest observed batch and are reused.
+Pinned storage, FP32 device staging, and tensor-retention vector capacity are
+reused after warmup. Each lease owns its pinned
 input staging buffers, output buffer, and GPU transfer tensors through completion
 and result construction. Real token arrays, offsets, radix maps, and pooling spans
 are uploaded without padding. Upload, graph replay, output conversion, and D2H

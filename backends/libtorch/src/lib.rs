@@ -1190,9 +1190,9 @@ impl LibtorchBackend {
                     .and_then(|r| n.checked_add(r))
             })
             .ok_or_else(|| inference("Output size overflow"))?;
-        // Bulk output allocation/copying runs on the persistent completion worker.
-        // Small results retain their synchronous path to avoid handoff overhead.
-        if self.cuda && size >= 64 * 1024 {
+        // CUDA results share one bounded completion path at every output size.
+        // The model thread can submit the next forward while CPU packing finishes.
+        if self.cuda {
             // SAFETY: all descriptors remain live during submission. Native code
             // copies staged inputs and owns every buffer needed after return.
             let handle = NonNull::new(unsafe {
@@ -1732,6 +1732,16 @@ mod tests {
             "cuda:0",
         )
         .unwrap();
+        // The same CUDA path also accepts a valid batch with no requested rows.
+        let mut empty = batch();
+        empty.pooled_indices.clear();
+        empty.raw_indices.clear();
+        assert!(gpu
+            .submit_embed(empty)
+            .unwrap()
+            .complete()
+            .unwrap()
+            .is_empty());
         let input = |pattern: u32| {
             let mut input = batch();
             input.input_ids = (0..6400).map(|i| (i + pattern) % 16).collect();
@@ -1761,11 +1771,16 @@ mod tests {
                 assert_eq!(values(&value), values(&expected[&index]));
             }
         }
-        // Tiny pooled results retain inline completion.
-        assert!(matches!(
-            gpu.submit_embed(batch()).unwrap(),
-            Inference::Ready(_)
-        ));
+        // Tiny pooled results use the same staged path as larger outputs.
+        gpu.cuda = false;
+        let expected = gpu.embed(batch()).unwrap();
+        gpu.cuda = true;
+        let tiny = gpu.submit_embed(batch()).unwrap();
+        assert!(matches!(tiny, Inference::Deferred(_)));
+        let actual = tiny.complete().unwrap();
+        for (index, value) in actual {
+            assert_eq!(values(&value), values(&expected[&index]));
+        }
     }
 
     #[test]
