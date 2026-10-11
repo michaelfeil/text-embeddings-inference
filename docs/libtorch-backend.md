@@ -111,10 +111,13 @@ on Linux. No `libtorch_python` library is linked by the bridge.
 ## Warm CUDA deployment
 
 Configure LibTorch's CPU worker pool before starting the process. A one-thread
-pool is a measured option for warm ModernBERT CUDA inference:
+pool is a measured option for warm H768/I1152 ModernBERT CUDA inference.
+The measured run also selected BLASLt with 32 MiB workspace:
 
 ```bash
 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+TORCH_BLAS_PREFER_CUBLASLT=1 CUBLASLT_WORKSPACE_SIZE=32768 \
+TEI_TORCH_CUDA_GRAPHS=false TEI_TORCH_CUDNN_VARLEN=false \
 target/release/text-embeddings-router \
   --backend libtorch --torch-device cuda --dtype bfloat16 \
   --model-id /path/to/modernbert-reranker --pooling mean \
