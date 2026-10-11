@@ -66,13 +66,15 @@ __device__ void tei_fp8_quant_row(const T *x, __nv_fp8_e4m3 *y, float *scales, i
         __nv_fp8_e4m3(__fdiv_rn(float(x[i]), s));
 }
 
-// Keep the original rounded Half values in real-width shared storage. The
+// Keep original model-rounded Half/BF16 values in real-width shared storage. The
 // unchanged row quantizer consumes them exactly as it consumed the old buffer.
-__global__ void gated_quant_kernel(const half* gate_up,__nv_fp8_e4m3* y,float* scales,int width) {
-  extern __shared__ half values[];
+template<typename T>
+__global__ void gated_quant_kernel(const T* gate_up,__nv_fp8_e4m3* y,float* scales,int width) {
+  extern __shared__ unsigned char storage[];
+  auto* values=reinterpret_cast<T*>(storage);
   const auto* row=gate_up+size_t(blockIdx.x)*2*width;
   for(int i=threadIdx.x;i<width;i+=128)
-    values[i]=detail::gated_value<half>(float(row[i]),float(row[width+i]),4);
+    values[i]=detail::gated_value<T>(float(row[i]),float(row[width+i]),4);
   __syncthreads();
   tei_fp8_quant_row(values,y,scales,width);
 }
@@ -103,8 +105,9 @@ std::pair<at::Tensor,at::Tensor> fp8_quantize_rows(const at::Tensor& input) {
   return {output,scales};
 }
 std::pair<at::Tensor,at::Tensor> fp8_quantize_gated_rows(const at::Tensor& input) {
-  TORCH_CHECK(input.is_cuda() && input.dim()==2 && input.is_contiguous() && input.scalar_type()==at::kHalf,
-    "FP8 gated row quantization requires contiguous CUDA Half gate/up matrices");
+  TORCH_CHECK(input.is_cuda() && input.dim()==2 && input.is_contiguous() &&
+    (input.scalar_type()==at::kHalf || input.scalar_type()==at::kBFloat16),
+    "FP8 gated row quantization requires contiguous CUDA Half/BF16 gate/up matrices");
   TORCH_CHECK(input.size(1)>0 && input.size(1)%2==0 && input.size(0)<=INT_MAX,
     "Invalid actual gated FP8 row geometry");
   const int64_t width=input.size(1)/2;
@@ -115,9 +118,13 @@ std::pair<at::Tensor,at::Tensor> fp8_quantize_gated_rows(const at::Tensor& input
   auto scales=at::empty({input.size(0),1},input.options().dtype(at::kFloat));
   if(input.size(0)) {
     auto stream=at::cuda::getCurrentCUDAStream(input.device().index());
-    gated_quant_kernel<<<input.size(0),128,width*sizeof(half),stream>>>(
-      reinterpret_cast<const half*>(input.const_data_ptr()),
-      reinterpret_cast<__nv_fp8_e4m3*>(output.mutable_data_ptr()),scales.data_ptr<float>(),int(width));
+    auto* target=reinterpret_cast<__nv_fp8_e4m3*>(output.mutable_data_ptr());
+    if(input.scalar_type()==at::kHalf)
+      gated_quant_kernel<<<input.size(0),128,width*sizeof(half),stream>>>(
+        reinterpret_cast<const half*>(input.const_data_ptr()),target,scales.data_ptr<float>(),int(width));
+    else
+      gated_quant_kernel<<<input.size(0),128,width*sizeof(__nv_bfloat16),stream>>>(
+        reinterpret_cast<const __nv_bfloat16*>(input.const_data_ptr()),target,scales.data_ptr<float>(),int(width));
     C10_CUDA_KERNEL_LAUNCH_CHECK();
   }
   return {output,scales};
