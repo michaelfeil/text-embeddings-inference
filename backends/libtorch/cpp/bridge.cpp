@@ -182,7 +182,8 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
   const bool gemma_image=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
   const auto image_dtype=gemma_image?at::kFloat:family.starts_with("qwen3_5")?at::kHalf:model.dtype;
   auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
-  if(!gemma_image)pixels=pixels.to(model.device,image_dtype);
+  // Upload F32 pixels before dtype conversion: avoid CPU worker-pool casting.
+  if(!gemma_image)pixels=pixels.to(model.device).to(image_dtype);
   packed.images.push_back({pixels,{item.grid[0],item.grid[1],item.grid[2]},item.merge_size,item.token_start,item.token_count,item.sequence_start});
   std::copy_n(item.feature_key,32,packed.images.back().feature_key.begin());
   packed.images.back().has_feature_key=item.has_feature_key!=0;
