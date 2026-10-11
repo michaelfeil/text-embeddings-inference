@@ -370,7 +370,7 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
   std::vector<at::Tensor> values;for(size_t i=0;i<results.size();++i){TORCH_CHECK(results[i].logits.numel()==engine.decision->output_count(converted[i]),"Decision head output width mismatch");values.push_back(results[i].logits.flatten());}
   std::vector<at::Tensor> action_values;for(const auto& result:results)action_values.push_back(result.action_probability);
-  values.push_back(at::stack(action_values));auto output=at::cat(values).to(at::kCPU,at::kFloat).contiguous();
+  values.push_back(at::stack(action_values));auto output=at::cat(values).to(at::kFloat).to(at::kCPU).contiguous();
   std::memcpy(logits,output.data_ptr<float>(),expected*sizeof(float));std::memcpy(actions,output.data_ptr<float>()+expected,batch*sizeof(float));
  });
 }
@@ -465,7 +465,8 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
                     "Native output exceeds provided capacity");
         if (completion) completion->copy(joined, offset);
         else {
-          auto cpu = joined.to(at::kCPU, at::kFloat).contiguous();
+          // Cast on the producing device before transfer.
+          auto cpu = joined.to(at::kFloat).to(at::kCPU).contiguous();
           std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
         }
         offset += joined.numel();
