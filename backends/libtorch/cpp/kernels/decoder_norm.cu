@@ -65,11 +65,12 @@ std::pair<at::Tensor,at::Tensor> exact_norm(const at::Tensor& x,const at::Tensor
 }
 std::pair<at::Tensor,at::Tensor> decoder_exact_rms_norm(const at::Tensor& x,
  const at::Tensor& residual,const at::Tensor& w,double epsilon) {
- TORCH_CHECK(x.is_cuda()&&x.scalar_type()==at::kBFloat16&&x.dim()==2&&(x.size(1)==1024||x.size(1)==2048||x.size(1)==3072)&&x.is_contiguous(),"Exact decoder RMS expects contiguous CUDA BF16 width 1024, 2048 or 3072");
+ TORCH_CHECK(x.is_cuda()&&x.scalar_type()==at::kBFloat16&&x.dim()==2&&(x.size(1)==1024||x.size(1)==2048||x.size(1)==3072||x.size(1)==4096)&&x.is_contiguous(),"Exact decoder RMS expects contiguous CUDA BF16 width 1024, 2048, 3072 or 4096");
  TORCH_CHECK(w.device()==x.device()&&w.scalar_type()==x.scalar_type()&&w.dim()==1&&w.numel()==x.size(1)&&w.is_contiguous(),"Invalid exact decoder RMS weight");
  TORCH_CHECK(!residual.defined()||(residual.device()==x.device()&&residual.scalar_type()==x.scalar_type()&&residual.sizes()==x.sizes()&&residual.is_contiguous()),"Invalid exact decoder RMS residual");
  if(x.size(1)==1024)return exact_norm<1024,4,1>(x,residual,w,epsilon);
  if(x.size(1)==2048)return exact_norm<2048,4,1>(x,residual,w,epsilon);
- return exact_norm<3072,1,4>(x,residual,w,epsilon);
+ if(x.size(1)==3072)return exact_norm<3072,1,4>(x,residual,w,epsilon);
+ return exact_norm<4096,1,4>(x,residual,w,epsilon);
 }
 }

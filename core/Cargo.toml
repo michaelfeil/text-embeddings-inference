@@ -21,7 +21,6 @@ serde_json = { workspace = true }
 text-embeddings-backend = { path = "../backends" }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
-rayon = "1.11"
 basetenkenizer = { version = "=0.2.9", default-features = false }
 tracing = { workspace = true }
 tokio = { workspace = true, features = ["net", "time", "process", "io-util"] }
