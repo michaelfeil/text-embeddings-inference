@@ -1167,15 +1167,6 @@ impl LibtorchBackend {
         if pooled.iter().chain(&raw).any(|&n| n as usize >= b) {
             return Err(inference("Invalid output index"));
         }
-        if pooled
-            .iter()
-            .chain(&raw)
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-            != pooled.len() + raw.len()
-        {
-            return Err(inference("Duplicate output indices"));
-        }
         let raw_width = if pool >= 4 { hidden } else { self.output_width };
         let raw_rows = raw
             .iter()
@@ -1656,6 +1647,32 @@ mod tests {
                 let want = values(&expected[row]);
                 assert_eq!(got.len(), want.len());
                 assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0001));
+            }
+            // Duplicate selectors preserve request order; raw overwrites pooled
+            // when both request the same sequence, matching Candle's public map.
+            for (pooled, raw) in [
+                (vec![1, 1], vec![0]),
+                (vec![1], vec![0, 0]),
+                (vec![1, 0, 1], vec![0, 1, 0]),
+            ] {
+                let mut selected = batch();
+                selected.pooled_indices = pooled;
+                selected.raw_indices = raw;
+                let expected = candle.embed(selected.clone()).unwrap();
+                let actual = native.embed(selected).unwrap();
+                assert_eq!(actual.len(), expected.len());
+                for (row, got) in &actual {
+                    match (got, &expected[row]) {
+                        (Embedding::Pooled(v), Embedding::Pooled(_)) => assert_eq!(v.len(), 3),
+                        (Embedding::All(v), Embedding::All(w)) => {
+                            assert_eq!(v.len(), w.len());
+                            assert!(v.iter().all(|token| token.len() == 16));
+                        }
+                        _ => panic!("Duplicate selector changed pooled/raw overwrite kind"),
+                    }
+                    let want = values(&expected[row]);
+                    assert!(values(got).iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0001));
+                }
             }
         }
         fs::write(
