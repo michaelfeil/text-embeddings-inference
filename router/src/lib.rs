@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use text_embeddings_backend::{DType, Pool};
 use text_embeddings_core::download::{download_artifacts, ST_CONFIG_NAMES};
 use text_embeddings_core::infer::Infer;
-use text_embeddings_core::queue::Queue;
+use text_embeddings_core::queue_actor::Queue;
 use text_embeddings_core::tokenization::{Tokenization, MAX_TOKENIZATION_WORKERS};
 use text_embeddings_core::TextEmbeddingsError;
 use tokenizers::processors::sequence::Sequence;

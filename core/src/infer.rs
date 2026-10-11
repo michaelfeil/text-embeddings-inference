@@ -1,5 +1,5 @@
 use crate::backend_pool::BackendPool;
-use crate::queue::{prune_canceled_batch, Entry, Metadata, NextBatch, Queue};
+use crate::queue_actor::{prune_canceled_batch, Entry, Metadata, NextBatch, Queue};
 use crate::tokenization::{EncodingInput, RawEncoding, Tokenization};
 use crate::TextEmbeddingsError;
 use std::sync::{
