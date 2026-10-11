@@ -19,6 +19,28 @@ namespace tei {
 namespace {
 enum class Family { Distil, Modern, Nomic, Gte, Jina, JinaCode };
 
+at::Tensor gte_ntk_inverse_frequencies(int64_t dimension, double theta, double factor,
+    c10::Device device) {
+  const float base = static_cast<float>(theta), scale_factor = static_cast<float>(factor);
+  TORCH_CHECK(dimension > 0 && dimension % 2 == 0, "GTE NTK rotary width must be positive and even");
+  TORCH_CHECK(std::isfinite(base) && base > 0 && std::isfinite(scale_factor) && scale_factor > 0,
+    "GTE NTK theta and factor must be finite positive Float values");
+  const float scaled_base = base * scale_factor;
+  const float scale = std::pow(scale_factor, 2.f / static_cast<float>(dimension));
+  TORCH_CHECK(std::isfinite(scaled_base) && scaled_base > 0 && std::isfinite(scale) && scale > 0,
+    "Invalid GTE NTK frequency scale");
+  std::vector<float> frequencies;
+  frequencies.reserve(dimension / 2);
+  for (int64_t i = 0; i < dimension; i += 2)
+    frequencies.push_back(1.f / std::pow(scaled_base,
+      static_cast<float>(i) / static_cast<float>(dimension)));
+  auto inverse = at::from_blob(frequencies.data(), {dimension / 2},
+    at::TensorOptions().dtype(at::kFloat)).to(device).clone();
+  // Candle divides by the Float powf scale through affine(1.0 / f64(scale), 0).
+  const float multiplier = static_cast<float>(1.0 / static_cast<double>(scale));
+  return inverse * static_cast<double>(multiplier);
+}
+
 struct Encoder final : Model {
   Options o;
   Weights& weights;
@@ -100,6 +122,10 @@ struct Encoder final : Model {
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,residual,bias(n),false).first;
+    if (family == Family::Gte && x.is_cuda() &&
+        (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16))
+      return encoder_layer_norm_only(x, w(n + (has(n + ".weight") ? ".weight" : ".gamma")),
+        eps, residual, bias(n), false);
     if (x.is_cuda()) return fused_add_layer_norm(x, residual,
       w(n + (has(n + ".weight") ? ".weight" : ".gamma")),
       family == Family::Modern ? at::Tensor() : bias(n), eps);
@@ -167,7 +193,7 @@ struct Encoder final : Model {
         auto mixed = (1.0 - smooth) * inv / factor + smooth * inv;
         inv = at::where(wavelength < original / high, inv, at::where(wavelength > original / low, inv / factor, mixed));
       } else {
-        inv = at::exp(at::arange(0, d, 2, fp) * (-std::log(theta * factor) / d)) / std::pow(factor, 2.0 / d);
+        inv = gte_ntk_inverse_frequencies(d, theta, factor, device);
       }
     }
     auto phase = at::arange(length, fp).unsqueeze(1) * inv.unsqueeze(0);
@@ -286,7 +312,7 @@ struct Encoder final : Model {
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if((family==Family::Modern||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
+    if((family==Family::Modern||family==Family::Gte||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
       return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
 #endif
@@ -297,9 +323,24 @@ struct Encoder final : Model {
     if (family == Family::Modern) h = norm(at::embedding(w("embeddings.tok_embeddings.weight"), input.ids), "embeddings.norm");
     else {
       h = at::embedding(w("embeddings.word_embeddings.weight"), input.ids);
-      if (has("embeddings.token_type_embeddings.weight")) h = h + at::embedding(w("embeddings.token_type_embeddings.weight"), input.types);
+      bool embedding_norm_done = false;
+      if (has("embeddings.token_type_embeddings.weight")) {
+        auto type_embedding = at::embedding(w("embeddings.token_type_embeddings.weight"), input.types);
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if (family == Family::Gte && h.is_cuda() &&
+            (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)) {
+          // Candle normalizes the Float residual sum before the model-dtype cast.
+          h = encoder_layer_norm_only(h, w(std::string("embeddings.LayerNorm") +
+            (has("embeddings.LayerNorm.weight") ? ".weight" : ".gamma")), eps,
+            type_embedding, bias("embeddings.LayerNorm"), false);
+          embedding_norm_done = true;
+        } else
+#endif
+        h = h + type_embedding;
+      }
       if (family == Family::Distil || ((family == Family::Jina || family == Family::JinaCode) && !alibi)) h = h + at::embedding(w("embeddings.position_embeddings.weight"), input.positions);
-      h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
+      if (!embedding_norm_done)
+        h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
     }
     // All Jina layers share slopes and local positions, so materialize their
     // packed bias once per request rather than once per layer.
