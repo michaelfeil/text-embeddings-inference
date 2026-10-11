@@ -448,24 +448,18 @@ pub async fn run(
         None => tokenization,
     };
 
-    let torch_device = if backend_kind == text_embeddings_backend::BackendKind::Libtorch {
-        torch_device.resolved()?
-    } else {
-        torch_device
-    };
-    let dtype = if backend_kind == text_embeddings_backend::BackendKind::Libtorch {
-        resolve_libtorch_dtype(
+    let torch_device = backend_kind.resolve_device(torch_device)?;
+    let model_dtype = config.dtype.as_deref().or(config.torch_dtype.as_deref());
+    let dtype = match backend_kind {
+        text_embeddings_backend::BackendKind::Libtorch => resolve_libtorch_dtype(
             dtype,
-            config.dtype.as_deref().or(config.torch_dtype.as_deref()),
+            model_dtype,
             &config.model_type,
             torch_device == text_embeddings_backend::TorchDevice::Cpu,
-        )
-    } else {
-        resolve_dtype(
-            dtype,
-            config.dtype.as_deref().or(config.torch_dtype.as_deref()),
-            &config.model_type,
-        )
+        ),
+        text_embeddings_backend::BackendKind::Candle => {
+            resolve_dtype(dtype, model_dtype, &config.model_type)
+        }
     };
 
     // Create backend

@@ -168,6 +168,13 @@ fn compare_dtype(path: &Path, pool: Pool, dtype: &str) {
         LibtorchBackend::new(path, dtype, ModelType::Embedding(pool.clone()), "cuda:0").unwrap();
     let candle =
         CandleBackend::new(path, dtype.into(), ModelType::Embedding(pool), None, 1).unwrap();
+    let config: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(path.join("config.json")).unwrap()).unwrap();
+    assert_eq!(
+        torch.supports_radix_mlp(),
+        !config["use_bidirectional_attention"].as_bool().unwrap(),
+        "Router capability must match the tested causal/bidirectional decoder"
+    );
     let actual = torch.embed(batch()).unwrap();
     let expected = candle.embed(batch()).unwrap();
     assert_eq!(actual.len(), expected.len());

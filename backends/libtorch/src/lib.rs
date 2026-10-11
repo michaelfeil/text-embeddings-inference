@@ -170,6 +170,7 @@ extern "C" {
     fn tei_output_width(handle: *mut c_void) -> i64;
     fn tei_pooled_width(handle: *mut c_void) -> i64;
     fn tei_classification_width(handle: *mut c_void) -> i64;
+    fn tei_supports_radix(handle: *mut c_void) -> i32;
     fn tei_graph_count(handle: *mut c_void) -> i64;
     fn tei_ready(handle: *mut c_void) -> i32;
     fn tei_decision_counts(
@@ -309,6 +310,7 @@ pub struct LibtorchBackend {
     pooled_width: usize,
     classification_width: usize,
     decision: bool,
+    supports_radix: bool,
 }
 // SAFETY: the handle owns its tensors and is used by TEI's single backend worker.
 // It can move between threads; it is deliberately not Sync. InferenceMode is set per native call.
@@ -689,6 +691,7 @@ impl LibtorchBackend {
             output_width: 0,
             pooled_width: 0,
             classification_width: 0,
+            supports_radix: false,
             decision,
         };
         fn flatten(value: &serde_json::Value, key: &str, output: &mut Vec<(String, String)>) {
@@ -835,6 +838,8 @@ impl LibtorchBackend {
         if model_type == ModelType::Classifier && model.classification_width == 0 {
             return Err(start("Checkpoint has no supported classification head"));
         }
+        // SAFETY: the initialized handle owns immutable model capability flags.
+        model.supports_radix = unsafe { tei_supports_radix(handle.as_ptr()) } == 1;
         Ok(model)
     }
 }
@@ -1145,6 +1150,10 @@ impl LibtorchBackend {
 }
 
 impl Backend for LibtorchBackend {
+    fn supports_radix_mlp(&self) -> bool {
+        // Typed decision requests still require the full-token inference path.
+        self.supports_radix && !self.decision
+    }
     fn decide(
         &self,
         mut batch: Batch,
@@ -1200,6 +1209,10 @@ impl Backend for LibtorchBackend {
         Ok(result)
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/support/pytorch_checkpoint.rs"]
+mod pytorch_checkpoint;
 
 #[cfg(test)]
 mod tests {
@@ -1475,8 +1488,6 @@ mod tests {
 
     #[test]
     fn pytorch_checkpoint_fallback_preserves_dense_and_raw_outputs() {
-        let fixture_root =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("cpp/fixtures/pytorch_checkpoint");
         for (base_bin, dense_bin) in [(true, false), (false, true), (true, true)] {
             let (fixture, paths) = dense_fixture();
             let model_type = ModelType::Embedding(Pool::Mean);
@@ -1487,21 +1498,19 @@ mod tests {
                 .embed(batch())
                 .unwrap();
             if base_bin {
-                fs::copy(
-                    fixture_root.join("bert.bin"),
-                    fixture.0.join("pytorch_model.bin"),
-                )
-                .unwrap();
+                pytorch_checkpoint::from_safetensors(
+                    &fixture.0.join("model.safetensors"),
+                    &fixture.0.join("pytorch_model.bin"),
+                );
                 fs::remove_file(fixture.0.join("model.safetensors")).unwrap();
             }
             if dense_bin {
-                for (index, path) in paths.iter().enumerate() {
+                for path in &paths {
                     let dir = fixture.0.join(path);
-                    fs::copy(
-                        fixture_root.join(format!("dense{index}.bin")),
-                        dir.join("pytorch_model.bin"),
-                    )
-                    .unwrap();
+                    pytorch_checkpoint::from_safetensors(
+                        &dir.join("model.safetensors"),
+                        &dir.join("pytorch_model.bin"),
+                    );
                     fs::remove_file(dir.join("model.safetensors")).unwrap();
                 }
             }
@@ -2022,6 +2031,10 @@ mod tests {
             "cpu",
         )
         .unwrap();
+        assert!(
+            !torch.supports_radix_mlp(),
+            "BERT must not advertise causal folding"
+        );
         let mut bad = batch();
         bad.cumulative_seq_lengths = vec![];
         assert!(torch.embed(bad).is_err());

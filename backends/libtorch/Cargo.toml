@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 license = "Apache-2.0"
 links = "tei_torch"
+autoexamples = false
 
 [dependencies]
 text-embeddings-backend-core = { path = "../core" }
@@ -18,6 +19,7 @@ pytorch-reader = "=0.22.0"
 cmake = "0.1"
 
 [dev-dependencies]
+zip = { version = "8.6.0", default-features = false }
 text-embeddings-backend-candle = { path = "../candle" }
 
 [features]
@@ -26,25 +28,30 @@ benchmark-fp8 = ["benchmark-cuda", "text-embeddings-backend-candle/experimental-
 
 [[example]]
 name = "compare_bert"
+path = "tests/benchmarks/compare_bert.rs"
 required-features = ["benchmark-cuda"]
-
 
 [[example]]
 name = "compare_gemma"
+path = "tests/benchmarks/compare_gemma.rs"
 required-features = ["benchmark-cuda"]
 
 [[example]]
 name = "compare_decoders"
+path = "tests/benchmarks/compare_decoders.rs"
 required-features = ["benchmark-cuda"]
 
 [[example]]
 name = "compare_decisions"
+path = "tests/benchmarks/compare_decisions.rs"
 required-features = ["benchmark-cuda"]
 
 [[example]]
 name = "compare_radix"
+path = "tests/benchmarks/compare_radix.rs"
 required-features = ["benchmark-cuda"]
 
 [[example]]
 name = "compare_heads"
+path = "tests/benchmarks/compare_heads.rs"
 required-features = ["benchmark-cuda"]

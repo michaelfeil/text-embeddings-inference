@@ -1,5 +1,5 @@
 // Minimal native harness for independently generated Transformers fixtures.
-#include "../cpp/encoder_models.h"
+#include "../cpp/models/encoder_models.h"
 #include <c10/core/InferenceMode.h>
 #include <cstring>
 namespace {

@@ -31,6 +31,32 @@ pub enum BackendKind {
     Libtorch,
 }
 
+impl BackendKind {
+    /// Resolve accelerator selection once before choosing dtype or replica devices.
+    pub fn resolve_device(self, torch: TorchDevice) -> Result<TorchDevice, BackendError> {
+        match self {
+            Self::Candle => Ok(torch),
+            Self::Libtorch => torch.resolved(),
+        }
+    }
+
+    /// Whether the selected runtime and accelerator can host GPU replicas.
+    pub fn supports_replication(self, torch: TorchDevice) -> bool {
+        match self {
+            Self::Candle => supports_device_replication(),
+            Self::Libtorch => torch == TorchDevice::Cuda,
+        }
+    }
+
+    /// Query the selected runtime rather than another backend's CUDA installation.
+    pub fn visible_device_count(self, torch: TorchDevice) -> Result<usize, BackendError> {
+        match self {
+            Self::Candle => visible_cuda_device_count(),
+            Self::Libtorch => torch.count(),
+        }
+    }
+}
+
 /// LibTorch accelerator family; availability depends on the installed C++ distribution.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[cfg_attr(feature = "clap", derive(clap::ValueEnum))]

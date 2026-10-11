@@ -55,6 +55,7 @@ int64_t tei_output_width(void*);
 int64_t tei_pooled_width(void*);
 int64_t tei_classification_width(void*);
 int64_t tei_graph_count(void*);
+int32_t tei_supports_radix(void*);
 int32_t tei_ready(void*);
 int32_t tei_decision_counts(void*,const TeiDecision*,size_t count,int64_t* counts);
 int32_t tei_decide(void*,const int64_t* ids,const int64_t* types,

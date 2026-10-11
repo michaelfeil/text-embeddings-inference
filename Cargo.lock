@@ -4762,6 +4762,7 @@ dependencies = [
  "sha2",
  "text-embeddings-backend-candle",
  "text-embeddings-backend-core",
+ "zip 8.6.0",
 ]
 
 [[package]]
