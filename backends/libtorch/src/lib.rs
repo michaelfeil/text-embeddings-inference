@@ -303,6 +303,53 @@ struct Config {
     position_embedding_type: Option<String>,
 }
 
+// Bound the single worker's retained initialized flat CUDA raw-output buffer.
+// Allocator-wide caches and each returned owned token Vec are outside this bound.
+const MAX_RAW_OUTPUT_FLOATS: usize = 64 * 1024 * 1024 / std::mem::size_of::<f32>();
+#[derive(Default)]
+struct RawOutputScratch(std::cell::RefCell<Vec<f32>>);
+enum FlatOutput<'a> {
+    Owned(Vec<f32>),
+    Cached(std::cell::RefMut<'a, Vec<f32>>),
+}
+impl std::ops::Deref for FlatOutput<'_> {
+    type Target = [f32];
+    fn deref(&self) -> &[f32] {
+        match self {
+            Self::Owned(values) => values,
+            Self::Cached(values) => values,
+        }
+    }
+}
+impl std::ops::DerefMut for FlatOutput<'_> {
+    fn deref_mut(&mut self) -> &mut [f32] {
+        match self {
+            Self::Owned(values) => values,
+            Self::Cached(values) => values,
+        }
+    }
+}
+impl RawOutputScratch {
+    fn output(&self, size: usize) -> Result<FlatOutput<'_>, BackendError> {
+        if size > MAX_RAW_OUTPUT_FLOATS {
+            return Ok(FlatOutput::Owned(vec![0f32; size]));
+        }
+        let mut values = self
+            .0
+            .try_borrow_mut()
+            .map_err(|_| inference("Raw output scratch is already borrowed"))?;
+        if values.capacity() < size {
+            // Exact-size allocation avoids geometric Vec growth beyond 64MiB.
+            *values = vec![0f32; size];
+        } else {
+            // Every exposed float stays initialized. Successful synchronous C ABI
+            // calls overwrite the entire validated prefix before it is copied out.
+            values.resize(size, 0f32);
+        }
+        Ok(FlatOutput::Cached(values))
+    }
+}
+
 pub struct LibtorchBackend {
     handle: NonNull<c_void>,
     config: Config,
@@ -312,6 +359,7 @@ pub struct LibtorchBackend {
     classification_width: usize,
     decision: bool,
     supports_radix: bool,
+    raw_output_scratch: Option<RawOutputScratch>,
 }
 // SAFETY: the handle owns its tensors and is used by TEI's single backend worker.
 // It can move between threads; it is deliberately not Sync. InferenceMode is set per native call.
@@ -693,6 +741,10 @@ impl LibtorchBackend {
             pooled_width: 0,
             classification_width: 0,
             supports_radix: false,
+            raw_output_scratch: device
+                .as_bytes()
+                .starts_with(b"cuda")
+                .then(RawOutputScratch::default),
             decision,
         };
         fn flatten(value: &serde_json::Value, key: &str, output: &mut Vec<(String, String)>) {
@@ -1104,7 +1156,14 @@ impl LibtorchBackend {
                     .and_then(|r| n.checked_add(r))
             })
             .ok_or_else(|| inference("Output size overflow"))?;
-        let mut output = vec![0f32; size];
+        let mut output = if pooled.is_empty() && !raw.is_empty() {
+            match &self.raw_output_scratch {
+                Some(scratch) => scratch.output(size)?,
+                None => FlatOutput::Owned(vec![0f32; size]),
+            }
+        } else {
+            FlatOutput::Owned(vec![0f32; size])
+        };
         // SAFETY: validated dimensions and indices bound every native read/write. All buffers stay
         // live until this synchronous call returns; exceptions cannot cross the C ABI.
         if unsafe {
@@ -1230,6 +1289,52 @@ mod pytorch_checkpoint;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn raw_output_scratch_preserves_initialization_lifetime_and_byte_bound() {
+        let scratch = RawOutputScratch::default();
+        let mut first = scratch.output(16).unwrap();
+        assert!(first.iter().all(|&value| value == 0f32));
+        first.fill(3.5);
+        let pointer = first.as_ptr();
+        assert!(
+            scratch.output(16).is_err(),
+            "Active scratch must reject overlapping borrowing"
+        );
+        drop(first);
+        let second = scratch.output(8).unwrap();
+        assert_eq!(second.as_ptr(), pointer);
+        assert_eq!(&*second, &[3.5; 8]);
+        drop(second);
+        let grown = scratch.output(16).unwrap();
+        assert_eq!(grown.as_ptr(), pointer);
+        assert_eq!(&grown[..8], &[3.5; 8]);
+        assert!(grown[8..].iter().all(|&value| value == 0f32));
+        drop(grown);
+        for size in [MAX_RAW_OUTPUT_FLOATS - 1, MAX_RAW_OUTPUT_FLOATS] {
+            let mut output = scratch.output(size).unwrap();
+            assert!(matches!(&output, FlatOutput::Cached(_)));
+            assert_eq!(output.len(), size);
+            output[0] = 1.25;
+            output[size - 1] = -2.5;
+            drop(output);
+            assert!(scratch.0.borrow().capacity() <= MAX_RAW_OUTPUT_FLOATS);
+        }
+        let retained_pointer = scratch.0.borrow().as_ptr();
+        let large = scratch.output(MAX_RAW_OUTPUT_FLOATS + 1).unwrap();
+        assert!(
+            matches!(&large, FlatOutput::Owned(_)),
+            "Above-limit output must use the original owned fallback"
+        );
+        assert_eq!(large.len(), MAX_RAW_OUTPUT_FLOATS + 1);
+        assert_eq!(scratch.0.borrow().as_ptr(), retained_pointer);
+        assert_eq!(scratch.0.borrow().capacity(), MAX_RAW_OUTPUT_FLOATS);
+        drop(large);
+        // Returned embeddings copy out; no scratch borrow may escape a call or error.
+        let recovered = scratch.output(16).unwrap();
+        assert_eq!(recovered.len(), 16);
+        drop(recovered);
+    }
 
     #[test]
     fn image_feature_keys_and_descriptor_layout() {
