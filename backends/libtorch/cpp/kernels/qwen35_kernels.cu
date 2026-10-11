@@ -2,6 +2,7 @@
 // The included Candle kernels retain their MIT notices. This wrapper dispatches
 // those native packed kernels on LibTorch's current stream, without Python.
 #include "kernels/qwen35_kernels.h"
+#include "kernels/gemma2_norm.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
@@ -58,11 +59,12 @@ at::Tensor gemma_rotary_cuda(const at::Tensor& x,const at::Tensor& cos,
 // Adapted from backends/candle/src/kernels/gemma_rms_norm.cu.
 // Candle compiles this reference with --fmad=false. Keep the mean and epsilon
 // as separate FP32 rounds without changing other native kernel flags.
-template<bool VIRTUAL_LANES, bool PAIRED = false>
+template<bool VIRTUAL_LANES, bool PAIRED = false, bool RESIDUAL = false>
 __device__ __forceinline__ void tei_gemma_rms_norm_reference_impl(
     const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
     unsigned int width, unsigned int heads, unsigned long long token_stride, float eps,
-    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {}) {
+    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {},
+    const __nv_bfloat16* residual = nullptr) {
     const size_t base = static_cast<size_t>(blockIdx.x / heads) * token_stride
         + static_cast<size_t>(blockIdx.x % heads) * width;
     const size_t out_base = static_cast<size_t>(blockIdx.x) * width;
@@ -114,7 +116,10 @@ __device__ __forceinline__ void tei_gemma_rms_norm_reference_impl(
     __syncthreads();
     for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
         float normalized = __bfloat162float(x[base + col]) / sums[0];
-        out[out_base + col] = __float2bfloat16_rn(normalized * scale[col]);
+        if constexpr (RESIDUAL) {
+            const auto rounded = __float2bfloat16_rn(normalized * scale[col]);
+            out[out_base + col] = __hadd(residual[out_base + col], rounded);
+        } else out[out_base + col] = __float2bfloat16_rn(normalized * scale[col]);
         if constexpr (PAIRED) {
             __nv_bfloat16 router = __float2bfloat16_rn(normalized * 1.f);
             router = router * root + __float2bfloat16_rn(0.f);
@@ -130,6 +135,151 @@ static __global__ void tei_gemma_rms_norm_reference_bf16(
     tei_gemma_rms_norm_reference_impl<false>(x, scale, out, width, heads, token_stride, eps);
 }
 
+
+// SPDX-License-Identifier: MIT
+// Adapted from backends/candle/src/kernels/gemma_rms_norm.cu.
+// Candle compiles this reference with --fmad=false. Keep the mean and epsilon
+// as separate FP32 rounds without changing other native kernel flags.
+template<bool VIRTUAL_LANES, bool PAIRED = false, bool RESIDUAL = false>
+__device__ __forceinline__ void g2_candidate_reference_impl(
+    const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps,
+    const __nv_bfloat16* router_scale = nullptr, __nv_bfloat16 root = {},
+    const __nv_bfloat16* residual = nullptr) {
+    const size_t base = static_cast<size_t>(blockIdx.x / heads) * token_stride
+        + static_cast<size_t>(blockIdx.x % heads) * width;
+    const size_t out_base = static_cast<size_t>(blockIdx.x) * width;
+    __shared__ float sums[1024];
+    float sum = 0.f;
+    if constexpr (VIRTUAL_LANES) {
+        // Emulate the original logical lanes before reducing across this smaller
+        // block. Pairing lane 0+512, then 0+256 preserves the 1024-lane tree.
+        unsigned int logical_threads = 1;
+        while (logical_threads < width && logical_threads < 1024) logical_threads <<= 1;
+        const unsigned int lanes = logical_threads / blockDim.x;
+        float partial[4] = {0.f, 0.f, 0.f, 0.f};
+        for (unsigned int lane = 0; lane < lanes; ++lane) {
+            for (unsigned int col = threadIdx.x + lane * blockDim.x;
+                 col < width; col += logical_threads) {
+                float v = __bfloat162float(x[base + col]);
+                partial[lane] = __fadd_rn(partial[lane],__fmul_rn(v,v));
+            }
+        }
+        for (unsigned int stride = lanes / 2; stride; stride >>= 1)
+            for (unsigned int lane = 0; lane < stride; ++lane)
+                partial[lane] = __fadd_rn(partial[lane],partial[lane + stride]);
+        sum = partial[0];
+    } else {
+        for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+            float v = __bfloat162float(x[base + col]);
+            sum = __fadd_rn(sum,__fmul_rn(v,v));
+        }
+    }
+    sums[threadIdx.x] = sum;
+    for (unsigned int stride = blockDim.x / 2; stride >= 32; stride >>= 1) {
+        __syncthreads();
+        if (threadIdx.x < stride) sums[threadIdx.x] = __fadd_rn(sums[threadIdx.x],sums[threadIdx.x + stride]);
+    }
+    // Finish the same reduction tree within the first warp.
+    if (threadIdx.x < 32) {
+        sum = sums[threadIdx.x];
+        const unsigned int mask = __activemask();
+        for (unsigned int stride = blockDim.x < 32 ? blockDim.x / 2 : 16;
+             stride; stride >>= 1) {
+            float other = __shfl_down_sync(mask, sum, stride);
+            if (threadIdx.x < stride) sum = __fadd_rn(sum,other);
+        }
+        if (threadIdx.x == 0) {
+            float mean = __fmul_rn(sum, static_cast<float>(1.0 / static_cast<double>(width)));
+            sums[0] = sqrtf(__fadd_rn(mean, eps));
+        }
+    }
+    __syncthreads();
+    for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+        float normalized = __fdiv_rn(__bfloat162float(x[base + col]),sums[0]);
+        if constexpr (RESIDUAL) {
+            const auto rounded = __float2bfloat16_rn(__fmul_rn(normalized,scale[col]));
+            out[out_base + col] = __hadd(residual[out_base + col], rounded);
+        } else out[out_base + col] = __float2bfloat16_rn(__fmul_rn(normalized,scale[col]));
+        if constexpr (PAIRED) {
+            __nv_bfloat16 router = __float2bfloat16_rn(normalized * 1.f);
+            router = router * root + __float2bfloat16_rn(0.f);
+            out[static_cast<size_t>(gridDim.x) * width + out_base + col]
+                = router * router_scale[col];
+        }
+    }
+}
+
+static __global__ void g2_candidate_reference_bf16(
+    const __nv_bfloat16* x, const float* scale, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps) {
+    g2_candidate_reference_impl<false>(x, scale, out, width, heads, token_stride, eps);
+}
+
+
+
+// Adapted from MIT Candle warp_reference<256>, explicit RN staging for native TU.
+static __global__ void g2_candidate_warp(const __nv_bfloat16* x,const float* scale,__nv_bfloat16* out,unsigned width,unsigned heads,unsigned long long stride,float eps,unsigned rows){
+ unsigned lane=threadIdx.x%32,row=blockIdx.x*8+threadIdx.x/32;if(row>=rows)return;
+ size_t base=size_t(row/heads)*stride+size_t(row%heads)*width;float partial[8]={};
+ #pragma unroll
+ for(int i=0;i<8;++i)for(unsigned col=lane+i*32;col<width;col+=256){float v=__bfloat162float(x[base+col]);partial[i]=__fadd_rn(partial[i],__fmul_rn(v,v));}
+ #pragma unroll
+ for(int step=4;step;step>>=1){
+  #pragma unroll
+  for(int i=0;i<step;++i)partial[i]=__fadd_rn(partial[i],partial[i+step]);
+ }
+ float sum=partial[0];
+ #pragma unroll
+ for(int step=16;step;step>>=1){float other=__shfl_down_sync(0xffffffff,sum,step);if(lane<step)sum=__fadd_rn(sum,other);}
+ float den=0;if(!lane)den=sqrtf(__fadd_rn(__fmul_rn(sum,float(1./double(width))),eps));den=__shfl_sync(0xffffffff,den,0);
+ for(unsigned col=lane;col<width;col+=32)out[size_t(row)*width+col]=__float2bfloat16_rn(__fmul_rn(__fdiv_rn(__bfloat162float(x[base+col]),den),scale[col]));
+}
+static __global__ void g2_candidate_compact(const __nv_bfloat16* x,const float* scale,__nv_bfloat16* out,unsigned w,unsigned h,unsigned long long s,float e){g2_candidate_reference_impl<true>(x,scale,out,w,h,s,e);}
+at::Tensor gemma2_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double eps){
+ TORCH_CHECK(x.is_cuda() && x.scalar_type()==at::kBFloat16 && scale.scalar_type()==at::kFloat && (x.dim()==2 || x.dim()==3) && x.stride(-1)==1 && scale.device()==x.device(),"Gemma2 compact RMS requires original packed BF16/F32 operands");
+ const auto width=x.size(-1),rows=x.numel()/width;
+ if(!((width==256 && rows>=4096)||(width==512 && rows>=2048))) return gemma_norm_cuda(x,scale,eps,true);
+ TORCH_CHECK(scale.numel()==width && scale.is_contiguous() && (x.dim()!=3 || x.stride(1)==width),"Gemma2 compact RMS scale/layout mismatch");
+ c10::cuda::CUDAGuard guard(x.device());auto out=at::empty(x.sizes(),x.options());
+ unsigned w=x.size(-1),h=x.dim()==3?x.size(1):1,r=x.numel()/w;auto stream=at::cuda::getCurrentCUDAStream();
+ int threads=1;while(threads<w&&threads<1024)threads*=2;
+ auto a=reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr());auto b=reinterpret_cast<__nv_bfloat16*>(out.mutable_data_ptr());
+ if(w==256&&r>=4096)g2_candidate_warp<<<(r+7)/8,256,0,stream>>>(a,scale.const_data_ptr<float>(),b,w,h,x.stride(0),eps,r);
+ else if(w>256&&r>=2048)g2_candidate_compact<<<r,256,0,stream>>>(a,scale.const_data_ptr<float>(),b,w,h,x.stride(0),eps);
+ else g2_candidate_reference_bf16<<<r,threads,0,stream>>>(a,scale.const_data_ptr<float>(),b,w,h,x.stride(0),eps);
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
+
+
+// SPDX-License-Identifier: MIT
+// Same original sqrt/div norm tree and BF16 norm cast; retain residual-first
+// BF16 addition while removing the standalone add launch. No rsqrt substitution.
+static __global__ void g2_residual_reference(const __nv_bfloat16* x,const float* scale,
+ const __nv_bfloat16* residual,__nv_bfloat16* out,unsigned width,float eps) {
+ tei_gemma_rms_norm_reference_impl<false,false,true>(x,scale,out,width,1,width,eps,nullptr,{},residual);
+}
+static __global__ void g2_residual_compact(const __nv_bfloat16* x,const float* scale,
+ const __nv_bfloat16* residual,__nv_bfloat16* out,unsigned width,float eps) {
+ g2_candidate_reference_impl<true,false,true>(x,scale,out,width,1,width,eps,nullptr,{},residual);
+}
+at::Tensor gemma2_residual_norm_cuda(const at::Tensor& residual,const at::Tensor& x,
+ const at::Tensor& scale,double eps) {
+ TORCH_CHECK(x.is_cuda() && x.scalar_type()==at::kBFloat16 && x.dim()==2 && x.size(1)==512 && x.is_contiguous(),
+  "Gemma2 residual norm requires original contiguous BF16 hidden width512");
+ TORCH_CHECK(residual.device()==x.device() && residual.scalar_type()==x.scalar_type() &&
+  residual.sizes()==x.sizes() && residual.is_contiguous() && scale.device()==x.device() &&
+  scale.scalar_type()==at::kFloat && scale.is_contiguous() && scale.numel()==512,
+  "Gemma2 residual norm operand mismatch");
+ TORCH_CHECK(x.size(0)>0 && x.size(0)<=INT32_MAX,"Gemma2 residual norm row bounds");
+ c10::cuda::CUDAGuard guard(x.device());auto out=at::empty(x.sizes(),x.options());
+ const auto* src=reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr());
+ const auto* res=reinterpret_cast<const __nv_bfloat16*>(residual.const_data_ptr());
+ auto* dst=reinterpret_cast<__nv_bfloat16*>(out.mutable_data_ptr());auto stream=at::cuda::getCurrentCUDAStream();
+ if(x.size(0)>=2048)g2_residual_compact<<<x.size(0),256,0,stream>>>(src,scale.const_data_ptr<float>(),res,dst,512,eps);
+ else g2_residual_reference<<<x.size(0),512,0,stream>>>(src,scale.const_data_ptr<float>(),res,dst,512,eps);
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
 
 // Adapted from the MIT precise_activation in Candle's gated_activation.cu.
 // The original source and its complete notices remain in the repository.
