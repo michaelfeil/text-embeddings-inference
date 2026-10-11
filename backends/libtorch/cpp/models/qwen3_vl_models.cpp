@@ -10,6 +10,7 @@
 #include "kernels/moe_kernels.h"
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <cmath>
+#include <algorithm>
 
 namespace tei {
 // Adapted from Candle qwen3_vl/vision.rs; upstream Apache-2.0 notices retained.
@@ -97,9 +98,28 @@ std::pair<at::Tensor,std::vector<at::Tensor>> Qwen3VL::vision(const ImageInput& 
         std::vector<at::Tensor> outputs;
         for(int64_t t=0;t<frames;++t){auto slice=[&](const at::Tensor& x){return x.narrow(0,t*height*width,height*width).transpose(0,1).contiguous().unsqueeze(0);};
           auto qframe=slice(q),kframe=slice(k),vframe=slice(v);
-          auto scaled=at::matmul(qframe,kframe.transpose(2,3))*(1./std::sqrt(double(dim)));
-          auto probs=qwen35_vision_softmax(scaled.contiguous());
-          outputs.push_back(at::matmul(probs,vframe).squeeze(0).transpose(0,1));}
+          // Bound each F32 score/probability tensor to 16 MiB (or one
+          // complete query row). Every query still sees every real key;
+          // only independent query rows are chunked, without token padding.
+          constexpr int64_t score_elements=(16LL*1024*1024)/sizeof(float);
+          const auto patches=qframe.size(2);
+          const auto rows=std::max<int64_t>(1,std::min<int64_t>(patches,score_elements/heads/patches));
+          if(rows==patches) {
+            // Preserve the original small-image GEMM shapes and operators.
+            auto scaled=at::matmul(qframe,kframe.transpose(2,3))*(1./std::sqrt(double(dim)));
+            auto probs=qwen35_vision_softmax(scaled.contiguous());
+            outputs.push_back(at::matmul(probs,vframe).squeeze(0).transpose(0,1));
+          } else {
+            auto frame=at::empty({patches,heads,dim},qframe.options());
+            const auto transposed_keys=kframe.transpose(2,3);
+            for(int64_t start=0;start<patches;start+=rows) {
+              const auto count=std::min<int64_t>(rows,patches-start);
+              auto scaled=at::matmul(qframe.narrow(2,start,count),transposed_keys)*(1./std::sqrt(double(dim)));
+              auto probs=qwen35_vision_softmax(scaled.contiguous());
+              frame.narrow(0,start,count).copy_(at::matmul(probs,vframe).squeeze(0).transpose(0,1));
+            }
+            outputs.push_back(frame);
+          }}
         attention=at::cat(outputs,0);
       } else
 #endif
