@@ -10,6 +10,9 @@ text-embeddings-backend-core = { path = "../core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 safetensors = "0.8"
+sha2 = "0.10"
+bytemuck = "1"
+pytorch-reader = "=0.22.0"
 
 [build-dependencies]
 cmake = "0.1"

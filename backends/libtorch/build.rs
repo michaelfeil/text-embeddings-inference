@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=cpp/vendor/torch_flash_attention");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma.cpp");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_64.cu");
+    println!("cargo:rerun-if-changed=cpp/torch_flash_fma_72.cu");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_128.cu");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_256.cu");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma_512.cu");

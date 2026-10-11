@@ -3,6 +3,7 @@ mod radix;
 use radix::{NativeRadix, OwnedRadix};
 use safetensors::{Dtype, SafeTensors};
 use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     ffi::{c_char, c_void, CStr, CString},
     fs,
@@ -13,6 +14,21 @@ use text_embeddings_backend_core::{
     Backend, BackendError, Batch, DecisionInput, DecisionOutput, Embedding, Embeddings, ModelType,
     Pool, Predictions, TokenPredictions,
 };
+
+// Matches Candle's Gemma4 cache: source host pixels and every vision layout input.
+// Token/sequence starts are deliberately excluded: projected features do not use them.
+fn image_feature_key(image: &text_embeddings_backend_core::ImagePatches) -> [u8; 32] {
+    let mut hash = Sha256::new();
+    for value in image
+        .grid_thw
+        .into_iter()
+        .chain([image.patch_dim, image.merge_size])
+    {
+        hash.update(value.to_le_bytes());
+    }
+    hash.update(bytemuck::cast_slice(&image.pixels));
+    hash.finalize().into()
+}
 
 #[repr(C)]
 struct NativeConfig {
@@ -36,6 +52,8 @@ struct NativeImage {
     token_start: i64,
     token_count: i64,
     sequence_start: i64,
+    feature_key: [u8; 32],
+    has_feature_key: u8,
 }
 #[repr(C)]
 struct NativeAudio {
@@ -210,6 +228,48 @@ fn native_error() -> String {
 fn start(error: impl ToString) -> BackendError {
     BackendError::Start(error.to_string())
 }
+
+fn upload_weight(
+    handle: NonNull<c_void>,
+    name: &str,
+    data: &[u8],
+    shape: &[usize],
+    dtype: i32,
+) -> Result<(), BackendError> {
+    let element_size = match dtype {
+        0 => 4usize,
+        1 | 2 => 2usize,
+        _ => return Err(start("Unsupported weight dtype")),
+    };
+    let expected = shape
+        .iter()
+        .try_fold(element_size, |bytes, &extent| bytes.checked_mul(extent));
+    if expected != Some(data.len()) {
+        return Err(start(format!("Invalid weight byte length for {name}")));
+    }
+    let shape = shape
+        .iter()
+        .map(|&n| i64::try_from(n).map_err(start))
+        .collect::<Result<Vec<_>, _>>()?;
+    let name = CString::new(name).map_err(start)?;
+    // SAFETY: byte length matches the checked shape and dtype; native code copies
+    // the data synchronously. The caller owns the live model handle.
+    if unsafe {
+        tei_weight(
+            handle.as_ptr(),
+            name.as_ptr(),
+            data.as_ptr(),
+            shape.as_ptr(),
+            shape.len(),
+            dtype,
+        )
+    } != 0
+    {
+        return Err(start(native_error()));
+    }
+    Ok(())
+}
+
 fn inference(error: impl ToString) -> BackendError {
     BackendError::Inference(error.to_string())
 }
@@ -568,6 +628,9 @@ impl LibtorchBackend {
         } else {
             "embedding"
         });
+        // Keep the head contract above separate from the actual pooling mode
+        // used to select narrowly qualified native embedding kernels.
+        options["_embedding_pool"] = serde_json::json!(pool.to_string());
         for (i, dense_path) in dense_paths.iter().enumerate() {
             let relative = Path::new(dense_path);
             if relative.as_os_str().is_empty()
@@ -662,7 +725,11 @@ impl LibtorchBackend {
             }
         }
         let index = path.join("model.safetensors.index.json");
-        let files = if index.exists() {
+        let files = if path.join("model.safetensors").exists() {
+            vec!["model.safetensors".to_owned()]
+        } else if path.join("pytorch_model.bin").exists() {
+            vec!["pytorch_model.bin".to_owned()]
+        } else if index.exists() {
             let index: serde_json::Value =
                 serde_json::from_slice(&fs::read(index).map_err(start)?).map_err(start)?;
             let map = index["weight_map"]
@@ -696,12 +763,39 @@ impl LibtorchBackend {
             }
         }
         for (i, dense_path) in dense_paths.iter().enumerate() {
-            files.push((
-                format!("{dense_path}/model.safetensors"),
-                format!("_dense.{i}."),
-            ));
+            let filename = if path.join(dense_path).join("model.safetensors").exists() {
+                "model.safetensors"
+            } else {
+                "pytorch_model.bin"
+            };
+            files.push((format!("{dense_path}/{filename}"), format!("_dense.{i}.")));
         }
         for (file, prefix) in files {
+            if file.ends_with(".bin") {
+                // Parse checkpoint data in Rust; no Python or inference engine is
+                // involved. The reader gathers strided/shared-storage views.
+                let reader = pytorch_reader::PytorchReader::new(path.join(&file)).map_err(start)?;
+                for (name, tensor) in reader.tensors() {
+                    if name.ends_with("position_ids") || name.ends_with("token_type_ids") {
+                        continue;
+                    }
+                    let dtype = match tensor.dtype() {
+                        pytorch_reader::DType::F32 => 0,
+                        pytorch_reader::DType::F16 => 1,
+                        pytorch_reader::DType::BF16 => 2,
+                        other => return Err(start(format!("Unsupported weight dtype {other:?}"))),
+                    };
+                    let data = tensor.read().map_err(start)?;
+                    upload_weight(
+                        handle,
+                        &format!("{prefix}{name}"),
+                        &data,
+                        tensor.shape(),
+                        dtype,
+                    )?;
+                }
+                continue;
+            }
             let data = fs::read(path.join(file)).map_err(start)?;
             let tensors = SafeTensors::deserialize(&data).map_err(start)?;
             for (name, tensor) in tensors.tensors() {
@@ -715,26 +809,13 @@ impl LibtorchBackend {
                     Dtype::BF16 => 2,
                     other => return Err(start(format!("Unsupported weight dtype {other:?}"))),
                 };
-                let shape = tensor
-                    .shape()
-                    .iter()
-                    .map(|&n| i64::try_from(n).map_err(start))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let name = CString::new(format!("{prefix}{name}")).map_err(start)?;
-                // SAFETY: safetensors validates byte lengths. Native code copies the data before returning.
-                if unsafe {
-                    tei_weight(
-                        handle.as_ptr(),
-                        name.as_ptr(),
-                        tensor.data().as_ptr(),
-                        shape.as_ptr(),
-                        shape.len(),
-                        dtype,
-                    )
-                } != 0
-                {
-                    return Err(start(native_error()));
-                }
+                upload_weight(
+                    handle,
+                    &format!("{prefix}{name}"),
+                    tensor.data(),
+                    tensor.shape(),
+                    dtype,
+                )?;
             }
         }
         // SAFETY: the live handle is owned by model; this checks every required weight and its shape.
@@ -794,6 +875,11 @@ impl LibtorchBackend {
             return Err(inference("Invalid multimodal batch length"));
         }
         let mut images = Vec::new();
+        let cache_images = matches!(
+            self.config.model_type.as_str(),
+            "gemma4" | "gemma4_text" | "embedding_gemma2"
+        );
+        let mut image_keys = std::collections::HashMap::new();
         let mut audios = Vec::new();
         let mut media_positions = Vec::new();
         if batch.multimodal.iter().any(Option::is_some) {
@@ -843,6 +929,14 @@ impl LibtorchBackend {
                         token_start: (begin + start) as i64,
                         token_count: (patches / merge) as i64,
                         sequence_start: begin as i64,
+                        feature_key: if cache_images {
+                            *image_keys
+                                .entry(std::sync::Arc::as_ptr(image))
+                                .or_insert_with(|| image_feature_key(image))
+                        } else {
+                            [0; 32]
+                        },
+                        has_feature_key: u8::from(cache_images),
                     });
                 }
                 for (start, audio) in &media.audios {
@@ -1110,6 +1204,38 @@ impl Backend for LibtorchBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn image_feature_keys_and_descriptor_layout() {
+        assert_eq!(std::mem::size_of::<NativeImage>(), 120);
+        assert_eq!(std::mem::offset_of!(NativeImage, feature_key), 80);
+        let image = text_embeddings_backend_core::ImagePatches {
+            pixels: (0..18).map(|i| i as f32 * 0.125).collect(),
+            grid_thw: [1, 3, 3],
+            patch_dim: 2,
+            merge_size: 3,
+        };
+        let expected = [
+            0x47, 0xe6, 0x4d, 0xf4, 0x66, 0x26, 0x25, 0x20, 0x1a, 0x29, 0x71, 0xb6, 0xd2, 0x85,
+            0x68, 0xf0, 0x4c, 0x19, 0xa7, 0x5a, 0x34, 0x8e, 0x9f, 0x59, 0xb3, 0x1d, 0xe4, 0x73,
+            0x6c, 0x43, 0x63, 0x08,
+        ];
+        assert_eq!(image_feature_key(&image), expected);
+        assert_eq!(image_feature_key(&image.clone()), expected);
+        let mut changed = image.clone();
+        changed.pixels[0] = 0.5;
+        assert_ne!(image_feature_key(&changed), expected);
+        for field in 0..5 {
+            let mut changed = image.clone();
+            match field {
+                0..=2 => changed.grid_thw[field] += 1,
+                3 => changed.patch_dim += 1,
+                _ => changed.merge_size += 1,
+            }
+            assert_ne!(image_feature_key(&changed), expected);
+        }
+    }
+
     use safetensors::tensor::{serialize, TensorView};
     use std::sync::atomic::{AtomicUsize, Ordering};
     #[cfg(not(feature = "benchmark-cuda"))]
@@ -1345,6 +1471,60 @@ mod tests {
             "cpu"
         )
         .is_err());
+    }
+
+    #[test]
+    fn pytorch_checkpoint_fallback_preserves_dense_and_raw_outputs() {
+        let fixture_root =
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("cpp/fixtures/pytorch_checkpoint");
+        for (base_bin, dense_bin) in [(true, false), (false, true), (true, true)] {
+            let (fixture, paths) = dense_fixture();
+            let model_type = ModelType::Embedding(Pool::Mean);
+            // Safetensors takes priority over a present incompatible fallback.
+            fs::write(fixture.0.join("pytorch_model.bin"), b"invalid pickle").unwrap();
+            let baseline = LibtorchBackend::new(&fixture.0, "float32", model_type.clone(), "cpu")
+                .unwrap()
+                .embed(batch())
+                .unwrap();
+            if base_bin {
+                fs::copy(
+                    fixture_root.join("bert.bin"),
+                    fixture.0.join("pytorch_model.bin"),
+                )
+                .unwrap();
+                fs::remove_file(fixture.0.join("model.safetensors")).unwrap();
+            }
+            if dense_bin {
+                for (index, path) in paths.iter().enumerate() {
+                    let dir = fixture.0.join(path);
+                    fs::copy(
+                        fixture_root.join(format!("dense{index}.bin")),
+                        dir.join("pytorch_model.bin"),
+                    )
+                    .unwrap();
+                    fs::remove_file(dir.join("model.safetensors")).unwrap();
+                }
+            }
+            let actual = LibtorchBackend::new(&fixture.0, "float32", model_type, "cpu")
+                .unwrap()
+                .embed(batch())
+                .unwrap();
+            for (index, expected) in &baseline {
+                assert_eq!(values(&actual[index]), values(expected));
+            }
+            if base_bin {
+                fs::write(fixture.0.join("pytorch_model.bin"), b"invalid pickle").unwrap();
+                assert!(matches!(
+                    LibtorchBackend::new(
+                        &fixture.0,
+                        "float32",
+                        ModelType::Embedding(Pool::Mean),
+                        "cpu",
+                    ),
+                    Err(BackendError::Start(_))
+                ));
+            }
+        }
     }
     #[test]
     #[ignore = "Requires an NVIDIA GPU and CUDA LibTorch 2.14.1"]

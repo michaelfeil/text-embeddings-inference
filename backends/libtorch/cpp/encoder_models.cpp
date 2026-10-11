@@ -43,6 +43,9 @@ struct Encoder final : Model {
     layers = o.integer(distil ? "n_layers" : nomic ? "n_layer" : "num_hidden_layers", 12);
     eps = o.real(distil ? "unused" : nomic ? "layer_norm_epsilon" : f == Family::Modern ? "norm_eps" : "layer_norm_eps", 1e-12);
     activation = o.string(distil ? "activation" : nomic ? "activation_function" : f == Family::Modern ? "hidden_activation" : "hidden_act", "gelu");
+    // Candle HiddenAct deserializes this alias as Gelu. Normalize before the
+    // Nomic dense/gated checkpoint-layout selection and fused dispatch checks.
+    if (nomic && activation == "gelu_pytorch_tanh") activation = "gelu";
     exact_moe=nomic&&o.integer("num_experts",0)>0;
     const char* norm_mode=std::getenv("TEI_TORCH_EXACT_ENCODER_NORM");
     // Preserve Candle normalization and rounded residuals for deep rotary encoders.

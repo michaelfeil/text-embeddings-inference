@@ -7,9 +7,53 @@
 #include <vector>
 #include <cmath>
 
+
+// Media attention retains true head width72 and distinct query/key lengths.
+static void media_spans(const c10::Device& device) {
+  auto options=at::TensorOptions().device(device).dtype(at::kBFloat16);
+  auto probe=at::zeros({3,4,72},options);
+  const auto* properties=at::cuda::getDeviceProperties(device.index());
+  bool supported=properties->major==9 && properties->minor==0 && properties->sharedMemPerBlockOptin>=48*1024;
+  TORCH_CHECK(tei::torch_flash_fma_supported(probe,probe,probe)==supported,"Head72 architecture guard");
+  TORCH_CHECK(!tei::torch_flash_fma_supported(probe,probe,probe,true,-1,-1),"Head72 causal fallback");
+  TORCH_CHECK(!tei::torch_flash_fma_supported(probe,probe,probe,false,2,2),"Head72 local fallback");
+  auto half=probe.to(at::kHalf),cpu=probe.cpu();
+  TORCH_CHECK(!tei::torch_flash_fma_supported(half,half,half),"Head72 FP16 fallback");
+  TORCH_CHECK(!tei::torch_flash_fma_supported(cpu,cpu,cpu),"Head72 CPU fallback");
+  if(!supported)return;
+  for(int64_t dim:{72,256})for(bool causal:{false,true}) {
+    if(dim==72 && causal)continue;
+    std::vector<int32_t> qo{0,1,4,11},ko{0,3,11,24};
+    auto cuq=at::tensor(qo,at::TensorOptions().dtype(at::kInt)).to(device),cuk=at::tensor(ko,at::TensorOptions().dtype(at::kInt)).to(device);
+    auto qstore=at::randn({11,6,dim},options)*.1,kstore=at::randn({24,4,dim},options)*.1;
+    auto q=qstore.narrow(1,0,4),k=kstore.narrow(1,0,2),v=kstore.narrow(1,2,2);
+    auto result=tei::torch_flash_fma_varlen(q,k,v,cuq,cuk,7,13,1.,causal);
+    TORCH_CHECK(result.sizes()==q.sizes(),"Media attention allocated synthetic rows/head width");
+    double worst=0;
+    for(size_t b=0;b<3;++b) {
+      int64_t nq=qo[b+1]-qo[b],nk=ko[b+1]-ko[b];
+      auto qr=q.narrow(0,qo[b],nq).cpu().to(at::kDouble).transpose(0,1);
+      auto kr=k.narrow(0,ko[b],nk).cpu().to(at::kDouble).transpose(0,1).repeat_interleave(2,0);
+      auto vr=v.narrow(0,ko[b],nk).cpu().to(at::kDouble).transpose(0,1).repeat_interleave(2,0);
+      auto scores=at::matmul(qr,kr.transpose(1,2));
+      if(causal) {
+        auto delta=at::arange(nk,at::kLong).unsqueeze(0)-at::arange(nq,at::kLong).unsqueeze(1)-(nk-nq);
+        scores=scores.masked_fill(delta>0,-INFINITY);
+      }
+      auto expected=at::matmul(at::softmax(scores,-1),vr).transpose(0,1);
+      worst=std::max(worst,(result.narrow(0,qo[b],nq).cpu().to(at::kDouble)-expected).abs().max().item<double>());
+    }
+    TORCH_CHECK(worst<.003,"Unequal media spans FP64 reference",worst);
+    auto changed=v.clone();changed.narrow(0,0,3).add_(1);
+    auto isolated=tei::torch_flash_fma_varlen(q,k,changed,cuq,cuk,7,13,1.,causal);
+    TORCH_CHECK(at::equal(result.narrow(0,1,10),isolated.narrow(0,1,10)),"Unequal media span sequence isolation");
+  }
+}
+
 int main(int argc,char** argv) {
   c10::InferenceMode guard;
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
+  media_spans(device);
   at::manual_seed(9917);at::set_num_threads(1);
   for(auto dtype:{at::kHalf,at::kBFloat16})for(int64_t dim:{64,128,256})
   for(bool grouped:{false,true})for(bool causal:{false,true})for(int64_t window:{-1,2})

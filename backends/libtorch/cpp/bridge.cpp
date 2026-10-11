@@ -72,6 +72,7 @@ struct Bert : tei::Model {
   bool roberta = false;
   bool cudnn_varlen = false;
   bool private_flash_embedding = false;
+  bool private_flash_roberta_embedding = false;
   Bert(TeiConfig cfg, c10::Device dev, at::ScalarType type): config(cfg), device(dev), dtype(type) {}
   const at::Tensor& w(const std::string& name) const {
     auto entry = weights.find(prefix + name);
@@ -144,6 +145,16 @@ struct Bert : tei::Model {
       && config.hidden == 768 && config.heads == 12 && (config.activation == 0 || config.activation == 1)
       && at::cuda::getDeviceProperties(device.index())->major == 9
       && classification_width() == 0 && options.string("_pooling") != "splade";
+#endif
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // Initial measured RoBERTa eager scope: H100 FP16 hidden768/head64 mean
+    // embeddings. Keep dynamic FP8, trained heads and other pools unchanged.
+    private_flash_roberta_embedding = device.is_cuda() && dtype == at::kHalf
+      && options.string("model_type") == "roberta" && config.hidden == 768 && config.heads == 12
+      && (config.activation == 0 || config.activation == 1)
+      && at::cuda::getDeviceProperties(device.index())->major == 9
+      && classification_width() == 0 && options.string("_embedding_pool") == "mean"
+      && !options.boolean("_fp8_dynamic", false);
 #endif
     check("embeddings.word_embeddings.weight", {config.vocab, config.hidden});
     check("embeddings.position_embeddings.weight", {config.positions, config.hidden});
@@ -223,10 +234,19 @@ struct Bert : tei::Model {
     const auto& ids = input.ids; const auto& types = input.types;
     const auto& positions = input.positions; const auto& cumulative = input.cumulative;
     const auto* ends = input.offsets; const auto batch = input.batch, max_sequence = input.max_sequence;
+    at::Tensor h;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if (private_flash_roberta_embedding) {
+      h = tei::fused_embedding_layer_norm(ids, types, positions,
+        w("embeddings.word_embeddings.weight"), w("embeddings.token_type_embeddings.weight"),
+        w("embeddings.position_embeddings.weight"), w("embeddings.LayerNorm.weight"),
+        w("embeddings.LayerNorm.bias"), config.epsilon);
+    } else
+#endif
+    {
     auto word = at::embedding(w("embeddings.word_embeddings.weight"), ids);
     auto token_type = at::embedding(w("embeddings.token_type_embeddings.weight"), types);
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
-    at::Tensor h;
 #ifdef TEI_TORCH_CUDA_KERNELS
     if (word.is_cuda() && private_flash_embedding && options.boolean("_fp8_dynamic", false))
       h = tei::encoder_layer_norm_only(word + token_type,
@@ -239,6 +259,7 @@ struct Bert : tei::Model {
     else
 #endif
     h = norm(word + token_type + position, "embeddings.LayerNorm");
+    }
     const int64_t tokens = ids.size(0), head = config.hidden / config.heads;
     for (int64_t i = 0; i < config.layers; ++i) {
       std::string p = "encoder.layer." + std::to_string(i) + ".";
@@ -256,7 +277,8 @@ struct Bert : tei::Model {
         // token totals. FP8 needs the fused Torch arithmetic at every total
         // to preserve quantization inputs; normal FP16 larger totals retain
         // the measured cuDNN advantage.
-        if (private_flash_embedding && (tokens <= 4096 || options.boolean("_fp8_dynamic", false))
+        if ((private_flash_embedding || private_flash_roberta_embedding)
+            && (tokens <= 4096 || (private_flash_embedding && options.boolean("_fp8_dynamic", false)))
             && tei::torch_flash_fma_supported(q, k, v)) {
           attended = tei::torch_flash_fma(q, k, v, cumulative, max_sequence,
             1.0 / std::sqrt(static_cast<double>(head)), false);
@@ -398,8 +420,11 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
   // Casting the raw pixels first loses precision before that normalization.
   const bool gemma_image=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
   const auto image_dtype=gemma_image?at::kFloat:family.starts_with("qwen3_5")?at::kHalf:model.dtype;
-  auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat)).to(model.device,image_dtype);
+  auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
+  if(!gemma_image)pixels=pixels.to(model.device,image_dtype);
   packed.images.push_back({pixels,{item.grid[0],item.grid[1],item.grid[2]},item.merge_size,item.token_start,item.token_count,item.sequence_start});
+  std::copy_n(item.feature_key,32,packed.images.back().feature_key.begin());
+  packed.images.back().has_feature_key=item.has_feature_key!=0;
  }
  for(size_t i=0;i<audio_count;++i){const auto& item=audios[i];
   auto features=at::from_blob(const_cast<float*>(item.values),{item.frames,item.feature_size},options.dtype(at::kFloat)).to(model.device);
@@ -500,7 +525,9 @@ int32_t tei_decide(void* handle,const int64_t* ids,const int64_t* types,const in
   for(const auto& request:converted){auto count=engine.decision->output_count(request);TORCH_CHECK(count>0&&static_cast<size_t>(count)<=capacity-expected,"Decision output exceeds provided capacity");expected+=count;}
   TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
   auto packed=packed_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count);
-  auto hidden=engine.graphs&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions))?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
+  const bool use_graph=engine.graphs&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
+  if(!use_graph)engine.model->prepare_input(packed);
+  auto hidden=use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
   auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
   std::vector<at::Tensor> values;for(size_t i=0;i<results.size();++i){TORCH_CHECK(results[i].logits.numel()==engine.decision->output_count(converted[i]),"Decision head output width mismatch");values.push_back(results[i].logits.flatten());}
   std::vector<at::Tensor> action_values;for(const auto& result:results)action_values.push_back(result.action_probability);
@@ -553,6 +580,7 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
       packed.fold_gather=metadata.fold_gather.to(model.device);
     }
     const bool graph_eligible = model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions));
+    if(!graph_eligible)model.model->prepare_input(packed);
     auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
       : pool >= 4 ? model.model->predict(packed, pool == 5) : model.model->forward(packed);
     // Project only requested real token spans once. Offsets below preserve

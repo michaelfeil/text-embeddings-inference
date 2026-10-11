@@ -7,6 +7,7 @@
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <cuda_runtime_api.h>
+#include <c10/cuda/CUDAGuard.h>
 using namespace tei;
 class Dense final:public Model {
 public:
@@ -40,11 +41,14 @@ class Media final:public Model {
 public:
  void ready() override{}
  void prepare_input(PackedInput& input) const override {
+  int active_device=-1;
+  TORCH_CHECK(cudaGetDevice(&active_device)==cudaSuccess && active_device==input.ids.get_device(),"Media preparation ran without the input device guard");
+  for(auto& image:input.images)image.prepared_features=image.pixels.sum().view({1,1});
   for(auto& audio:input.audios)audio.selected_frames=at::nonzero(audio.validity).flatten();
  }
  at::Tensor forward(const PackedInput& input) const override {
   auto result=input.ids.to(at::kFloat);
-  for(const auto& image:input.images)result=result+image.pixels.sum()+image.grid_thw[1]+image.token_start;
+  for(const auto& image:input.images)result=result+(image.prepared_features.defined()?image.prepared_features.sum():image.pixels.sum())+image.grid_thw[1]+image.token_start;
   for(const auto& audio:input.audios) {
    auto indices=audio.selected_frames.defined()?audio.selected_frames:at::nonzero(audio.validity).flatten();
    result=result+audio.features.index_select(0,indices).sum()+audio.token_start;
@@ -217,13 +221,21 @@ int main(){c10::InferenceMode guard;radix_qkv_copy_graph_test();Weights fixture;
  for(int i=0;i<2;++i){auto actual=fallback.forward(unsupported,input);TORCH_CHECK(actual[0][0].item<float>()==12,"Graph fallback changed result");}
  TORCH_CHECK(fallback.size()==0,"Unsupported model unexpectedly captured");
  Media media;CudaGraphCache media_cache(4,8);
+ int devices=0;TORCH_CHECK(cudaGetDeviceCount(&devices)==cudaSuccess,"Unable to query CUDA devices");
  input.images.push_back({at::ones({2,4},options.dtype(at::kFloat)),{1,2,2},1,0,1,0});
  input.audios.push_back({at::arange(12,options.dtype(at::kFloat)).view({3,4}),at::tensor({1,0,1},options).to(at::kBool),0,2});
  input.multimodal_positions=at::zeros({3,3},options);
  for(int run=0;run<3;++run) {
+  input.images[0].feature_key[0]++;input.images[0].has_feature_key=true;
   input.images[0].pixels.add_(1);input.audios[0].features.add_(1);input.multimodal_positions.add_(1);
   if(run==1)input.audios[0].validity.copy_(at::tensor({0,1,1},options).to(at::kBool));
-  auto actual=media_cache.forward(media,input).clone();
+  at::Tensor actual;
+  if(devices>1) {
+   // The caller's current GPU can differ from the request's tensors. Tower
+   // preparation must be guarded before its first operation, including misses.
+   c10::cuda::CUDAGuard other_device(c10::Device(c10::kCUDA,1));
+   actual=media_cache.forward(media,input).clone();
+  } else actual=media_cache.forward(media,input).clone();
   TORCH_CHECK(at::equal(actual,media.forward(input)),"Media graph replay retained stale values or frame indices");
  }
  TORCH_CHECK(media_cache.size()==1,"Same exact media shapes did not reuse capture");

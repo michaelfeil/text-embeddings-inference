@@ -93,6 +93,14 @@ int main(int argc, char** argv) {
   for(auto type:{"distilbert","modernbert","nomic_bert","new","jina","jina-code","mpnet"}) {
     auto o=config(type);auto w=weights(type,device,dtype);auto model=tei::create_encoder(o,w,device,dtype);model->ready();
     auto packed=model->forward({ids,types,positions,cu,offsets,2,5});
+    if (std::string(type) == "nomic_bert") {
+      auto alias = o;
+      alias.values["activation_function"] = "gelu_pytorch_tanh";
+      auto alias_model = tei::create_encoder(alias,w,device,dtype);
+      alias_model->ready();
+      auto alias_output = alias_model->forward({ids,types,positions,cu,offsets,2,5});
+      TORCH_CHECK(at::equal(packed,alias_output),"Nomic GELU alias changed checkpoint layout or outputs");
+    }
     std::vector<at::Tensor> separate;
     for(int b=0;b<2;++b) {
       auto start=offsets[b],n=offsets[b+1]-start;

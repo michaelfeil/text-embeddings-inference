@@ -1,6 +1,7 @@
 // Native adaptations of backends/candle/src/models/{gemma3,gemma4,embedding_gemma2}.rs.
 // Upstream Apache-2.0 notices remain in LICENSE and NOTICE.
 #include "gemma_models.h"
+#include "image_feature_cache.h"
 #include "decoder_models.h"
 #include "qwen35_kernels.h"
 #include "moe_kernels.h"
@@ -36,6 +37,7 @@ class Gemma final : public Model {
   Weights norm_scales;
   Weights router_f32;
   at::Tensor vision_frequency;
+  mutable ImageFeatureCache image_features;
   std::unordered_map<int64_t,at::Tensor> norm_ones;
   std::unordered_map<std::string,std::array<double,4>> audio_bounds;
   at::Tensor moe(const at::Tensor& residual,const at::Tensor& dense,const std::string& p) const {
@@ -233,11 +235,11 @@ class Gemma final : public Model {
       if(!name.empty()) f=f*vw(name+".weight").to(at::kFloat);
       return f.to(x.scalar_type());
     };
-    auto ix=at::arange(height*width,image.pixels.options().dtype(at::kLong));
+    auto ix=at::arange(height*width,image.pixels.options().device(device).dtype(at::kLong));
     auto columns=ix.remainder(width),rows=at::floor_divide(ix,width);
     auto table=vw("vision_tower.patch_embedder.position_embedding_table");
     // Normalize source pixels in FP32 before the projection's activation cast.
-    auto states=vl(((image.pixels.to(at::kFloat)-.5)*2.).to(dtype),"vision_tower.patch_embedder.input_proj")+
+    auto states=vl(((image.pixels.to(device,at::kFloat)-.5)*2.).to(dtype),"vision_tower.patch_embedder.input_proj")+
       (table.select(0,0).index_select(0,columns)+table.select(0,1).index_select(0,rows));
     auto col_angles=columns.to(at::kFloat).unsqueeze(1)*vision_frequency,row_angles=rows.to(at::kFloat).unsqueeze(1)*vision_frequency;
     auto cos=at::cat({col_angles.cos(),row_angles.cos()},-1).to(dtype).unsqueeze(1);
@@ -389,8 +391,14 @@ class Gemma final : public Model {
           auto key_len=image.token_start+image.token_count-key_start;
           auto cuq=at::arange(2,q.options().dtype(at::kInt))*image.token_count;
           auto cuk=at::arange(2,q.options().dtype(at::kInt))*key_len;
-          auto correction=std::get<0>(at::_flash_attention_forward(q.narrow(0,image.token_start,image.token_count),
-            k.narrow(0,key_start,key_len),v.narrow(0,key_start,key_len),cuq,cuk,image.token_count,key_len,
+          auto iq=q.narrow(0,image.token_start,image.token_count),ik=k.narrow(0,key_start,key_len),iv=v.narrow(0,key_start,key_len);
+          at::Tensor correction;
+#ifdef TEI_TORCH_CUDA_KERNELS
+          if(torch_flash_fma_supported(iq,ik,iv,false,layer.window-1,-1))
+            correction=torch_flash_fma_varlen(iq,ik,iv,cuq,cuk,image.token_count,key_len,scale,false,layer.window-1,-1);
+          else
+#endif
+          correction=std::get<0>(at::_flash_attention_forward(iq,ik,iv,cuq,cuk,image.token_count,key_len,
             0.,false,false,scale,layer.window-1,-1));
           output.narrow(0,image.token_start,image.token_count).copy_(correction);
         }
@@ -432,6 +440,18 @@ class Gemma final : public Model {
   }
  public:
   void prepare_input(PackedInput& input) const override {
+    // CPU-side descriptor keys are supplied before any device transfer. The
+    // tower runs outside CUDA capture; only immutable features enter forward.
+    for(auto& image:input.images) {
+      TORCH_CHECK(supports_images(),"Gemma vision tower unavailable");
+      image.prepared_features=image.has_feature_key
+        ?image_features.get_or_compute(image.feature_key,[&]{return vision(image);})
+        :vision(image);
+      TORCH_CHECK(image.prepared_features.dim()==2 && image.prepared_features.size(0)==image.token_count
+        && image.prepared_features.size(1)==hidden && image.prepared_features.device()==device
+        && image.prepared_features.scalar_type()==dtype,"Gemma prepared image feature geometry mismatch");
+    }
+
     for(auto& audio:input.audios) {
       auto valid=audio.validity.to(at::kBool);
       for(int block=0;block<2;++block) {
@@ -584,8 +604,10 @@ class Gemma final : public Model {
     auto inject_images=[&]() {
       TORCH_CHECK(input.images.empty() || supports_images(),"Gemma vision tower unavailable");
       for(const auto& image:input.images) {
-        auto features=vision(image);
-        TORCH_CHECK(image.token_start>=0 && image.token_start+image.token_count<=states.size(0) && features.size(0)==image.token_count,"Gemma image token geometry mismatch");
+        auto features=image.prepared_features.defined()?image.prepared_features:vision(image);
+        TORCH_CHECK(image.token_start>=0 && image.token_start+image.token_count<=states.size(0)
+          && features.dim()==2 && features.size(0)==image.token_count && features.size(1)==hidden
+          && features.device()==states.device() && features.scalar_type()==states.scalar_type(),"Gemma image token geometry mismatch");
         states.slice(0,image.token_start,image.token_start+image.token_count).copy_(features);
       }
     };

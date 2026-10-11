@@ -5,6 +5,11 @@ namespace tei {
 at::Tensor fused_add_layer_norm(const at::Tensor& x, const at::Tensor& residual,
  const at::Tensor& weight, const at::Tensor& bias, double epsilon,
  const at::Tensor& second_residual = at::Tensor());
+// Sequential model-dtype word+type+position additions, followed by the
+// same register LayerNorm reduction as fused_add_layer_norm. CUDA Half H768.
+at::Tensor fused_embedding_layer_norm(const at::Tensor& ids, const at::Tensor& types,
+ const at::Tensor& positions, const at::Tensor& words, const at::Tensor& type_table,
+ const at::Tensor& position_table, const at::Tensor& weight, const at::Tensor& bias, double epsilon);
 std::pair<at::Tensor, at::Tensor> fused_add_rms_norm(const at::Tensor& x, const at::Tensor& residual,
  const at::Tensor& weight, double epsilon);
 // Activation codes: 0 SiLU, 1 GELU exact, 2 GELU tanh, 3 ReLU,

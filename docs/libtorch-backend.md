@@ -1,7 +1,7 @@
 # Experimental native LibTorch backend
 
 LibTorch 2.14.1 runs alongside Candle as an optional inference runtime. Rust owns
-model configuration, safetensors loading, batch validation and TEI integration;
+model configuration, checkpoint loading, batch validation and TEI integration;
 a small C ABI bridge runs the model with the PyTorch C++ tensor API. Python is
 not required at build time or inference time when using a standalone LibTorch
 distribution. There is no TorchScript export step.
@@ -52,7 +52,11 @@ Gemma families. Model availability and numerical validation are tracked in the
 not establish production support or the latency target.
 
 Single-file and sharded safetensors, CLS/mean/last-token pooling and raw token
-embeddings remain supported. BERT supports tanh GELU, ReLU and SiLU; other
+embeddings remain supported. Base models and Sentence Transformers Dense
+sidecars also accept `pytorch_model.bin` state dictionaries through a pinned
+pure Rust reader; checkpoint loading does not invoke Python. For base models,
+a single safetensors file takes priority over `.bin`, followed by a safetensors
+index, matching Candle. Dense sidecars prefer safetensors over `.bin`. BERT supports tanh GELU, ReLU and SiLU; other
 BERT activation names fail at startup instead of silently selecting GELU.
 Classification and SPLADE heads are being checked
 against their Candle counterparts. FP32, FP16 and BF16 are accepted. Omitted
@@ -92,7 +96,7 @@ geometry and genuine visual-weight prefixes have validated startup fixes;
 this text qualification does not cover all 255 readout rows or image inference.
 Sentence Transformers Dense
 chains support identity/tanh projections of pooled outputs, retaining raw token
-widths. Dense modules require safetensors weights. Radix folding now supports
+widths. Dense modules accept safetensors or `.bin` weights. Radix folding now supports
 causal Llama, Mistral, Qwen2, Qwen3 and Qwen3 MoE text decoders. Projections and
 MLPs use real compact rows; attention receives the original packed token rows.
 Unused alignment rows are removed before inference, and the host validator
@@ -123,7 +127,11 @@ audio towers have native implementations. EmbeddingGemma2 text, image and audio
 match Candle bitwise and meet the measured P50 target in both GPU assignments;
 Gemma4-26B-A4B-it BF16 embedding text and causal option-token Decision text also
 meet the measured target in both GPU assignments, with and without CUDA graphs.
-Gemma4 image/audio Decision qualification remains incomplete. Authentic
+Gemma4 warm repeated-image Decision inference now meets the same accuracy
+and +5% P50 gates in both 200-iteration eager and graph assignments;
+[cache scope, runtime identities and regressions](libtorch-gemma-media-cache.md).
+Cold misses, eviction throughput and changing-image latency remain unqualified.
+The official checkpoint has no audio tower. Authentic
 Qwen3.5-35B-A3B BF16 text matches Candle pooled outputs bitwise on all seven
 measured eager workloads in both 200-iteration H100 assignments, including
 ragged batches and 32×512 actual tokens. Graphs are disabled; P50 is
@@ -142,6 +150,11 @@ SPLADE heads retain their existing attention paths. The measured BGE FP16 CLS
 checkpoint passes all seven shapes in both H100 assignments with 200 iterations
 per backend: worst P50 slowdown +4.896% eager and +1.865% with graphs, minimum
 cosine 0.99999499. See the [qualification scope and reports](libtorch-model-coverage.md).
+RoBERTa additionally uses an exact embedding gather/normalization fusion and
+private packed attention for the measured H100 FP16 hidden-768/12-head mean
+embedding scope. Both 200-iteration eager assignments pass seven workloads,
+with worst P50 slowdown 3.04%; other pools, heads and dynamic FP8 retain their
+existing paths. [Exact whole-build evidence](benchmarks/libtorch-roberta-eager-h100.md).
 
 ## Build and run
 

@@ -396,9 +396,11 @@ async fn init_backend(
                 let paths = download_dense_modules(repo, dense_path)
                     .await
                     .map_err(|e| BackendError::WeightsNotFound(e.to_string()))?;
-                download_safetensors(repo.clone())
-                    .await
-                    .map_err(|e| BackendError::WeightsNotFound(e.to_string()))?;
+                if download_safetensors(repo.clone()).await.is_err() {
+                    download_file(repo, "pytorch_model.bin")
+                        .await
+                        .map_err(|e| BackendError::WeightsNotFound(e.to_string()))?;
+                }
                 Some(paths)
             } else if let Some(override_path) = dense_path {
                 let modules = model_path.join("modules.json");

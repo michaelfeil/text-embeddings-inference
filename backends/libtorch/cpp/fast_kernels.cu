@@ -8,6 +8,7 @@
 #include <cuda_bf16.h>
 #include <cuda_fp16.h>
 #include <cstdint>
+#include <cmath>
 // Candle emits PTX directly and guards its BF16 kernel by __CUDA_ARCH__.
 // LibTorch builds a host CUDA translation unit, which also needs the declaration.
 extern "C" __global__ void qk_norm_rope_bf16(const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int, int, int, int, int, float);
@@ -68,6 +69,30 @@ template<class T,int Columns> __global__ __launch_bounds__(256) void add_norm_re
     if(col<width) {
       T value=T(float(x[row*width+col])+float(residual[row*width+col]));
       if(second)value=T(float(value)+float(second[row*width+col]));
+      values[j]=float(value);sum+=values[j];
+    }
+  }
+  const float mean=block_sum(sum)/width;float variance=0;
+#pragma unroll
+  for(int j=0;j<Columns;++j)if(threadIdx.x+j*256<width){float delta=values[j]-mean;variance+=delta*delta;}
+  const float inverse=rsqrtf(block_sum(variance)/width+epsilon);
+#pragma unroll
+  for(int j=0;j<Columns;++j) {
+    auto col=threadIdx.x+j*256;
+    if(col<width) out[row*width+col]=T(((values[j]-mean)*inverse)*(weight?float(weight[col]):1.f)+(bias?float(bias[col]):0.f));
+  }
+}
+template<class T,int Columns> __global__ __launch_bounds__(256) void gather_norm_kernel(const int64_t* ids,const int64_t* types,const int64_t* positions,const T* words,const T* type_table,const T* position_table,
+ const T* weight,const T* bias,T* out,int64_t width,float epsilon) {
+  const int64_t row=blockIdx.x;
+  float values[Columns],sum=0;
+#pragma unroll
+  for(int j=0;j<Columns;++j) {
+    auto col=threadIdx.x+j*256;
+    values[j]=0;
+    if(col<width) {
+      T value=T(float(words[ids[row]*width+col])+float(type_table[types[row]*width+col]));
+      value=T(float(value)+float(position_table[positions[row]*width+col]));
       values[j]=float(value);sum+=values[j];
     }
   }
@@ -269,6 +294,26 @@ at::Tensor fused_add_layer_norm(const at::Tensor& x,const at::Tensor& residual,c
   else TORCH_CHECK(false,"Unsupported fused layernorm dtype");
   C10_CUDA_KERNEL_LAUNCH_CHECK();return output;
 }
+at::Tensor fused_embedding_layer_norm(const at::Tensor& ids,const at::Tensor& types,const at::Tensor& positions,const at::Tensor& words,const at::Tensor& type_table,const at::Tensor& position_table,const at::Tensor& weight,const at::Tensor& bias,double epsilon) {
+ TORCH_CHECK(words.is_cuda() && words.scalar_type()==at::kHalf && words.dim()==2
+   && words.size(1)==768 && words.is_contiguous(), "Embedding fusion requires contiguous CUDA Half hidden768 words");
+ for(const auto* table:{&type_table,&position_table})
+   TORCH_CHECK(table->device()==words.device() && table->scalar_type()==words.scalar_type()
+     && table->dim()==2 && table->size(1)==768 && table->is_contiguous(), "Embedding tables must match CUDA Half hidden768 words");
+ for(const auto* index:{&ids,&types,&positions})
+   TORCH_CHECK(index->device()==words.device() && index->dim()==1 && index->numel()==ids.numel()
+     && index->is_contiguous() && index->scalar_type()==at::kLong, "Embedding indices require matching contiguous device INT64 vectors");
+ for(const auto* affine:{&weight,&bias})
+   TORCH_CHECK(affine->device()==words.device() && affine->scalar_type()==words.scalar_type()
+     && affine->dim()==1 && affine->numel()==768 && affine->is_contiguous(), "Embedding affine requires matching hidden768 vectors");
+ TORCH_CHECK(std::isfinite(epsilon) && epsilon>=0, "Embedding epsilon must be finite and nonnegative");
+ // IDs are range-validated by the existing Engine host input contract, before capture.
+ c10::cuda::CUDAGuard guard(words.device());
+ auto out=at::empty({ids.numel(),768},words.options());
+ if(ids.numel())gather_norm_kernel<__half,3><<<ids.numel(),256,0,at::cuda::getCurrentCUDAStream(words.device().index())>>>(ids.const_data_ptr<int64_t>(),types.const_data_ptr<int64_t>(),positions.const_data_ptr<int64_t>(),reinterpret_cast<const __half*>(words.const_data_ptr()),reinterpret_cast<const __half*>(type_table.const_data_ptr()),reinterpret_cast<const __half*>(position_table.const_data_ptr()),reinterpret_cast<const __half*>(weight.const_data_ptr()),reinterpret_cast<const __half*>(bias.const_data_ptr()),reinterpret_cast<__half*>(out.mutable_data_ptr()),768,epsilon);
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
+
 std::pair<at::Tensor,at::Tensor> fused_add_rms_norm(const at::Tensor& x,const at::Tensor& residual,const at::Tensor& weight,double epsilon) {
   TORCH_CHECK(x.is_cuda()&&x.is_contiguous()&&x.dim()>=2&&x.size(-1)>0,"Fused residual RMSNorm requires contiguous CUDA input");
   validate(x,residual,"residual",true);validate(x,weight,"weight",false);TORCH_CHECK(weight.defined(),"RMSNorm weight must be defined");

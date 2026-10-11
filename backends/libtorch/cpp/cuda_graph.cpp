@@ -45,10 +45,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   };
 #ifdef TEI_TORCH_CUDA_KERNELS
   auto input=original;
+  c10::cuda::OptionalCUDAGuard device;
+  if(input.ids.is_cuda())device.set_device(input.ids.device());
+  model.prepare_input(input);
   if(!input.ids.is_cuda()||!impl->limit||input.ids.numel()>impl->max_tokens||input.ids.numel()==0)
     return run(input);
-  c10::cuda::CUDAGuard device(input.ids.device());
-  model.prepare_input(input);
   // Include offsets, max length, device and scalar types: no sequence metadata
   // from one batch can leak into another graph with the same total token count.
   std::ostringstream key;
@@ -60,7 +61,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   };
   key<<";images="<<input.images.size();
   for(const auto& image:input.images) {
-    tensor_key(image.pixels);
+    tensor_key(image.prepared_features);
+    if(!image.prepared_features.defined())tensor_key(image.pixels);
     for(auto dimension:image.grid_thw)key<<':'<<dimension;
     key<<':'<<image.merge_size<<':'<<image.token_start<<':'<<image.token_count<<':'<<image.sequence_start;
   }
@@ -79,7 +81,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     impl->lru.erase(entry.lru);impl->lru.push_front(id);entry.lru=impl->lru.begin();
     entry.input.ids.copy_(input.ids);entry.input.types.copy_(input.types);
     entry.input.positions.copy_(input.positions);entry.input.cumulative.copy_(input.cumulative);
-    for(size_t i=0;i<input.images.size();++i)entry.input.images[i].pixels.copy_(input.images[i].pixels);
+    for(size_t i=0;i<input.images.size();++i) {
+      if(input.images[i].prepared_features.defined())
+        entry.input.images[i].prepared_features.copy_(input.images[i].prepared_features);
+      else entry.input.images[i].pixels.copy_(input.images[i].pixels);
+    }
     for(size_t i=0;i<input.audios.size();++i) {
       entry.input.audios[i].features.copy_(input.audios[i].features);
       entry.input.audios[i].validity.copy_(input.audios[i].validity);
@@ -98,7 +104,13 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   auto entry=std::make_unique<Impl::Entry>();
   entry->offsets.assign(input.offsets,input.offsets+input.batch+1);
   entry->input={input.ids.clone(),input.types.clone(),input.positions.clone(),input.cumulative.clone(),entry->offsets.data(),input.batch,input.max_sequence};
-  for(auto image:input.images){image.pixels=image.pixels.clone();entry->input.images.push_back(std::move(image));}
+  for(auto image:input.images) {
+    if(image.prepared_features.defined()) {
+      image.prepared_features=image.prepared_features.clone();
+      image.pixels=at::Tensor(); // Captured forward never reads raw host pixels.
+    } else image.pixels=image.pixels.clone();
+    entry->input.images.push_back(std::move(image));
+  }
   for(auto audio:input.audios) {
     audio.features=audio.features.clone();audio.validity=audio.validity.clone();
     if(audio.selected_frames.defined())audio.selected_frames=audio.selected_frames.clone();
@@ -147,7 +159,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   impl->entries.emplace(std::move(id),std::move(entry));
   return result;
 #else
-  return run(original);
+  auto input=original;model.prepare_input(input);return run(input);
 #endif
 }
 }

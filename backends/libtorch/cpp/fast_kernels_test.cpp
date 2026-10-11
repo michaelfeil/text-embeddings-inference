@@ -24,6 +24,29 @@ at::Tensor round_model_double(const at::Tensor& values,at::ScalarType dtype) {
  return output;
 }
 int main(){c10::InferenceMode guard;
+ {
+  auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kHalf);
+  auto words=at::randn({257,768},opts),types=at::randn({3,768},opts),positions=at::randn({514,768},opts);
+  auto weight=at::randn({768},opts),bias=at::randn({768},opts);
+  // Exact packed ragged rows: lengths32/64/128/512, repeated/nonzero IDs and
+  // router offset2 including final legal position513. No padded rows exist.
+  std::vector<int64_t> token_ids,type_ids,position_ids;
+  for(int length:{32,64,128,512})for(int i=0;i<length;++i){token_ids.push_back((i*17+31)%257);type_ids.push_back(i%3);position_ids.push_back(i+2);}
+  auto longs=opts.dtype(at::kLong);
+  auto ids=at::tensor(token_ids,longs),tt=at::tensor(type_ids,longs),pp=at::tensor(position_ids,longs);
+  auto word=at::embedding(words,ids),type=at::embedding(types,tt),position=at::embedding(positions,pp);
+  auto actual=tei::fused_embedding_layer_norm(ids,tt,pp,words,types,positions,weight,bias,1e-5);
+  close(actual,tei::fused_add_layer_norm(word,type,weight,bias,1e-5,position),0,"Embedding fusion preserves staged model-dtype kernel bits");
+  // Independent CPU formula: dtype-rounded additions, FP32 mean/variance,
+  // affine then final model-dtype cast. This guards the operation contract.
+  auto staged=(word.to(at::kCPU)+type.to(at::kCPU)+position.to(at::kCPU)).to(at::kFloat);
+  auto centered=staged-staged.mean(-1,true);
+  auto reference=(centered*at::rsqrt(centered.square().mean(-1,true)+1e-5)*weight.to(at::kCPU,at::kFloat)+bias.to(at::kCPU,at::kFloat)).to(at::kHalf).to(actual.device());
+  close(actual,reference,.006,"Embedding fusion independent rounded CPU oracle");
+  auto empty=ids.narrow(0,0,0);
+  TORCH_CHECK(tei::fused_embedding_layer_norm(empty,empty,empty,words,types,positions,weight,bias,1e-5).sizes()==at::IntArrayRef({0,768}),"Empty embedding shape");
+ }
+
  for(auto dtype:{at::kHalf,at::kBFloat16,at::kFloat}) {
   auto opts=at::TensorOptions().device(at::kCUDA).dtype(dtype);
   for(int width:{7,16,63,128,257,513,768,769,1024,1152,2048,4096,8192}) {

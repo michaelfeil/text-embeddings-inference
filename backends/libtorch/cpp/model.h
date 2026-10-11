@@ -28,6 +28,9 @@ struct ImageInput {
   at::Tensor pixels;
   std::array<int64_t,3> grid_thw;
   int64_t merge_size=1, token_start=0, token_count=0, sequence_start=0;
+  std::array<uint8_t,32> feature_key{};
+  bool has_feature_key=false;
+  at::Tensor prepared_features{};
 };
 struct AudioInput {
   at::Tensor features, validity;

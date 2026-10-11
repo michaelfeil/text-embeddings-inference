@@ -11,6 +11,8 @@ struct TeiConfig {
 struct TeiImage {
   const float* pixels;
   int64_t rows, patch_dim, grid[3], merge_size, token_start, token_count, sequence_start;
+  uint8_t feature_key[32]{};
+  uint8_t has_feature_key=0;
 };
 struct TeiAudio {
   const float* values;

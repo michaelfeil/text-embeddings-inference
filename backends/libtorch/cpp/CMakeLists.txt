@@ -14,7 +14,7 @@ install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_to
 if(TARGET torch_cuda)
   enable_language(CUDA)
   target_sources(tei_torch PRIVATE radix_qkv.cu qwen35_reference.cu qwen35_kernels.cu fast_kernels.cu fp8_quant.cu encoder_activation.cu encoder_norm.cu decoder_norm.cu packed_pool.cu
-    torch_flash_fma.cpp torch_flash_fma_64.cu torch_flash_fma_128.cu torch_flash_fma_256.cu torch_flash_fma_512.cu)
+    torch_flash_fma.cpp torch_flash_fma_64.cu torch_flash_fma_72.cu torch_flash_fma_128.cu torch_flash_fma_256.cu torch_flash_fma_512.cu)
   set_source_files_properties(qwen35_reference.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--expt-relaxed-constexpr")
   set_source_files_properties(encoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
   set_source_files_properties(encoder_activation.cu PROPERTIES COMPILE_OPTIONS "--expt-relaxed-constexpr")
@@ -24,6 +24,11 @@ if(TARGET torch_cuda)
   set_source_files_properties(torch_flash_fma_64.cu torch_flash_fma_128.cu torch_flash_fma_256.cu torch_flash_fma_512.cu
     PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
     COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_ALIBI;FLASHATTENTION_DISABLE_SOFTCAP;FLASHATTENTION_DISABLE_UNEVEN_K")
+  # Head72 uses internal traits96 with true-dimension bounds; uneven-K masking
+  # must remain enabled rather than exposing synthetic head columns.
+  set_source_files_properties(torch_flash_fma_72.cu
+    PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
+    COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_ALIBI;FLASHATTENTION_DISABLE_SOFTCAP")
   install(FILES vendor/torch_flash_attention/LICENSE vendor/torch_flash_attention/AUTHORS
     vendor/torch_flash_attention/provenance.json DESTINATION share/licenses/tei_torch/torch_flash_attention)
   install(FILES ../../candle/extensions/candle-layer-norm/LICENSE
@@ -79,6 +84,11 @@ if(TEI_BUILD_NATIVE_TESTS)
     target_link_libraries(${test}_test PRIVATE tei_torch "${TORCH_LIBRARIES}")
     add_test(NAME ${test}_cpu COMMAND ${test}_test)
   endforeach()
+  if(TARGET torch_cuda)
+    # Match the private cache header layout even when CUDA test registration is
+    # disabled: CPU fixtures can still link against a CUDA-enabled library.
+    target_compile_definitions(gemma_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
+  endif()
   if(TARGET torch_cuda AND TEI_RUN_CUDA_TESTS)
     foreach(test bert_private_flash qwen35_reference fp8_linear decoder_fp8 fast_kernels encoder_activation encoder_norm decoder_norm cuda_graph gemma_vision_kernels gemma_rotary packed_pool packed_alibi packed_relative_bias moe_kernels moe_cuda_graph torch_flash_fma)
       add_executable(${test}_test ${test}_test.cpp)

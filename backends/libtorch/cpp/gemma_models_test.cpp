@@ -1,9 +1,72 @@
 // Packed sequence isolation and geometry tests for native Gemma implementations.
 #include "gemma_models.h"
+#include "image_feature_cache.h"
 #include <iostream>
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include <c10/cuda/CUDAGuard.h>
+#endif
 
 using namespace tei;
 namespace {
+void feature_cache_bounds() {
+  ImageFeatureCache cache(64,2);ImageFeatureCache::Key a{},b{},c{};b[0]=1;c[0]=2;
+  int calls=0;
+  auto large=at::arange(100,at::kFloat);
+  auto first=cache.get_or_compute(a,[&]{++calls;return large.narrow(0,1,4);});
+  TORCH_CHECK(first.storage().nbytes()==16 && first.storage_offset()==0 && cache.usage()==std::make_pair(size_t(1),size_t(16)),"Cache budget retained oversized view storage");
+  auto hit=cache.get_or_compute(a,[&]{++calls;return at::zeros({4});});
+  TORCH_CHECK(calls==1 && at::equal(first,hit),"Image cache hit recomputed features");
+  cache.get_or_compute(b,[&]{++calls;return at::ones({4});});
+  cache.get_or_compute(a,[&]{++calls;return at::zeros({4});}); // a is most recent.
+  cache.get_or_compute(c,[&]{++calls;return at::ones({4});});
+  cache.get_or_compute(a,[&]{++calls;return at::zeros({4});});
+  TORCH_CHECK(calls==3,"LRU promotion evicted a recent entry");
+  cache.get_or_compute(b,[&]{++calls;return at::ones({4});});
+  TORCH_CHECK(calls==4 && cache.usage().first==2 && cache.usage().second<=64,"Bounded LRU did not evict the oldest entry");
+  auto before=cache.usage();
+  for(int i=0;i<2;++i)cache.get_or_compute(c,[&]{++calls;return at::zeros({100});});
+  TORCH_CHECK(calls==6 && cache.usage()==before,"Oversized features entered the cache");
+  ImageFeatureCache entry_bound;
+  for(int i=0;i<33;++i){ImageFeatureCache::Key key{};key[0]=i;entry_bound.get_or_compute(key,[]{return at::ones({1},at::kByte);});}
+  TORCH_CHECK(entry_bound.usage()==std::make_pair(size_t(32),size_t(32)),"Default image cache32entry bound failed");
+}
+#ifdef TEI_TORCH_CUDA_KERNELS
+void feature_cache_stream_lifetime(const c10::Device& device) {
+  c10::cuda::CUDAGuard device_guard(device);
+  auto producer=at::cuda::getStreamFromPool(false,device.index());
+  auto consumer=at::cuda::getStreamFromPool(false,device.index());
+  constexpr int64_t count=65536;
+  ImageFeatureCache cache(count*sizeof(float),1);
+  ImageFeatureCache::Key first{},replacement{};replacement[0]=1;
+  auto options=at::TensorOptions().device(device).dtype(at::kFloat);
+  {
+    c10::cuda::CUDAStreamGuard stream_guard(producer);
+    cache.get_or_compute(first,[&]{return at::arange(count,options)*3;});
+  }
+  at::Tensor observed,work;
+  {
+    c10::cuda::CUDAStreamGuard stream_guard(consumer);
+    // Queue unrelated consumer work before reading a hit produced elsewhere.
+    auto matrix=at::ones({1024,1024},options);
+    work=at::mm(matrix,matrix);
+    auto hit=cache.get_or_compute(first,[&]() -> at::Tensor {
+      TORCH_CHECK(false,"Cross-stream hit unexpectedly recomputed features");
+    });
+    observed=hit+7;
+  }
+  {
+    c10::cuda::CUDAStreamGuard stream_guard(producer);
+    // Drop the cache's last reference while consumer reads may still be queued,
+    // then pressure this stream's allocator with identically sized allocations.
+    cache.get_or_compute(replacement,[&]{return at::full({count},-99,options);});
+    for(int i=0;i<16;++i)at::full({count},99+i,options);
+  }
+  consumer.synchronize();producer.synchronize();
+  TORCH_CHECK(at::equal(observed,at::arange(count,options)*3+7),"Cross-stream cache hit changed after eviction");
+  TORCH_CHECK(cache.usage()==std::make_pair(size_t(1),size_t(count*sizeof(float))),"CUDA eviction exceeded cache-owned storage budget");
+  TORCH_CHECK(work[0][0].item<float>()==1024,"Consumer work was corrupted during eviction");
+}
+#endif
 struct Fixture {
   Options cfg;
   Weights weights;
@@ -84,6 +147,10 @@ void audio_operations(const c10::Device& device) {
 }
 }
 int main(int argc,char** argv) {
+  feature_cache_bounds();
+#ifdef TEI_TORCH_CUDA_KERNELS
+  if(argc>1)feature_cache_stream_lifetime(c10::Device(argv[1]));
+#endif
   at::manual_seed(418);
   audio_operations(c10::Device("cpu"));
   if(argc>1)audio_operations(c10::Device(argv[1]));
@@ -163,9 +230,57 @@ int main(int argc,char** argv) {
       auto batch=input(packed,po);
       batch.images.push_back({at::rand({9,768}),{1,3,3},3,2,1,0});
       auto with_image=visual->forward(batch);
+      auto prepared=batch;prepared.images[0].has_feature_key=true;prepared.images[0].feature_key[0]=1;
+      visual->prepare_input(prepared);
+      TORCH_CHECK(at::equal(with_image,visual->forward(prepared)),family," Feature preparation changed model outputs");
+      auto features=prepared.images[0].prepared_features;
+      auto moved=prepared;moved.images[0].token_start=1;
+      visual->prepare_input(moved);
+      TORCH_CHECK(features.const_data_ptr()==moved.images[0].prepared_features.const_data_ptr(),"Token position incorrectly entered feature cache key");
+      auto changed=prepared;changed.images[0].pixels=1.-batch.images[0].pixels;changed.images[0].feature_key[0]=2;
+      visual->prepare_input(changed);
+      TORCH_CHECK(!at::equal(features,changed.images[0].prepared_features),family," Changed image content reused stale cached features");
+      Weights other_weights=f.weights;other_weights["embed_vision.embedding_projection.weight"]=at::zeros_like(other_weights.at("embed_vision.embedding_projection.weight"));
+      auto other_model=create_gemma(f.cfg,other_weights,c10::Device("cpu"),at::kFloat);other_model->ready();
+      auto other_input=prepared;other_model->prepare_input(other_input);
+      TORCH_CHECK(!at::equal(features,other_input.images[0].prepared_features),"Feature cache leaked across model instances");
+
       TORCH_CHECK(!at::allclose(output.narrow(0,0,5),with_image.narrow(0,0,5)),family," vision features were ignored");
       TORCH_CHECK(at::allclose(output.narrow(0,5,2),with_image.narrow(0,5,2),1e-5,1e-6),family," image injection leaked across sequence boundaries");
       std::cout<<family<<": natural-resolution vision injection/isolation passed\n";
+
+      if(argc>1) {
+        // A real CPU-host miss must create all image positions/offsets on the
+        // model device. Preuploaded pixels or a warm hit would mask that bug.
+        const c10::Device gpu(argv[1]);auto vc=f.cfg;Weights vw=f.weights;
+        vc.values["vision_config.hidden_size"]="128";vc.values["vision_config.head_dim"]="64";
+        auto replace=[&](const std::string& name,std::initializer_list<int64_t> shape,bool norm=false) {
+          vw[name]=norm?at::ones(shape):at::randn(shape)*.03;
+        };
+        replace("vision_tower.patch_embedder.input_proj.weight",{128,768});
+        replace("vision_tower.patch_embedder.position_embedding_table",{2,16,128});
+        for(const auto& name:{"input_layernorm","post_attention_layernorm","pre_feedforward_layernorm","post_feedforward_layernorm"})replace(p+name+".weight",{128},true);
+        replace(p+"self_attn.q_proj.linear.weight",{128,128});replace(p+"self_attn.k_proj.linear.weight",{64,128});
+        replace(p+"self_attn.v_proj.linear.weight",{64,128});replace(p+"self_attn.o_proj.linear.weight",{128,128});
+        replace(p+"self_attn.q_norm.weight",{64},true);replace(p+"self_attn.k_norm.weight",{64},true);
+        replace(p+"mlp.gate_proj.linear.weight",{12,128});replace(p+"mlp.up_proj.linear.weight",{12,128});replace(p+"mlp.down_proj.linear.weight",{128,12});
+        replace("embed_vision.embedding_projection.weight",{16,128});
+        for(auto& [name,value]:vw)value=value.to(gpu,at::kBFloat16);
+        auto on_gpu=create_gemma(vc,vw,gpu,at::kBFloat16);on_gpu->ready();
+        auto host=prepared;host.ids=host.ids.to(gpu);host.types=host.types.to(gpu);
+        host.positions=host.positions.to(gpu);host.cumulative=host.cumulative.to(gpu);
+        host.images[0].prepared_features=at::Tensor();
+        TORCH_CHECK(host.images[0].pixels.device().is_cpu(),"CUDA miss regression already uploaded its pixels");
+        on_gpu->prepare_input(host);auto cached=host.images[0].prepared_features;
+        TORCH_CHECK(cached.device()==gpu,"Host pixel miss prepared features on wrong device");
+        auto uploaded=host;uploaded.images[0].pixels=host.images[0].pixels.to(gpu);
+        uploaded.images[0].has_feature_key=false;uploaded.images[0].prepared_features=at::Tensor();
+        on_gpu->prepare_input(uploaded);
+        TORCH_CHECK(at::equal(cached,uploaded.images[0].prepared_features),"Host pixel miss changed prepared GPU features");
+        auto repeat=host;repeat.images[0].prepared_features=at::Tensor();on_gpu->prepare_input(repeat);
+        TORCH_CHECK(cached.const_data_ptr()==repeat.images[0].prepared_features.const_data_ptr(),"CUDA host image hit recomputed tower");
+      }
+
       Weights bf16_weights;
       for(const auto& [name,value]:f.weights)bf16_weights[name]=value.to(at::kBFloat16);
       auto bf16_visual=create_gemma(f.cfg,bf16_weights,c10::Device("cpu"),at::kBFloat16);bf16_visual->ready();
