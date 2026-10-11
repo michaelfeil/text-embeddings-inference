@@ -138,8 +138,10 @@ ragged batches and 32×512 actual tokens. Graphs are disabled; P50 is
 15.40–26.37% faster. Its routed-BF16 path uses the original no-FMA DeltaNet,
 exact norm reduction, model-dtype sigmoid and native Torch packed attention.
 Dense Qwen3.5 retains its existing path. Separate BF16 mean-embedding image
-qualifications pass both 200-iteration assignments for one 32×32 image and
-two ragged 32×32/48×48 images, with at least 16.94% lower P50 and minimum
+qualifications pass both 200-iteration assignments for an image in a 32-token
+sequence and images in ragged 32-/48-token sequences. Prepared patch grids are
+`[1,4,4]` and `[1,2,4]`, with patch dimension 1536 and spatial merge size 2.
+Measured P50 is at least 16.94% lower, with minimum
 cosine 0.999663905. These use prepared synthetic patches, eager execution
 and valid boundary IDs 101/102. Real-image preprocessing, raw-token output,
 typed decisions, folding, other image grids, other precisions and A10 remain
