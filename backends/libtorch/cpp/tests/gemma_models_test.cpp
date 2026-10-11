@@ -72,12 +72,12 @@ struct Fixture {
   Options cfg;
   Weights weights;
   bool legacy, embedding2;
-  Fixture(const std::string& family, int64_t head_dim=8) : legacy(family == "gemma3"), embedding2(family == "embedding_gemma2") {
+  Fixture(const std::string& family, int64_t head_dim=8, int64_t layer_count=4, int64_t shared_count=2) : legacy(family == "gemma3"), embedding2(family == "embedding_gemma2") {
     cfg.values = {{"model_type", family}, {"hidden_size", "16"}, {"num_attention_heads", "2"},
       {"num_key_value_heads", "1"}, {"head_dim", std::to_string(head_dim)}, {"global_head_dim", std::to_string(head_dim)},
-      {"num_hidden_layers", "4"}, {"max_position_embeddings", "512"}, {"sliding_window", "2"},
+      {"num_hidden_layers", std::to_string(layer_count)}, {"max_position_embeddings", "512"}, {"sliding_window", "2"},
       {"query_pre_attn_scalar", "8"}, {"_sliding_window_pattern", "2"},
-      {"num_kv_shared_layers", legacy ? "0" : "2"}, {"hidden_activation", "gelu_pytorch_tanh"},
+      {"num_kv_shared_layers", legacy ? "0" : std::to_string(shared_count)}, {"hidden_activation", "gelu_pytorch_tanh"},
       {"hidden_size_per_layer_input", legacy ? "0" : "4"}};
     cfg.values["embedding_dim"]="12";
     auto put = [&](const std::string& name, std::initializer_list<int64_t> shape, bool norm = false) {
@@ -86,17 +86,17 @@ struct Fixture {
     put("embed_tokens.weight", {64,16}); put("norm.weight", {16},true);
     if (!legacy) {
       auto stem = embedding2 ? std::string("ple.") : std::string();
-      put(stem + "per_layer_model_projection.weight", {16,16});
+      put(stem + "per_layer_model_projection.weight", {4*layer_count,16});
       put(stem + "per_layer_projection_norm.weight", {4},true);
-      if (!embedding2) put("embed_tokens_per_layer.weight", {64,16});
+      if (!embedding2) put("embed_tokens_per_layer.weight", {64,4*layer_count});
       if (embedding2) put("embedding_projection.weight", {12,16});
     }
-    for (int64_t i=0;i<4;++i) {
+    for (int64_t i=0;i<layer_count;++i) {
       cfg.values["layer_types." + std::to_string(i)] = (head_dim>256 || i % 2) ? "full_attention" : "sliding_attention";
       auto p = "layers." + std::to_string(i) + ".";
       for (const auto& name : {"input_layernorm", "post_attention_layernorm", "pre_feedforward_layernorm", "post_feedforward_layernorm"}) put(p+name+".weight",{16},true);
       put(p+"self_attn.q_proj.weight", {2*head_dim,16}); put(p+"self_attn.q_norm.weight", {head_dim},true);
-      if (legacy || i<2) {
+      if (legacy || i<layer_count-shared_count) {
         put(p+"self_attn.k_proj.weight", {head_dim,16}); put(p+"self_attn.v_proj.weight", {head_dim,16});
         put(p+"self_attn.k_norm.weight", {head_dim},true);
       }
@@ -147,7 +147,87 @@ void audio_operations(const c10::Device& device) {
   std::cout<<"Audio natural-frame convolution and staged BF16 bias passed on "<<device<<"\n";
 }
 }
+void embedding_layer_key_aliases() {
+  Fixture f("embedding_gemma2",8,6,0);
+  // Layer5 really has different Q/K/V geometry; ignoring the override cannot
+  // pass merely because it happens to equal the backbone defaults.
+  const std::string p="layers.5.self_attn.";
+  for(const auto* name:{"q_proj","k_proj","v_proj"})
+    f.weights[p+name+".weight"]=at::randn({32,16})*.1;
+  f.weights[p+"q_norm.weight"]=at::ones({16});
+  f.weights[p+"k_norm.weight"]=at::ones({16});
+  f.weights[p+"o_proj.weight"]=at::randn({16,32})*.1;
+  const std::vector<int64_t> ids={1,2,3,4,5,6,7};
+  const std::vector<int32_t> offsets={0,5,7};
+  auto packed=input(ids,offsets);
+  auto options=[&](const std::string& spelling,const std::string& scope="per_layer_config.") {
+    auto cfg=f.cfg;
+    cfg.values[scope+spelling+".head_dim"]="16";
+    cfg.values[scope+spelling+".num_key_value_heads"]="2";
+    return cfg;
+  };
+  auto run=[&](const Options& cfg) {
+    auto model=create_gemma(cfg,f.weights,c10::Device("cpu"),at::kFloat);
+    model->ready();return model->forward(packed);
+  };
+  const auto expected=run(options("05"));
+  for(const auto* spelling:{"5","0005","+05","+0005"})
+    for(const auto* scope:{"per_layer_config.","text_config.per_layer_config."})
+      TORCH_CHECK(at::equal(expected,run(options(spelling,scope))),
+                  "Numeric Gemma layer alias changed actual output: ",spelling);
+  auto duplicate=options("05");
+  duplicate.values["per_layer_config.+0005.head_dim"]="16";
+  duplicate.values["per_layer_config.+0005.num_key_value_heads"]="2";
+  TORCH_CHECK(at::equal(expected,run(duplicate)),"Equivalent Gemma layer aliases rejected");
+  duplicate.values["per_layer_config.+0005.head_dim"]="8";
+  bool rejected=false;
+  try {run(duplicate);} catch(const c10::Error& error) {
+    rejected=std::string(error.what()).find("Conflicting Gemma per_layer_config aliases")!=std::string::npos;
+  }
+  TORCH_CHECK(rejected,"Conflicting Gemma layer aliases must fail before inference");
+  auto ignored=options("05");
+  // Rust usize rejects signs other than +, spaces, nondigits and overflow.
+  // Valid usize values beyond the real layer count are also unused by Candle.
+  for(const auto* spelling:{"-0"," 5","5 ","+","5x","18446744073709551616","18446744073709551615","6"})
+    ignored.values[std::string("per_layer_config.")+spelling+".head_dim"]="invalid-unused-value";
+  TORCH_CHECK(at::equal(expected,run(ignored)),"Invalid or out-of-range Gemma layer key was used");
+  auto inherited_root=options("05");
+  inherited_root.values["text_config.per_layer_config.0005.head_dim"]="16";
+  inherited_root.values["text_config.per_layer_config.+05.head_dim"]="16";
+  inherited_root.values["text_config.per_layer_config.+05.num_key_value_heads"]="2";
+  TORCH_CHECK(at::equal(expected,run(inherited_root)),"Nested alias lost root KV override precedence");
+  // Omitted Option<usize> values inherit the backbone; explicit defaults
+  // therefore describe the same actual layer geometry, not a conflict.
+  f.weights[p+"k_proj.weight"]=at::randn({16,16})*.1;
+  f.weights[p+"v_proj.weight"]=at::randn({16,16})*.1;
+  auto explicit_default=options("05");
+  explicit_default.values["per_layer_config.05.num_key_value_heads"]="1";
+  const auto fallback_expected=run(explicit_default);
+  auto partial=explicit_default;
+  partial.values.erase("per_layer_config.05.num_key_value_heads");
+  partial.values["per_layer_config.5.head_dim"]="16";
+  partial.values["per_layer_config.5.num_key_value_heads"]="1";
+  TORCH_CHECK(at::equal(fallback_expected,run(partial)),"Omitted KV default conflicts with explicit alias");
+  auto nested=partial;
+  nested.values["text_config.per_layer_config.0005.head_dim"]="16";
+  nested.values["text_config.per_layer_config.+05.head_dim"]="16";
+  nested.values["text_config.per_layer_config.+05.num_key_value_heads"]="1";
+  TORCH_CHECK(at::equal(fallback_expected,run(nested)),"Nested omitted KV default conflicts with explicit alias");
+  auto omitted_head=options("05");
+  omitted_head.values.erase("per_layer_config.05.head_dim");
+  omitted_head.values["per_layer_config.05.num_key_value_heads"]="1";
+  omitted_head.values["per_layer_config.5.head_dim"]="8";
+  omitted_head.values["per_layer_config.5.num_key_value_heads"]="1";
+  f.weights[p+"q_proj.weight"]=at::randn({16,16})*.1;
+  f.weights[p+"k_proj.weight"]=at::randn({8,16})*.1;
+  f.weights[p+"v_proj.weight"]=at::randn({8,16})*.1;
+  f.weights[p+"q_norm.weight"]=at::ones({8});f.weights[p+"k_norm.weight"]=at::ones({8});
+  f.weights[p+"o_proj.weight"]=at::randn({16,16})*.1;
+  auto original=f.cfg;
+  TORCH_CHECK(at::equal(run(original),run(omitted_head)),"Omitted head default conflicts with explicit alias");
+}
 int main(int argc,char** argv) {
+  embedding_layer_key_aliases();
   feature_cache_bounds();
 #ifdef TEI_TORCH_CUDA_KERNELS
   if(argc>1)feature_cache_stream_lifetime(c10::Device(argv[1]));
