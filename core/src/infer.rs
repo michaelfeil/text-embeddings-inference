@@ -919,30 +919,33 @@ async fn backend_task(
                 } else {
                     let results = execution.predict(batch.1).await;
 
-                    tokio::task::spawn_blocking(move || match results {
-                        Ok((mut predictions, inference_duration)) => {
-                            batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                                let infer_metadata = InferMetadata {
-                                    prompt_tokens: m.prompt_tokens,
-                                    tokenization: m.tokenization,
-                                    queue: m.queue_time.elapsed().saturating_sub(inference_duration),
-                                    inference: inference_duration,
-                                };
+                    // Delivery only moves owned results and sends them to request tasks.
+                    tokio::spawn(async move {
+                        match results {
+                            Ok((mut predictions, inference_duration)) => {
+                                batch.0.into_iter().enumerate().for_each(|(i, m)| {
+                                    let infer_metadata = InferMetadata {
+                                        prompt_tokens: m.prompt_tokens,
+                                        tokenization: m.tokenization,
+                                        queue: m.queue_time.elapsed().saturating_sub(inference_duration),
+                                        inference: inference_duration,
+                                    };
 
-                                let _ = m.response_tx.send(Ok(InferResult::Classification(
-                                    ClassificationInferResponse {
-                                        results: predictions.remove(&i).expect(
-                                            "prediction not found in results. This is a backend bug.",
-                                        ),
-                                        metadata: infer_metadata,
-                                    },
-                                )));
-                            });
-                        }
-                        Err(err) => {
-                            batch.0.into_iter().for_each(|m| {
-                                let _ = m.response_tx.send(Err(err.clone()));
-                            });
+                                    let _ = m.response_tx.send(Ok(InferResult::Classification(
+                                        ClassificationInferResponse {
+                                            results: predictions.remove(&i).expect(
+                                                "prediction not found in results. This is a backend bug.",
+                                            ),
+                                            metadata: infer_metadata,
+                                        },
+                                    )));
+                                });
+                            }
+                            Err(err) => {
+                                batch.0.into_iter().for_each(|m| {
+                                    let _ = m.response_tx.send(Err(err.clone()));
+                                });
+                            }
                         }
                     });
                 }
@@ -950,41 +953,46 @@ async fn backend_task(
             ModelType::Embedding(_) => {
                 let results = execution.embed(batch.1).await;
 
-                tokio::task::spawn_blocking(move || match results {
-                    Ok((mut embeddings, inference_duration)) => {
-                        batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                            let metadata = InferMetadata {
-                                prompt_tokens: m.prompt_tokens,
-                                tokenization: m.tokenization,
-                                queue: m.queue_time.elapsed().saturating_sub(inference_duration),
-                                inference: inference_duration,
-                            };
+                // Delivery only moves owned results and sends them to request tasks.
+                tokio::spawn(async move {
+                    match results {
+                        Ok((mut embeddings, inference_duration)) => {
+                            batch.0.into_iter().enumerate().for_each(|(i, m)| {
+                                let metadata = InferMetadata {
+                                    prompt_tokens: m.prompt_tokens,
+                                    tokenization: m.tokenization,
+                                    queue: m
+                                        .queue_time
+                                        .elapsed()
+                                        .saturating_sub(inference_duration),
+                                    inference: inference_duration,
+                                };
 
-                            let results = match embeddings
-                                .remove(&i)
-                                .expect("embedding not found in results. This is a backend bug.")
-                            {
-                                Embedding::Pooled(e) => {
-                                    InferResult::PooledEmbedding(PooledEmbeddingsInferResponse {
-                                        results: e,
-                                        metadata,
-                                    })
-                                }
-                                Embedding::All(e) => {
-                                    InferResult::AllEmbedding(AllEmbeddingsInferResponse {
-                                        results: e,
-                                        metadata,
-                                    })
-                                }
-                            };
+                                let results = match embeddings.remove(&i).expect(
+                                    "embedding not found in results. This is a backend bug.",
+                                ) {
+                                    Embedding::Pooled(e) => InferResult::PooledEmbedding(
+                                        PooledEmbeddingsInferResponse {
+                                            results: e,
+                                            metadata,
+                                        },
+                                    ),
+                                    Embedding::All(e) => {
+                                        InferResult::AllEmbedding(AllEmbeddingsInferResponse {
+                                            results: e,
+                                            metadata,
+                                        })
+                                    }
+                                };
 
-                            let _ = m.response_tx.send(Ok(results));
-                        })
-                    }
-                    Err(err) => {
-                        batch.0.into_iter().for_each(|m| {
-                            let _ = m.response_tx.send(Err(err.clone()));
-                        });
+                                let _ = m.response_tx.send(Ok(results));
+                            })
+                        }
+                        Err(err) => {
+                            batch.0.into_iter().for_each(|m| {
+                                let _ = m.response_tx.send(Err(err.clone()));
+                            });
+                        }
                     }
                 });
             }
