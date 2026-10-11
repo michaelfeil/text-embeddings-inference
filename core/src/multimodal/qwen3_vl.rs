@@ -142,7 +142,7 @@ impl Qwen3VlProcessor {
             config.timeout,
         )?;
         let workers = Arc::new(Semaphore::new(config.workers));
-        let fast_tokenizer = crate::fast_tokenization::load(&tokenizer, config.workers);
+        let fast_tokenizer = crate::fast_tokenization::load(&tokenizer);
         Ok(Self {
             state: Arc::new(ProcessorState {
                 chat,

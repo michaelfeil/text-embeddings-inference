@@ -4,10 +4,9 @@ use tokenizers::{Encoding, Tokenizer};
 
 pub(crate) struct FastTokenizer {
     tokenizer: basetenkenizer::Tokenizer,
-    pool: rayon::ThreadPool,
 }
 
-pub(crate) fn load(tokenizer: &Tokenizer, workers: usize) -> Option<FastTokenizer> {
+pub(crate) fn load(tokenizer: &Tokenizer) -> Option<FastTokenizer> {
     if !matches!(
         tokenizer.get_model(),
         tokenizers::models::ModelWrapper::BPE(_)
@@ -39,13 +38,7 @@ pub(crate) fn load(tokenizer: &Tokenizer, workers: usize) -> Option<FastTokenize
             json["post_processor"] = serde_json::Value::Null;
             let tokenizer =
                 basetenkenizer::Tokenizer::from_json(json).map_err(|e| e.to_string())?;
-            // Basetenkenizer parallelizes splits internally. Bound it to the configured
-            // worker budget instead of initializing Rayon's host-wide global pool.
-            let pool = rayon::ThreadPoolBuilder::new()
-                .num_threads(workers.max(1))
-                .build()
-                .map_err(|e| e.to_string())?;
-            Ok(FastTokenizer { tokenizer, pool })
+            Ok(FastTokenizer { tokenizer })
         });
     match result {
         Ok(tokenizer) => {
@@ -67,7 +60,9 @@ pub(crate) fn encode(
 ) -> tokenizers::Result<Encoding> {
     // Do not truncate final IDs: HF reserves space for special tokens before
     // truncating content, and applies configured type IDs and post-processors.
-    let ids = fast.pool.install(|| fast.tokenizer.encode(text))?;
+    // Basetenkenizer 0.2.9 owns a bounded BPE pool for parallel work. Calling
+    // directly keeps short inputs on this tokenizer worker and avoids a second hop.
+    let ids = fast.tokenizer.encode(text)?;
     let len = ids.len();
     let raw = Encoding::new(
         ids,
@@ -121,7 +116,7 @@ mod tests {
             AddedToken::from("<s>", true),
             AddedToken::from("</s>", true),
         ]);
-        let fast = load(&tokenizer, 2).unwrap();
+        let fast = load(&tokenizer).unwrap();
         // A processor installed after Basetenkenizer initialization must still apply.
         tokenizer.with_post_processor(Some(
             TemplateProcessing::builder()
@@ -132,7 +127,7 @@ mod tests {
                 .unwrap(),
         ));
         // Loading with an existing processor must also avoid applying it twice.
-        let fast_with_processor = load(&tokenizer, 2).unwrap();
+        let fast_with_processor = load(&tokenizer).unwrap();
         for direction in [TruncationDirection::Left, TruncationDirection::Right] {
             for limit in [2, 3, 8, 128] {
                 tokenizer
@@ -170,11 +165,11 @@ mod tests {
     #[test]
     fn unsupported_models_and_dropout_use_hf() {
         let wordpiece = Tokenizer::new(tokenizers::models::wordpiece::WordPiece::default());
-        assert!(load(&wordpiece, 1).is_none());
+        assert!(load(&wordpiece).is_none());
         let mut json = serde_json::to_value(test_tokenizer()).unwrap();
         json["model"]["dropout"] = serde_json::json!(0.1);
         let tokenizer = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
-        assert!(load(&tokenizer, 1).is_none());
+        assert!(load(&tokenizer).is_none());
     }
     #[test]
     fn specialized_semantics_use_hf() {
@@ -205,7 +200,7 @@ mod tests {
             }
             let hf = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
             hf.encode(input, false).unwrap();
-            assert!(load(&hf, 1).is_none(), "{kind}");
+            assert!(load(&hf).is_none(), "{kind}");
         }
     }
 
@@ -222,7 +217,7 @@ mod tests {
         let hf = Tokenizer::from_bytes(serde_json::to_vec(&json).unwrap()).unwrap();
         let input = "cafe\u{301}";
         let expected = hf.encode(input, false).unwrap();
-        let fast = load(&hf, 1).unwrap();
+        let fast = load(&hf).unwrap();
         let actual = encode(&fast, &hf, input, false).unwrap();
         assert_eq!(actual.get_ids(), expected.get_ids());
         assert_eq!(actual.get_ids(), &[1]);

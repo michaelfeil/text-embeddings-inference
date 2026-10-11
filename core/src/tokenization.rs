@@ -11,7 +11,7 @@ use tracing::{instrument, Span};
 
 static MAX_CHAR_MULTIPLIER: usize = 250;
 
-/// Maximum outer tokenizer workers and threads in the shared fast-tokenizer pool.
+/// Maximum tokenizer request workers; BPE parallelism uses the library's own pool.
 pub const MAX_TOKENIZATION_WORKERS: usize = 16;
 
 /// Waiting tokenizer jobs, independent of the worker count.
@@ -86,7 +86,7 @@ impl Tokenization {
         // Spawn a background thread that creates all workers
         // since tokenizer.clone() require 0.2s.
         std::thread::spawn(move || {
-            let fast_tokenizer = crate::fast_tokenization::load(&tokenizer, workers).map(Arc::new);
+            let fast_tokenizer = crate::fast_tokenization::load(&tokenizer).map(Arc::new);
             for _ in 0..workers {
                 let chat = chat.clone();
                 let tokenizer_clone = tokenizer.clone();
