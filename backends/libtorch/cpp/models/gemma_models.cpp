@@ -643,7 +643,8 @@ class Gemma final : public Model {
   bool supports_radix() const override {
     // Both option decisions and a loaded sequence score head use causal states.
     // forward_impl still rejects folding for bidirectional embedding requests.
-    return (causal || classification_width() > 0) && !legacy && !embedding2;
+    return (causal || (boolean("_classifier",false) && classification_width() > 0))
+      && !legacy && !embedding2;
   }
   bool supports_images() const override { return !legacy && cfg.integer("vision_config.num_hidden_layers",0)>0; }
   bool supports_audio() const override { return embedding2 && cfg.integer("audio_config.hidden_size",0)>0; }

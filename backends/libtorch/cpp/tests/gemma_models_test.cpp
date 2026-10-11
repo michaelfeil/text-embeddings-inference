@@ -274,7 +274,11 @@ int main(int argc,char** argv) {
       compact.fold_gather=at::tensor({0,1,2,5,6},at::kLong);
       validate_radix(compact,true);
       auto scored_weights=f.weights;scored_weights["score.weight"]=at::randn({2,16})*.03;
-      auto scored=create_gemma(f.cfg,scored_weights,c10::Device("cpu"),at::kFloat);scored->ready();
+      auto scored_embedding_cfg=f.cfg;scored_embedding_cfg.values["model_type"]="gemma4_text";
+      auto scored_embedding=create_gemma(scored_embedding_cfg,scored_weights,c10::Device("cpu"),at::kFloat);scored_embedding->ready();
+      TORCH_CHECK(!scored_embedding->supports_radix(),"Unused score weights must not enable bidirectional embedding folding");
+      auto scored_cfg=f.cfg;scored_cfg.values["_classifier"]="true";
+      auto scored=create_gemma(scored_cfg,scored_weights,c10::Device("cpu"),at::kFloat);scored->ready();
       TORCH_CHECK(scored->supports_radix(),"Loaded Gemma sequence score head must support causal folding");
       auto full_score=scored->predict(logical,false);
       TORCH_CHECK(at::allclose(full_score,scored->predict(compact,false),1e-5,1e-6),"Gemma folded classifier changed sequence-end readout");

@@ -400,6 +400,8 @@ impl LibtorchBackend {
         } else {
             "config.json"
         })?;
+        // Head tensors can also be present when the requested operation is embedding.
+        options["_classifier"] = serde_json::json!(model_type == ModelType::Classifier);
         if laya {
             if options["model_type"] != "modernbert" {
                 return Err(start("Laya requires a ModernBERT encoder"));
