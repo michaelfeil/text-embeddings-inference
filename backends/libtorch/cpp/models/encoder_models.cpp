@@ -408,11 +408,27 @@ struct Encoder final : Model {
       else { TORCH_CHECK(activation == "gelu" || activation == "gelu_pytorch_tanh", "Unsupported ModernBERT classifier activation"); h = at::gelu(h, "tanh"); }
       h = at::layer_norm(h, {hidden}, weight(weights, "head.norm.weight"), at::Tensor(), eps);
     } else {
-      auto pooler = weights.find(prefix + "pooler.dense.weight");
-      if (pooler == weights.end()) pooler = weights.find("pooler.dense.weight");
-      if (pooler != weights.end()) {
-        const auto key = pooler->first.substr(0, pooler->first.size() - 7);
-        h = at::tanh(root_linear(h, key));
+      auto matrix_matches = [&](const std::string& key) {
+        const auto matrix = weights.find(key + ".weight");
+        return matrix != weights.end() && matrix->second.dim() == 2
+          && matrix->second.size(0) == hidden && matrix->second.size(1) == hidden;
+      };
+      auto bias_matches = [&](const std::string& key) {
+        const auto value = weights.find(key + ".bias");
+        return value != weights.end() && value->second.dim() == 1 && value->second.numel() == hidden;
+      };
+      if (family == Family::Jina) {
+        // Candle Jina checks bert.pooler independently of embedding prefix.
+        const std::string key = "bert.pooler.dense";
+        if (matrix_matches(key)) {
+          TORCH_CHECK(bias_matches(key), "Invalid Jina classifier pooler bias");
+          h = at::tanh(root_linear(h, key));
+        }
+      } else {
+        // Candle GTE tries a complete new.pooler, then a complete root pooler.
+        const std::string key = matrix_matches("new.pooler.dense") && bias_matches("new.pooler.dense")
+          ? "new.pooler.dense" : "pooler.dense";
+        if (matrix_matches(key) && bias_matches(key)) h = at::tanh(root_linear(h, key));
       }
     }
     return root_linear(h, "classifier");
@@ -617,6 +633,18 @@ struct Deberta final : Model {
     return h;
   }
   at::Tensor predict(const PackedInput& input,bool tokenwise)const override {
+    TORCH_CHECK(classification_width() > 0, "DeBERTa classifier not loaded");
+    bool token_checkpoint = false;
+    for (int64_t i = 0; ; ++i) {
+      const auto entry = o.values.find("architectures." + std::to_string(i));
+      if (entry == o.values.end()) break;
+      token_checkpoint = token_checkpoint || entry->second.ends_with("ForTokenClassification");
+    }
+    TORCH_CHECK(tokenwise == token_checkpoint,
+      tokenwise ? "token prediction requires a token classifier checkpoint"
+                : "sequence prediction requires a sequence classifier checkpoint");
+    if (!tokenwise) TORCH_CHECK(weights.count("pooler.dense.weight") && weights.count("pooler.dense.bias"),
+      "sequence prediction requires a sequence classifier checkpoint");
     auto h=forward(input);
     if(!tokenwise) {
       std::vector<at::Tensor> rows;for(int64_t row=0;row<input.batch;++row)rows.push_back(h.narrow(0,input.offsets[row],1));h=at::cat(rows,0);
