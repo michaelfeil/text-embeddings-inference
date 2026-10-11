@@ -31,6 +31,7 @@ struct Bert : tei::Model {
   bool cudnn_varlen = false;
   bool private_flash_embedding = false;
   bool private_flash_roberta_embedding = false;
+  bool exact_biased_norm = false;
   Bert(TeiConfig cfg, c10::Device dev, at::ScalarType type): config(cfg), device(dev), dtype(type) {}
   const at::Tensor& w(const std::string& name) const {
     auto entry = weights.find(prefix + name);
@@ -69,7 +70,7 @@ struct Bert : tei::Model {
   }
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& name) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (x.is_cuda() && (config.hidden == 384 || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
+    if (x.is_cuda() && (exact_biased_norm || config.hidden == 384 || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
       return tei::encoder_layer_norm_only(x, w(name + ".weight"), config.epsilon, residual, w(name + ".bias"), false);
     if (x.is_cuda()) return tei::fused_add_layer_norm(x, residual, w(name + ".weight"), w(name + ".bias"), config.epsilon);
 #endif
@@ -105,6 +106,11 @@ struct Bert : tei::Model {
       && classification_width() == 0 && options.string("_pooling") != "splade";
 #endif
 #ifdef TEI_TORCH_CUDA_KERNELS
+    // BERT and its aliases share Candle's biased LayerNorm primitive: residual
+    // statistics use the unrounded FP32 sum. Kernel eligibility is independent
+    // of model alias, pooling and head architecture; CPU/other CUDA scopes stay unchanged.
+    exact_biased_norm = device.is_cuda() && dtype == at::kHalf && config.hidden == 768
+      && at::cuda::getDeviceProperties(device.index())->major == 9;
     // Initial measured RoBERTa eager scope: H100 FP16 hidden768/head64 mean
     // embeddings. Keep dynamic FP8, trained heads and other pools unchanged.
     private_flash_roberta_embedding = device.is_cuda() && dtype == at::kHalf
@@ -204,7 +210,7 @@ struct Bert : tei::Model {
     const auto* ends = input.offsets; const auto batch = input.batch, max_sequence = input.max_sequence;
     at::Tensor h;
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (private_flash_roberta_embedding) {
+    if (private_flash_roberta_embedding && !exact_biased_norm) {
       h = tei::fused_embedding_layer_norm(ids, types, positions,
         w("embeddings.word_embeddings.weight"), w("embeddings.token_type_embeddings.weight"),
         w("embeddings.position_embeddings.weight"), w("embeddings.LayerNorm.weight"),
@@ -216,7 +222,7 @@ struct Bert : tei::Model {
     auto token_type = at::embedding(w("embeddings.token_type_embeddings.weight"), types);
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (word.is_cuda() && private_flash_embedding && options.boolean("_fp8_dynamic", false))
+    if (word.is_cuda() && (exact_biased_norm || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
       h = tei::encoder_layer_norm_only(word + token_type,
         w("embeddings.LayerNorm.weight"), config.epsilon, position, w("embeddings.LayerNorm.bias"), false);
     else if (word.is_cuda() && config.hidden == 384)
