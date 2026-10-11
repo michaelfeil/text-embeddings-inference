@@ -28,6 +28,7 @@ struct Encoder final : Model {
   std::string prefix, activation;
   bool exact_norm = false;
   bool exact_moe = false;
+  bool exact_alibi32 = false;
   struct Layer {
     at::Tensor qkv_weight, qkv_bias;
     at::Tensor gate_weight, gate_bias;
@@ -171,6 +172,9 @@ struct Encoder final : Model {
         const double extra = std::pow(2., -std::pow(2., -(std::log2(2 * power) - 3)));
         for (int64_t h = 0; h < heads - power; ++h) slopes.push_back(std::pow(extra, 2 * h + 1));
         alibi = at::from_blob(slopes.data(), {heads}, at::TensorOptions().dtype(at::kFloat)).to(device).clone();
+#ifdef TEI_TORCH_CUDA_KERNELS
+        exact_alibi32=family==Family::Jina && torch_flash_fma_alibi32_supported(device,dtype,hidden/heads);
+#endif
       }
     }
     if (family == Family::Nomic) {
@@ -256,6 +260,9 @@ struct Encoder final : Model {
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_alibi32)
+      return torch_flash_fma_alibi32(q,k,v,input.cumulative,*alibi,input.max_sequence,
+        1.0/std::sqrt(static_cast<double>(q.size(-1))));
     if((family==Family::Modern||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
       return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
@@ -274,7 +281,7 @@ struct Encoder final : Model {
     // All Jina layers share slopes and local positions, so materialize their
     // packed bias once per request rather than once per layer.
     std::optional<at::Tensor> attention_bias;
-    if(alibi && h.is_cuda())attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
+    if(alibi && h.is_cuda() && !exact_alibi32)attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
     bool scaled = family == Family::Nomic && local_cos.defined() && input.max_sequence > o.integer("max_trained_positions", 2048);
     at::Tensor cos_global, sin_global, cos_local, sin_local;
     if (global_cos.defined()) {

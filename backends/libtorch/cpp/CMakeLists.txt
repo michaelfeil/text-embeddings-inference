@@ -15,7 +15,7 @@ install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_to
 if(TARGET torch_cuda)
   enable_language(CUDA)
   target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_reference.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
-    kernels/torch_flash_fma.cpp kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
+    kernels/torch_flash_fma.cpp kernels/torch_flash_fma_32.cu kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
   set_source_files_properties(kernels/qwen35_reference.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--expt-relaxed-constexpr")
   set_source_files_properties(kernels/encoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
   set_source_files_properties(kernels/encoder_activation.cu PROPERTIES COMPILE_OPTIONS "--expt-relaxed-constexpr")
@@ -30,6 +30,10 @@ if(TARGET torch_cuda)
   set_source_files_properties(kernels/torch_flash_fma_72.cu
     PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
     COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_ALIBI;FLASHATTENTION_DISABLE_SOFTCAP")
+  # Scope ALiBi to head32; retain all existing head specialization flags.
+  set_source_files_properties(kernels/torch_flash_fma_32.cu
+    PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
+    COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_SOFTCAP;FLASHATTENTION_DISABLE_UNEVEN_K")
   install(FILES vendor/torch_flash_attention/LICENSE vendor/torch_flash_attention/AUTHORS
     vendor/torch_flash_attention/provenance.json DESTINATION share/licenses/tei_torch/torch_flash_attention)
   install(FILES ../../candle/extensions/candle-layer-norm/LICENSE
