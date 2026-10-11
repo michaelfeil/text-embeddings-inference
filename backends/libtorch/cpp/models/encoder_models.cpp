@@ -12,6 +12,7 @@
 #include <ATen/ops/_addmm_activation.h>
 #include <cmath>
 #include <cstdlib>
+#include <map>
 
 namespace tei {
 namespace {
@@ -522,6 +523,9 @@ struct Deberta final : Model {
   int64_t hidden,heads,dim,layers,span,max_relative; bool c2p,p2c;
   std::string prefix;
   std::vector<at::Tensor> qkv_weight,qkv_bias,position_key,position_query;
+  at::Tensor attention_scale;
+  mutable std::map<int64_t,at::Tensor> shared_bucket_cache;
+  mutable size_t shared_bucket_bytes = 0;
   Deberta(const Options& options,Weights& w,c10::Device dev,at::ScalarType dt)
     :o(options),weights(w),device(dev),dtype(dt),hidden(o.integer("hidden_size",768)),
      heads(o.integer("num_attention_heads",12)),dim(o.integer("attention_head_size",heads>0?hidden/heads:0)),
@@ -574,6 +578,9 @@ struct Deberta final : Model {
     }
     const auto kernel=o.integer("conv_kernel_size",0),groups=o.integer("conv_groups",1);
     TORCH_CHECK(kernel==0||(kernel>0&&kernel%2==1&&groups>0&&hidden%groups==0),"Invalid DeBERTa convolution geometry");
+    if(device.is_cuda())
+      attention_scale=at::full({},std::sqrt((1+c2p+p2c)*dim),
+                              w("embeddings.word_embeddings.weight").options());
   }
   at::Tensor buckets(int64_t length)const {
     auto idx=at::arange(length,at::TensorOptions().device(device).dtype(at::kLong));
@@ -585,6 +592,19 @@ struct Deberta final : Model {
       delta=at::where(distance>mid,logarithmic.to(at::kLong)*delta.sign(),delta);
     }
     return (delta+span).clamp(0,2*span-1);
+  }
+  at::Tensor cached_buckets(int64_t length)const {
+    const auto found=shared_bucket_cache.find(length);
+    if(found!=shared_bucket_cache.end())return found->second;
+    auto table=buckets(length);
+    constexpr size_t byte_limit=32*1024*1024;
+    // Keep exact-length metadata only. Never evict: captured graphs can retain
+    // these addresses. New shapes beyond either bound use the original path.
+    if(shared_bucket_cache.size()<16 && table.nbytes()<=byte_limit-shared_bucket_bytes) {
+      shared_bucket_bytes+=table.nbytes();
+      shared_bucket_cache.emplace(length,table);
+    }
+    return table;
   }
   at::Tensor forward(const PackedInput& input)const override {
     auto h=at::embedding(w("embeddings.word_embeddings.weight"),input.ids);
@@ -598,7 +618,7 @@ struct Deberta final : Model {
     // This metadata shares no token rows and introduces no padded activations.
     at::Tensor shared_indices;
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if(device.is_cuda()&&(dtype==at::kHalf||dtype==at::kBFloat16))shared_indices=buckets(input.max_sequence);
+    if(device.is_cuda()&&(dtype==at::kHalf||dtype==at::kBFloat16))shared_indices=cached_buckets(input.max_sequence);
     else
 #endif
     {
@@ -610,7 +630,9 @@ struct Deberta final : Model {
         indices.push_back(found->second);
       }
     }
-    auto scale=at::full({},std::sqrt((1+c2p+p2c)*dim),h.options());
+    auto scale=attention_scale.defined() && attention_scale.device()==h.device()
+        && attention_scale.scalar_type()==h.scalar_type()
+      ? attention_scale : at::full({},std::sqrt((1+c2p+p2c)*dim),h.options());
     for(int64_t layer=0;layer<layers;++layer) {
       const auto p="encoder.layer."+std::to_string(layer)+".";
       auto qkv=at::linear(h,qkv_weight[layer],qkv_bias[layer]).view({h.size(0),3*heads,dim});
