@@ -46,6 +46,17 @@ impl Linear {
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
         let _enter = self.span.enter();
 
+        // Candle CPU may fold a broadcast-weight batch into matrix rows while
+        // retaining the singleton row stride from unsqueeze(1). Flatten actual
+        // rows before matmul so each sequence reads its own complete features.
+        if matches!(x.device(), Device::Cpu) {
+            if let &[batch, rows, width] = x.dims() {
+                let flat = x.contiguous()?.reshape((batch * rows, width))?;
+                let output = self.forward(&flat)?;
+                return output.reshape((batch, rows, output.dim(1)?));
+            }
+        }
+
         #[allow(unused)]
         if let (Device::Cuda(_), Some(cublaslt)) = (x.device(), get_cublas_lt_wrapper(x.device())?)
         {
