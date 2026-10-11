@@ -1,4 +1,4 @@
-#include "models/multimodal_models.h"
+#include "models/qwen35_models.h"
 #include "models/decision_models.h"
 #include <iostream>
 using namespace tei;
@@ -32,7 +32,7 @@ int main(int argc,char** argv) {
     }
   }
   auto build=[](const Options& options,const Weights& source,c10::Device device,at::ScalarType dtype) {
-    auto loader=source;return create_multimodal(options,loader,device,dtype);
+    auto loader=source;return create_qwen35(options,loader,device,dtype);
   };
   auto model=build(cfg,weights,c10::Device("cpu"),at::kFloat);model->ready();
   std::vector<int32_t> offsets={0,3,5},one={0,3},two={0,2};
@@ -52,7 +52,7 @@ int main(int argc,char** argv) {
   c10::weak_intrusive_ptr<c10::TensorImpl> original_gate(owned_loader.at("model.layers.0.mlp.gate_proj.weight").getIntrusivePtr());
   auto tied_cfg=cfg;tied_cfg.values["tie_word_embeddings"]="true";
   auto tied=create_decision_head("option_tokens",{},tied_cfg,{},owned_loader);
-  auto owned=create_multimodal(cfg,owned_loader,c10::Device("cpu"),at::kFloat);
+  auto owned=create_qwen35(cfg,owned_loader,c10::Device("cpu"),at::kFloat);
   TORCH_CHECK(owned_loader.empty() && !original_gate.expired(),"Qwen3.5 must own loaded tensors before initialization");
   owned->ready();
   TORCH_CHECK(original_gate.expired(),"Consumed Qwen3.5 FFN projection still retained after initialization");
@@ -101,7 +101,7 @@ int main(int argc,char** argv) {
     Weights cuda_weights;
     for(const auto& [key,value]:weights)cuda_weights[key]=value.to(device);
     c10::weak_intrusive_ptr<c10::TensorImpl> cuda_gate(cuda_weights.at("model.layers.0.mlp.gate_proj.weight").getIntrusivePtr());
-    auto cuda=create_multimodal(cfg,cuda_weights,device,at::kBFloat16);cuda->ready();
+    auto cuda=create_qwen35(cfg,cuda_weights,device,at::kBFloat16);cuda->ready();
     TORCH_CHECK(cuda_weights.empty() && cuda_gate.expired(),"CUDA Qwen3.5 retained consumed loader/FFN ownership");
     auto host=make({1,2,3,4,5},offsets),dev=host;
     dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);

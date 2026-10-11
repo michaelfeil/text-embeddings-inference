@@ -19,7 +19,8 @@
 #include "models/dense_models.h"
 #include "models/encoder_models.h"
 #include "models/gemma_models.h"
-#include "models/multimodal_models.h"
+#include "models/qwen35_models.h"
+#include "models/qwen3_vl_models.h"
 #include "batching/cuda_graph.h"
 #include <ATen/ATen.h>
 #include <ATen/Context.h>
@@ -104,7 +105,8 @@ struct Engine {
     model = tei::create_encoder(options, weights, device, dtype);
     if (!model) model = tei::create_decoder(options, weights, device, dtype);
     if (!model) model = tei::create_gemma(options, weights, device, dtype);
-    if (!model) model = tei::create_multimodal(options, weights, device, dtype);
+    if (!model) model = tei::create_qwen35(options, weights, device, dtype);
+    if (!model) model = tei::create_qwen3_vl(options, weights, device, dtype);
     if (!model && (family == "bert" || family == "roberta" || family == "xlm-roberta" || family == "camembert")) {
       const auto activation=options.string("hidden_act","gelu");
       TORCH_CHECK(activation=="gelu"||activation=="gelu_new"||activation=="gelu_pytorch_tanh"||activation=="relu"||activation=="silu",

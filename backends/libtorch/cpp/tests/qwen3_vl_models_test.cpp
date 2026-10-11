@@ -1,5 +1,6 @@
 // Native actual-length image/deepstack regression; no Python or token padding.
-#include "models/multimodal_models.h"
+#include "models/qwen3_vl_models.h"
+#include "models/qwen35_models.h"
 #include <c10/core/InferenceMode.h>
 #include <ATen/Parallel.h>
 #include <iostream>
@@ -34,7 +35,7 @@ int main(int argc,char** argv) {
   add(vp+"patch_embed.proj.weight",{16,3,2,1,1});add(vp+"patch_embed.proj.bias",{16});add(vp+"pos_embed.weight",{4,16});
   for(int i=0;i<2;++i){auto p="blocks."+std::to_string(i)+".";ln(p+"norm1",16);ln(p+"norm2",16);fc(p+"attn.qkv",48,16);fc(p+"attn.proj",16,16);fc(p+"mlp.linear_fc1",24,16);fc(p+"mlp.linear_fc2",16,24);}
   for(const auto& p:{std::string("merger"),std::string("deepstack_merger_list.0")}){ln(p+".norm",p=="merger"?16:64);fc(p+".linear_fc1",64,64);fc(p+".linear_fc2",16,64);}
-  auto model=create_multimodal(cfg,weights,c10::Device("cpu"),at::kFloat);model->ready();
+  auto model=create_qwen3_vl(cfg,weights,c10::Device("cpu"),at::kFloat);model->ready();
   TORCH_CHECK(model->supports_images(),"Qwen3-VL image capability unavailable");
   std::vector<int64_t> ids={1,2,3,4,5,6},pos={0,1,2,3,0,1};std::vector<int32_t> offsets={0,4,6};
   auto options=at::TensorOptions().dtype(at::kLong);
@@ -64,7 +65,7 @@ int main(int argc,char** argv) {
     auto query=q35weights.at(key).view({2,8,16});
     q35weights[key]=at::cat({query,at::zeros_like(query)},1).reshape({32,16});
   }
-  auto q35loader=q35weights;auto q35=create_multimodal(q35cfg,q35loader,c10::Device("cpu"),at::kFloat);q35->ready();
+  auto q35loader=q35weights;auto q35=create_qwen35(q35cfg,q35loader,c10::Device("cpu"),at::kFloat);q35->ready();
   auto q35plain=input;q35plain.images.clear();q35plain.multimodal_positions=at::Tensor();
   auto q35text=q35->forward(q35plain),q35image=q35->forward(input);
   TORCH_CHECK(q35->supports_images() && (q35image-q35text).abs().max().item<float>()>1e-4,"Qwen3.5 vision features not injected");
@@ -72,15 +73,15 @@ int main(int argc,char** argv) {
   Weights published;
   for(const auto& [name,value]:q35weights)
     published[name.starts_with("model.")?name.substr(6):name]=value;
-  auto published_loader=published;auto unprefixed=create_multimodal(q35cfg,published_loader,c10::Device("cpu"),at::kFloat);unprefixed->ready();
+  auto published_loader=published;auto unprefixed=create_qwen35(q35cfg,published_loader,c10::Device("cpu"),at::kFloat);unprefixed->ready();
   TORCH_CHECK(unprefixed->supports_images() && at::equal(q35text,unprefixed->forward(q35plain)) &&
     at::equal(q35image,unprefixed->forward(input)),"Published Qwen3.5 visual/language prefix changed full text or image outputs");
   auto missing=published;missing.erase("visual.patch_embed.proj.weight");bool rejected=false;
-  try {auto incomplete=create_multimodal(q35cfg,missing,c10::Device("cpu"),at::kFloat);incomplete->ready();}
+  try {auto incomplete=create_qwen35(q35cfg,missing,c10::Device("cpu"),at::kFloat);incomplete->ready();}
   catch(const c10::Error& error) {rejected=std::string(error.what()).find("patch_embed.proj.weight")!=std::string::npos;}
   TORCH_CHECK(rejected,"Incomplete published visual tower silently accepted");
   auto duplicate=published;duplicate["model.visual.patch_embed.proj.weight"]=published.at("visual.patch_embed.proj.weight");rejected=false;
-  try {auto ambiguous=create_multimodal(q35cfg,duplicate,c10::Device("cpu"),at::kFloat);ambiguous->ready();}
+  try {auto ambiguous=create_qwen35(q35cfg,duplicate,c10::Device("cpu"),at::kFloat);ambiguous->ready();}
   catch(const c10::Error& error) {rejected=std::string(error.what()).find("Duplicate Qwen visual weight")!=std::string::npos;}
   TORCH_CHECK(rejected,"Duplicate canonical/published visual weight silently accepted");
   std::cout<<"Qwen3.5 published prefixes preserve full outputs; missing/ambiguous tower rejected\n";
@@ -88,8 +89,8 @@ int main(int argc,char** argv) {
   if(argc>1) {
     c10::Device device(argv[1]);Weights hw,cw;
     for(const auto& [name,value]:weights){hw[name]=value.to(at::kHalf);cw[name]=hw[name].to(device);}
-    auto reference=create_multimodal(cfg,hw,c10::Device("cpu"),at::kHalf);reference->ready();
-    auto native=create_multimodal(cfg,cw,device,at::kHalf);native->ready();
+    auto reference=create_qwen3_vl(cfg,hw,c10::Device("cpu"),at::kHalf);reference->ready();
+    auto native=create_qwen3_vl(cfg,cw,device,at::kHalf);native->ready();
     auto host=input,dev=input;host.images[0].pixels=host.images[0].pixels.to(at::kHalf);
     dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);
     dev.multimodal_positions=host.multimodal_positions.to(device);dev.images[0].pixels=host.images[0].pixels.to(device);
