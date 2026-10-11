@@ -90,10 +90,12 @@ Each replica logs inference throughput every 100 batches.
 
 ### BPE tokenization
 
-Embedding text inputs automatically use `basetenkenizer` 0.2.9 when the tokenizer configuration is supported. No opt-in flag or environment variable is required. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Fast encoding uses a shared CPU pool bounded by `--tokenization-workers`.
+Embedding text inputs automatically use `basetenkenizer` 0.2.9 when the tokenizer configuration is supported. No opt-in flag or environment variable is required. WordPiece and Unigram models, paired or token-ID inputs, classification/NER, `/tokenize`, and `/decode` keep using Hugging Face Tokenizers. Truncation and special-token processing also remain with Hugging Face. Short BPE inputs run directly on the tokenizer worker; larger inputs use Basetenkenizer's own shared pool.
 
-Tokenization workers are capped at 16, including explicit overrides. BPE encoding
-uses a shared Rayon pool with up to 16 additional threads. The waiting-job queue
+Tokenization request workers are capped at 16, including explicit overrides.
+Basetenkenizer 0.2.9 separately caps its shared BPE pool at eight threads;
+`--tokenization-workers` controls request workers, not that library pool.
+The waiting-job queue
 has a separate default capacity of 1,024; set `--tokenization-queue-capacity` or
 `TOKENIZATION_QUEUE_CAPACITY` to change it. Capacity counts individual inputs,
 not HTTP requests, and must be positive. Producers wait when the queue is full.
