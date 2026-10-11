@@ -184,7 +184,14 @@ struct Bert : tei::Model {
       && config.hidden == 768 && config.heads == 12 && (config.activation == 0 || config.activation == 1)
       && at::cuda::getDeviceProperties(device.index())->major == 9
       && (options.string("_pooling") != "splade" || options.boolean("_fp8_dynamic", false));
-    cached_classifier_gemm = private_flash_embedding && classification_width()>0
+    // RoBERTa classifier projections use the same biased/GELU GEMM contract;
+    // retain its existing attention selector while reusing projection plans.
+    cached_classifier_gemm = (private_flash_embedding || options.string("model_type") == "roberta")
+      && device.is_cuda() && dtype == at::kHalf
+      && config.hidden == 768 && config.heads == 12
+      && (config.activation == 0 || config.activation == 1)
+      && at::cuda::getDeviceProperties(device.index())->major == 9
+      && classification_width()>0
       && !options.boolean("_fp8_dynamic",false)
       && at::globalContext().blasPreferredBackend()==at::BlasBackend::Cublaslt;
     if(cached_classifier_gemm)
