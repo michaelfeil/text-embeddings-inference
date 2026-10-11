@@ -638,22 +638,13 @@ enum BackendCommand {
 }
 
 async fn download_decision_sidecars(api: &ApiRepo) -> Result<(), ApiError> {
-    async fn optional(api: &ApiRepo, file: &str) -> Result<bool, ApiError> {
-        match api.get(file).await {
-            Ok(_) => Ok(true),
-            Err(ApiError::RequestError(error))
-                if error.status().is_some_and(|status| status.as_u16() == 404) =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error),
-        }
-    }
-    if optional(api, "rl_agent_config.json").await? {
+    // These sidecars select optional decision heads. Missing cached probes
+    // must also be tolerated offline; a discovered head's companion is required.
+    if api.get("rl_agent_config.json").await.is_ok() {
         api.get("encoder/config.json").await?;
-    } else if optional(api, "decision_config.json").await? {
+    } else if api.get("decision_config.json").await.is_ok() {
         api.get("readout.safetensors").await?;
-    } else if optional(api, "joint_head_config.json").await? {
+    } else if api.get("joint_head_config.json").await.is_ok() {
         api.get("joint_head.safetensors").await?;
     }
     Ok(())
