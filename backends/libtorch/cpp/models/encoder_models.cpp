@@ -195,7 +195,7 @@ struct Encoder final : Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
     const bool gelu=activation!="relu" && activation!="silu" && activation!="swiglu" && activation!="tanh";
     if(family==Family::Modern && gelu && middle.is_cuda() &&
-      middle.scalar_type()==at::kHalf && !fp8_mlp.empty()) {
+      (middle.scalar_type()==at::kHalf || middle.scalar_type()==at::kBFloat16) && !fp8_mlp.empty()) {
       auto projection=fp8_mlp.find(name);
       if(projection!=fp8_mlp.end() && projection->second.can_fuse_gated_quantization()) {
         auto quantized=fp8_quantize_gated_rows(middle);
