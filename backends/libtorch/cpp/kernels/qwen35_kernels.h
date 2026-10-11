@@ -1,6 +1,7 @@
 #pragma once
 #include "batching/packed_input.h"
 namespace tei {
+at::Tensor gemma_vision_rotary_cuda(const at::Tensor&,const at::Tensor&,const at::Tensor&);
 at::Tensor gemma_rotary_cuda(const at::Tensor&,const at::Tensor&,const at::Tensor&,const at::Tensor&);
 at::Tensor gemma_audio_norm_cuda(const at::Tensor&,const at::Tensor&,double);
 at::Tensor gemma_vision_norm_cuda(const at::Tensor&,const at::Tensor&,double);

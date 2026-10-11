@@ -43,7 +43,7 @@ if(TARGET torch_cuda)
   target_link_directories(tei_torch PRIVATE "${CUDAToolkit_LIBRARY_DIR}")
   target_compile_definitions(tei_torch PRIVATE TEI_TORCH_CUDA_KERNELS)
   set_target_properties(tei_torch PROPERTIES CUDA_STANDARD 20 CUDA_STANDARD_REQUIRED ON)
-  target_link_libraries(tei_torch PRIVATE torch_cuda c10_cuda)
+  target_link_libraries(tei_torch PRIVATE torch_cuda c10_cuda CUDA::cublasLt)
   # Same pinned CUTLASS revision as Candle. Reuse its local checkout when
   # available; CUTLASS_ROOT supports offline native builds elsewhere.
   set(CUTLASS_ROOT "$ENV{CUTLASS_ROOT}" CACHE PATH "Pinned CUTLASS source root")

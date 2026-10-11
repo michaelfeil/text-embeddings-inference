@@ -34,6 +34,7 @@
 #include <mutex>
 #include <memory>
 #include <string>
+#include <set>
 #include <unordered_map>
 
 namespace {
@@ -184,6 +185,78 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
   packed.audios.push_back({features,validity,item.token_start,item.token_count});
  }return packed;
 }
+void attach_radix(Engine& model,tei::PackedInput& packed,const int64_t* ids,const int64_t* types,
+ const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,size_t audio_count,const TeiRadix* radix) {
+  if(radix) {
+      TORCH_CHECK(model.model->supports_radix(),"This native model does not support radix folding");
+      TORCH_CHECK(!audio_count,"Radix audio inference is not supported");
+      const int64_t total=cumulative[batch],compact=radix->compact_tokens;
+      TORCH_CHECK(compact>0&&compact<=total&&radix->ids&&radix->types&&radix->positions&&radix->scatter&&radix->fold,"Invalid native radix buffers");
+      const auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);
+      auto host=[&](const int64_t* data,int64_t rows){return at::from_blob(const_cast<int64_t*>(data),{rows},options);};
+      tei::PackedInput metadata{host(ids,total),host(types,total),host(positions,total),
+        at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)),cumulative,batch,max_sequence};
+      metadata.compact_ids=host(radix->ids,compact);
+      metadata.compact_types=host(radix->types,compact);
+      metadata.compact_positions=host(radix->positions,compact);
+      metadata.scatter_unfold=host(radix->scatter,total);
+      metadata.fold_gather=host(radix->fold,compact);
+      // Validate complete causal contexts on host before capture or map upload.
+      tei::validate_radix(metadata,true);
+      if(image_count||media_positions) {
+        // Token IDs alone cannot establish equivalent image contexts. Compare
+        // host pixel bits, placement and all rotary axes before map upload.
+        std::vector<std::vector<const TeiImage*>> contexts(batch);
+        std::vector<int64_t> rows(total);
+        for(int64_t row=0;row<batch;++row)
+          std::fill(rows.begin()+cumulative[row],rows.begin()+cumulative[row+1],row);
+        for(size_t i=0;i<image_count;++i) {
+          const auto& image=images[i];
+          TORCH_CHECK(image.sequence_start>=0&&image.sequence_start<total,"Invalid radix image sequence");
+          auto row=rows[image.sequence_start];
+          TORCH_CHECK(image.sequence_start==cumulative[row]&&image.token_start>=image.sequence_start&&image.token_count>0
+            && image.token_count<=cumulative[row+1]-image.token_start,"Invalid radix image span");
+          TORCH_CHECK(image.rows>0&&image.patch_dim>0&&image.pixels&&
+            uint64_t(image.rows)<=SIZE_MAX/sizeof(float)/uint64_t(image.patch_dim),"Invalid radix image pixels");
+          contexts[row].push_back(&image);
+        }
+        std::set<std::pair<int64_t,int64_t>> checked_contexts;
+        for(int64_t i=0;i<total;++i) {
+          const auto a=rows[i],b=rows[radix->fold[radix->scatter[i]]];
+          if(!checked_contexts.emplace(a,b).second)continue;
+          const auto& left=contexts[a];const auto& right=contexts[b];
+          TORCH_CHECK(left.size()==right.size(),"Radix aliases require identical image contexts");
+          int64_t prefix=0;
+          for(size_t j=0;j<left.size();++j) {
+            const auto& x=*left[j];const auto& y=*right[j];
+            const auto start=x.token_start-cumulative[a];
+            TORCH_CHECK(start==y.token_start-cumulative[b]&&x.token_count==y.token_count&&x.rows==y.rows&&x.patch_dim==y.patch_dim
+              && x.merge_size==y.merge_size&&std::equal(x.grid,x.grid+3,y.grid)
+              && !std::memcmp(x.pixels,y.pixels,size_t(x.rows)*size_t(x.patch_dim)*sizeof(float)),
+              "Radix aliases require identical image pixels and layout");
+            prefix=std::max(prefix,start+x.token_count);
+          }
+          TORCH_CHECK(prefix<=cumulative[a+1]-cumulative[a]&&prefix<=cumulative[b+1]-cumulative[b],"Invalid radix image prefix");
+          for(int64_t j=0;j<prefix;++j) {
+            TORCH_CHECK(ids[cumulative[a]+j]==ids[cumulative[b]+j],"Radix aliases require identical image prefixes");
+            if(media_positions)for(int64_t axis=0;axis<3;++axis)
+              TORCH_CHECK(media_positions[axis*total+cumulative[a]+j]==media_positions[axis*total+cumulative[b]+j],
+                "Radix aliases require identical image rotary positions");
+          }
+          // Even for text-only media positions, every shared row must agree.
+        }
+        if(media_positions)for(int64_t i=0;i<total;++i)for(int64_t axis=0;axis<3;++axis)
+          TORCH_CHECK(media_positions[axis*total+i]==media_positions[axis*total+radix->fold[radix->scatter[i]]],
+            "Radix aliases require identical rotary positions");
+      }
+      packed.compact_ids=metadata.compact_ids.to(model.device);
+      packed.compact_types=metadata.compact_types.to(model.device);
+      packed.compact_positions=metadata.compact_positions.to(model.device);
+      packed.scatter_unfold=metadata.scatter_unfold.to(model.device);
+      packed.fold_gather=metadata.fold_gather.to(model.device);
+    }
+}
 std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,size_t count) {
  TORCH_CHECK(requests||!count,"Missing decision metadata buffer");std::vector<tei::DecisionRequest> result;result.reserve(count);
  for(size_t i=0;i<count;++i){const auto& request=requests[i];TORCH_CHECK(request.kind>=0&&request.kind<=3,"Invalid decision metadata kind");
@@ -275,11 +348,18 @@ int32_t tei_decide(void* handle,const int64_t* ids,const int64_t* types,const in
  const int32_t* cumulative,int64_t batch,int64_t max_sequence,const TeiDecision* requests,
  float* logits,size_t capacity,float* actions,const int64_t* media_positions,
  const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count) {
+ return tei_decide_radix(handle,ids,types,positions,cumulative,batch,max_sequence,requests,logits,capacity,actions,media_positions,images,image_count,audios,audio_count,nullptr);
+}
+int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,const int64_t* positions,
+ const int32_t* cumulative,int64_t batch,int64_t max_sequence,const TeiDecision* requests,
+ float* logits,size_t capacity,float* actions,const int64_t* media_positions,
+ const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,const TeiRadix* radix) {
  return checked([&]{auto& engine=*static_cast<Engine*>(handle);TORCH_CHECK(engine.decision&&batch>0,"Model was not loaded for typed decisions");
   auto converted=decision_requests(requests,batch);size_t expected=0;
   for(const auto& request:converted){auto count=engine.decision->output_count(request);TORCH_CHECK(count>0&&static_cast<size_t>(count)<=capacity-expected,"Decision output exceeds provided capacity");expected+=count;}
   TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
   auto packed=packed_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count);
+  attach_radix(engine,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
   const bool use_graph=engine.graphs&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
   if(!use_graph)engine.model->prepare_input(packed);
   auto hidden=use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
@@ -312,28 +392,7 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
     auto& model = *static_cast<Engine*>(handle);
     auto packed=packed_input(model,ids,types,positions,cumulative,batch,max_sequence,
       media_positions,images,image_count,audios,audio_count);
-    if(radix) {
-      TORCH_CHECK(model.model->supports_radix(),"This native model does not support radix folding");
-      TORCH_CHECK(!image_count&&!audio_count&&!media_positions,"Radix media inference is not supported");
-      const int64_t total=cumulative[batch],compact=radix->compact_tokens;
-      TORCH_CHECK(compact>0&&compact<=total&&radix->ids&&radix->types&&radix->positions&&radix->scatter&&radix->fold,"Invalid native radix buffers");
-      const auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);
-      auto host=[&](const int64_t* data,int64_t rows){return at::from_blob(const_cast<int64_t*>(data),{rows},options);};
-      tei::PackedInput metadata{host(ids,total),host(types,total),host(positions,total),
-        at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)),cumulative,batch,max_sequence};
-      metadata.compact_ids=host(radix->ids,compact);
-      metadata.compact_types=host(radix->types,compact);
-      metadata.compact_positions=host(radix->positions,compact);
-      metadata.scatter_unfold=host(radix->scatter,total);
-      metadata.fold_gather=host(radix->fold,compact);
-      // Validate complete causal contexts on host before capture or map upload.
-      tei::validate_radix(metadata,true);
-      packed.compact_ids=metadata.compact_ids.to(model.device);
-      packed.compact_types=metadata.compact_types.to(model.device);
-      packed.compact_positions=metadata.compact_positions.to(model.device);
-      packed.scatter_unfold=metadata.scatter_unfold.to(model.device);
-      packed.fold_gather=metadata.fold_gather.to(model.device);
-    }
+    attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
     const bool graph_eligible = model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions));
     if(!graph_eligible)model.model->prepare_input(packed);
     auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)

@@ -296,3 +296,34 @@ at::Tensor qwen35_delta_cuda(const at::Tensor& qkv, const at::Tensor& z,
   return output.view({tokens,value_heads*128});
 }
 }
+
+// SPDX-License-Identifier: MIT
+// Adapted from Candle036f39e candle-kernels/src/reduce.cu gemma4_rope2d.
+// Preserve original MIT terms and explicit BF16 product rounding on Torch stream.
+namespace tei {
+namespace {
+__global__ void rope2d(const __nv_bfloat16* x,const __nv_bfloat16* c,const __nv_bfloat16* s,
+ __nv_bfloat16* out,int64_t count,int64_t heads,int64_t dim,int64_t token_stride,int64_t head_stride) {
+ auto i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;if(i>=count)return;
+ auto d=i%dim,head=(i/dim)%heads,token=i/(dim*heads);
+ auto part=d%(dim/2),quarter=dim/4,partner=part<quarter?d+quarter:d-quarter;
+ auto base=token*token_stride+head*head_stride;
+ auto a=__bfloat162float(x[base+d]),b=__bfloat162float(x[base+partner]);
+ if(part<quarter)b=-b;
+ auto frequency=token*(dim/2)+(d/(dim/2))*quarter+part%quarter;
+ auto p=__bfloat162float(__float2bfloat16_rn(__fmul_rn(a,__bfloat162float(c[frequency]))));
+ auto q=__bfloat162float(__float2bfloat16_rn(__fmul_rn(b,__bfloat162float(s[frequency]))));
+ out[i]=__float2bfloat16_rn(__fadd_rn(p,q));
+}
+}
+at::Tensor gemma_vision_rotary_cuda(const at::Tensor& x,const at::Tensor& cos,const at::Tensor& sin) {
+ TORCH_CHECK(x.is_cuda()&&x.scalar_type()==at::kBFloat16&&x.dim()==3&&x.stride(2)==1&&x.size(2)>0&&x.size(2)%4==0,"Invalid packed vision rotary rows");
+ TORCH_CHECK(x.numel()<=int64_t(INT32_MAX)*256,"Vision rotary launch exceeds kernel range");
+ auto dim=x.size(2);
+ TORCH_CHECK(cos.numel()==x.size(0)*dim/2&&sin.sizes()==cos.sizes()&&cos.is_contiguous()&&sin.is_contiguous()&&cos.scalar_type()==x.scalar_type()&&sin.scalar_type()==x.scalar_type()&&cos.device()==x.device()&&sin.device()==x.device(),"Invalid packed vision rotary frequencies");
+ c10::cuda::CUDAGuard guard(x.device());auto out=at::empty(x.sizes(),x.options());
+ if(x.numel())rope2d<<<(x.numel()+255)/256,256,0,at::cuda::getCurrentCUDAStream()>>>(
+ (const __nv_bfloat16*)x.const_data_ptr(),(const __nv_bfloat16*)cos.const_data_ptr(),(const __nv_bfloat16*)sin.const_data_ptr(),(__nv_bfloat16*)out.mutable_data_ptr(),x.numel(),x.size(1),dim,x.stride(0),x.stride(1));
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return out;
+}
+}

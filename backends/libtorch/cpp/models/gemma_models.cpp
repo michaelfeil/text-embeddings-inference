@@ -3,6 +3,7 @@
 // Upstream Apache-2.0 notices remain in LICENSE and NOTICE.
 #include "models/gemma_models.h"
 #include "helpers/image_feature_cache.h"
+#include "batching/radix.h"
 #include "models/decoder_models.h"
 #include "kernels/qwen35_kernels.h"
 #include "kernels/moe_kernels.h"
@@ -15,6 +16,14 @@
 #include <cmath>
 #include <array>
 #include <limits>
+#include <map>
+#include <memory>
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cublasLt.h>
+#endif
 
 namespace tei {
 namespace {
@@ -41,12 +50,109 @@ class Gemma final : public Model {
   mutable ImageFeatureCache image_features;
   std::unordered_map<int64_t,at::Tensor> norm_ones;
   std::unordered_map<std::string,std::array<double,4>> audio_bounds;
-  at::Tensor moe(const at::Tensor& residual,const at::Tensor& dense,const std::string& p) const {
+  // Choose the same accumulation tree as the original logical-row GEMM,
+  // using descriptors only. Execute on actual compact rows, with no padding.
+#ifdef TEI_TORCH_CUDA_KERNELS
+  struct RadixLinearPlan {
+    cublasLtMatmulDesc_t operation{};
+    cublasLtMatrixLayout_t weight{},input{},output{};
+    cublasLtMatmulAlgo_t algorithm{};
+    size_t workspace_bytes{};
+    bool valid=false;
+    ~RadixLinearPlan(){if(output)cublasLtMatrixLayoutDestroy(output);if(input)cublasLtMatrixLayoutDestroy(input);if(weight)cublasLtMatrixLayoutDestroy(weight);if(operation)cublasLtMatmulDescDestroy(operation);}
+  };
+  // Includes device, real logical/compact dimensions, operand strides/types,
+  // and the ATen workspace policy. Plans are shared by identical layer shapes.
+  using RadixLinearKey=std::array<int64_t,15>;
+  mutable std::map<RadixLinearKey,std::unique_ptr<RadixLinearPlan>> radix_linear_plans;
+  mutable at::Tensor radix_linear_workspace;
+#endif
+  at::Tensor linear_radix_projection(const at::Tensor& x,const std::string& name,const PackedInput& packed,const at::Tensor& supplied=at::Tensor{}) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    const auto& matrix=supplied.defined()?supplied:w(name+".weight");
+    const bool fp32_router=supplied.defined() && x.scalar_type()==at::kFloat && matrix.scalar_type()==at::kFloat &&
+      !at::globalContext().allowTF32CuBLAS() && at::globalContext().blasPreferredBackend()==at::BlasBackend::Cublaslt;
+    if(!legacy && !embedding2 && boolean("enable_moe_block",false) &&
+       device.is_cuda() && dtype==at::kBFloat16 && hidden==2816 && heads==16 &&
+       x.dim()==2 && (x.size(1)==4096 || x.size(1)==8192 || x.size(1)==2816) && x.size(0)>0 &&
+       x.is_contiguous() && matrix.is_contiguous() &&
+       ((x.scalar_type()==at::kBFloat16 && matrix.scalar_type()==at::kBFloat16) || fp32_router) &&
+       matrix.dim()==2 && matrix.size(1)==x.size(1) &&
+       ((matrix.size(0)==2816 && (x.size(1)==4096 || x.size(1)==8192)) ||
+        (matrix.size(0)==1024 && x.size(1)==2816) ||
+        (fp32_router && matrix.size(0)==128 && x.size(1)==2816)) && !has(name+".bias")) {
+      c10::cuda::CUDAGuard guard(x.device());
+      auto property=at::cuda::getDeviceProperties(device.index());
+      if(property->major==9 && property->minor==0 &&
+         reinterpret_cast<uintptr_t>(x.const_data_ptr())%256==0 &&
+         reinterpret_cast<uintptr_t>(matrix.const_data_ptr())%256==0) {
+        const auto m=x.size(0),full_m=packed.ids.numel(),k=x.size(1),n=matrix.size(0);
+        const auto limit=at::cuda::getCUDABlasLtWorkspaceSize();
+        const RadixLinearKey key{{device.index(),full_m,m,k,n,x.stride(0),x.stride(1),matrix.stride(0),matrix.stride(1),n,1,static_cast<int64_t>(x.scalar_type()),static_cast<int64_t>(matrix.scalar_type()),static_cast<int64_t>(x.scalar_type()),static_cast<int64_t>(limit)}};
+        auto found=radix_linear_plans.find(key);
+        if(found==radix_linear_plans.end() && radix_linear_plans.size()<64) {
+          auto plan=std::make_unique<RadixLinearPlan>();
+          struct Planning {
+            cublasLtMatrixLayout_t input{},output{};
+            cublasLtMatmulPreference_t preference{};
+            ~Planning(){if(preference)cublasLtMatmulPreferenceDestroy(preference);if(output)cublasLtMatrixLayoutDestroy(output);if(input)cublasLtMatrixLayoutDestroy(input);}
+          } logical;
+          auto transpose=CUBLAS_OP_T,no_transpose=CUBLAS_OP_N;
+          const auto data_type=fp32_router?CUDA_R_32F:CUDA_R_16BF;
+          bool valid=cublasLtMatmulDescCreate(&plan->operation,CUBLAS_COMPUTE_32F,CUDA_R_32F)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_TRANSA,&transpose,sizeof(transpose))==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_TRANSB,&no_transpose,sizeof(no_transpose))==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&plan->weight,data_type,k,n,k)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&plan->input,data_type,k,m,k)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&plan->output,data_type,n,m,n)==CUBLAS_STATUS_SUCCESS;
+          // Logical layouts never allocate or compute duplicated rows.
+          if(valid)valid=cublasLtMatrixLayoutCreate(&logical.input,data_type,k,full_m,k)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&logical.output,data_type,n,full_m,n)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulPreferenceCreate(&logical.preference)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulPreferenceSetAttribute(logical.preference,CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,&limit,sizeof(limit))==CUBLAS_STATUS_SUCCESS;
+          cublasLtMatmulHeuristicResult_t original{},check{};int count=0;
+          auto handle=at::cuda::getCurrentCUDABlasLtHandle();
+          if(valid)valid=cublasLtMatmulAlgoGetHeuristic(handle,plan->operation,plan->weight,logical.input,logical.output,logical.output,logical.preference,1,&original,&count)==CUBLAS_STATUS_SUCCESS && count==1 && original.state==CUBLAS_STATUS_SUCCESS;
+          if(valid) {
+            plan->algorithm=original.algo;
+            valid=cublasLtMatmulAlgoCheck(handle,plan->operation,plan->weight,plan->input,plan->output,plan->output,&plan->algorithm,&check)==CUBLAS_STATUS_SUCCESS && check.state==CUBLAS_STATUS_SUCCESS && check.workspaceSize<=limit;
+            plan->workspace_bytes=check.workspaceSize;
+          }
+          if(valid && plan->workspace_bytes>0 && (!radix_linear_workspace.defined() || static_cast<size_t>(radix_linear_workspace.numel())<plan->workspace_bytes))
+            radix_linear_workspace=at::empty({static_cast<int64_t>(limit)},x.options().dtype(at::kByte));
+          plan->valid=valid;
+          found=radix_linear_plans.emplace(key,std::move(plan)).first;
+        }
+        if(found!=radix_linear_plans.end() && found->second->valid) {
+          auto& plan=*found->second;
+          auto output=at::empty({m,n},x.options());
+          const float alpha=1.f,beta=0.f;
+          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?radix_linear_workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
+          TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"Gemma4 packed projection failed: ",static_cast<int>(status));
+          return output;
+        }
+      }
+    }
+#endif
+    // Unsupported shapes retain original full-row arithmetic. These are the
+    // request's real logical rows, never rounded-up or padded rows.
+    if(supplied.defined())return radix_fold(at::linear(radix_unfold(x,packed),supplied),packed);
+    if(!legacy && !embedding2 && boolean("enable_moe_block",false) && dtype==at::kBFloat16 && hidden==2816 && heads==16)
+      return radix_fold(linear(radix_unfold(x,packed),name),packed);
+    return linear(x,name);
+  }
+  at::Tensor moe(const at::Tensor& residual,const at::Tensor& dense,const std::string& p,const PackedInput& packed) const {
     auto input=norm(residual,p+"pre_feedforward_layernorm_2");
     // Preserve the router's BF16 rounding before both root-size and learned scales.
     auto root=at::scalar_tensor(1./std::sqrt(double(hidden)),residual.options());
     auto routing=((norm(residual,"",true)*root)*w(p+"router.scale")).to(at::kFloat);
-    auto logits=at::linear(routing,weight(router_f32,prefix+p+"router.proj.weight"));
+    // Preserve original FP32 accumulation with the logical-shape plan while
+    // computing only actual compact router rows. Unsupported plans retain
+    // the original logical-row ATen projection through the helper fallback.
+    const auto& router_matrix=weight(router_f32,prefix+p+"router.proj.weight");
+    auto logits=radix_enabled(packed)
+      ?linear_radix_projection(routing,p+"router.proj",packed,router_matrix)
+      :at::linear(routing,router_matrix);
     auto count=integer("num_experts",0),top=integer("top_k_experts",8);
     TORCH_CHECK(count>0 && top>0 && top<=count,"Invalid Gemma4 MoE routing geometry");
     const auto& gate_up=w(p+"experts.gate_up_proj");const auto& down=w(p+"experts.down_proj");
@@ -246,6 +352,9 @@ class Gemma final : public Model {
     auto cos=at::cat({col_angles.cos(),row_angles.cos()},-1).to(dtype).unsqueeze(1);
     auto sin=at::cat({col_angles.sin(),row_angles.sin()},-1).to(dtype).unsqueeze(1);
     auto rotate2d=[&](const at::Tensor& x) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(device.is_cuda()&&dtype==at::kBFloat16) return gemma_vision_rotary_cuda(x,cos,sin);
+#endif
       std::vector<at::Tensor> parts;
       for(int axis=0;axis<2;++axis) {
         auto part=x.narrow(-1,axis*dim/2,dim/2),a=part.narrow(-1,0,dim/4),b=part.narrow(-1,dim/4,dim/4);
@@ -296,6 +405,12 @@ class Gemma final : public Model {
     }
     if(cfg.boolean("vision_config.standardize",false)) pooled=(pooled-vw("vision_tower.std_bias").to(at::kFloat))*vw("vision_tower.std_scale").to(at::kFloat);
     pooled=pooled.to(dtype);
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // The original BareRmsNorm uses separate FP32 square, fast_sum,
+    // reciprocal-width, sqrt and divide before its BF16 activation cast.
+    if(device.is_cuda()&&dtype==at::kBFloat16)
+      return vl(gemma_vision_norm_cuda(pooled.contiguous(),norm_ones.at(vh),eps),"embed_vision.embedding_projection");
+#endif
     auto f=pooled.to(at::kFloat);
     return vl((f/at::sqrt(f.square().mean(-1,true)+eps)).to(dtype),"embed_vision.embedding_projection");
   }
@@ -466,6 +581,7 @@ class Gemma final : public Model {
       TORCH_CHECK(audio.selected_frames.numel()==audio.token_count,"Gemma selected audio frame count does not match token span");
     }
   }
+  bool supports_radix() const override { return causal && !legacy && !embedding2; }
   bool supports_images() const override { return !legacy && cfg.integer("vision_config.num_hidden_layers",0)>0; }
   bool supports_audio() const override { return embedding2 && cfg.integer("audio_config.hidden_size",0)>0; }
   int64_t output_width() const override { return embedding2 ? integer("embedding_dim", hidden) : hidden; }
@@ -499,6 +615,7 @@ class Gemma final : public Model {
     if(cfg.integer("vision_config.num_hidden_layers",0)>0) {
       auto width=cfg.integer("vision_config.hidden_size",0),head_count=cfg.integer("vision_config.num_attention_heads",0);
       TORCH_CHECK(width>0&&head_count>0,"Invalid Gemma vision hidden/head widths");
+      norm_ones[width]=at::ones({width},at::TensorOptions().dtype(at::kFloat).device(device));
       auto head_width=cfg.integer("vision_config.head_dim",width/head_count);
       TORCH_CHECK(head_width>0&&head_width%4==0,"Invalid Gemma vision rotary width");
       auto theta=cfg.real("vision_config.rope_parameters.rope_theta",100.);
@@ -599,8 +716,13 @@ class Gemma final : public Model {
     return cap>0?at::tanh(logits/cap)*cap:logits;
   }
   at::Tensor forward_impl(const PackedInput& input,bool is_causal) const {
+    TORCH_CHECK(!radix_enabled(input) || (is_causal && !legacy && !embedding2),
+      "Gemma radix folding requires causal Gemma4 hidden states");
+    const auto& ids=radix_ids(input);
+    const auto& positions=radix_positions(input);
+    const auto tokens=ids.numel();
     auto scale = at::scalar_tensor(std::sqrt(static_cast<double>(hidden)), w("embed_tokens.weight").options());
-    auto states = at::embedding(w("embed_tokens.weight"), input.ids) * scale;
+    auto states = at::embedding(w("embed_tokens.weight"), ids) * scale;
     at::Tensor ple;
     auto inject_images=[&]() {
       TORCH_CHECK(input.images.empty() || supports_images(),"Gemma vision tower unavailable");
@@ -625,14 +747,18 @@ class Gemma final : public Model {
       auto projected = linear(states, std::string(stem) + "per_layer_model_projection") *
         at::scalar_tensor(1./std::sqrt(static_cast<double>(hidden)),states.options());
 
-      ple = norm(projected.view({input.ids.size(0), layers, ple_width}), std::string(stem) + "per_layer_projection_norm");
+      ple = norm(projected.view({tokens, layers, ple_width}), std::string(stem) + "per_layer_projection_norm");
       if (!embedding2) {
-        auto token_inputs = at::embedding(w("embed_tokens_per_layer.weight"), input.ids) *
+        auto token_inputs = at::embedding(w("embed_tokens_per_layer.weight"), ids) *
           at::scalar_tensor(std::sqrt(static_cast<double>(ple_width)),states.options());
         ple = (token_inputs.view_as(ple) + ple) * at::scalar_tensor(1./std::sqrt(2.),states.options());
       }
     }
-    if(!embedding2) inject_images();
+    if(!embedding2 && !input.images.empty()) {
+      states=radix_unfold(states,input);
+      inject_images();
+      states=radix_fold(states,input);
+    }
 
     std::array<std::pair<at::Tensor,at::Tensor>,2> shared;
     for (int64_t i = 0; i < layers; ++i) {
@@ -643,18 +769,20 @@ class Gemma final : public Model {
       if (legacy) {
         std::optional<at::Tensor> bias;
         if (has(p + "self_attn.q_proj.bias")) bias = at::cat({w(p + "self_attn.q_proj.bias"), w(p + "self_attn.k_proj.bias"), w(p + "self_attn.v_proj.bias")}, 0);
-        auto qkv = at::linear(normalized, layer.qkv, bias).view({input.ids.size(0), heads + 2 * layer.kv, layer.dim});
+        auto qkv = at::linear(normalized, layer.qkv, bias).view({tokens, heads + 2 * layer.kv, layer.dim});
         q = qkv.narrow(1, 0, heads); k = qkv.narrow(1, heads, layer.kv); v = qkv.narrow(1, heads + layer.kv, layer.kv);
       } else {
-        q = linear(normalized, p + "self_attn.q_proj").view({input.ids.size(0), heads, layer.dim});
+        q = linear(normalized, p + "self_attn.q_proj").view({tokens, heads, layer.dim});
         if (!layer.shared) {
-          k = linear(normalized, p + "self_attn.k_proj").view({input.ids.size(0), layer.kv, layer.dim});
-          v = layer.k_equals_v ? k : linear(normalized, p + "self_attn.v_proj").view({input.ids.size(0), layer.kv, layer.dim});
+          k = (radix_enabled(input) && layer.dim==512 && layer.kv==2
+            ? linear_radix_projection(normalized,p+"self_attn.k_proj",input)
+            : linear(normalized,p+"self_attn.k_proj")).view({tokens,layer.kv,layer.dim});
+          v = layer.k_equals_v ? k : linear(normalized, p + "self_attn.v_proj").view({tokens, layer.kv, layer.dim});
         }
       }
       q = norm(q, p + "self_attn.q_norm");
       if (layer.shared) {
-        q = rotate(q, layer, input.positions);
+        q = radix_unfold(rotate(q, layer, positions),input);
         k = shared[layer.sliding].first; v = shared[layer.sliding].second;
         TORCH_CHECK(k.defined(), "Missing shared Gemma KV states at layer ", i);
       } else {
@@ -663,24 +791,27 @@ class Gemma final : public Model {
         if (legacy && device.is_cuda()) {
           // The fork's packed Gemma3 rotary contracts the first product in
           // BF16/Half. Gemma4's composed rotary retains separate rounding.
-          auto cos = layer.cos.index_select(0, input.positions).contiguous();
-          auto sin = layer.sin.index_select(0, input.positions).contiguous();
+          auto cos = layer.cos.index_select(0, positions).contiguous();
+          auto sin = layer.sin.index_select(0, positions).contiguous();
           // Both norms own fresh contiguous buffers, so rotation can reuse
           // them exactly as Candle does, without extra Q/K allocations.
           encoder_rotary_inplace(q,k,cos,sin);
         } else
 #endif
         {
-          q = rotate(q, layer, input.positions);
-          k = rotate(k, layer, input.positions);
+          q = rotate(q, layer, positions);
+          k = rotate(k, layer, positions);
         }
         if (!legacy) v = norm(v, "", true);
+        auto full=radix_unfold_qkv(q,k,v,input);
+        q=full[0];k=full[1];v=full[2];
         if (layer.store) shared[layer.sliding] = {k,v};
       }
 
-      auto output = attention(q, k, v, input, layer,is_causal).reshape({input.ids.size(0), heads * layer.dim});
+      auto output = radix_fold(attention(q, k, v, input, layer,is_causal),input)
+        .reshape({tokens, heads * layer.dim});
 
-      output=linear(output,p+"self_attn.o_proj");
+      output=radix_enabled(input)?linear_radix_projection(output,p+"self_attn.o_proj",input):linear(output,p+"self_attn.o_proj");
       states = states + norm(output,p+"post_attention_layernorm");
 
       normalized = norm(states, p + "pre_feedforward_layernorm");
@@ -696,7 +827,7 @@ class Gemma final : public Model {
       mlp=activate(gu.narrow(-1,0,width))*gu.narrow(-1,width,width);
       mlp=linear(mlp,p+"mlp.down_proj");
 
-      if(boolean("enable_moe_block",false))mlp=moe(states,mlp,p);
+      if(boolean("enable_moe_block",false))mlp=moe(states,mlp,p,input);
       states = states + norm(mlp, p + "post_feedforward_layernorm");
 
       if (ple.defined()) {
@@ -709,7 +840,7 @@ class Gemma final : public Model {
     }
     auto output = norm(states, "norm");
     output=embedding2 ? linear(output, "embedding_projection") : output;
-    return output;
+    return radix_unfold(output,input);
   }
 };
 }

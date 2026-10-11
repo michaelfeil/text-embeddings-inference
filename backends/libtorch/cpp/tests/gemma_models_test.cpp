@@ -1,5 +1,6 @@
 // Packed sequence isolation and geometry tests for native Gemma implementations.
 #include "models/gemma_models.h"
+#include "batching/radix.h"
 #include "helpers/image_feature_cache.h"
 #include <iostream>
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -183,6 +184,22 @@ int main(int argc,char** argv) {
       TORCH_CHECK(at::allclose(decision_output,decision_separate,1e-5,1e-6),"Gemma4 causal decision leaked across packed sequences");
       TORCH_CHECK(at::allclose(decision_output.narrow(0,0,1),decision->forward(input({1},{0,1})),1e-5,1e-6),
         "Gemma4 causal decision prefix differs from independent one-token reference");
+      TORCH_CHECK(decision->supports_radix() && !model->supports_radix(),"Gemma folding capability must be causal");
+      const std::vector<int32_t> fold_offsets={0,3,7};
+      auto logical=input({1,2,3,1,2,4,5},fold_offsets),compact=logical;
+      compact.compact_ids=at::tensor({1,2,3,4,5},at::kLong);
+      compact.compact_positions=at::tensor({0,1,2,2,3},at::kLong);
+      compact.compact_types=at::zeros({5},at::kLong);
+      compact.scatter_unfold=at::tensor({0,1,2,0,1,3,4},at::kLong);
+      compact.fold_gather=at::tensor({0,1,2,5,6},at::kLong);
+      validate_radix(compact,true);
+      auto full_hidden=decision->forward(logical),fold_hidden=decision->forward(compact);
+      TORCH_CHECK(fold_hidden.sizes()==full_hidden.sizes() && at::allclose(full_hidden,fold_hidden,1e-5,1e-6),"Gemma causal folding changed logical readout rows or shared KV/PLE");
+      // Reordered representatives must reconstruct exactly the same logical rows.
+      compact.compact_ids=compact.compact_ids.flip({0});compact.compact_positions=compact.compact_positions.flip({0});
+      compact.fold_gather=compact.fold_gather.flip({0});compact.scatter_unfold=4-compact.scatter_unfold;
+      validate_radix(compact,true);
+      TORCH_CHECK(at::allclose(full_hidden,decision->forward(compact),1e-5,1e-6),"Gemma folded output depends on representative order");
       std::cout<<"Gemma4 decisions causal; embeddings bidirectional; packed sequence isolation passed\n";
       Fixture mf(family);
       mf.cfg.values["enable_moe_block"]="true";mf.cfg.values["num_experts"]="3";mf.cfg.values["top_k_experts"]="2";
