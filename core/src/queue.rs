@@ -198,7 +198,6 @@ fn queue_blocking_task(
     replicas: usize,
     closed: Arc<AtomicBool>,
 ) {
-    let capacity = max_batch_requests.unwrap_or(max_concurrent_requests);
     tracing::info!(
         ?early_dispatch_tokens,
         replicas,
@@ -210,6 +209,8 @@ fn queue_blocking_task(
         .and_then(|s| s.parse().ok());
 
     let mut entries: VecDeque<Entry> = VecDeque::with_capacity(max_concurrent_requests);
+    // Reuse selection storage; outgoing batch vectors belong to the backend.
+    let mut selected: Vec<Entry> = Vec::new();
 
     tracing::info!("Using {} queue {}", "custom Baseten", "implementation.");
 
@@ -260,23 +261,10 @@ fn queue_blocking_task(
                     .sum();
                 let target = target_for_backlog(queued_tokens, early_dispatch_tokens, replicas);
 
-                let mut input_ids = Vec::with_capacity(max_batch_tokens);
-                let mut multimodal = Vec::new();
-                let mut token_type_ids = Vec::with_capacity(max_batch_tokens);
-                let mut position_ids = Vec::with_capacity(max_batch_tokens);
-                let mut tokens = Vec::with_capacity(max_batch_tokens);
-                let mut offsets = Vec::with_capacity(max_batch_tokens);
-
-                let mut pooled_indices = Vec::with_capacity(capacity);
-                let mut raw_indices = Vec::with_capacity(capacity);
-                let mut metadata: Vec<Metadata> = Vec::with_capacity(capacity);
-                let mut cu_seq_lengths = Vec::with_capacity(capacity);
-                cu_seq_lengths.push(0);
-
                 let mut current_tokens = 0;
-                let mut max_length = 0;
-
-                let mut entry_index = 0;
+                let mut pooled_count = 0;
+                let mut token_count = 0;
+                let mut offset_count = 0;
 
                 while let Some(entry) = entries.pop_front() {
                     // Filter entries where the response receiver was dropped (== entries where the request
@@ -290,23 +278,27 @@ fn queue_blocking_task(
 
                     // Soft limit: always allow one input, even if it exceeds the target.
                     let unfinished_client = || {
-                        metadata.iter().any(|selected| {
-                            selected.client_batch.as_ref().is_some_and(|client| {
-                                client.load(Ordering::SeqCst) != 0
-                                    || entry
-                                        .metadata
-                                        .client_batch
-                                        .as_ref()
-                                        .is_some_and(|next| Arc::ptr_eq(client, next))
-                                    || entries.iter().any(|pending| {
-                                        !pending.metadata.response_tx.is_closed()
-                                            && pending
-                                                .metadata
-                                                .client_batch
-                                                .as_ref()
-                                                .is_some_and(|other| Arc::ptr_eq(client, other))
-                                    })
-                            })
+                        selected.iter().any(|selected| {
+                            selected
+                                .metadata
+                                .client_batch
+                                .as_ref()
+                                .is_some_and(|client| {
+                                    client.load(Ordering::SeqCst) != 0
+                                        || entry
+                                            .metadata
+                                            .client_batch
+                                            .as_ref()
+                                            .is_some_and(|next| Arc::ptr_eq(client, next))
+                                        || entries.iter().any(|pending| {
+                                            !pending.metadata.response_tx.is_closed()
+                                                && pending
+                                                    .metadata
+                                                    .client_batch
+                                                    .as_ref()
+                                                    .is_some_and(|other| Arc::ptr_eq(client, other))
+                                        })
+                                })
                         })
                     };
                     if should_cut(current_tokens, entry_tokens, target) && !unfinished_client() {
@@ -325,29 +317,65 @@ fn queue_blocking_task(
                         break;
                     }
 
-                    match entry.metadata.pooling {
-                        true => pooled_indices.push(entry_index),
-                        false => raw_indices.push(entry_index),
-                    }
-
-                    max_length = max(max_length, entry_tokens as u32);
-
-                    multimodal.push(entry.encoding.multimodal);
-                    input_ids.extend(entry.encoding.input_ids);
-                    token_type_ids.extend(entry.encoding.token_type_ids);
-                    position_ids.extend(entry.encoding.position_ids);
-                    tokens.extend(entry.encoding.tokens);
-                    offsets.extend(entry.encoding.offsets);
-
-                    current_tokens += entry_tokens;
-                    metadata.push(entry.metadata);
-                    cu_seq_lengths.push(current_tokens as u32);
-
-                    entry_index += 1;
-
-                    if Some(metadata.len()) == max_batch_requests {
+                    current_tokens = total_tokens;
+                    pooled_count += usize::from(entry.metadata.pooling);
+                    token_count += entry.encoding.tokens.len();
+                    offset_count += entry.encoding.offsets.len();
+                    selected.push(entry);
+                    if Some(selected.len()) == max_batch_requests {
                         break;
                     }
+                }
+
+                // Size buffers from the selected batch, not the configured maximum.
+                // Most requests have no token strings or offsets at all.
+                let capacity = selected.len();
+                let mut input_ids = Vec::new();
+                let mut token_type_ids = Vec::new();
+                let mut position_ids = Vec::new();
+                let mut tokens = Vec::new();
+                let mut offsets = Vec::new();
+                let mut multimodal = Vec::with_capacity(capacity);
+                let mut pooled_indices = Vec::with_capacity(pooled_count);
+                let mut raw_indices = Vec::with_capacity(capacity - pooled_count);
+                let mut metadata = Vec::with_capacity(capacity);
+                let mut cu_seq_lengths =
+                    Vec::with_capacity(if capacity == 0 { 0 } else { capacity + 1 });
+                if capacity != 0 {
+                    cu_seq_lengths.push(0);
+                }
+                let mut max_length = 0;
+
+                for (entry_index, entry) in selected.drain(..).enumerate() {
+                    let entry_tokens = entry.encoding.input_ids.len();
+                    match entry.metadata.pooling {
+                        true => pooled_indices.push(entry_index as u32),
+                        false => raw_indices.push(entry_index as u32),
+                    }
+                    max_length = max(max_length, entry_tokens as u32);
+                    multimodal.push(entry.encoding.multimodal);
+                    if entry_index == 0 {
+                        // Move the first encoding's allocations into the batch. A
+                        // single request needs neither new token buffers nor copies.
+                        input_ids = entry.encoding.input_ids;
+                        token_type_ids = entry.encoding.token_type_ids;
+                        position_ids = entry.encoding.position_ids;
+                        tokens = entry.encoding.tokens;
+                        offsets = entry.encoding.offsets;
+                        input_ids.reserve_exact(current_tokens - input_ids.len());
+                        token_type_ids.reserve_exact(current_tokens - token_type_ids.len());
+                        position_ids.reserve_exact(current_tokens - position_ids.len());
+                        tokens.reserve_exact(token_count - tokens.len());
+                        offsets.reserve_exact(offset_count - offsets.len());
+                    } else {
+                        input_ids.extend(entry.encoding.input_ids);
+                        token_type_ids.extend(entry.encoding.token_type_ids);
+                        position_ids.extend(entry.encoding.position_ids);
+                        tokens.extend(entry.encoding.tokens);
+                        offsets.extend(entry.encoding.offsets);
+                    }
+                    metadata.push(entry.metadata);
+                    cu_seq_lengths.push(input_ids.len() as u32);
                 }
 
                 // Compute RadixMLP compact representation with BOTH mappings
@@ -514,6 +542,180 @@ pub(crate) fn prune_canceled_batch((metadata, batch): NextBatch) -> Option<NextB
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn test_queue(max_tokens: usize, max_requests: Option<usize>, target: Option<usize>) -> Queue {
+        let (queue_sender, queue_receiver) = mpsc::channel(32);
+        let closed = Arc::new(AtomicBool::new(false));
+        let worker_closed = closed.clone();
+        std::thread::spawn(move || {
+            queue_blocking_task(
+                max_tokens,
+                max_requests,
+                0.0,
+                16,
+                queue_receiver,
+                target,
+                1,
+                worker_closed,
+            );
+        });
+        Queue {
+            queue_sender,
+            closed,
+        }
+    }
+
+    fn test_entry(
+        ids: Vec<u32>,
+        pooling: bool,
+    ) -> (Entry, oneshot::Receiver<Result<InferResult, BackendError>>) {
+        let (response_tx, response_rx) = oneshot::channel();
+        let len = ids.len();
+        (
+            Entry {
+                encoding: ValidEncoding {
+                    multimodal: None,
+                    input_ids: ids,
+                    token_type_ids: vec![0; len],
+                    position_ids: (0..len as u32).collect(),
+                    tokens: vec![],
+                    offsets: vec![],
+                },
+                metadata: Metadata {
+                    decision: None,
+                    client_batch: None,
+                    response_tx,
+                    tokenization: Duration::ZERO,
+                    queue_time: Instant::now(),
+                    prompt_tokens: len,
+                    pooling,
+                    token_classification: false,
+                },
+            },
+            response_rx,
+        )
+    }
+
+    #[tokio::test]
+    async fn single_request_reuses_encoding_buffers() {
+        let queue = test_queue(65_536, Some(1_024), None);
+        assert!(queue.next_batch().await.is_none());
+        for token_classification in [false, true] {
+            let (mut entry, _response) = test_entry(vec![10, 11, 12], !token_classification);
+            if token_classification {
+                entry.metadata.token_classification = true;
+                entry.encoding.tokens = vec!["a".into(), "b".into(), "c".into()];
+                entry.encoding.offsets = vec![(0, 1), (2, 3), (4, 5)];
+            }
+            let pointers = (
+                entry.encoding.input_ids.as_ptr(),
+                entry.encoding.token_type_ids.as_ptr(),
+                entry.encoding.position_ids.as_ptr(),
+                entry.encoding.tokens.as_ptr(),
+                entry.encoding.offsets.as_ptr(),
+            );
+            queue.append(entry).await;
+            let (metadata, batch) = queue.next_batch().await.unwrap();
+            assert_eq!(
+                pointers,
+                (
+                    batch.input_ids.as_ptr(),
+                    batch.token_type_ids.as_ptr(),
+                    batch.position_ids.as_ptr(),
+                    batch.tokens.as_ptr(),
+                    batch.offsets.as_ptr(),
+                )
+            );
+            assert_eq!(batch.input_ids, [10, 11, 12]);
+            assert_eq!(batch.cumulative_seq_lengths, [0, 3]);
+            assert_eq!(metadata.capacity(), 1);
+            assert_eq!(batch.cumulative_seq_lengths.capacity(), 2);
+            if !token_classification {
+                assert_eq!(batch.tokens.capacity(), 0);
+                assert_eq!(batch.offsets.capacity(), 0);
+                assert_eq!(batch.raw_indices.capacity(), 0);
+            }
+            assert!(queue.next_batch().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn packed_batch_preserves_order_and_optional_tokens() {
+        let queue = test_queue(65_536, None, None);
+        let (first, _first_response) = test_entry(vec![10, 11], true);
+        let (mut second, _second_response) = test_entry(vec![20, 21, 22], false);
+        second.metadata.token_classification = true;
+        second.encoding.tokens = vec!["x".into(), "y".into(), "z".into()];
+        second.encoding.offsets = vec![(0, 1), (2, 3), (4, 5)];
+        let media = Arc::new(text_embeddings_backend::MultimodalEncoding {
+            audios: vec![],
+            images: vec![],
+            position_ids: [vec![], vec![], vec![]],
+            memory: None,
+        });
+        second.encoding.multimodal = Some(media.clone());
+        queue.append(first).await;
+        queue.append(second).await;
+        let (metadata, batch) = queue.next_batch().await.unwrap();
+        assert_eq!(metadata.len(), 2);
+        assert!(metadata[1].token_classification);
+        assert_eq!(batch.input_ids, [10, 11, 20, 21, 22]);
+        assert_eq!(batch.token_type_ids, [0; 5]);
+        assert_eq!(batch.position_ids, [0, 1, 0, 1, 2]);
+        assert_eq!(batch.cumulative_seq_lengths, [0, 2, 5]);
+        assert_eq!(batch.max_length, 3);
+        assert_eq!(batch.pooled_indices, [0]);
+        assert_eq!(batch.raw_indices, [1]);
+        assert_eq!(batch.tokens, ["x", "y", "z"]);
+        assert_eq!(batch.offsets, [(0, 1), (2, 3), (4, 5)]);
+        assert!(batch.multimodal[0].is_none());
+        assert!(Arc::ptr_eq(batch.multimodal[1].as_ref().unwrap(), &media));
+        assert_eq!(batch.input_ids.capacity(), 5);
+        assert_eq!(batch.tokens.capacity(), 3);
+        assert_eq!(batch.offsets.capacity(), 3);
+        assert_eq!(batch.pooled_indices.capacity(), 1);
+        assert_eq!(batch.raw_indices.capacity(), 1);
+    }
+
+    #[tokio::test]
+    async fn selection_preserves_limits_and_skips_canceled_entries() {
+        for (max_tokens, max_requests, target) in
+            [(5, None, None), (100, Some(1), None), (100, None, Some(5))]
+        {
+            let queue = test_queue(max_tokens, max_requests, target);
+            let (canceled, canceled_response) = test_entry(vec![0; 4], true);
+            drop(canceled_response);
+            queue.append(canceled).await;
+            assert!(queue.next_batch().await.is_none());
+            let (first, _first_response) = test_entry(vec![1; 3], true);
+            let (second, _second_response) = test_entry(vec![2; 3], true);
+            queue.append(first).await;
+            queue.append(second).await;
+            for id in [1, 2] {
+                let (metadata, batch) = queue.next_batch().await.unwrap();
+                assert_eq!(metadata.len(), 1);
+                assert_eq!(batch.input_ids, vec![id; 3]);
+                assert_eq!(batch.input_ids.capacity(), 3);
+            }
+            assert!(queue.next_batch().await.is_none());
+        }
+    }
+
+    #[tokio::test]
+    async fn early_dispatch_keeps_client_batch_together() {
+        let queue = test_queue(100, None, Some(3));
+        let client = Arc::new(AtomicUsize::new(0));
+        let (mut first, _first_response) = test_entry(vec![1; 3], true);
+        let (mut second, _second_response) = test_entry(vec![2; 3], true);
+        first.metadata.client_batch = Some(client.clone());
+        second.metadata.client_batch = Some(client);
+        queue.append(first).await;
+        queue.append(second).await;
+        let (metadata, batch) = queue.next_batch().await.unwrap();
+        assert_eq!(metadata.len(), 2);
+        assert_eq!(batch.input_ids, [1, 1, 1, 2, 2, 2]);
+        assert_eq!(batch.cumulative_seq_lengths, [0, 3, 6]);
+    }
+
     #[test]
     fn cancellation_preserves_token_classification_offsets() {
         let (canceled, canceled_rx) = oneshot::channel();
