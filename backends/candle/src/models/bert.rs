@@ -78,6 +78,10 @@ impl BertEmbeddings {
         })
     }
 
+    pub(crate) fn word_embeddings_weight(&self) -> &Tensor {
+        self.word_embeddings.embeddings()
+    }
+
     pub fn forward(
         &self,
         input_ids: &Tensor,
@@ -290,8 +294,11 @@ impl BertSpladeHead {
         })
     }
 
-    pub(crate) fn load_roberta(vb: VarBuilder, config: &BertConfig) -> Result<Self> {
-        let root_vb = vb.clone();
+    pub(crate) fn load_roberta(
+        vb: VarBuilder,
+        config: &BertConfig,
+        tied_embeddings: &Tensor,
+    ) -> Result<Self> {
         let vb = vb.pp("lm_head");
         let transform_weight = vb
             .pp("dense")
@@ -310,14 +317,14 @@ impl BertSpladeHead {
         )?;
 
         // Safetensors may omit the decoder tied to the input embeddings, as
-        // with the original RoBERTa masked-language-model checkpoint.
+        // with the original RoBERTa masked-language-model checkpoint. Use the
+        // embedding weight from the backbone that actually loaded, regardless
+        // of its checkpoint namespace.
         let decoder_weight = if vb.contains_tensor("decoder.weight") {
             vb.pp("decoder")
                 .get((config.vocab_size, config.hidden_size), "weight")?
         } else {
-            root_vb
-                .pp("roberta.embeddings.word_embeddings")
-                .get((config.vocab_size, config.hidden_size), "weight")?
+            tied_embeddings.clone()
         };
         let decoder_bias = vb.get(config.vocab_size, "bias")?;
         let decoder = Linear::new(decoder_weight, Some(decoder_bias), Some(HiddenAct::Relu));
@@ -379,20 +386,23 @@ mod classification_tests {
             ),
             (
                 "roberta.embeddings.word_embeddings.weight".into(),
-                embeddings.clone(),
+                // An unrelated partial namespace must not supply the tied decoder.
+                Tensor::zeros((3, 2), candle::DType::F32, &device)?,
             ),
         ]);
         let input = Tensor::new(&[[0.5_f32, -1.], [-0.2, 0.7]], &device)?;
         let tied = BertSpladeHead::load_roberta(
             VarBuilder::from_tensors(tensors.clone(), candle::DType::F32, &device),
             &config,
+            &embeddings,
         )?
         .forward(&input)?
         .to_vec2::<f32>()?;
-        tensors.insert("lm_head.decoder.weight".into(), embeddings);
+        tensors.insert("lm_head.decoder.weight".into(), embeddings.clone());
         let explicit_tied = BertSpladeHead::load_roberta(
             VarBuilder::from_tensors(tensors.clone(), candle::DType::F32, &device),
             &config,
+            &embeddings,
         )?
         .forward(&input)?
         .to_vec2::<f32>()?;
@@ -404,6 +414,7 @@ mod classification_tests {
         let explicit = BertSpladeHead::load_roberta(
             VarBuilder::from_tensors(tensors, candle::DType::F32, &device),
             &config,
+            &embeddings,
         )?
         .forward(&input)?
         .to_vec2::<f32>()?;
