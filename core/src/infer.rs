@@ -814,7 +814,7 @@ async fn backend_task(
             Ok(execution) => execution,
             Err(_) => break,
         };
-        let Some(batch) = prune_canceled_batch(dispatched.0.take().unwrap()) else {
+        let Some(mut batch) = prune_canceled_batch(dispatched.0.take().unwrap()) else {
             continue;
         };
         match &backend.model_type {
@@ -860,7 +860,12 @@ async fn backend_task(
                 let token_classification = batch.0.iter().any(|m| m.token_classification);
 
                 if token_classification {
-                    let encoding = batch.1.clone();
+                    // The backend consumes numeric inputs but does not use source
+                    // alignment. Move it out and retain only the IDs needed for delivery.
+                    let input_ids = batch.1.input_ids.clone();
+                    let cumulative_seq_lengths = batch.1.cumulative_seq_lengths.clone();
+                    let mut tokens = std::mem::take(&mut batch.1.tokens);
+                    let offsets = std::mem::take(&mut batch.1.offsets);
                     let results = execution.predict_tokens(batch.1).await;
 
                     tokio::task::spawn_blocking(move || match results {
@@ -880,25 +885,20 @@ async fn backend_task(
                                     "prediction not found in results. This is a backend bug.",
                                 );
 
-                                let start_idx = encoding.cumulative_seq_lengths[i] as usize;
-                                let _end_idx = encoding.cumulative_seq_lengths[i + 1] as usize;
+                                let start_idx = cumulative_seq_lengths[i] as usize;
 
                                 let token_predictions: Vec<TokenPrediction> = token_predictions
                                     .into_iter()
                                     .enumerate()
                                     .map(|(token_idx, scores)| {
                                         let global_token_idx = start_idx + token_idx;
-                                        let token_id = encoding.input_ids[global_token_idx];
-                                        let token = encoding
-                                            .tokens
-                                            .get(global_token_idx)
-                                            .cloned()
-                                            .unwrap_or_else(|| format!("<token_{}>", token_id));
-                                        let start =
-                                            encoding.offsets.get(global_token_idx).map(|o| o.0);
-                                        let end =
-                                            encoding.offsets.get(global_token_idx).map(|o| o.1);
-                                        (token, token_id, scores, start, end)
+                                        make_token_prediction(
+                                            global_token_idx,
+                                            scores,
+                                            &input_ids,
+                                            &mut tokens,
+                                            &offsets,
+                                        )
                                     })
                                     .collect();
 
@@ -1030,6 +1030,24 @@ pub struct ClassificationInferResponse {
     pub metadata: InferMetadata,
 }
 
+fn make_token_prediction(
+    index: usize,
+    scores: Vec<f32>,
+    input_ids: &[u32],
+    tokens: &mut [String],
+    offsets: &[(usize, usize)],
+) -> TokenPrediction {
+    let token_id = input_ids[index];
+    let token = tokens
+        .get_mut(index)
+        .map(std::mem::take)
+        .unwrap_or_else(|| format!("<token_{token_id}>"));
+    let (start, end) = offsets
+        .get(index)
+        .map_or((None, None), |&(start, end)| (Some(start), Some(end)));
+    (token, token_id, scores, start, end)
+}
+
 /// Token text, token ID, class scores, and optional character offsets.
 pub type TokenPrediction = (String, u32, Vec<f32>, Option<usize>, Option<usize>);
 
@@ -1049,4 +1067,28 @@ pub struct PooledEmbeddingsInferResponse {
 pub struct AllEmbeddingsInferResponse {
     pub results: Vec<Vec<f32>>,
     pub metadata: InferMetadata,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn token_delivery_moves_text_and_preserves_alignment() {
+        let ids = [10, 20];
+        let mut tokens = vec!["hello".to_owned(), "東京".to_owned()];
+        let offsets = [(0, 5), (6, 12)];
+        let original = tokens[1].as_ptr();
+        let result = make_token_prediction(1, vec![0.25, 0.75], &ids, &mut tokens, &offsets);
+        assert_eq!(result.0.as_ptr(), original);
+        assert_eq!(
+            result,
+            ("東京".into(), 20, vec![0.25, 0.75], Some(6), Some(12))
+        );
+        assert_eq!(tokens, ["hello", ""]);
+        let first = make_token_prediction(0, vec![1.0], &ids, &mut tokens, &offsets);
+        assert_eq!(first, ("hello".into(), 10, vec![1.0], Some(0), Some(5)));
+        let fallback = make_token_prediction(1, vec![1.0], &ids, &mut [], &[]);
+        assert_eq!(fallback, ("<token_20>".into(), 20, vec![1.0], None, None));
+    }
 }
