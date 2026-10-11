@@ -45,10 +45,17 @@ impl Qwen35Vision {
         } else {
             vb.dtype()
         };
+        let vision = if vb.contains_tensor("model.visual.patch_embed.proj.weight") {
+            vb.pp("model.visual")
+        } else if vb.contains_tensor("visual.patch_embed.proj.weight") {
+            vb.pp("visual")
+        } else {
+            vb.pp("model.visual")
+        };
         Ok(Self {
             // FP16 retains more mantissa precision in the vision tower than BF16
             // while keeping its projections on 16-bit tensor cores.
-            tower: Qwen3VLVisionModel::new(&config, vb.to_dtype(vision_dtype).pp("model.visual"))?,
+            tower: Qwen3VLVisionModel::new(&config, vision.to_dtype(vision_dtype))?,
             dtype: vision_dtype,
             sections,
             patch_dim: config.in_chans
