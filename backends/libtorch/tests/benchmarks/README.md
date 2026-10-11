@@ -19,8 +19,8 @@ cargo run --release -p text-embeddings-backend-libtorch \
 | `compare_heads` | Scalar classifiers and SPLADE vocabulary outputs |
 | `compare_radix` | Prefix reuse, changed inputs and folded/ragged execution |
 
-Each prints JSON measurements. Paired reports, immutable runtime identities and
-fixed accuracy/latency gates live under `docs/benchmarks`; an individual run is
-not qualification by itself. These tools require checkpoint files and CUDA and
+Each prints JSON measurements. Reports under `docs/benchmarks/` are kept locally
+and ignored by Git; publishing them is deferred to a follow-up PR. An individual
+run is not qualification by itself. These tools require checkpoint files and CUDA and
 are not run by the normal unit tests. `benchmark-fp8` additionally enables the
 Candle FP8 reference where supported.

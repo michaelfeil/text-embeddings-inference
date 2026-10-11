@@ -45,124 +45,25 @@ tests do not establish trained checkpoint accuracy.
 
 ## Model support
 
-Native implementations now cover BERT/RoBERTa, DistilBERT, GTE, ModernBERT,
-Nomic, Jina/JinaCode, Llama/Mistral, Qwen2/Qwen3 (including Qwen3 MoE), and the
-Gemma families. Model availability and numerical validation are tracked in the
-[coverage ledger](libtorch-model-coverage.md); source implementation alone does
-not establish production support or the latency target.
+Native implementations cover the encoder, decoder and multimodal families in
+[model coverage](libtorch-model-coverage.md). Classifier, SPLADE and typed decision
+heads are architecture-specific; arbitrary custom checkpoint modules are rejected.
+Single and sharded safetensors are supported, with a pure Rust PyTorch checkpoint
+fallback. Loading and inference require no Python runtime.
 
-Single-file and sharded safetensors, CLS/mean/last-token pooling and raw token
-embeddings remain supported. Base models and Sentence Transformers Dense
-sidecars also accept `pytorch_model.bin` state dictionaries through a pinned
-pure Rust reader; checkpoint loading does not invoke Python. For base models,
-a single safetensors file takes priority over `.bin`, followed by a safetensors
-index, matching Candle. Dense sidecars prefer safetensors over `.bin`. BERT supports tanh GELU, ReLU and SiLU; other
-BERT activation names fail at startup instead of silently selecting GELU.
-Classification and SPLADE heads are being checked
-against their Candle counterparts. FP32, FP16 and BF16 are accepted. Omitted
-dtype or `--dtype auto` selects BF16 on CUDA for BF16 checkpoints and models
-requiring it, FP16 for other CUDA checkpoints, and FP32 on CPU. Explicit dtype
-choices take precedence. CUDA Flash
-requires FP16/BF16. Gemma width-512 global attention uses a restricted native
-Torch Flash specialization for BF16 on SM90 with 128 KiB opt-in shared memory;
-other configurations use native packed efficient attention. The installed Torch Flash build disables ALiBi, so Jina uses native
-efficient varlen attention in one packed call per layer. A shared sequence-local
-ALiBi tile uses overlapping read-only strides with bounded backing storage:
-`O(T*M + H*M*M)` elements for total tokens `T`, maximum actual sequence length
-`M`, and heads `H`. Q/K/V contain only actual tokens. Jina reuses the bias across
-all layers within each request; no mutable cross-request cache is used.
-DeBERTa constructs distinct relative-bias tiles for each actual sequence and
-uses one packed efficient-attention call per layer. Its backing storage is
-`O(B*H*M*M + T*M)`, where `B` is the number of sequences; unused bias positions
-are never read. Neither Q/K/V nor token activations are padded.
+CUDA packed attention requires FP16 or BF16. Automatic dtype selection respects
+checkpoint configuration and Gemma's BF16 requirements; CPU uses FP32. Explicit
+dtype selection remains available. Relative-bias and ALiBi attention use actual
+sequence lengths without padded activations.
 
-Typed decision heads have native implementations and synthetic parity checks.
-Trained BF16 text decisions for Laya, Clef, Pplx and Qwen3.5 option-token heads now
-pass the strict accuracy gates and the 5% P50 latency target in both H100
-assignments. Laya covers the published three-question fixture and extended
-states through 256 tokens; its combined Q/K/V projection preserves all tested
-native outputs bitwise. All tested trained Laya actions saturate at probability
-1.0, while the synthetic fixture covers nonconstant actions. Clef covers joint
-choice/noul/three-level-score schemas; a separate scalar score passes an
-explicit BF16 magnitude gate without using scalar cosine as fidelity evidence.
-Option-token Qwen3.5 covers real
-choice prompts with actual token IDs. Laya enables `TEI_TORCH_CUDA_GRAPHS=true`;
-Clef/Pplx/option-token runs additionally enable `TEI_TORCH_MEDIA_CUDA_GRAPHS=true`,
-with verified graph counts 1–4. [Exact decision coverage and reports](libtorch-model-coverage.md)
-retain historical latency misses. Trained Pplx 27B now passes four real choice
-workloads in both GPU assignments, at least 15.27% faster, using its published
-noncausal-full-attention contract and readout rows 0/1/2. Its explicit head
-geometry and genuine visual-weight prefixes have validated startup fixes;
-this text qualification does not cover all 255 readout rows or image inference.
-Sentence Transformers Dense
-chains support identity/tanh projections of pooled outputs, retaining raw token
-widths. Dense modules accept safetensors or `.bin` weights. Radix folding now supports
-causal Llama, Mistral, Qwen2, Qwen3 and Qwen3 MoE text decoders. Projections and
-MLPs use real compact rows; attention receives the original packed token rows.
-Unused alignment rows are removed before inference, and the host validator
-requires identical causal prefixes for every alias. Bidirectional, multimodal
-and typed-decision folding are rejected. Trained Qwen3 FP16 and derived Ministral BF16 meet correctness
-and the latency target in both GPU assignments, including every raw token,
-full/fold comparisons, changed-map replay and suffix isolation. Experimental dynamic FP8
-uses native rowwise E4M3 for dense BERT/RoBERTa/ModernBERT and
-Llama/Mistral/Qwen2/Qwen3 MLP projections only. It requires a supported CUDA
-device, FP16/BF16 and an unquantized checkpoint; unsupported matrix dimensions
-are rejected without padding. Attention, normalization and heads retain their
-original dtype. The integrated a981 whole library qualifies trained causal
-TinyLlama BF16 FP8 inference in eager and graph modes: every raw/full/folded
-and last-token pooled output is bitwise equal to Candle, and all five P50
-workloads meet the unchanged +5% target in both 200-iteration H100 assignments.
-Default BF16 eager regressions also pass both assignments. Exact QKV copies
-combine three radix gathers into one CUDA launch without changing arithmetic.
-The earlier eager +8.88% miss remains recorded. BGE FP16 CLS dynamic MLP-only
-FP8 also meets the target on seven packed workloads in both 200-iteration
-assignments, eager and graph modes, with bitwise pooled outputs;
-[BGE scope](benchmarks/libtorch-bert-fp8-h100.md). Other checkpoint, head and
-precision scopes require their own trained qualification;
-[scope and evidence](libtorch-model-coverage.md) include the retained failures.
-Both comparison tools accept `TEI_BENCHMARK_FP8=1` when built
-with `benchmark-fp8`, enabling the same requested mode in both backends. Other custom
-modules are rejected explicitly. Image and
-audio towers have native implementations. EmbeddingGemma2 text, image and audio
-match Candle bitwise and meet the measured P50 target in both GPU assignments;
-Gemma4-26B-A4B-it BF16 embedding text and causal option-token Decision text also
-meet the measured target in both GPU assignments, with and without CUDA graphs.
-Gemma4 warm repeated-image Decision inference now meets the same accuracy
-and +5% P50 gates in both 200-iteration eager and graph assignments;
-[cache scope, runtime identities and regressions](libtorch-gemma-media-cache.md).
-Cold misses, eviction throughput and changing-image latency remain unqualified.
-The official checkpoint has no audio tower. Authentic
-Qwen3.5-35B-A3B BF16 text matches Candle pooled outputs bitwise on all seven
-measured eager workloads in both 200-iteration H100 assignments, including
-ragged batches and 32×512 actual tokens. Graphs are disabled; P50 is
-15.40–26.37% faster. Its routed-BF16 path uses the original no-FMA DeltaNet,
-exact norm reduction, model-dtype sigmoid and native Torch packed attention.
-Dense Qwen3.5 retains its existing path. Separate BF16 mean-embedding image
-qualifications pass both 200-iteration assignments for an image in a 32-token
-sequence and images in ragged 32-/48-token sequences. Prepared patch grids are
-`[1,4,4]` and `[1,2,4]`, with patch dimension 1536 and spatial merge size 2.
-Measured P50 is at least 16.94% lower, with minimum
-cosine 0.999663905. These use prepared synthetic patches, eager execution
-and valid boundary IDs 101/102. Real-image preprocessing, raw-token output,
-typed decisions, folding, other image grids, other precisions and A10 remain
-outside these measurements.
-[Image scope and runtime identity](benchmarks/tei-qwen35-moe-media-qualified-manifest.json).
-[2/3 evidence](benchmarks/tei-qwen35-moe-integrated-eager-2-3.json),
-[3/2 evidence](benchmarks/tei-qwen35-moe-integrated-eager-3-2.json).
-BERT uses tanh GELU to match Candle's inference kernels. CUDA fuses bias and
-GELU into the intermediate projection; CPU uses the matching approximation.
-On Hopper, FP16 BERT embedding models with hidden width 768 and 12 attention
-heads use the pinned native Torch packed Flash adapter for at most 4096 actual
-tokens; larger batches retain the existing attention path. Classifier and
-SPLADE heads retain their existing attention paths. The measured BGE FP16 CLS
-checkpoint passes all seven shapes in both H100 assignments with 200 iterations
-per backend: worst P50 slowdown +4.896% eager and +1.865% with graphs, minimum
-cosine 0.99999499. See the [qualification scope and reports](libtorch-model-coverage.md).
-RoBERTa additionally uses an exact embedding gather/normalization fusion and
-private packed attention for the measured H100 FP16 hidden-768/12-head mean
-embedding scope. Both 200-iteration eager assignments pass seven workloads,
-with worst P50 slowdown 3.04%; other pools, heads and dynamic FP8 retain their
-existing paths. [Exact whole-build evidence](benchmarks/libtorch-roberta-eager-h100.md).
+Supported causal text models can reuse radix prefixes. Bidirectional, media and
+typed decision requests reject folded inputs; the backend reports this capability
+to the router. Optional MLP FP8 kernels preserve attention, normalization and head
+dtypes and reject unsupported geometries rather than padding them.
+
+Gemma image features use a bounded per-model cache (32 entries, 64 MiB). CUDA
+events protect cached values across streams, and graph replay uses independent
+storage. Cache hits, misses and eviction have different serving costs.
 
 ## Build and run
 
@@ -252,12 +153,10 @@ Restrictive sliding windows retain Flash attention. This option remains opt-in.
 `TEI_TORCH_FULL_PRECISION_GEMM=1` disables reduced-precision GEMM accumulation
 and TF32 for this process; experiments have not established a general accuracy
 or latency benefit.
-ModernBERT CUDA uses the Candle normalization kernel adapter by default, together
-with matching half-precision rotary arithmetic. The trained embedding checkpoint
-matches Candle bitwise for both trained embedding mean and MLM CLS checkpoints,
-including official and arbitrary token IDs, with private Torch-pinned fused-softmax
-attention. Nomic v2 MoE uses exact model-dtype GELU and beta LayerNorm with
-unrounded residual statistics; its official and arbitrary-ID checks pass.
+ModernBERT CUDA uses the Candle normalization kernel adapter by default, with
+matching half-precision rotary arithmetic and private Torch-pinned attention.
+Nomic v2 MoE uses model-dtype GELU and beta LayerNorm with unrounded residual
+statistics.
 CUDA mean pooling uses Candle's exact model-dtype reduction tree in one packed
 launch over selected sequence spans; raw token outputs retain their original widths.
 `TEI_TORCH_EXACT_ENCODER_NORM=0` selects ATen normalization for diagnostics.
@@ -267,17 +166,8 @@ and descriptors and copy media values and prepared audio indices on replay.
 Unsupported captures fall back to eager inference. Trained media accuracy and
 performance remain under evaluation.
 
-The [checkpoint comparison](benchmarks/libtorch-checkpoints-h100.md) records
-Qwen3, GTE, BERT, RoBERTa, DistilBERT, ModernBERT, Nomic, Jina/JinaCode, Mistral and
-Qwen vision workloads meeting the
-5% P50 target with the recorded options. Gemma3, including both learned Dense
-heads, matches Candle bitwise and meets the measured target. EmbeddingGemma2
-text/image/audio and Nemotron Llama 1B now also match bitwise and meet the
-measured target. Additional checkpoint qualifications remain open.
-The Jina/JinaCode packed Torch bias implementation resolves the previously
-recorded batched latency gap. The initial
-[H100 BERT comparison](benchmarks/libtorch-bert-h100.md) shows Candle ahead,
-including when the GPU assignments are swapped.
+Detailed benchmark measurements and qualification reports are deferred to a
+follow-up PR. Local reports under `docs/benchmarks/` are ignored by Git.
 
 ## Comparing against Candle
 
