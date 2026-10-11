@@ -420,8 +420,13 @@ impl candle::CustomOp3 for ResidualNorm {
             .as_cuda_slice::<half::bf16>()?
             .slice(rl.start_offset()..);
         let mut out = unsafe { device.alloc::<half::bf16>(rows * width)? };
+        let compact = width > 256 && rows >= 2048;
         let kernel = device.get_or_load_custom_func(
-            "gemma_rms_norm_residual_bf16",
+            if compact {
+                "gemma_rms_norm_residual_compact_bf16"
+            } else {
+                "gemma_rms_norm_residual_bf16"
+            },
             "tei-gemma-rms-norm",
             ptx::GEMMA_RMS_NORM,
         )?;
@@ -441,7 +446,15 @@ impl candle::CustomOp3 for ResidualNorm {
         unsafe {
             launch.launch(LaunchConfig {
                 grid_dim: (rows as u32, 1, 1),
-                block_dim: (width32.min(1024).next_power_of_two(), 1, 1),
+                block_dim: (
+                    if compact {
+                        256
+                    } else {
+                        width32.min(1024).next_power_of_two()
+                    },
+                    1,
+                    1,
+                ),
                 shared_mem_bytes: 0,
             })
         }
@@ -461,7 +474,7 @@ mod tests {
     #[ignore = "requires CUDA"]
     fn residual_matches_separate_candle_operations_bitwise() -> Result<()> {
         let device = Device::new_cuda(0)?;
-        for rows in [1, 17, 1152, 2048, 4507] {
+        for rows in [1, 17, 1152, 2047, 2048, 4507] {
             for width in [72, 2816] {
                 let backing = Tensor::randn(0f32, 2f32, (rows + 2, width + 8), &device)?
                     .to_dtype(DType::BF16)?;
