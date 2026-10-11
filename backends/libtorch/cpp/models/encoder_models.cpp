@@ -6,12 +6,14 @@
 #include "kernels/encoder_norm.h"
 #include "kernels/encoder_bias.h"
 #include "kernels/encoder_activation.h"
+#include "batching/packed_pool.h"
 #include "kernels/torch_flash_fma.h"
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_addmm_activation.h>
 #include <cmath>
 #include <cstdlib>
+#include <limits>
 
 namespace tei {
 namespace {
@@ -34,6 +36,7 @@ struct Encoder final : Model {
   };
   std::vector<Layer> fused;
   std::unordered_map<std::string,Fp8Linear> fp8_mlp;
+  std::shared_ptr<Fp8RowwiseExecutor> fp8_executor;
   at::Tensor global_cos, global_sin, local_cos, local_sin;
   std::optional<at::Tensor> alibi;
 
@@ -114,6 +117,21 @@ struct Encoder final : Model {
     const auto width=x.size(-1)/2;
     auto first=x.narrow(-1,0,width),second=x.narrow(-1,width,width);
     return gate_first?act(first)*second:first*act(second);
+  }
+  at::Tensor modern_mlp_output(const at::Tensor& middle,const std::string& p) const {
+    const auto name=p+"mlp.Wo";
+#ifdef TEI_TORCH_CUDA_KERNELS
+    const bool gelu=activation!="relu" && activation!="silu" && activation!="swiglu" && activation!="tanh";
+    if(family==Family::Modern && gelu && middle.is_cuda() &&
+      middle.scalar_type()==at::kHalf && !fp8_mlp.empty()) {
+      auto projection=fp8_mlp.find(name);
+      if(projection!=fp8_mlp.end() && projection->second.can_fuse_gated_quantization()) {
+        auto quantized=fp8_quantize_gated_rows(middle);
+        return projection->second.forward_quantized(quantized.first,quantized.second,bias(name));
+      }
+    }
+#endif
+    return linear(gated(middle),name);
   }
   std::string layer_name(int64_t i) const {
     if (family == Family::Distil) return (has("transformer.layer.0.attention.q_lin.weight") ? "transformer.layer." : "encoder.layer.") + std::to_string(i) + ".";
@@ -196,6 +214,8 @@ struct Encoder final : Model {
       rotary_cache(o.real("rope_theta", 10000), global_cos, global_sin);
     }
     w(family == Family::Modern ? "embeddings.tok_embeddings.weight" : "embeddings.word_embeddings.weight");
+    if(family==Family::Modern && o.boolean("_fp8_dynamic",false))
+      fp8_executor=std::make_shared<Fp8RowwiseExecutor>();
     fused.resize(layers);
     for (int64_t i = 0; i < layers; ++i) {
       const auto p = layer_name(i);
@@ -216,7 +236,7 @@ struct Encoder final : Model {
       }
       if(o.boolean("_fp8_dynamic",false)) {
         for(const auto& name:{p+"mlp.Wi",p+"mlp.Wo"}) {
-          fp8_mlp.try_emplace(name,w(name+".weight"));
+          fp8_mlp.try_emplace(name,w(name+".weight"),family==Family::Modern,fp8_executor,name==p+"mlp.Wo");
           weights.erase(prefix+name+".weight");
         }
       }
@@ -329,13 +349,13 @@ struct Encoder final : Model {
         if(exact_norm&&h.is_cuda()) {
           auto normalized=encoder_layer_norm(projected,w(p+"mlp_norm.weight"),eps,modern_residual);
           modern_residual=normalized.second;
-          h=linear(gated(linear(normalized.first,p+"mlp.Wi")),p+"mlp.Wo");
+          h=modern_mlp_output(linear(normalized.first,p+"mlp.Wi"),p);
         } else
 #endif
         {
         h = h + projected;
         auto middle = linear(norm(h, p + "mlp_norm"), p + "mlp.Wi");
-        h = h + linear(gated(middle), p + "mlp.Wo");
+        h = h + modern_mlp_output(middle,p);
         }
       } else if (family == Family::Distil) {
         h = residual_norm(projected, h, p + "sa_layer_norm");
@@ -390,16 +410,34 @@ struct Encoder final : Model {
     if (tokenwise) return root_linear(h, "classifier");
     std::vector<at::Tensor> rows;
     const auto pool = family == Family::Modern ? o.string("classifier_pooling", "cls") : "cls";
-    for (int64_t row = 0; row < input.batch; ++row) {
-      const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
-      if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
-      else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
-      else {
-        TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
-        rows.push_back(h.narrow(0, start, 1));
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if (family == Family::Modern && pool == "mean" && h.is_cuda()
+        && h.is_contiguous() && (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)
+        && hidden > 0 && hidden <= std::numeric_limits<uint32_t>::max()
+        && input.batch > 0 && input.batch <= 65535
+        && input.cumulative.defined() && input.cumulative.device() == h.device()
+        && input.cumulative.scalar_type() == at::kInt && input.cumulative.dim() == 1
+        && input.cumulative.numel() == input.batch + 1) {
+      // Reuse Candle's packed model-dtype sum tree and rounded reciprocal.
+      // Device cumulative offsets are replay inputs, so this metadata remains
+      // capture-safe when actual token contents or sequence lengths change.
+      auto starts = input.cumulative.narrow(0, 0, input.batch);
+      auto lengths = input.cumulative.narrow(0, 1, input.batch) - starts;
+      h = packed_mean_pool(h, at::stack({starts, lengths}, 1));
+    } else
+#endif
+    {
+      for (int64_t row = 0; row < input.batch; ++row) {
+        const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
+        if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
+        else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
+        else {
+          TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
+          rows.push_back(h.narrow(0, start, 1));
+        }
       }
+      h = at::cat(rows, 0);
     }
-    h = at::cat(rows, 0);
     if (family == Family::Modern) {
       // Candle intentionally omits a dense bias and normalizes with no bias.
       h = at::linear(h, weight(weights, "head.dense.weight"));
