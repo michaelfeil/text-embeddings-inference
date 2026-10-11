@@ -137,8 +137,14 @@ measured eager workloads in both 200-iteration H100 assignments, including
 ragged batches and 32×512 actual tokens. Graphs are disabled; P50 is
 15.40–26.37% faster. Its routed-BF16 path uses the original no-FMA DeltaNet,
 exact norm reduction, model-dtype sigmoid and native Torch packed attention.
-Dense Qwen3.5 retains its existing path. This does not qualify the MoE image
-path, raw-token output, other precisions or A10.
+Dense Qwen3.5 retains its existing path. Separate BF16 mean-embedding image
+qualifications pass both 200-iteration assignments for one 32×32 image and
+two ragged 32×32/48×48 images, with at least 16.94% lower P50 and minimum
+cosine 0.999663905. These use prepared synthetic patches, eager execution
+and valid boundary IDs 101/102. Real-image preprocessing, raw-token output,
+typed decisions, folding, other image grids, other precisions and A10 remain
+outside these measurements.
+[Image scope and runtime identity](benchmarks/tei-qwen35-moe-media-qualified-manifest.json).
 [2/3 evidence](benchmarks/tei-qwen35-moe-integrated-eager-2-3.json),
 [3/2 evidence](benchmarks/tei-qwen35-moe-integrated-eager-3-2.json).
 BERT uses tanh GELU to match Candle's inference kernels. CUDA fuses bias and
