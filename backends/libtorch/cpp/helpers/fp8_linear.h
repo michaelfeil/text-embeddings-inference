@@ -59,7 +59,8 @@ public:
   at::Tensor forward_quantized(const at::Tensor& input,const at::Tensor& scales,
     const at::Tensor& bias = {}) const;
   bool can_fuse_gated_quantization() const {
-    return gated_quantization_ && rowwise_ && dtype_==at::kHalf &&
+    return gated_quantization_ && rowwise_ &&
+      (dtype_==at::kHalf || dtype_==at::kBFloat16) &&
       input_width()==1152 && output_width()==768;
   }
   int64_t input_width() const { return matrix_.size(1); }
