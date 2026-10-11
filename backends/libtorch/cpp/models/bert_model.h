@@ -42,7 +42,6 @@ struct Bert : tei::Model {
     cublasLtMatmulDesc_t operation{};
     cublasLtMatrixLayout_t weight{}, input{}, output{};
     cublasLtMatmulAlgo_t algorithm{};
-    at::Tensor workspace;
     size_t bytes{};
     bool valid = false;
     ~ClassifierPlan() {
@@ -52,6 +51,9 @@ struct Bert : tei::Model {
       if(operation)cublasLtMatmulDescDestroy(operation);
     }
   };
+  // All projections execute serially on the model's stream. Keep one stable
+  // allocation for every plan, including addresses retained by CUDA graphs.
+  at::Tensor classifier_workspace;
   mutable std::map<std::array<int64_t,5>,std::unique_ptr<ClassifierPlan>> classifier_plans;
 #endif
   Bert(TeiConfig cfg, c10::Device dev, at::ScalarType type): config(cfg), device(dev), dtype(type) {}
@@ -68,6 +70,7 @@ struct Bert : tei::Model {
         && x.scalar_type()==at::kHalf && matrix.scalar_type()==at::kHalf && bias.scalar_type()==at::kHalf
         && matrix.size(1)==x.size(1) && matrix.size(0)%16==0 && x.size(1)%16==0
         && bias.dim()==1 && bias.numel()==matrix.size(0)
+        && at::cuda::getCUDABlasLtWorkspaceSize()<=static_cast<size_t>(classifier_workspace.numel())
         && reinterpret_cast<uintptr_t>(x.const_data_ptr())%256==0
         && reinterpret_cast<uintptr_t>(matrix.const_data_ptr())%256==0
         && reinterpret_cast<uintptr_t>(bias.const_data_ptr())%256==0) {
@@ -96,7 +99,6 @@ struct Bert : tei::Model {
         if(preference)cublasLtMatmulPreferenceDestroy(preference);
         if(valid) {
           plan->algorithm=result.algo;plan->bytes=result.workspaceSize;
-          if(plan->bytes)plan->workspace=at::empty({static_cast<int64_t>(plan->bytes)},x.options().dtype(at::kByte));
         }
         plan->valid=valid;found=classifier_plans.emplace(key,std::move(plan)).first;
       }
@@ -104,7 +106,7 @@ struct Bert : tei::Model {
         auto& plan=*found->second;auto pointer=bias.const_data_ptr();
         TORCH_CHECK(cublasLtMatmulDescSetAttribute(plan.operation,CUBLASLT_MATMUL_DESC_BIAS_POINTER,&pointer,sizeof(pointer))==CUBLAS_STATUS_SUCCESS,"BERT cached bias update failed");
         auto output=at::empty({m,n},x.options());const float alpha=1.f,beta=0.f;
-        auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.bytes?plan.workspace.mutable_data_ptr():nullptr,plan.bytes,at::cuda::getCurrentCUDAStream());
+        auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.bytes?classifier_workspace.mutable_data_ptr():nullptr,plan.bytes,at::cuda::getCurrentCUDAStream());
         TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"BERT cached classifier projection failed: ",static_cast<int>(status)," m=",m," n=",n," k=",k," gelu=",gelu);
         return output;
       }
@@ -185,6 +187,9 @@ struct Bert : tei::Model {
     cached_classifier_gemm = private_flash_embedding && classification_width()>0
       && !options.boolean("_fp8_dynamic",false)
       && at::globalContext().blasPreferredBackend()==at::BlasBackend::Cublaslt;
+    if(cached_classifier_gemm)
+      classifier_workspace=at::empty({static_cast<int64_t>(at::cuda::getCUDABlasLtWorkspaceSize())},
+                                    at::TensorOptions().device(device).dtype(at::kByte));
 #endif
 #ifdef TEI_TORCH_CUDA_KERNELS
     // BERT and its aliases share Candle's biased LayerNorm primitive: residual
