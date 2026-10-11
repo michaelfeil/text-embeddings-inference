@@ -19,6 +19,28 @@ namespace tei {
 namespace {
 enum class Family { Distil, Modern, Nomic, Gte, Jina, JinaCode };
 
+at::Tensor gte_ntk_inverse_frequencies(int64_t dimension, double theta, double factor,
+    c10::Device device) {
+  const float base = static_cast<float>(theta), scale_factor = static_cast<float>(factor);
+  TORCH_CHECK(dimension > 0 && dimension % 2 == 0, "GTE NTK rotary width must be positive and even");
+  TORCH_CHECK(std::isfinite(base) && base > 0 && std::isfinite(scale_factor) && scale_factor > 0,
+    "GTE NTK theta and factor must be finite positive Float values");
+  const float scaled_base = base * scale_factor;
+  const float scale = std::pow(scale_factor, 2.f / static_cast<float>(dimension));
+  TORCH_CHECK(std::isfinite(scaled_base) && scaled_base > 0 && std::isfinite(scale) && scale > 0,
+    "Invalid GTE NTK frequency scale");
+  std::vector<float> frequencies;
+  frequencies.reserve(dimension / 2);
+  for (int64_t i = 0; i < dimension; i += 2)
+    frequencies.push_back(1.f / std::pow(scaled_base,
+      static_cast<float>(i) / static_cast<float>(dimension)));
+  auto inverse = at::from_blob(frequencies.data(), {dimension / 2},
+    at::TensorOptions().dtype(at::kFloat)).to(device).clone();
+  // Candle divides by the Float powf scale through affine(1.0 / f64(scale), 0).
+  const float multiplier = static_cast<float>(1.0 / static_cast<double>(scale));
+  return inverse * static_cast<double>(multiplier);
+}
+
 struct Encoder final : Model {
   Options o;
   Weights& weights;
@@ -95,7 +117,7 @@ struct Encoder final : Model {
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,residual,bias(n),false).first;
-    if (family == Family::Nomic && x.is_cuda() &&
+    if ((family == Family::Nomic || family == Family::Gte) && x.is_cuda() &&
         (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16))
       return encoder_layer_norm_only(x, w(n + (has(n + ".weight") ? ".weight" : ".gamma")), eps, residual, bias(n), false);
     if (x.is_cuda()) return fused_add_layer_norm(x, residual,
@@ -154,7 +176,7 @@ struct Encoder final : Model {
         auto mixed = (1.0 - smooth) * inv / factor + smooth * inv;
         inv = at::where(wavelength < original / high, inv, at::where(wavelength > original / low, inv / factor, mixed));
       } else {
-        inv = at::exp(at::arange(0, d, 2, fp) * (-std::log(theta * factor) / d)) / std::pow(factor, 2.0 / d);
+        inv = gte_ntk_inverse_frequencies(d, theta, factor, device);
       }
     }
     auto phase = at::arange(length, fp).unsqueeze(1) * inv.unsqueeze(0);
@@ -290,7 +312,7 @@ struct Encoder final : Model {
     if(exact_alibi32)
       return torch_flash_fma_alibi32(q,k,v,input.cumulative,*alibi,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))));
-    if((family==Family::Modern||family==Family::Nomic||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
+    if((family==Family::Modern||family==Family::Nomic||family==Family::Gte||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
       return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
 #endif
@@ -315,6 +337,11 @@ struct Encoder final : Model {
           h = encoder_layer_norm_only(h, w(std::string("emb_ln") +
             (has("emb_ln.weight") ? ".weight" : ".gamma")), eps,
             types, bias("emb_ln"), false);
+          embedding_norm_done = true;
+        } else if (family == Family::Gte && types.defined() && h.is_cuda() &&
+            (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)) {
+          // Candle keeps the word/type sum in Float through normalization.
+          h = residual_norm(h, types, "embeddings.LayerNorm");
           embedding_norm_done = true;
         } else
 #endif
