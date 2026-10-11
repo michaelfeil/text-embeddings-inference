@@ -468,14 +468,13 @@ fn queue_blocking_task(
     let mut pending = PendingQueue::new(max_concurrent_requests);
     let mut selection = Selection::default();
     let mut spare_token_buffers = allocate_token_buffers(max_batch_tokens);
-    let queue_size = metrics::gauge!("te_queue_size");
-    let batch_size = metrics::histogram!("te_batch_next_size");
-    let batch_tokens = metrics::histogram!("te_batch_next_tokens");
+    // Resolve metric handles at each update: the router installs its recorder
+    // after constructing this queue. Handles captured here could stay no-op.
 
     while let Some(cmd) = queue_receiver.blocking_recv() {
         if closed.load(Ordering::SeqCst) {
             pending.reject_all();
-            queue_size.set(0.0);
+            metrics::gauge!("te_queue_size").set(0.0);
             match cmd {
                 QueueCommand::Append(entry, _) => {
                     let _ = entry
@@ -497,7 +496,7 @@ fn queue_blocking_task(
             QueueCommand::Append(entry, span) => {
                 let _span = span.entered();
                 pending.push(*entry);
-                queue_size.set(pending.entries.len() as f64);
+                metrics::gauge!("te_queue_size").set(pending.entries.len() as f64);
             }
             QueueCommand::NextBatch {
                 response_sender,
@@ -524,9 +523,9 @@ fn queue_blocking_task(
                 if requests > 1 {
                     spare_token_buffers = allocate_token_buffers(max_batch_tokens);
                 }
-                batch_size.record(requests as f64);
-                batch_tokens.record(selection.tokens as f64);
-                queue_size.set(pending.entries.len() as f64);
+                metrics::histogram!("te_batch_next_size").record(requests as f64);
+                metrics::histogram!("te_batch_next_tokens").record(selection.tokens as f64);
+                metrics::gauge!("te_queue_size").set(pending.entries.len() as f64);
             }
         }
     }
