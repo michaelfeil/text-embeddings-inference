@@ -13,8 +13,8 @@ template<class T> __global__ void packed_bias_fill_kernel(T* out,const T* ck,con
  CUDA_KERNEL_ASSERT(start>=0 && n>0 && n<=max_sequence && start+n<=total);
  if(idx>=heads*n*n)return;
  const int64_t head=idx/(n*n),row=(idx%(n*n))/n,col=idx%n;
- CUDA_KERNEL_ASSERT(index_offsets[sequence]>=0 && index_offsets[sequence]<=index_count-n*n);
- const int64_t bucket=(ck||pc)?indices[index_offsets[sequence]+row*n+col]:0;
+ CUDA_KERNEL_ASSERT(!index_offsets || (index_offsets[sequence]>=0 && index_offsets[sequence]<=index_count-n*n));
+ const int64_t bucket=(ck||pc)?indices[index_offsets ? index_offsets[sequence]+row*n+col : row*max_sequence+col]:0;
  CUDA_KERNEL_ASSERT(!(ck||pc) || (bucket>=0 && bucket<bins));
  T value=T(0.f);
  // Preserve the original model-dtype zero+c2p, then +p2c rounding.
@@ -42,10 +42,16 @@ void packed_bias_fill(const at::Tensor& out,const at::Tensor& ck,const at::Tenso
  const auto& source=ck.defined()?ck:pc;
  const int64_t bins=source.defined()&&source.dim()==3?source.size(2):0;
  for(const auto* t:{&ck,&pc})if(t->defined())TORCH_CHECK(t->dim()==3&&t->size(0)==heads&&t->size(1)==total&&t->size(2)==bins&&bins>0&&t->device()==out.device()&&t->scalar_type()==out.scalar_type()&&t->is_contiguous(),"Packed relative bias source mismatch");
- TORCH_CHECK(indices.dim()==1&&indices.device()==out.device()&&indices.scalar_type()==at::kLong&&indices.is_contiguous()&&index_offsets.dim()==1&&index_offsets.device()==out.device()&&index_offsets.scalar_type()==at::kLong&&index_offsets.is_contiguous()&&index_offsets.numel()==batch+1&&cumulative.device()==out.device()&&cumulative.scalar_type()==at::kInt&&cumulative.is_contiguous(),"Packed relative bias metadata mismatch");
- TORCH_CHECK(indices.numel()>=total,"Packed relative bias indices are too short");
+ TORCH_CHECK(indices.device()==out.device()&&indices.scalar_type()==at::kLong&&indices.is_contiguous()&&cumulative.device()==out.device()&&cumulative.scalar_type()==at::kInt&&cumulative.is_contiguous(),"Packed relative bias metadata mismatch");
+ if(indices.dim()==2) {
+   TORCH_CHECK(indices.size(0)==max_sequence&&indices.size(1)==max_sequence&&!index_offsets.defined(),"Shared relative bias table must match the real maximum sequence");
+ } else {
+   TORCH_CHECK(indices.dim()==1&&index_offsets.defined()&&index_offsets.dim()==1&&index_offsets.device()==out.device()&&index_offsets.scalar_type()==at::kLong&&index_offsets.is_contiguous()&&index_offsets.numel()==batch+1,"Packed relative bias offsets mismatch");
+   TORCH_CHECK(indices.numel()>=total,"Packed relative bias indices are too short");
+ }
+
  auto stream=at::cuda::getCurrentCUDAStream(out.device().index());dim3 grid((heads*max_sequence*max_sequence+255)/256,batch);
-#define RUN(T) packed_bias_fill_kernel<T><<<grid,256,0,stream>>>(reinterpret_cast<T*>(out.mutable_data_ptr()),ck.defined()?reinterpret_cast<const T*>(ck.const_data_ptr()):nullptr,pc.defined()?reinterpret_cast<const T*>(pc.const_data_ptr()):nullptr,indices.const_data_ptr<int64_t>(),index_offsets.const_data_ptr<int64_t>(),cumulative.const_data_ptr<int32_t>(),heads,total,bins,max_sequence,stride,indices.numel())
+#define RUN(T) packed_bias_fill_kernel<T><<<grid,256,0,stream>>>(reinterpret_cast<T*>(out.mutable_data_ptr()),ck.defined()?reinterpret_cast<const T*>(ck.const_data_ptr()):nullptr,pc.defined()?reinterpret_cast<const T*>(pc.const_data_ptr()):nullptr,indices.const_data_ptr<int64_t>(),index_offsets.defined()?index_offsets.const_data_ptr<int64_t>():nullptr,cumulative.const_data_ptr<int32_t>(),heads,total,bins,max_sequence,stride,indices.numel())
  if(out.scalar_type()==at::kHalf){RUN(__half);}else{RUN(__nv_bfloat16);}
 #undef RUN
  C10_CUDA_KERNEL_LAUNCH_CHECK();

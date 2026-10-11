@@ -593,25 +593,23 @@ struct Deberta final : Model {
     if(has("embeddings.embed_proj.weight"))h=linear(h,"embeddings.embed_proj");
     h=norm(h,"embeddings.LayerNorm");auto embedding=h;
     std::vector<at::Tensor> indices;
-    // Relative buckets depend only on local sequence length and model options.
-    // Reuse exact original tensors inside this forward; no persistent cache or
-    // padded token coordinates are introduced, including during graph capture.
-    std::unordered_map<int64_t,at::Tensor> indices_by_length;
-    for(int64_t row=0;row<input.batch;++row) {
-      const auto length=input.offsets[row+1]-input.offsets[row];
-      auto found=indices_by_length.find(length);
-      if(found==indices_by_length.end())found=indices_by_length.emplace(length,buckets(length)).first;
-      indices.push_back(found->second);
-    }
+    // Bucket values depend only on local i-j. Use the actual longest real
+    // sequence's table for CUDA, with direct top-left indexing in bias fill.
+    // This metadata shares no token rows and introduces no padded activations.
+    at::Tensor shared_indices;
 #ifdef TEI_TORCH_CUDA_KERNELS
-    at::Tensor packed_indices,index_offsets;
-    if(device.is_cuda()&&(dtype==at::kHalf||dtype==at::kBFloat16)) {
-      std::vector<at::Tensor> flat;for(const auto& t:indices)flat.push_back(t.reshape({-1}));
-      packed_indices=at::cat(flat,0);
-      auto lengths=(input.cumulative.narrow(0,1,input.batch)-input.cumulative.narrow(0,0,input.batch)).to(at::kLong);
-      index_offsets=at::cat({at::zeros({1},lengths.options()),at::cumsum(lengths*lengths,0)},0);
-    }
+    if(device.is_cuda()&&(dtype==at::kHalf||dtype==at::kBFloat16))shared_indices=buckets(input.max_sequence);
+    else
 #endif
+    {
+      std::unordered_map<int64_t,at::Tensor> indices_by_length;
+      for(int64_t row=0;row<input.batch;++row) {
+        const auto length=input.offsets[row+1]-input.offsets[row];
+        auto found=indices_by_length.find(length);
+        if(found==indices_by_length.end())found=indices_by_length.emplace(length,buckets(length)).first;
+        indices.push_back(found->second);
+      }
+    }
     auto scale=at::full({},std::sqrt((1+c2p+p2c)*dim),h.options());
     for(int64_t layer=0;layer<layers;++layer) {
       const auto p="encoder.layer."+std::to_string(layer)+".";
@@ -630,8 +628,8 @@ struct Deberta final : Model {
         if(position_key[layer].defined())content_key=at::matmul(q.transpose(0,1),position_key[layer])/scale;
         if(position_query[layer].defined())position_content=at::matmul(k.transpose(0,1),position_query[layer])/scale;
 #ifdef TEI_TORCH_CUDA_KERNELS
-        if(packed_indices.defined()) {
-          packed_bias_fill(packed_bias,content_key,position_content,packed_indices,index_offsets,input.cumulative,nmax);
+        if(shared_indices.defined()) {
+          packed_bias_fill(packed_bias,content_key,position_content,shared_indices,at::Tensor(),input.cumulative,nmax);
         } else
 #endif
         {
