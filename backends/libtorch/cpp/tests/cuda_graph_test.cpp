@@ -70,7 +70,7 @@ std::unique_ptr<Model> tiny_decoder(Weights* fixture=nullptr) {
  auto result=create_decoder(cfg,w,c10::Device("cuda:0"),at::kHalf);result->ready();return result;
 }
 void radix_graph_test(Model& model) {
- CudaGraphCache cache(3,16);
+ CudaGraphCache cache(3,16,1);
  auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
  std::vector<int32_t> offsets={0,3,6};
  PackedInput input{at::tensor({3,4,5,3,4,6},options),at::zeros({6},options),at::tensor({0,1,2,0,1,2},options),
@@ -146,7 +146,7 @@ void radix_qkv_copy_graph_test() {
    TORCH_CHECK(at::equal(actual,model.reference(request)),"QKV unfolding used another-device stream");
    cudaSetDevice(0);
   }
-  CudaGraphCache cache(2,2048);
+  CudaGraphCache cache(2,2048,1);
   for(int run=0;run<3;++run){
    if(run==1){
     request.compact_ids=request.compact_ids.flip({0});request.compact_positions=request.compact_positions.flip({0});
@@ -160,7 +160,33 @@ void radix_qkv_copy_graph_test() {
   TORCH_CHECK(cache.size()==1,"Same QKV/map shapes did not reuse the graph");
  }
 }
-int main(){c10::InferenceMode guard;radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8);
+void admission_test() {
+ Dense model;
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ CudaGraphCache cache(2,32,3,512ULL<<20,4);
+ auto request=[&](int n) {
+  std::vector<int32_t> offsets{0,n};
+  auto ids=at::arange(n,options);
+  PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,n},options.dtype(at::kInt)),offsets.data(),1,n};
+  TORCH_CHECK(at::equal(cache.forward(model,input).clone(),model.forward(input)),"Admission changed output");
+ };
+ // Shape churn never pays capture cost; a stable shape can still enter later.
+ for(int repeat=0;repeat<5;++repeat)for(int n=1;n<=8;++n)request(n);
+ TORCH_CHECK(cache.stats().attempts==0,"Alternating cold shapes captured");
+ for(int n=1;n<=4;++n)for(int repeat=0;repeat<4;++repeat)request(n);
+ auto warmed=cache.stats();
+ TORCH_CHECK(warmed.captures==4 && warmed.evictions==2 && cache.size()==2,"Working-set turnover failed");
+ for(int n=5;n<=8;++n)for(int repeat=0;repeat<4;++repeat)request(n);
+ TORCH_CHECK(cache.stats().attempts==4,"Capture budget did not stop churn");
+ request(4);TORCH_CHECK(cache.stats().hits>warmed.hits,"Budget exhaustion disabled resident replay");
+ CudaGraphCache tiny_budget(2,32,1,1,4);
+ std::vector<int32_t> offsets{0,3};auto ids=at::arange(3,options);
+ PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,3},options.dtype(at::kInt)),offsets.data(),1,3};
+ for(int repeat=0;repeat<4;++repeat)
+  TORCH_CHECK(at::equal(tiny_budget.forward(model,input),model.forward(input)),"Budget fallback changed output");
+ TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==1,"Oversized pools repeatedly captured");
+}
+int main(){c10::InferenceMode guard;admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);
@@ -206,7 +232,7 @@ int main(){c10::InferenceMode guard;radix_qkv_copy_graph_test();Weights fixture;
  auto withdeep=decoder_multimodal_forward(model,input,visual_indices,visual,cosine,sine,{deepstack});
  TORCH_CHECK((withdeep-withzero).abs().max().item<float>()>0.001,"CUDA deepstack features were ignored");
  TORCH_CHECK((withdeep[0]-withzero[0]).abs().max().item<float>()<0.0001,"CUDA deepstack crossed causal token boundary");
- Heads heads;CudaGraphCache heads_cache(4,8);
+ Heads heads;CudaGraphCache heads_cache(4,8,1);
  for(int repeat=0;repeat<3;++repeat) {
   input.ids.add_(1);
   for(int operation=0;operation<=2;++operation) {
@@ -217,10 +243,10 @@ int main(){c10::InferenceMode guard;radix_qkv_copy_graph_test();Weights fixture;
  }
  TORCH_CHECK(heads_cache.size()==3,"Hidden, sequence and token head graph keys collided");
  input.ids.sub_(3);
- Uncapturable unsupported;CudaGraphCache fallback;
+ Uncapturable unsupported;CudaGraphCache fallback(4,4096,1);
  for(int i=0;i<2;++i){auto actual=fallback.forward(unsupported,input);TORCH_CHECK(actual[0][0].item<float>()==12,"Graph fallback changed result");}
  TORCH_CHECK(fallback.size()==0,"Unsupported model unexpectedly captured");
- Media media;CudaGraphCache media_cache(4,8);
+ Media media;CudaGraphCache media_cache(4,8,1);
  int devices=0;TORCH_CHECK(cudaGetDeviceCount(&devices)==cudaSuccess,"Unable to query CUDA devices");
  input.images.push_back({at::ones({2,4},options.dtype(at::kFloat)),{1,2,2},1,0,1,0});
  input.audios.push_back({at::arange(12,options.dtype(at::kFloat)).view({3,4}),at::tensor({1,0,1},options).to(at::kBool),0,2});

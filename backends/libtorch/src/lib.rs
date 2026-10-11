@@ -509,6 +509,20 @@ impl LibtorchBackend {
             return Err(start("CUDA graph maximum tokens must be positive"));
         }
         options["_cuda_graph_max_tokens"] = graph_max_tokens.into();
+        for (env, key, default, minimum) in [
+            ("TEI_TORCH_CUDA_GRAPH_ENTRIES", "_cuda_graph_entries", 4, 0),
+            ("TEI_TORCH_CUDA_GRAPH_REUSE", "_cuda_graph_reuse", 3, 1),
+            ("TEI_TORCH_CUDA_GRAPH_MAX_BYTES", "_cuda_graph_max_bytes", 512 << 20, 1),
+            ("TEI_TORCH_CUDA_GRAPH_MAX_CAPTURES", "_cuda_graph_max_captures", 8, 0),
+        ] {
+            let value = std::env::var(env)
+                .map(|value| value.parse::<i64>().map_err(start))
+                .unwrap_or(Ok(default))?;
+            if value < minimum {
+                return Err(start(format!("{env} must be at least {minimum}")));
+            }
+            options[key] = value.into();
+        }
         options["_cudnn_varlen"] = std::env::var("TEI_TORCH_CUDNN_VARLEN")
             .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
             .into();

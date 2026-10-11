@@ -23,7 +23,7 @@ int main() {
   add(p+"self_attn.q_norm.weight",{128},true);add(p+"self_attn.k_norm.weight",{128},true);
   add(p+"mlp.gate.weight",{128,2048});add(p+"mlp.experts.gate_up_proj",{128,1536,2048});add(p+"mlp.experts.down_proj",{128,2048,768});
   auto decoder=create_decoder(cfg,w,c10::Device("cuda:0"),at::kBFloat16);decoder->ready();
-  CudaGraphCache cache(2,8);auto longs=opts.dtype(at::kLong);
+  CudaGraphCache cache(2,8,1);auto longs=opts.dtype(at::kLong);
   for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3}}) {
    auto ids=at::tensor({3,4,5},longs),pos=at::tensor({0,1,2},longs);
    auto cumulative=at::from_blob(offsets.data(),{int64_t(offsets.size())},at::TensorOptions().dtype(at::kInt)).to(at::kCUDA);

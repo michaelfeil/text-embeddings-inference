@@ -143,6 +143,17 @@ Set `TEI_TORCH_CUDA_GRAPHS=1` to enable an experimental four-shape replay cache
 for eligible dense models and the validated Hopper BF16 Qwen3 MoE geometry.
 Other routed configurations run eagerly. Cache keys include exact sequence boundaries; no
 tokens are padded. Capture cost and cache misses matter for serving latency.
+Shapes need three consecutive requests before capture. Alternating misses run
+eagerly. `TEI_TORCH_CUDA_GRAPH_ENTRIES` defaults to four and
+`TEI_TORCH_CUDA_GRAPH_REUSE` to three. A lifetime budget of eight capture attempts
+(`TEI_TORCH_CUDA_GRAPH_MAX_CAPTURES`) allows a bounded working-set turnover;
+afterward existing graphs still replay and other shapes run eagerly.
+`TEI_TORCH_CUDA_GRAPH_MAX_BYTES` defaults to 536870912 bytes. Admission charges
+private-pool reserved segments plus static CUDA input buffers, cumulatively even
+after eviction. An oversized trial capture stops further captures, so the bound
+can overshoot by one trial pool. These budgets bound graph admission, not total
+model/allocator memory or CUDA graph executable metadata. No global allocator
+cleanup runs per request. Set entries or attempts to zero to disable capture.
 The default capture limit is 4096 tokens; `TEI_TORCH_CUDA_GRAPH_MAX_TOKENS` accepts
 a positive override. Unsupported capture operations run eagerly. Media capture
 requires the additional experimental flag described below.
