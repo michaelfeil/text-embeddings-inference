@@ -74,6 +74,28 @@ pub struct DecisionOutput {
     pub action_probability: f32,
 }
 
+/// An owned result, or CPU completion work after an ordered native submission.
+/// Deferred work must retain all native buffers until `complete` or drop, and
+/// bound pending work before returning. The next model call may run immediately.
+pub enum Inference<T> {
+    Ready(T),
+    Deferred(Box<dyn FnOnce() -> Result<T, BackendError> + Send>),
+}
+impl<T: Send + 'static> Inference<T> {
+    pub fn complete(self) -> Result<T, BackendError> {
+        match self {
+            Self::Ready(value) => Ok(value),
+            Self::Deferred(complete) => complete(),
+        }
+    }
+    pub fn map<U: Send + 'static>(self, map: impl FnOnce(T) -> U + Send + 'static) -> Inference<U> {
+        match self {
+            Self::Ready(value) => Inference::Ready(map(value)),
+            Self::Deferred(complete) => Inference::Deferred(Box::new(move || complete().map(map))),
+        }
+    }
+}
+
 pub trait Backend {
     fn decide(
         &self,
@@ -98,6 +120,19 @@ pub trait Backend {
     fn predict(&self, batch: Batch) -> Result<Predictions, BackendError>;
 
     fn predict_tokens(&self, batch: Batch) -> Result<TokenPredictions, BackendError>;
+
+    fn submit_embed(&self, batch: Batch) -> Result<Inference<Embeddings>, BackendError> {
+        self.embed(batch).map(Inference::Ready)
+    }
+    fn submit_predict(&self, batch: Batch) -> Result<Inference<Predictions>, BackendError> {
+        self.predict(batch).map(Inference::Ready)
+    }
+    fn submit_predict_tokens(
+        &self,
+        batch: Batch,
+    ) -> Result<Inference<TokenPredictions>, BackendError> {
+        self.predict_tokens(batch).map(Inference::Ready)
+    }
 }
 
 #[derive(Debug, PartialEq, Clone)]
