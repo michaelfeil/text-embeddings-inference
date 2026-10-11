@@ -281,6 +281,11 @@ int main(int argc,char** argv) {
       auto scored=create_gemma(scored_cfg,scored_weights,c10::Device("cpu"),at::kFloat);scored->ready();
       TORCH_CHECK(scored->supports_radix(),"Loaded Gemma sequence score head must support causal folding");
       auto full_score=scored->predict(logical,false);
+      auto capped_cfg=scored_cfg;capped_cfg.values["final_logit_softcapping"]="0.01";
+      auto capped=create_gemma(capped_cfg,scored_weights,c10::Device("cpu"),at::kFloat);capped->ready();
+      TORCH_CHECK(full_score.abs().max().item<float>()>0.01f,"Classifier fixture must expose accidental softcapping");
+      TORCH_CHECK(at::equal(full_score,capped->predict(logical,false)),"LM softcapping changed raw classifier logits");
+      TORCH_CHECK(at::allclose(full_score,capped->predict(compact,false),1e-5,1e-6),"LM softcapping changed folded classifier logits");
       TORCH_CHECK(at::allclose(full_score,scored->predict(compact,false),1e-5,1e-6),"Gemma folded classifier changed sequence-end readout");
       bool embedding_fold_rejected=false;
       try { scored->forward(compact); } catch(const c10::Error&) { embedding_fold_rejected=true; }

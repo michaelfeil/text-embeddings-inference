@@ -776,9 +776,8 @@ class Gemma final : public Model {
     // Read current packed ends on the producing device, including graph replay.
     // A host-backed index upload cannot run inside CUDA graph capture.
     auto ids=input.cumulative.narrow(0,1,input.batch).to(at::kLong)-1;
-    auto logits=at::linear(states.index_select(0,ids),weight(weights,"score.weight"));
-    auto cap=real("final_logit_softcapping",cfg.real("final_logit_softcapping",0));
-    return cap>0?at::tanh(logits/cap)*cap:logits;
+    // LM-head softcapping does not apply to sequence classifier logits.
+    return at::linear(states.index_select(0,ids),weight(weights,"score.weight"));
   }
   at::Tensor forward_impl(const PackedInput& input,bool is_causal) const {
     TORCH_CHECK(!radix_enabled(input) || (is_causal && !legacy && !embedding2),
