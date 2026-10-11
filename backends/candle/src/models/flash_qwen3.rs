@@ -146,14 +146,8 @@ impl Qwen3Attention {
             self.num_key_value_heads,
         )?;
         #[cfg(feature = "cuda")]
-        let fused = crate::layers::qk_norm_rope::try_forward(
-            &q,
-            &k,
-            &self.q_norm,
-            &self.k_norm,
-            &cos,
-            &sin,
-        )?;
+        let fused =
+            crate::layers::qk_norm_rope::try_forward(&q, &k, &self.q_norm, &self.k_norm, cos, sin)?;
         #[cfg(not(feature = "cuda"))]
         let fused: Option<(Tensor, Tensor)> = None;
         let (q, k) = match fused {

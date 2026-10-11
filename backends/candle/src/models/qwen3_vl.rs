@@ -127,7 +127,13 @@ impl Model for Qwen3VlModel {
         let half = self.head_dim / 2;
         let mut cos = Vec::with_capacity(batch.input_ids.len() * half);
         let mut sin = Vec::with_capacity(cos.capacity());
-        for i in 0..batch.input_ids.len() {
+        for ((temporal, height), width) in positions[0]
+            .iter()
+            .zip(&positions[1])
+            .zip(&positions[2])
+            .take(batch.input_ids.len())
+        {
+            let position = [*temporal, *height, *width];
             for (j, frequency) in self.inv_freq.iter().enumerate() {
                 let axis = if j % 3 == 1 && j < self.sections[1] * 3 {
                     1
@@ -136,7 +142,7 @@ impl Model for Qwen3VlModel {
                 } else {
                     0
                 };
-                let angle = positions[axis][i] as f32 * frequency;
+                let angle = position[axis] as f32 * frequency;
                 cos.push(angle.cos());
                 sin.push(angle.sin());
             }
