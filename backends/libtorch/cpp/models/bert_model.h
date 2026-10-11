@@ -100,11 +100,11 @@ struct Bert : tei::Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
     // Qualified H100 FP16 BERT embedding geometry. Dynamic FP8 also needs
     // the original Flash rounding before quantization, including trained heads.
-    // Keep ordinary classifier/SPLADE and RoBERTa selectors unchanged.
+    // BERT classifier backbones share this geometry; keep SPLADE and RoBERTa selectors unchanged.
     private_flash_embedding = device.is_cuda() && dtype == at::kHalf && !roberta
       && config.hidden == 768 && config.heads == 12 && (config.activation == 0 || config.activation == 1)
       && at::cuda::getDeviceProperties(device.index())->major == 9
-      && ((classification_width() == 0 && options.string("_pooling") != "splade") || options.boolean("_fp8_dynamic", false));
+      && (options.string("_pooling") != "splade" || options.boolean("_fp8_dynamic", false));
 #endif
 #ifdef TEI_TORCH_CUDA_KERNELS
     // BERT and its aliases share Candle's biased LayerNorm primitive: residual
