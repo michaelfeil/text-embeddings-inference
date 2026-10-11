@@ -3,3 +3,8 @@ target
 data/
 __pycache__/
 Qwen3-Embedding-*/
+
+# Local benchmark reports; publish separately from the backend implementation.
+docs/benchmarks/
+docs/libtorch-gemma-media-cache.md
+docs/libtorch-gemma-media-cache-integrated-regression.md

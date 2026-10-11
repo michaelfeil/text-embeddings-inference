@@ -1,0 +1,405 @@
+#include "models/bert_model.h"
+#include "bridge.h"
+#include "helpers/fp8_linear.h"
+#include "batching/radix.h"
+#include "models/model.h"
+#include "helpers/options.h"
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include "kernels/fast_kernels.h"
+#include "kernels/encoder_norm.h"
+#include "kernels/encoder_activation.h"
+#include "kernels/torch_flash_fma.h"
+#include "batching/packed_pool.h"
+#include <ATen/cuda/CUDAContext.h>
+#include <ATen/detail/CUDAHooksInterface.h>
+#endif
+#include "models/decoder_models.h"
+#include "kernels/moe_kernels.h"
+#include "models/decision_models.h"
+#include "models/dense_models.h"
+#include "models/encoder_models.h"
+#include "models/gemma_models.h"
+#include "models/multimodal_models.h"
+#include "batching/cuda_graph.h"
+#include <ATen/ATen.h>
+#include <ATen/Context.h>
+#include <ATen/ops/_flash_attention_forward.h>
+#include <ATen/ops/_addmm_activation.h>
+#include <ATen/ops/_cudnn_attention_forward.h>
+#include <c10/core/InferenceMode.h>
+#include <c10/core/impl/DeviceGuardImplInterface.h>
+#include <cstring>
+#include <cstdlib>
+#include <mutex>
+#include <memory>
+#include <string>
+#include <unordered_map>
+
+namespace {
+thread_local std::string error;
+std::once_flag precision_initialized;
+void initialize_precision() {
+  std::call_once(precision_initialized, [] {
+    const auto* value = std::getenv("TEI_TORCH_FULL_PRECISION_GEMM");
+    if (value && (std::strcmp(value, "true") == 0 || std::strcmp(value, "1") == 0)) {
+      at::globalContext().setAllowFP16ReductionCuBLAS(false);
+      at::globalContext().setAllowBF16ReductionCuBLAS(false);
+      at::globalContext().setAllowFP16AccumulationCuBLAS(false);
+      at::globalContext().setAllowTF32CuBLAS(false);
+      at::globalContext().setAllowTF32CuDNN(false);
+    }
+  });
+}
+at::ScalarType scalar(int32_t dtype) {
+  switch (dtype) {
+    case 0: return at::kFloat;
+    case 1: return at::kHalf;
+    case 2: return at::kBFloat16;
+    default: throw std::runtime_error("Unsupported tensor dtype");
+  }
+}
+c10::Device device(const char* name) {
+  if (std::strcmp(name, "auto") == 0)
+    return c10::Device(at::globalContext().hasCUDA() && at::getNumGPUs() > 0 ? "cuda:0" : "cpu");
+  return c10::Device(name);
+}
+struct Engine {
+  TeiConfig config;
+  c10::Device device;
+  at::ScalarType dtype;
+  tei::Options options;
+  tei::Weights weights;
+  std::unique_ptr<tei::Model> model;
+  std::unique_ptr<tei::DenseChain> dense;
+  std::unique_ptr<tei::DecisionHead> decision;
+  std::unique_ptr<tei::CudaGraphCache> graphs;
+  bool media_graphs=false;
+  Engine(TeiConfig cfg, c10::Device dev, at::ScalarType type) : config(cfg), device(dev), dtype(type) {}
+  void ready() {
+    dense = std::make_unique<tei::DenseChain>(options, weights);
+    auto family = options.string("model_type", "bert");
+    if(options.boolean("_fp8_dynamic",false)) {
+      TORCH_CHECK(family=="bert" || family=="roberta" || family=="xlm-roberta"
+        || family=="camembert" || family=="modernbert" || family=="llama"
+        || family=="llama_bidirec" || family=="mistral" || family=="ministral3"
+        || family=="qwen2" || family=="qwen3", "Dynamic FP8 is unsupported for this model family");
+      TORCH_CHECK(!options.values.count("quantization_config") && !options.values.count("quantization_config.quant_method"),
+        "Dynamic FP8 requires an unquantized checkpoint");
+    }
+    auto decision_kind=options.string("_decision.kind");
+    if(!decision_kind.empty()) {
+      tei::Options head_config;tei::Weights head_weights;
+      constexpr std::string_view config_prefix="_decision.config.",weight_prefix="__tei_decision.";
+      for(const auto& [key,value]:options.values)if(key.starts_with(config_prefix))head_config.values[key.substr(config_prefix.size())]=value;
+      for(auto it=weights.begin();it!=weights.end();) {
+        if(it->first.starts_with(weight_prefix)){head_weights[it->first.substr(weight_prefix.size())]=it->second;it=weights.erase(it);}else ++it;
+      }
+      decision=tei::create_decision_head(decision_kind,head_config,options,decision_kind=="laya"?weights:head_weights,weights);
+      if(decision_kind=="laya") {
+        TORCH_CHECK(family=="modernbert","Laya requires a ModernBERT encoder");tei::Weights encoder;
+        for(const auto& [key,value]:weights)if(key.starts_with("encoder."))encoder[key.substr(8)]=value;
+        TORCH_CHECK(!encoder.empty(),"Laya checkpoint contains no encoder.* weights");weights=std::move(encoder);
+      }
+    }
+    model = tei::create_encoder(options, weights, device, dtype);
+    if (!model) model = tei::create_decoder(options, weights, device, dtype);
+    if (!model) model = tei::create_gemma(options, weights, device, dtype);
+    if (!model) model = tei::create_multimodal(options, weights, device, dtype);
+    if (!model && (family == "bert" || family == "roberta" || family == "xlm-roberta" || family == "camembert")) {
+      const auto activation=options.string("hidden_act","gelu");
+      TORCH_CHECK(activation=="gelu"||activation=="gelu_new"||activation=="gelu_pytorch_tanh"||activation=="relu"||activation=="silu",
+        "Unsupported native BERT activation: ",activation);
+      auto bert = std::make_unique<Bert>(config, device, dtype);
+      bert->options = options;
+      bert->weights = std::move(weights);
+      model = std::move(bert);
+    }
+    TORCH_CHECK(model, "Unsupported native Torch model family: ", family);
+    model->ready();
+    TORCH_CHECK(model->output_width() > 0, "Model must declare a positive output width");
+    dense->output_width(options.string("_pooling") == "splade" ? config.vocab : model->output_width());
+    media_graphs=options.boolean("_media_cuda_graphs",false);
+    // These Hopper BF16 geometries use device-only routing. Other MoE
+    // geometries retain eager execution rather than synchronizing in capture.
+    bool native_moe_graphs=false;
+#if defined(TEI_TORCH_MOE_KERNELS) && defined(TEI_TORCH_MOE_HOPPER)
+    if(device.is_cuda()&&dtype==at::kBFloat16&&family=="qwen3_moe"
+      &&options.integer("hidden_size",0)==2048&&options.integer("num_experts",0)==128
+      &&options.integer("num_experts_per_tok",0)==8&&options.integer("moe_intermediate_size",0)==768
+      &&options.integer("head_dim",0)==128&&options.integer("num_attention_heads",0)==32
+      &&options.integer("num_key_value_heads",0)==4)
+      native_moe_graphs=tei::native_hopper_moe_available(device);
+    if(device.is_cuda()&&dtype==at::kBFloat16&&(family=="gemma4"||family=="gemma4_text")) {
+      auto text_integer=[&](const char* key,int64_t fallback=0) {
+        return options.integer(std::string("text_config.")+key,options.integer(key,fallback));
+      };
+      auto act=options.string("text_config.hidden_activation",options.string("hidden_activation","gelu_pytorch_tanh"));
+      if(text_integer("hidden_size")==2816&&text_integer("num_experts")==128
+        &&text_integer("top_k_experts",8)==8&&text_integer("moe_intermediate_size")==704
+        &&(act=="gelu_pytorch_tanh"||act=="gelu_new"))
+        native_moe_graphs=tei::native_hopper_moe_available(device);
+    }
+#endif
+    if (device.is_cuda() && options.boolean("_cuda_graphs", false)
+        && (native_moe_graphs || (options.integer("num_experts", options.integer("text_config.num_experts", 0)) == 0
+        && options.integer("moe_every_n_layers", options.integer("text_config.moe_every_n_layers", 0)) == 0
+        && !options.boolean("enable_moe_block", options.boolean("text_config.enable_moe_block", false))
+        && (family == "bert" || family == "roberta"
+        || family == "xlm-roberta" || family == "camembert" || family == "distilbert" || family == "modernbert"
+        || family == "mpnet" || family == "deberta-v2" || family == "gte" || family == "nomic_bert" || family == "llama" || family == "mistral"
+        || family == "qwen2" || family == "qwen3" || family == "gemma3" || family == "gemma3_text"
+        || family == "gemma4" || family == "gemma4_text" || family == "embedding_gemma2"
+        || (media_graphs && (family == "qwen3_vl" || family == "qwen3_vl_text" || family == "qwen3_5" || family == "qwen3_5_text")))))) graphs = std::make_unique<tei::CudaGraphCache>(4, options.integer("_cuda_graph_max_tokens", 4096));
+  }
+};
+tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* types,
+ const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count) {
+ TORCH_CHECK(batch>0&&cumulative&&cumulative[0]==0,"Invalid native packed batch");
+ for(int64_t i=0;i<batch;++i)TORCH_CHECK(cumulative[i+1]>cumulative[i],"Native packed sequences must be nonempty");
+ auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);const int64_t tokens=cumulative[batch];
+ auto input=[&](const int64_t* data){TORCH_CHECK(data,"Missing native token buffer");return at::from_blob(const_cast<int64_t*>(data),{tokens},options).to(model.device);};
+ auto cu=at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)).to(model.device);
+ tei::PackedInput packed{input(ids),input(types),input(positions),cu,cumulative,batch,max_sequence};
+ TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
+ TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
+ if(media_positions)packed.multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options).to(model.device);
+ for(size_t i=0;i<image_count;++i){const auto& item=images[i];
+  const auto family=model.options.string("model_type");
+  // Gemma normalizes incoming pixels in F32 before casting for projection.
+  // Casting the raw pixels first loses precision before that normalization.
+  const bool gemma_image=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
+  const auto image_dtype=gemma_image?at::kFloat:family.starts_with("qwen3_5")?at::kHalf:model.dtype;
+  auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
+  if(!gemma_image)pixels=pixels.to(model.device,image_dtype);
+  packed.images.push_back({pixels,{item.grid[0],item.grid[1],item.grid[2]},item.merge_size,item.token_start,item.token_count,item.sequence_start});
+  std::copy_n(item.feature_key,32,packed.images.back().feature_key.begin());
+  packed.images.back().has_feature_key=item.has_feature_key!=0;
+ }
+ for(size_t i=0;i<audio_count;++i){const auto& item=audios[i];
+  auto features=at::from_blob(const_cast<float*>(item.values),{item.frames,item.feature_size},options.dtype(at::kFloat)).to(model.device);
+  auto validity=at::from_blob(const_cast<uint8_t*>(item.mask),{item.frames},options.dtype(at::kByte)).to(model.device);
+  packed.audios.push_back({features,validity,item.token_start,item.token_count});
+ }return packed;
+}
+std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,size_t count) {
+ TORCH_CHECK(requests||!count,"Missing decision metadata buffer");std::vector<tei::DecisionRequest> result;result.reserve(count);
+ for(size_t i=0;i<count;++i){const auto& request=requests[i];TORCH_CHECK(request.kind>=0&&request.kind<=3,"Invalid decision metadata kind");
+  tei::DecisionRequest converted{static_cast<tei::DecisionRequest::Kind>(request.kind)};converted.question_type=request.question_type;
+  TORCH_CHECK((!request.marker_count||request.markers)&&(!request.token_count||request.token_ids)&&(!request.field_count||request.fields),"Missing decision metadata values");
+  if(request.marker_count)converted.markers.assign(request.markers,request.markers+request.marker_count);
+  if(request.token_count)converted.token_ids.assign(request.token_ids,request.token_ids+request.token_count);
+  for(size_t j=0;j<request.field_count;++j){const auto& field=request.fields[j];TORCH_CHECK(!field.option_count||field.options,"Missing Clef option spans");tei::DecisionField f{field.kind,{field.question_start,field.question_end},{}};
+   for(size_t k=0;k<field.option_count;++k)f.options.emplace_back(field.options[2*k],field.options[2*k+1]);converted.fields.push_back(std::move(f));
+  }result.push_back(std::move(converted));
+ }return result;
+}
+template<class F> int32_t checked(F&& f) {
+  try { c10::InferenceMode guard; f(); return 0; }
+  catch (const std::exception& ex) { error = ex.what(); return -1; }
+  catch (...) { error = "Unknown native exception"; return -1; }
+}
+}
+extern "C" {
+const char* tei_error() { return error.c_str(); }
+int64_t tei_device_count(const char* name) {
+  int64_t count = -1;
+  checked([&] {
+    auto dev = device(name);
+    count = c10::impl::getDeviceGuardImpl(dev.type())->deviceCount();
+  });
+  return count;
+}
+void* tei_create(const TeiConfig* cfg, const char* name, int32_t dtype) {
+  Engine* model = nullptr;
+  checked([&] { initialize_precision(); model = new Engine(*cfg, device(name), scalar(dtype)); });
+  return model;
+}
+int32_t tei_weight(void* handle, const char* name, const uint8_t* data,
+                   const int64_t* shape, size_t rank, int32_t dtype) {
+  return checked([&] {
+    auto& model = *static_cast<Engine*>(handle);
+    auto tensor = at::empty(at::IntArrayRef(shape, rank), at::TensorOptions().dtype(scalar(dtype)).device(at::kCPU));
+    std::memcpy(tensor.data_ptr(), data, tensor.nbytes());
+    const std::string key(name);
+    // DeltaNet decay parameters are FP32 in Candle and in the checkpoint's compute contract.
+    const bool fp32_audio_filter = key.find("audio_tower.") != std::string::npos
+      && ((key.find("subsample_conv_projection.") != std::string::npos && key.ends_with(".conv.weight"))
+        || key.ends_with(".lconv1d.depthwise_conv1d.weight"));
+    auto target_dtype = key.ends_with(".A_log") || key.ends_with(".dt_bias") || fp32_audio_filter ? at::kFloat : model.dtype;
+    const auto family = model.options.string("model_type");
+    if ((key.starts_with("model.visual.") || key.starts_with("visual.")) && family.starts_with("qwen3_5")) target_dtype = at::kHalf;
+    if(key.starts_with("__tei_decision.")&&model.options.string("_decision.kind")=="pplx")target_dtype=at::kBFloat16;
+    TORCH_CHECK(model.weights.emplace(name, tensor.to(model.device, target_dtype)).second,
+                "Duplicate weight: ", name);
+  });
+}
+int32_t tei_option(void* handle, const char* key, const char* value) {
+  return checked([&] { static_cast<Engine*>(handle)->options.values[key] = value; });
+}
+int64_t tei_output_width(void* handle) {
+  int64_t width = -1;
+  checked([&] { width = static_cast<Engine*>(handle)->model->output_width(); });
+  return width;
+}
+int32_t tei_supports_radix(void* handle) {
+  return static_cast<Engine*>(handle)->model->supports_radix() ? 1 : 0;
+}
+int64_t tei_graph_count(void* handle) {
+  const auto& engine = *static_cast<Engine*>(handle);
+  return engine.graphs ? engine.graphs->size() : 0;
+}
+int64_t tei_classification_width(void* handle) {
+  int64_t width = -1;
+  checked([&] { width = static_cast<Engine*>(handle)->model->classification_width(); });
+  return width;
+}
+int64_t tei_pooled_width(void* handle) {
+  int64_t width = -1;
+  checked([&] {
+    const auto& engine = *static_cast<Engine*>(handle);
+    width = engine.dense->output_width(engine.options.string("_pooling") == "splade" ? engine.config.vocab : engine.model->output_width());
+  });
+  return width;
+}
+int32_t tei_ready(void* handle) { return checked([&] { static_cast<Engine*>(handle)->ready(); }); }
+int32_t tei_decision_counts(void* handle,const TeiDecision* requests,size_t count,int64_t* counts) {
+ return checked([&]{auto& engine=*static_cast<Engine*>(handle);TORCH_CHECK(engine.decision,"Model was not loaded for typed decisions");
+  auto converted=decision_requests(requests,count);TORCH_CHECK(counts||!count,"Missing decision counts buffer");
+  for(size_t i=0;i<count;++i)counts[i]=engine.decision->output_count(converted[i]);
+ });
+}
+int32_t tei_decide(void* handle,const int64_t* ids,const int64_t* types,const int64_t* positions,
+ const int32_t* cumulative,int64_t batch,int64_t max_sequence,const TeiDecision* requests,
+ float* logits,size_t capacity,float* actions,const int64_t* media_positions,
+ const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count) {
+ return checked([&]{auto& engine=*static_cast<Engine*>(handle);TORCH_CHECK(engine.decision&&batch>0,"Model was not loaded for typed decisions");
+  auto converted=decision_requests(requests,batch);size_t expected=0;
+  for(const auto& request:converted){auto count=engine.decision->output_count(request);TORCH_CHECK(count>0&&static_cast<size_t>(count)<=capacity-expected,"Decision output exceeds provided capacity");expected+=count;}
+  TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
+  auto packed=packed_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count);
+  const bool use_graph=engine.graphs&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
+  if(!use_graph)engine.model->prepare_input(packed);
+  auto hidden=use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
+  auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
+  std::vector<at::Tensor> values;for(size_t i=0;i<results.size();++i){TORCH_CHECK(results[i].logits.numel()==engine.decision->output_count(converted[i]),"Decision head output width mismatch");values.push_back(results[i].logits.flatten());}
+  std::vector<at::Tensor> action_values;for(const auto& result:results)action_values.push_back(result.action_probability);
+  values.push_back(at::stack(action_values));auto output=at::cat(values).to(at::kCPU,at::kFloat).contiguous();
+  std::memcpy(logits,output.data_ptr<float>(),expected*sizeof(float));std::memcpy(actions,output.data_ptr<float>()+expected,batch*sizeof(float));
+ });
+}
+int32_t tei_forward(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, float* output, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count) {
+  return tei_forward_radix(handle,ids,types,positions,cumulative,batch,max_sequence,pool,
+    pooled,pooled_count,raw,raw_count,output,capacity,media_positions,images,image_count,
+    audios,audio_count,nullptr);
+}
+int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, float* output, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix) {
+  return checked([&] {
+    auto& model = *static_cast<Engine*>(handle);
+    auto packed=packed_input(model,ids,types,positions,cumulative,batch,max_sequence,
+      media_positions,images,image_count,audios,audio_count);
+    if(radix) {
+      TORCH_CHECK(model.model->supports_radix(),"This native model does not support radix folding");
+      TORCH_CHECK(!image_count&&!audio_count&&!media_positions,"Radix media inference is not supported");
+      const int64_t total=cumulative[batch],compact=radix->compact_tokens;
+      TORCH_CHECK(compact>0&&compact<=total&&radix->ids&&radix->types&&radix->positions&&radix->scatter&&radix->fold,"Invalid native radix buffers");
+      const auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);
+      auto host=[&](const int64_t* data,int64_t rows){return at::from_blob(const_cast<int64_t*>(data),{rows},options);};
+      tei::PackedInput metadata{host(ids,total),host(types,total),host(positions,total),
+        at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)),cumulative,batch,max_sequence};
+      metadata.compact_ids=host(radix->ids,compact);
+      metadata.compact_types=host(radix->types,compact);
+      metadata.compact_positions=host(radix->positions,compact);
+      metadata.scatter_unfold=host(radix->scatter,total);
+      metadata.fold_gather=host(radix->fold,compact);
+      // Validate complete causal contexts on host before capture or map upload.
+      tei::validate_radix(metadata,true);
+      packed.compact_ids=metadata.compact_ids.to(model.device);
+      packed.compact_types=metadata.compact_types.to(model.device);
+      packed.compact_positions=metadata.compact_positions.to(model.device);
+      packed.scatter_unfold=metadata.scatter_unfold.to(model.device);
+      packed.fold_gather=metadata.fold_gather.to(model.device);
+    }
+    const bool graph_eligible = model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions));
+    if(!graph_eligible)model.model->prepare_input(packed);
+    auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
+      : pool >= 4 ? model.model->predict(packed, pool == 5) : model.model->forward(packed);
+    // Project only requested real token spans once. Offsets below preserve
+    // caller order, repeated requests and mixed pooled/raw output semantics.
+    at::Tensor sparse_scores;
+    std::vector<int64_t> sparse_starts;
+    if (pool == 3 && pooled_count) {
+      std::vector<at::Tensor> selected;
+      int64_t cursor = 0;
+      for (size_t i = 0; i < pooled_count; ++i) {
+        const auto row = pooled[i];
+        const auto start = cumulative[row], length = cumulative[row + 1] - start;
+        sparse_starts.push_back(cursor); cursor += length;
+        selected.push_back(h.narrow(0, start, length));
+      }
+      sparse_scores = model.model->token_scores(at::cat(selected, 0));
+    }
+    std::vector<at::Tensor> outputs;
+    bool mean_pooled=false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(pool==1&&pooled_count&&h.is_cuda()&&h.is_contiguous()
+       &&(h.scalar_type()==at::kHalf||h.scalar_type()==at::kBFloat16)&&pooled_count<=65535) {
+      std::vector<int32_t> spans;spans.reserve(pooled_count*2);
+      for(size_t i=0;i<pooled_count;++i) {
+        spans.push_back(cumulative[pooled[i]]);
+        spans.push_back(cumulative[pooled[i]+1]-cumulative[pooled[i]]);
+      }
+      auto host=at::from_blob(spans.data(),{int64_t(pooled_count),2},at::TensorOptions().dtype(at::kInt));
+      outputs.push_back(tei::packed_mean_pool(h,host.to(h.device())));
+      mean_pooled=true;
+    }
+#endif
+    for (size_t i = 0; i < pooled_count && !mean_pooled; ++i) {
+      const auto row = pooled[i];
+      const auto start = cumulative[row], length = cumulative[row + 1] - start;
+      if (pool == 4) outputs.push_back(h.narrow(0, row, 1));
+      else if (pool == 3) outputs.push_back(std::get<0>(sparse_scores.narrow(0, sparse_starts[i], length).max(0, true)));
+      else if (pool == 0) outputs.push_back(h.narrow(0, start, 1));
+      else if (pool == 1) outputs.push_back(h.narrow(0, start, length).mean(0, true, at::kFloat));
+      else outputs.push_back(h.narrow(0, start + length - 1, 1));
+    }
+    if (pool < 4 && !model.dense->empty() && !outputs.empty()) {
+      auto pooled_output = model.dense->forward(at::cat(outputs, 0));
+      outputs.clear();
+      outputs.push_back(pooled_output);
+    }
+    for (size_t i = 0; i < raw_count; ++i)
+      outputs.push_back(h.narrow(0, cumulative[raw[i]], cumulative[raw[i] + 1] - cumulative[raw[i]]));
+    if (!outputs.empty()) {
+      size_t offset = 0;
+      std::vector<at::Tensor> group;
+      auto flush = [&] {
+        if (group.empty()) return;
+        auto cpu = at::cat(group, 0).to(at::kCPU, at::kFloat).contiguous();
+        TORCH_CHECK(static_cast<size_t>(cpu.numel()) <= capacity - offset, "Native output exceeds provided capacity");
+        std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
+        offset += cpu.numel();
+        group.clear();
+      };
+      for (const auto& tensor : outputs) {
+        if (!group.empty() && group.back().size(-1) != tensor.size(-1)) flush();
+        group.push_back(tensor);
+      }
+      flush();
+    }
+  });
+}
+void tei_destroy(void* handle) { delete static_cast<Engine*>(handle); }
+}

@@ -2,6 +2,7 @@ use crate::layers::{HiddenAct, RopeScaling};
 use serde::Deserialize;
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(try_from = "MistralConfigFields")]
 pub struct MistralConfig {
     pub vocab_size: usize,
     pub hidden_size: usize,
@@ -22,6 +23,62 @@ pub struct MistralConfig {
     pub use_bidirectional_attention: bool,
     pub is_causal: Option<bool>,
     pub rope_parameters: Option<MinistralRope>,
+}
+
+// HF Ministral3 stores theta inside rope_parameters. Legacy Mistral checkpoints
+// retain the root field; reject a missing theta when neither source provides it.
+#[derive(Deserialize)]
+struct MistralConfigFields {
+    vocab_size: usize,
+    hidden_size: usize,
+    intermediate_size: usize,
+    num_hidden_layers: usize,
+    num_attention_heads: usize,
+    head_dim: Option<usize>,
+    num_key_value_heads: usize,
+    hidden_act: HiddenAct,
+    max_position_embeddings: usize,
+    initializer_range: f64,
+    rms_norm_eps: f32,
+    model_type: Option<String>,
+    rope_theta: Option<f32>,
+    sliding_window: Option<usize>,
+    rope_scaling: Option<RopeScaling>,
+    #[serde(default)]
+    use_bidirectional_attention: bool,
+    is_causal: Option<bool>,
+    rope_parameters: Option<MinistralRope>,
+}
+
+impl TryFrom<MistralConfigFields> for MistralConfig {
+    type Error = &'static str;
+
+    fn try_from(fields: MistralConfigFields) -> Result<Self, Self::Error> {
+        let rope_theta = fields
+            .rope_theta
+            .or_else(|| fields.rope_parameters.as_ref().map(|rope| rope.rope_theta))
+            .ok_or("Mistral requires rope_theta or rope_parameters.rope_theta")?;
+        Ok(Self {
+            vocab_size: fields.vocab_size,
+            hidden_size: fields.hidden_size,
+            intermediate_size: fields.intermediate_size,
+            num_hidden_layers: fields.num_hidden_layers,
+            num_attention_heads: fields.num_attention_heads,
+            head_dim: fields.head_dim,
+            num_key_value_heads: fields.num_key_value_heads,
+            hidden_act: fields.hidden_act,
+            max_position_embeddings: fields.max_position_embeddings,
+            initializer_range: fields.initializer_range,
+            rms_norm_eps: fields.rms_norm_eps,
+            model_type: fields.model_type,
+            rope_theta,
+            sliding_window: fields.sliding_window,
+            rope_scaling: fields.rope_scaling,
+            use_bidirectional_attention: fields.use_bidirectional_attention,
+            is_causal: fields.is_causal,
+            rope_parameters: fields.rope_parameters,
+        })
+    }
 }
 
 impl MistralConfig {
@@ -97,6 +154,33 @@ impl MinistralRope {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ministral_nested_theta_config_preserves_legacy_requirement() -> candle::Result<()> {
+        let mut value = serde_json::json!({
+            "vocab_size":131072,"hidden_size":3072,"intermediate_size":9216,
+            "num_hidden_layers":26,"num_attention_heads":32,"num_key_value_heads":8,
+            "head_dim":128,"hidden_act":"silu","max_position_embeddings":262144,
+            "initializer_range":0.02,"rms_norm_eps":1e-5,"model_type":"ministral3",
+            "rope_parameters":{"rope_type":"yarn","rope_theta":1000000.,
+                "factor":16.,"beta_fast":32.,"beta_slow":1.,
+                "original_max_position_embeddings":16384,"mscale":1.,
+                "mscale_all_dim":1.,"llama_4_scaling_beta":0.1}
+        });
+        let config: MistralConfig =
+            serde_json::from_value(value.clone()).map_err(candle::Error::wrap)?;
+        assert_eq!(config.rope_theta, 1_000_000.);
+        assert_eq!(config.head_dim(), 128);
+        assert_eq!(config.rope_parameters.unwrap().llama_4_scaling_beta, 0.1);
+
+        value.as_object_mut().unwrap().remove("rope_parameters");
+        assert!(serde_json::from_value::<MistralConfig>(value.clone()).is_err());
+        value["rope_theta"] = 10000.into();
+        let legacy: MistralConfig = serde_json::from_value(value).map_err(candle::Error::wrap)?;
+        assert_eq!(legacy.rope_theta, 10000.);
+        assert!(legacy.rope_parameters.is_none());
+        Ok(())
+    }
 
     #[test]
     fn nemotron_yarn_matches_transformers() -> candle::Result<()> {

@@ -75,6 +75,8 @@ pub async fn run(
     cors_allow_origin: Option<Vec<String>>,
     device_id: Option<usize>,
     backend_device_ids: Option<String>,
+    backend_kind: text_embeddings_backend::BackendKind,
+    torch_device: text_embeddings_backend::TorchDevice,
     multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
 ) -> Result<()> {
     let (model_id, decision_protocol) =
@@ -450,14 +452,27 @@ pub async fn run(
         None => tokenization,
     };
 
-    let dtype = resolve_dtype(
-        dtype,
-        config.dtype.as_deref().or(config.torch_dtype.as_deref()),
-        &config.model_type,
-    );
+    let torch_device = backend_kind.resolve_device(torch_device)?;
+    let model_dtype = config.dtype.as_deref().or(config.torch_dtype.as_deref());
+    let dtype = match backend_kind {
+        text_embeddings_backend::BackendKind::Libtorch => resolve_libtorch_dtype(
+            dtype,
+            model_dtype,
+            &config.model_type,
+            torch_device == text_embeddings_backend::TorchDevice::Cpu,
+        ),
+        text_embeddings_backend::BackendKind::Candle => {
+            resolve_dtype(dtype, model_dtype, &config.model_type)
+        }
+    };
 
     // Create backend
-    let devices = replicas::resolve_devices(backend_device_ids.as_deref(), device_id)?;
+    let devices = replicas::resolve_devices(
+        backend_device_ids.as_deref(),
+        device_id,
+        backend_kind,
+        torch_device,
+    )?;
     tracing::info!("Starting model backend");
     let api_repo = api_repo.map(std::sync::Arc::new);
     let backends = replicas::initialize_all(devices.iter().enumerate().map(|(replica, &device)| {
@@ -473,7 +488,7 @@ pub async fn run(
                 replica,
                 "Initializing backend replica"
             );
-            let backend = text_embeddings_backend::Backend::new_shared_with_fp8(
+            let backend = text_embeddings_backend::Backend::new_selected(
                 model_root,
                 api_repo,
                 dtype,
@@ -481,6 +496,8 @@ pub async fn run(
                 dense_path,
                 device,
                 enable_fp8_dynamic,
+                backend_kind,
+                torch_device,
             )
             .await
             .with_context(|| format!("Could not create backend on device {device}"))?;
@@ -683,6 +700,27 @@ fn get_backend_model_type(
 }
 
 // Resolve Auto before passing a concrete dtype to the backend or reporting /info.
+fn resolve_libtorch_dtype(
+    requested: Option<DType>,
+    model_dtype: Option<&str>,
+    model_type: &str,
+    cpu: bool,
+) -> DType {
+    match requested {
+        None | Some(DType::Auto) if cpu => DType::Float32,
+        None | Some(DType::Auto) => {
+            if model_dtype == Some("bfloat16")
+                || matches!(model_type, "gemma3_text" | "embedding_gemma2")
+            {
+                DType::Bfloat16
+            } else {
+                DType::Float16
+            }
+        }
+        Some(dtype) => dtype,
+    }
+}
+
 fn resolve_dtype(requested: Option<DType>, model_dtype: Option<&str>, model_type: &str) -> DType {
     match requested {
         None | Some(DType::Auto) => {
@@ -1069,6 +1107,77 @@ impl From<ResponseMetadata> for HeaderMap {
                 .unwrap(),
         );
         headers
+    }
+}
+
+#[cfg(test)]
+mod libtorch_auto_dtype_tests {
+    use super::*;
+
+    #[test]
+    fn bf16_checkpoint_auto_dtype_survives_root_and_nested_configs() {
+        for field in ["dtype", "torch_dtype"] {
+            for nested in [false, true] {
+                let mut value = serde_json::json!({
+                    "model_type": "qwen3_5_moe",
+                    "max_position_embeddings": 2048,
+                    "text_config": {"max_position_embeddings": 2048}
+                });
+                if nested {
+                    value["text_config"][field] = "bfloat16".into();
+                } else {
+                    value[field] = "bfloat16".into();
+                }
+                let mut config: ModelConfig = serde_json::from_value(value).unwrap();
+                config.resolve_text_config().unwrap();
+                let declared = config.dtype.as_deref().or(config.torch_dtype.as_deref());
+                for requested in [None, Some(DType::Auto)] {
+                    assert_eq!(
+                        resolve_libtorch_dtype(requested, declared, &config.model_type, false),
+                        DType::Bfloat16
+                    );
+                }
+                assert_eq!(
+                    resolve_libtorch_dtype(None, declared, &config.model_type, true),
+                    DType::Float32
+                );
+                assert_eq!(
+                    resolve_libtorch_dtype(
+                        Some(DType::Float16),
+                        declared,
+                        &config.model_type,
+                        false
+                    ),
+                    DType::Float16
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn gemma_requirements_and_device_defaults_preserve_explicit_overrides() {
+        for model in ["gemma3_text", "embedding_gemma2"] {
+            assert_eq!(
+                resolve_libtorch_dtype(Some(DType::Auto), Some("float32"), model, false),
+                DType::Bfloat16
+            );
+            assert_eq!(
+                resolve_libtorch_dtype(Some(DType::Float32), Some("bfloat16"), model, false),
+                DType::Float32
+            );
+        }
+        assert_eq!(
+            resolve_libtorch_dtype(None, None, "bert", false),
+            DType::Float16
+        );
+        assert_eq!(
+            resolve_libtorch_dtype(Some(DType::Auto), None, "bert", true),
+            DType::Float32
+        );
+        assert_eq!(
+            resolve_libtorch_dtype(Some(DType::Bfloat16), None, "bert", true),
+            DType::Bfloat16
+        );
     }
 }
 

@@ -4,6 +4,7 @@ members = [
     "backends/candle",
     "backends/candle-bench",
     "backends/core",
+    "backends/libtorch",
     "core",
     "router",
 ]

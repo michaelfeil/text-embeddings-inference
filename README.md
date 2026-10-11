@@ -51,7 +51,8 @@ No replacement license has been selected; this is a planning note. See
     - [Apple M1/M2 Arm](#apple-m1m2-arm64-architectures)
 - [Examples](#examples)
 
-This fork serves inference through HTTP using the Candle backend. The Python
+This fork serves inference through HTTP using Candle by default, with an optional
+[experimental native LibTorch 2.14.1 backend](docs/libtorch-backend.md). The Python
 backend, Intel IPEX/Gaudi images, and public gRPC API have been removed.
 OpenTelemetry export over OTLP/gRPC remains supported.
 

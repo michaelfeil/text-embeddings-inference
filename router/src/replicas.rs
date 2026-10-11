@@ -17,13 +17,19 @@ where
         .collect()
 }
 
-pub(crate) fn resolve_devices(value: Option<&str>, device: Option<usize>) -> Result<Vec<usize>> {
-    resolve_devices_with(
-        value,
-        device,
-        text_embeddings_backend::supports_device_replication(),
-        || Ok(text_embeddings_backend::visible_cuda_device_count()?),
-    )
+pub(crate) fn resolve_devices(
+    value: Option<&str>,
+    device: Option<usize>,
+    kind: text_embeddings_backend::BackendKind,
+    torch: text_embeddings_backend::TorchDevice,
+) -> Result<Vec<usize>> {
+    use text_embeddings_backend::{BackendKind, TorchDevice};
+    if kind == BackendKind::Libtorch && torch == TorchDevice::Cpu {
+        ensure!(device.is_none_or(|id| id == 0), "CPU uses device index 0");
+    }
+    resolve_devices_with(value, device, kind.supports_replication(torch), || {
+        Ok(kind.visible_device_count(torch)?)
+    })
 }
 
 fn resolve_devices_with(
@@ -35,7 +41,7 @@ fn resolve_devices_with(
     if !replication {
         ensure!(
             value.is_none(),
-            "backend-device-ids requires the Candle CUDA backend"
+            "backend-device-ids requires a CUDA backend"
         );
         return Ok(vec![device.unwrap_or(0)]);
     }
@@ -90,5 +96,16 @@ mod tests {
             resolve_devices_with(None, None, false, || panic!("CPU must not query CUDA")).unwrap(),
             vec![0]
         );
+        use text_embeddings_backend::{BackendKind, TorchDevice};
+        assert!(!BackendKind::Libtorch.supports_replication(TorchDevice::Cpu));
+        assert!(BackendKind::Libtorch.supports_replication(TorchDevice::Cuda));
+        assert_eq!(
+            resolve_devices(None, None, BackendKind::Libtorch, TorchDevice::Cpu).unwrap(),
+            vec![0]
+        );
+        assert!(
+            resolve_devices(Some("auto"), None, BackendKind::Libtorch, TorchDevice::Cpu).is_err()
+        );
+        assert!(resolve_devices(None, Some(1), BackendKind::Libtorch, TorchDevice::Cpu).is_err());
     }
 }

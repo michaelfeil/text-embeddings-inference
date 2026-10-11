@@ -8,11 +8,14 @@ use clap::ValueEnum;
 pub enum DType {
     Auto,
     // Float16 is not available on accelerate
-    #[cfg(all(feature = "candle", not(feature = "accelerate")))]
+    #[cfg(any(
+        feature = "libtorch",
+        all(feature = "candle", not(feature = "accelerate"))
+    ))]
     Float16,
-    #[cfg(feature = "candle")]
+    #[cfg(any(feature = "candle", feature = "libtorch"))]
     Float32,
-    #[cfg(feature = "candle")]
+    #[cfg(any(feature = "candle", feature = "libtorch"))]
     Bfloat16,
 }
 
@@ -21,11 +24,14 @@ impl fmt::Display for DType {
         match self {
             DType::Auto => write!(f, "auto"),
             // Float16 is not available on accelerate
-            #[cfg(all(feature = "candle", not(feature = "accelerate")))]
+            #[cfg(any(
+                feature = "libtorch",
+                all(feature = "candle", not(feature = "accelerate"))
+            ))]
             DType::Float16 => write!(f, "float16"),
-            #[cfg(feature = "candle")]
+            #[cfg(any(feature = "candle", feature = "libtorch"))]
             DType::Float32 => write!(f, "float32"),
-            #[cfg(feature = "candle")]
+            #[cfg(any(feature = "candle", feature = "libtorch"))]
             DType::Bfloat16 => write!(f, "bfloat16"),
         }
     }
@@ -42,7 +48,11 @@ impl Default for DType {
         {
             DType::Float16
         }
-        #[cfg(not(feature = "candle"))]
+        #[cfg(all(not(feature = "candle"), feature = "libtorch"))]
+        {
+            DType::Float32
+        }
+        #[cfg(not(any(feature = "candle", feature = "libtorch")))]
         {
             DType::Auto
         }
