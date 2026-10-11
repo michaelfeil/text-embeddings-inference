@@ -72,8 +72,10 @@ pub async fn start_server(model_id: String, revision: Option<String>, dtype: DTy
             None,
             9000,
             None,
-            Some(0),            // device_id
-            None,               // backend device IDs
+            Some(0), // device_id
+            None,    // backend device IDs
+            text_embeddings_backend::BackendKind::Candle,
+            text_embeddings_backend::TorchDevice::Auto,
             Default::default(), // multimodal configuration
         )
     });
