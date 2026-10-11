@@ -8,6 +8,7 @@
 #include <cstdint>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/tunable/Tunable.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <ATen/Context.h>
@@ -335,7 +336,8 @@ at::Tensor OrdinaryLinearExecutor::forward(const at::Tensor& x,const at::Tensor&
   cudaStreamCaptureStatus capture;
   C10_CUDA_CHECK(cudaStreamIsCapturing(stream.stream(),&capture));
   if(capture!=cudaStreamCaptureStatusNone)return {};
-  if(at::globalContext()._SMCarveout_EXPERIMENTAL().has_value() ||
+  if(at::cuda::tunable::getTuningContext()->IsTunableOpEnabled() ||
+    at::globalContext()._SMCarveout_EXPERIMENTAL().has_value() ||
     (output_dtype==at::kHalf && at::globalContext().allowFP16AccumulationCuBLAS()) ||
     (output_dtype==at::kHalf ? at::globalContext().allowFP16ReductionCuBLAS() :
       at::globalContext().allowBF16ReductionCuBLAS())!=
