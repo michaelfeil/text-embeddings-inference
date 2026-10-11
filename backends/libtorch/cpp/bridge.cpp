@@ -76,6 +76,30 @@ struct Engine {
   std::unique_ptr<tei::DecisionHead> decision;
   std::unique_ptr<tei::CudaGraphCache> graphs;
   bool media_graphs=false;
+  // A synchronous raw-only transfer owns this scratch until memcpy completes.
+  // The bound covers this Engine's retained tensor, not the pinned allocator pool.
+  std::mutex raw_output_mutex;
+  at::Tensor raw_output_host;
+  void copy_raw_output(const at::Tensor& value, float* destination) {
+    constexpr int64_t max_host_bytes = 64 * 1024 * 1024;
+    TORCH_CHECK(value.scalar_type() == at::kFloat && value.is_contiguous(),
+                "Raw output transfer requires contiguous Float32");
+    if (!value.is_cuda() || value.nbytes() > max_host_bytes) {
+      auto cpu = value.to(at::kCPU).contiguous();
+      std::memcpy(destination, cpu.data_ptr<float>(), cpu.nbytes());
+      return;
+    }
+    std::lock_guard<std::mutex> lock(raw_output_mutex);
+    if (!raw_output_host.defined() || raw_output_host.numel() < value.numel()) {
+      raw_output_host = at::empty({value.numel()},
+        at::TensorOptions().dtype(at::kFloat).device(at::kCPU).pinned_memory(true));
+    }
+    auto host = raw_output_host.narrow(0, 0, value.numel()).view(value.sizes());
+    // False keeps completion synchronous on the producing device's current
+    // stream. No caller buffer or reusable scratch may escape while DMA runs.
+    host.copy_(value, /*non_blocking=*/false);
+    std::memcpy(destination, host.data_ptr<float>(), host.nbytes());
+  }
   Engine(TeiConfig cfg, c10::Device dev, at::ScalarType type) : config(cfg), device(dev), dtype(type) {}
   void ready() {
     dense = std::make_unique<tei::DenseChain>(options, weights);
@@ -450,10 +474,15 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
         if (group.empty()) return;
         // Cast on the producing device before transfer. A combined device/dtype
         // copy may instead cast on CPU using its unrelated compute thread pool.
-        auto cpu = at::cat(group, 0).to(at::kFloat).to(at::kCPU).contiguous();
-        TORCH_CHECK(static_cast<size_t>(cpu.numel()) <= capacity - offset, "Native output exceeds provided capacity");
-        std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
-        offset += cpu.numel();
+        auto value = at::cat(group, 0).to(at::kFloat).contiguous();
+        TORCH_CHECK(static_cast<size_t>(value.numel()) <= capacity - offset, "Native output exceeds provided capacity");
+        if (raw_count && !pooled_count) {
+          model.copy_raw_output(value, output + offset);
+        } else {
+          auto cpu = value.to(at::kCPU).contiguous();
+          std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
+        }
+        offset += value.numel();
         group.clear();
       };
       for (const auto& tensor : outputs) {
