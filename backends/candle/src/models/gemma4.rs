@@ -1201,7 +1201,8 @@ impl Model for Gemma4Model {
             index_select(&states, &indices, 0)?
         };
 
-        tokens
+        let lengths: Vec<usize> = tokens.iter().map(Vec::len).collect();
+        let scores = tokens
             .into_iter()
             .enumerate()
             .map(|(i, ids)| {
@@ -1211,12 +1212,35 @@ impl Model for Gemma4Model {
                 if let Some(cap) = self.final_logit_softcapping {
                     logits = ((logits / cap)?.tanh()? * cap)?;
                 }
-                Ok(DecisionOutput {
-                    logits: logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
-                    action_probability: 1.0,
-                })
+                Ok(logits)
             })
-            .collect()
+            .collect::<Result<Vec<_>>>()?;
+        if scores.is_empty() {
+            return Ok(Vec::new());
+        }
+        if scores.len() == 1 {
+            return Ok(vec![DecisionOutput {
+                logits: scores[0].to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
+                action_probability: 1.0,
+            }]);
+        }
+        // Keep each GEMM's shape and arithmetic, then read all scores once.
+        let scores = Tensor::cat(&scores, 1)?
+            .to_dtype(DType::F32)?
+            .flatten_all()?
+            .to_vec1::<f32>()?;
+        let mut offset = 0;
+        Ok(lengths
+            .into_iter()
+            .map(|len| {
+                let logits = scores[offset..offset + len].to_vec();
+                offset += len;
+                DecisionOutput {
+                    logits,
+                    action_probability: 1.0,
+                }
+            })
+            .collect())
     }
 
     fn supports_radix_mlp(&self) -> bool {
