@@ -697,10 +697,19 @@ impl Backend for CandleBackend {
         // Packed model pooling historically assumes identity selectors when no
         // raw rows are requested. Ask for canonical rows, then select before
         // Dense modules so request order and repeated indices work for every model.
-        let select_pooled = !pooled_indices.is_empty()
-            && pooled_indices.iter().copied().ne(0..batch_size as u32);
+        let select_pooled =
+            !pooled_indices.is_empty() && pooled_indices.iter().copied().ne(0..batch_size as u32);
         if select_pooled {
             batch.pooled_indices = (0..batch_size as u32).collect();
+        }
+        // Raw-only packed models can also return canonical token rows regardless
+        // of the selectors. Request those rows explicitly and gather real spans
+        // on the device before transferring only the requested tokens to the host.
+        let select_raw =
+            !raw_indices.is_empty() && raw_indices.iter().copied().ne(0..batch_size as u32);
+        let raw_offsets = batch.cumulative_seq_lengths.clone();
+        if select_raw {
+            batch.raw_indices = (0..batch_size as u32).collect();
         }
 
         // Used for indexing in the raw_embeddings tensor
@@ -722,6 +731,26 @@ impl Backend for CandleBackend {
                 .e()?
         } else {
             pooled_embeddings
+        };
+
+        let raw_embeddings = if select_raw {
+            raw_embeddings
+                .map(|raw| {
+                    let spans = raw_indices
+                        .iter()
+                        .map(|&index| {
+                            let index = index as usize;
+                            let start = raw_offsets[index] as usize;
+                            let length = (raw_offsets[index + 1] - raw_offsets[index]) as usize;
+                            raw.narrow(0, start, length)
+                        })
+                        .collect::<candle::Result<Vec<_>>>()?;
+                    candle::Tensor::cat(&spans, 0)
+                })
+                .transpose()
+                .e()?
+        } else {
+            raw_embeddings
         };
 
         // Apply Dense layers sequentially if available
