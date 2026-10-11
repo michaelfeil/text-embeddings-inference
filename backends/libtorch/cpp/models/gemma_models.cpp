@@ -58,6 +58,9 @@ class Gemma final : public Model {
     cublasLtMatrixLayout_t weight{},input{},output{};
     cublasLtMatmulAlgo_t algorithm{};
     size_t workspace_bytes{};
+    // Captured graphs retain this allocation address even when a later plan
+    // grows the shared workspace. Keep each cached plan's generation alive.
+    at::Tensor workspace;
     bool valid=false;
     ~RadixLinearPlan(){if(output)cublasLtMatrixLayoutDestroy(output);if(input)cublasLtMatrixLayoutDestroy(input);if(weight)cublasLtMatrixLayoutDestroy(weight);if(operation)cublasLtMatmulDescDestroy(operation);}
   };
@@ -118,8 +121,11 @@ class Gemma final : public Model {
             valid=cublasLtMatmulAlgoCheck(handle,plan->operation,plan->weight,plan->input,plan->output,plan->output,&plan->algorithm,&check)==CUBLAS_STATUS_SUCCESS && check.state==CUBLAS_STATUS_SUCCESS && check.workspaceSize<=limit;
             plan->workspace_bytes=check.workspaceSize;
           }
-          if(valid && plan->workspace_bytes>0 && (!radix_linear_workspace.defined() || static_cast<size_t>(radix_linear_workspace.numel())<plan->workspace_bytes))
-            radix_linear_workspace=at::empty({static_cast<int64_t>(limit)},x.options().dtype(at::kByte));
+          if(valid && plan->workspace_bytes>0) {
+            if(!radix_linear_workspace.defined() || static_cast<size_t>(radix_linear_workspace.numel())<plan->workspace_bytes)
+              radix_linear_workspace=at::empty({static_cast<int64_t>(limit)},x.options().dtype(at::kByte));
+            plan->workspace=radix_linear_workspace;
+          }
           plan->valid=valid;
           found=radix_linear_plans.emplace(key,std::move(plan)).first;
         }
@@ -127,7 +133,7 @@ class Gemma final : public Model {
           auto& plan=*found->second;
           auto output=at::empty({m,n},x.options());
           const float alpha=1.f,beta=0.f;
-          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?radix_linear_workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
+          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?plan.workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
           TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"Gemma4 packed projection failed: ",static_cast<int>(status));
           return output;
         }
