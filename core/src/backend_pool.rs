@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{Backend, BackendError, Batch, Embeddings, ModelType};
+use text_embeddings_backend::{Backend, BackendError, Batch, Embeddings, ModelType, Submission};
 use tokio::sync::watch;
 
 #[derive(Debug)]
@@ -144,6 +144,7 @@ impl BackendPool {
                         id,
                         finished: false,
                         submitted: false,
+                        released: false,
                         reserved_at: Instant::now(),
                     });
                 }
@@ -175,6 +176,7 @@ impl BackendPool {
                         id,
                         finished: false,
                         submitted: false,
+                        released: false,
                         reserved_at: Instant::now(),
                     }
                 })
@@ -215,16 +217,25 @@ impl Execution {
     where
         T: Send + 'static,
         F: FnOnce(Backend) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(T, Duration), BackendError>> + Send + 'static,
+        Fut: Future<Output = Result<Submission<T>, BackendError>> + Send + 'static,
     {
         let mut execution = self;
         execution.submitted = true;
-        // The spawned task owns the execution lease until the actual native call
-        // returns, even if its client disconnects or the pipeline is canceled.
+        // Retain execution ownership even if its caller cancels. A deferred
+        // submission may release the model lease, but completion still reports
+        // failures and accounts for the full inference duration.
         tokio::spawn(async move {
             let backend = execution.pool.inner.backends[execution.id].clone();
             execution.started();
-            let result = call(backend).await;
+            let result = match call(backend).await {
+                Ok(submission) => {
+                    if matches!(submission, Submission::Deferred(_)) {
+                        execution.release();
+                    }
+                    submission.complete().await
+                }
+                Err(error) => Err(error),
+            };
             execution.finish(tokens, sequences, &result);
             result
         })
@@ -235,7 +246,7 @@ impl Execution {
     pub async fn embed(self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
-            backend.embed(batch).await
+            backend.submit_embed(batch).await
         })
         .await
     }
@@ -247,7 +258,10 @@ impl Execution {
     ) -> Result<(Vec<text_embeddings_backend::DecisionOutput>, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
-            backend.decide(batch, inputs).await
+            backend
+                .decide(batch, inputs)
+                .await
+                .map(|(output, duration)| Submission::Ready(output, duration))
         })
         .await
     }
@@ -258,7 +272,7 @@ impl Execution {
     ) -> Result<(text_embeddings_backend::Predictions, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
-            backend.predict(batch).await
+            backend.submit_predict(batch).await
         })
         .await
     }
@@ -268,7 +282,7 @@ impl Execution {
     ) -> Result<(text_embeddings_backend::TokenPredictions, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
-            backend.predict_tokens(batch).await
+            backend.submit_predict_tokens(batch).await
         })
         .await
     }
@@ -279,10 +293,21 @@ pub(crate) struct Execution {
     id: usize,
     finished: bool,
     submitted: bool,
+    released: bool,
     reserved_at: Instant,
 }
 
 impl Execution {
+    fn release(&mut self) {
+        let mut state = self.pool.inner.state.lock().unwrap();
+        state.replicas[self.id].busy = false;
+        if !state.closed && state.replicas[self.id].healthy {
+            state.idle.push_back(self.id);
+        }
+        self.released = true;
+        self.pool.inner.signal(&state);
+    }
+
     fn started(&self) {
         metrics::histogram!("te_replica_dispatch_delay_duration", "replica" => self.id.to_string())
             .record(self.reserved_at.elapsed().as_secs_f64());
@@ -296,8 +321,12 @@ impl Execution {
     ) {
         let mut state = self.pool.inner.state.lock().unwrap();
         let r = &mut state.replicas[self.id];
-        r.busy = false;
-        r.healthy = result.is_ok();
+        if !self.released {
+            r.busy = false;
+        }
+        if result.is_err() {
+            r.healthy = false;
+        }
         if let Ok((_, duration)) = result {
             metrics::counter!("te_replica_tokens", "replica" => self.id.to_string())
                 .increment(tokens as u64);
@@ -321,7 +350,9 @@ impl Execution {
                 metrics::counter!("te_replica_batches", "replica" => self.id.to_string())
                     .increment(1);
             }
-            state.idle.push_back(self.id);
+            if !self.released && !state.closed {
+                state.idle.push_back(self.id);
+            }
         } else {
             state.closed = true;
             tracing::error!(
@@ -339,7 +370,9 @@ impl Drop for Execution {
         if !self.finished {
             let mut state = self.pool.inner.state.lock().unwrap();
             let r = &mut state.replicas[self.id];
-            r.busy = false;
+            if !self.released {
+                r.busy = false;
+            }
             if self.submitted {
                 r.healthy = false;
                 state.closed = true;
@@ -348,5 +381,70 @@ impl Drop for Execution {
             }
             self.pool.inner.signal(&state);
         }
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    fn execution() -> Execution {
+        let pool = BackendPool {
+            inner: Arc::new(Inner {
+                backends: vec![],
+                state: Mutex::new(State {
+                    replicas: vec![Replica {
+                        busy: true,
+                        healthy: true,
+                        batches: 0,
+                    }],
+                    idle: VecDeque::new(),
+                    closed: false,
+                }),
+                changed: watch::channel(()).0,
+            }),
+            model_type: ModelType::Classifier,
+            radix_mlp_supported: false,
+            max_batch_size: None,
+        };
+        Execution {
+            pool,
+            id: 0,
+            finished: false,
+            submitted: true,
+            released: false,
+            reserved_at: Instant::now(),
+        }
+    }
+    #[test]
+    fn old_completion_does_not_release_the_next_model_lease() {
+        let mut previous = execution();
+        let pool = previous.pool.clone();
+        previous.release();
+        {
+            let mut state = pool.inner.state.lock().unwrap();
+            assert_eq!(state.idle.pop_front(), Some(0));
+            state.replicas[0].busy = true;
+        }
+        previous.finish(1, 1, &Ok(((), Duration::from_millis(1))));
+        let state = pool.inner.state.lock().unwrap();
+        assert!(state.replicas[0].busy);
+        assert!(state.idle.is_empty());
+    }
+    #[test]
+    fn completion_error_closes_pool_without_releasing_new_lease() {
+        let mut previous = execution();
+        let pool = previous.pool.clone();
+        previous.release();
+        {
+            let mut state = pool.inner.state.lock().unwrap();
+            state.idle.clear();
+            state.replicas[0].busy = true;
+        }
+        previous.finish::<()>(1, 1, &Err(BackendError::Inference("copy failed".into())));
+        let state = pool.inner.state.lock().unwrap();
+        assert!(state.closed);
+        assert!(!state.replicas[0].healthy);
+        assert!(state.replicas[0].busy);
+        assert!(state.idle.is_empty());
     }
 }

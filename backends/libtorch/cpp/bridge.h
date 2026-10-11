@@ -84,5 +84,15 @@ int32_t tei_forward_radix(void*, const int64_t* ids, const int64_t* types,
                     const int64_t* raw, size_t raw_count, float* output, size_t capacity,
                     const int64_t* media_positions, const TeiImage* images, size_t image_count,
                     const TeiAudio* audios, size_t audio_count, const TeiRadix* radix);
+void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix);
+// Owned output lease: wait and construct host results before destroy.
+const float* tei_output_wait(void*);
+void tei_output_destroy(void*);
 void tei_destroy(void*);
 }

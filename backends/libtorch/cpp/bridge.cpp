@@ -2,6 +2,7 @@
 #include "bridge.h"
 #include "helpers/fp8_linear.h"
 #include "batching/radix.h"
+#include "batching/output.h"
 #include "models/model.h"
 #include "helpers/options.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -72,6 +73,7 @@ struct Engine {
   tei::Options options;
   tei::Weights weights;
   std::unique_ptr<tei::Model> model;
+  std::shared_ptr<tei::OutputPool> outputs = std::make_shared<tei::OutputPool>();
   std::unique_ptr<tei::DenseChain> dense;
   std::unique_ptr<tei::DecisionHead> decision;
   std::unique_ptr<tei::CudaGraphCache> graphs;
@@ -157,12 +159,13 @@ struct Engine {
 };
 tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
- const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count) {
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,tei::OutputLease* completion=nullptr) {
  TORCH_CHECK(batch>0&&cumulative&&cumulative[0]==0,"Invalid native packed batch");
  for(int64_t i=0;i<batch;++i)TORCH_CHECK(cumulative[i+1]>cumulative[i],"Native packed sequences must be nonempty");
  auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);const int64_t tokens=cumulative[batch];
- auto input=[&](const int64_t* data){TORCH_CHECK(data,"Missing native token buffer");return at::from_blob(const_cast<int64_t*>(data),{tokens},options).to(model.device);};
- auto cu=at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)).to(model.device);
+ auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
+ auto input=[&](const int64_t* data){TORCH_CHECK(data,"Missing native token buffer");return upload(at::from_blob(const_cast<int64_t*>(data),{tokens},options));};
+ auto cu=upload(at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)));
  tei::PackedInput packed{input(ids),input(types),input(positions),cu,cumulative,batch,max_sequence};
  TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
  TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
@@ -187,7 +190,7 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
 }
 void attach_radix(Engine& model,tei::PackedInput& packed,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
- const int64_t* media_positions,const TeiImage* images,size_t image_count,size_t audio_count,const TeiRadix* radix) {
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,size_t audio_count,const TeiRadix* radix,tei::OutputLease* completion=nullptr) {
   if(radix) {
       TORCH_CHECK(model.model->supports_radix(),"This native model does not support radix folding");
       TORCH_CHECK(!audio_count,"Radix audio inference is not supported");
@@ -250,11 +253,12 @@ void attach_radix(Engine& model,tei::PackedInput& packed,const int64_t* ids,cons
           TORCH_CHECK(media_positions[axis*total+i]==media_positions[axis*total+radix->fold[radix->scatter[i]]],
             "Radix aliases require identical rotary positions");
       }
-      packed.compact_ids=metadata.compact_ids.to(model.device);
-      packed.compact_types=metadata.compact_types.to(model.device);
-      packed.compact_positions=metadata.compact_positions.to(model.device);
-      packed.scatter_unfold=metadata.scatter_unfold.to(model.device);
-      packed.fold_gather=metadata.fold_gather.to(model.device);
+      auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
+      packed.compact_ids=upload(metadata.compact_ids);
+      packed.compact_types=upload(metadata.compact_types);
+      packed.compact_positions=upload(metadata.compact_positions);
+      packed.scatter_unfold=upload(metadata.scatter_unfold);
+      packed.fold_gather=upload(metadata.fold_gather);
     }
 }
 std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,size_t count) {
@@ -370,6 +374,13 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   std::memcpy(logits,output.data_ptr<float>(),expected*sizeof(float));std::memcpy(actions,output.data_ptr<float>()+expected,batch*sizeof(float));
  });
 }
+static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, float* output, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix, tei::OutputLease* completion);
 int32_t tei_forward(void* handle, const int64_t* ids, const int64_t* types,
                     const int64_t* positions, const int32_t* cumulative,
                     int64_t batch, int64_t max_sequence, int32_t pool,
@@ -381,18 +392,19 @@ int32_t tei_forward(void* handle, const int64_t* ids, const int64_t* types,
     pooled,pooled_count,raw,raw_count,output,capacity,media_positions,images,image_count,
     audios,audio_count,nullptr);
 }
-int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types,
+static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* types,
                     const int64_t* positions, const int32_t* cumulative,
                     int64_t batch, int64_t max_sequence, int32_t pool,
                     const int64_t* pooled, size_t pooled_count,
                     const int64_t* raw, size_t raw_count, float* output, size_t capacity,
                     const int64_t* media_positions, const TeiImage* images, size_t image_count,
-                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix) {
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix, tei::OutputLease* completion) {
   return checked([&] {
     auto& model = *static_cast<Engine*>(handle);
     auto packed=packed_input(model,ids,types,positions,cumulative,batch,max_sequence,
-      media_positions,images,image_count,audios,audio_count);
-    attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
+      media_positions,images,image_count,audios,audio_count,completion);
+    auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
+    attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix,completion);
     const bool graph_eligible = model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions));
     if(!graph_eligible)model.model->prepare_input(packed);
     auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
@@ -423,7 +435,7 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
         spans.push_back(cumulative[pooled[i]+1]-cumulative[pooled[i]]);
       }
       auto host=at::from_blob(spans.data(),{int64_t(pooled_count),2},at::TensorOptions().dtype(at::kInt));
-      outputs.push_back(tei::packed_mean_pool(h,host.to(h.device())));
+      outputs.push_back(tei::packed_mean_pool(h,upload(host)));
       mean_pooled=true;
     }
 #endif
@@ -448,12 +460,16 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
       std::vector<at::Tensor> group;
       auto flush = [&] {
         if (group.empty()) return;
-        // Cast on the producing device before transfer. A combined device/dtype
-        // copy may instead cast on CPU using its unrelated compute thread pool.
-        auto cpu = at::cat(group, 0).to(at::kFloat).to(at::kCPU).contiguous();
-        TORCH_CHECK(static_cast<size_t>(cpu.numel()) <= capacity - offset, "Native output exceeds provided capacity");
-        std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
-        offset += cpu.numel();
+        auto joined = completion && group.size() == 1 ? group.front() : at::cat(group, 0);
+        TORCH_CHECK(offset <= capacity && static_cast<size_t>(joined.numel()) <= capacity - offset,
+                    "Native output exceeds provided capacity");
+        if (completion) completion->copy(joined, offset);
+        else {
+          // Cast on the producing device before transfer.
+          auto cpu = joined.to(at::kFloat).to(at::kCPU).contiguous();
+          std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
+        }
+        offset += joined.numel();
         group.clear();
       };
       for (const auto& tensor : outputs) {
@@ -461,8 +477,43 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
         group.push_back(tensor);
       }
       flush();
+      if (completion) TORCH_CHECK(offset == capacity, "Native output size mismatch");
     }
+    if (completion) completion->record();
   });
 }
+int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, float* output, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix) {
+  return forward_radix(handle,ids,types,positions,cumulative,batch,max_sequence,pool,pooled,pooled_count,raw,raw_count,output,capacity,media_positions,images,image_count,audios,audio_count,radix,nullptr);
+}
+void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
+                    const int64_t* positions, const int32_t* cumulative,
+                    int64_t batch, int64_t max_sequence, int32_t pool,
+                    const int64_t* pooled, size_t pooled_count,
+                    const int64_t* raw, size_t raw_count, size_t capacity,
+                    const int64_t* media_positions, const TeiImage* images, size_t image_count,
+                    const TeiAudio* audios, size_t audio_count, const TeiRadix* radix) {
+  std::unique_ptr<tei::OutputLease> lease;
+  const auto status=checked([&] {
+    auto& model=*static_cast<Engine*>(handle);
+    TORCH_CHECK(model.device.is_cuda(), "Deferred output requires CUDA");
+    lease=std::make_unique<tei::OutputLease>(model.outputs,model.device,capacity);
+    lease->allocate();
+    if (forward_radix(handle,ids,types,positions,cumulative,batch,max_sequence,pool,pooled,pooled_count,raw,raw_count,nullptr,capacity,media_positions,images,image_count,audios,audio_count,radix,lease.get()) != 0)
+      throw std::runtime_error(error);
+  });
+  return status==0?lease.release():nullptr;
+}
+const float* tei_output_wait(void* handle) {
+  const float* output=nullptr;
+  checked([&] {output=static_cast<tei::OutputLease*>(handle)->wait();});
+  return output;
+}
+void tei_output_destroy(void* handle) { delete static_cast<tei::OutputLease*>(handle); }
 void tei_destroy(void* handle) { delete static_cast<Engine*>(handle); }
 }

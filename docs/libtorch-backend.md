@@ -214,3 +214,26 @@ checkpoints. The five workloads include actual 1024/2048-token sequences,
 eight-sequence batches, and ragged 1024/1536/2048/1280 inputs. Report the
 observed graph count alongside timings; graph requests can fall back to eager
 execution. `TEI_BENCHMARK_LONG_CONTEXT=1` appends these to the short suite.
+
+CUDA embedding and classifier outputs use one persistent CPU completion thread per
+replica. Submission returns either a ready result or an owned completion handle,
+after enqueuing D2H into reusable pinned storage and handing work to the completion
+thread. Completion waits for the CUDA event and allocates
+the final Rust result vectors directly from that storage, avoiding an intermediate
+flat host copy. CPU inference completes inline.
+
+Two output leases alternate A/B per replica; the next submission waits until its
+slot finishes transfer and result packing. Serial traffic warms both slots.
+Buffer capacities grow to the largest observed batch and are reused.
+Pinned storage, FP32 device staging, and tensor-retention vector capacity are
+reused after warmup. Each lease owns its pinned
+input staging buffers, output buffer, and GPU transfer tensors through completion
+and result construction. Real token arrays, offsets, radix maps, and pooling spans
+are uploaded without padding. Upload, graph replay, output conversion, and D2H
+remain ordered on the same CUDA stream; the next replay cannot overwrite buffers
+before the preceding copy consumes them. No separate copy stream is introduced.
+
+Request metadata stays owned until host results are ready, including after client
+cancellation. Only successful deferred submission releases the exclusive model
+lease early. Completion failures close the replica pool, and shutdown drains and
+joins the completion worker before destroying the model and its CUDA graphs.

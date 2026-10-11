@@ -801,6 +801,7 @@ async fn backend_task(
     replica: usize,
 ) {
     let mut changed = backend.changes();
+    let mut completions = tokio::task::JoinSet::new();
     loop {
         if backend.is_closed() {
             break;
@@ -814,191 +815,144 @@ async fn backend_task(
             Ok(execution) => execution,
             Err(_) => break,
         };
-        let Some(mut batch) = prune_canceled_batch(dispatched.0.take().unwrap()) else {
+        let Some(batch) = prune_canceled_batch(dispatched.0.take().unwrap()) else {
             continue;
         };
-        match &backend.model_type {
-            ModelType::Decision => {
-                let inputs = batch
-                    .0
-                    .iter()
-                    .map(|m| m.decision.clone().expect("decision metadata missing"))
-                    .collect();
-                match execution.decide(batch.1, inputs).await {
-                    Ok((outputs, inference_duration)) if outputs.len() == batch.0.len() => {
-                        for (m, output) in batch.0.into_iter().zip(outputs) {
-                            let _ = m.response_tx.send(Ok(InferResult::Decision(
-                                DecisionInferResponse {
-                                    results: output,
-                                    metadata: InferMetadata {
-                                        prompt_tokens: m.prompt_tokens,
-                                        tokenization: m.tokenization,
-                                        queue: m
-                                            .queue_time
-                                            .elapsed()
-                                            .saturating_sub(inference_duration),
-                                        inference: inference_duration,
-                                    },
-                                },
-                            )));
-                        }
-                    }
-                    result => {
-                        let err = result.err().unwrap_or_else(|| {
-                            BackendError::Inference(
-                                "Decision output count does not match batch".into(),
-                            )
-                        });
-                        for m in batch.0 {
-                            let _ = m.response_tx.send(Err(err.clone()));
-                        }
-                    }
-                }
-            }
-
-            ModelType::Classifier => {
-                let token_classification = batch.0.iter().any(|m| m.token_classification);
-
-                if token_classification {
-                    // The backend consumes numeric inputs but does not use source
-                    // alignment. Move it out and retain only the IDs needed for delivery.
-                    let input_ids = batch.1.input_ids.clone();
-                    let cumulative_seq_lengths = batch.1.cumulative_seq_lengths.clone();
-                    let mut tokens = std::mem::take(&mut batch.1.tokens);
-                    let offsets = std::mem::take(&mut batch.1.offsets);
-                    let results = execution.predict_tokens(batch.1).await;
-
-                    tokio::task::spawn_blocking(move || match results {
-                        Ok((mut predictions, inference_duration)) => {
-                            batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                                let infer_metadata = InferMetadata {
-                                    prompt_tokens: m.prompt_tokens,
-                                    tokenization: m.tokenization,
-                                    queue: m
-                                        .queue_time
-                                        .elapsed()
-                                        .saturating_sub(inference_duration),
-                                    inference: inference_duration,
-                                };
-
-                                let token_predictions = predictions.remove(&i).expect(
-                                    "prediction not found in results. This is a backend bug.",
-                                );
-
-                                let start_idx = cumulative_seq_lengths[i] as usize;
-
-                                let token_predictions: Vec<TokenPrediction> = token_predictions
-                                    .into_iter()
-                                    .enumerate()
-                                    .map(|(token_idx, scores)| {
-                                        let global_token_idx = start_idx + token_idx;
-                                        make_token_prediction(
-                                            global_token_idx,
-                                            scores,
-                                            &input_ids,
-                                            &mut tokens,
-                                            &offsets,
-                                        )
-                                    })
-                                    .collect();
-
-                                let _ = m.response_tx.send(Ok(InferResult::TokenClassification(
-                                    TokenClassificationInferResponse {
-                                        results: token_predictions,
-                                        metadata: infer_metadata,
-                                    },
-                                )));
-                            });
-                        }
-                        Err(err) => {
-                            batch.0.into_iter().for_each(|m| {
-                                let _ = m.response_tx.send(Err(err.clone()));
-                            });
-                        }
-                    });
-                } else {
-                    let results = execution.predict(batch.1).await;
-
-                    // Delivery only moves owned results and sends them to request tasks.
-                    tokio::spawn(async move {
-                        match results {
-                            Ok((mut predictions, inference_duration)) => {
-                                batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                                    let infer_metadata = InferMetadata {
-                                        prompt_tokens: m.prompt_tokens,
-                                        tokenization: m.tokenization,
-                                        queue: m.queue_time.elapsed().saturating_sub(inference_duration),
-                                        inference: inference_duration,
-                                    };
-
-                                    let _ = m.response_tx.send(Ok(InferResult::Classification(
-                                        ClassificationInferResponse {
-                                            results: predictions.remove(&i).expect(
-                                                "prediction not found in results. This is a backend bug.",
-                                            ),
-                                            metadata: infer_metadata,
-                                        },
-                                    )));
-                                });
-                            }
-                            Err(err) => {
-                                batch.0.into_iter().for_each(|m| {
-                                    let _ = m.response_tx.send(Err(err.clone()));
-                                });
-                            }
-                        }
-                    });
-                }
-            }
-            ModelType::Embedding(_) => {
-                let results = execution.embed(batch.1).await;
-
-                // Delivery only moves owned results and sends them to request tasks.
-                tokio::spawn(async move {
-                    match results {
-                        Ok((mut embeddings, inference_duration)) => {
-                            batch.0.into_iter().enumerate().for_each(|(i, m)| {
-                                let metadata = InferMetadata {
-                                    prompt_tokens: m.prompt_tokens,
-                                    tokenization: m.tokenization,
-                                    queue: m
-                                        .queue_time
-                                        .elapsed()
-                                        .saturating_sub(inference_duration),
-                                    inference: inference_duration,
-                                };
-
-                                let results = match embeddings.remove(&i).expect(
-                                    "embedding not found in results. This is a backend bug.",
-                                ) {
-                                    Embedding::Pooled(e) => InferResult::PooledEmbedding(
-                                        PooledEmbeddingsInferResponse {
-                                            results: e,
-                                            metadata,
-                                        },
-                                    ),
-                                    Embedding::All(e) => {
-                                        InferResult::AllEmbedding(AllEmbeddingsInferResponse {
-                                            results: e,
-                                            metadata,
-                                        })
-                                    }
-                                };
-
-                                let _ = m.response_tx.send(Ok(results));
-                            })
-                        }
-                        Err(err) => {
-                            batch.0.into_iter().for_each(|m| {
-                                let _ = m.response_tx.send(Err(err.clone()));
-                            });
-                        }
-                    }
-                });
-            }
-        };
+        // Keep request metadata alive until completion, even after an early
+        // model-lease release. Other backends keep their lease until results are ready.
+        completions.spawn(complete_batch(execution, backend.model_type.clone(), batch));
+        while completions.try_join_next().is_some() {}
     }
+    while completions.join_next().await.is_some() {}
     queue.close();
+}
+
+async fn complete_batch(
+    execution: crate::backend_pool::Execution,
+    model_type: ModelType,
+    (entries, mut batch): NextBatch,
+) {
+    match model_type {
+        ModelType::Decision => {
+            let inputs = entries
+                .iter()
+                .map(|m| m.decision.clone().expect("decision metadata missing"))
+                .collect();
+            let results = execution
+                .decide(batch, inputs)
+                .await
+                .and_then(|(outputs, duration)| {
+                    if outputs.len() != entries.len() {
+                        return Err(BackendError::Inference(
+                            "Decision output count does not match batch".into(),
+                        ));
+                    }
+                    Ok((outputs.into_iter(), duration))
+                });
+            send_batch_results(entries, results, |outputs, _, metadata| {
+                InferResult::Decision(DecisionInferResponse {
+                    results: outputs.next().expect("decision output count was checked"),
+                    metadata,
+                })
+            });
+        }
+        ModelType::Classifier if entries.iter().any(|m| m.token_classification) => {
+            // Move source alignment into delivery; the backend only consumes numeric inputs.
+            let input_ids = batch.input_ids.clone();
+            let cumulative_seq_lengths = batch.cumulative_seq_lengths.clone();
+            let mut tokens = std::mem::take(&mut batch.tokens);
+            let offsets = std::mem::take(&mut batch.offsets);
+            let results = execution.predict_tokens(batch).await;
+            // Token text/offset construction can be large; retain its blocking worker.
+            tokio::task::spawn_blocking(move || {
+                send_batch_results(entries, results, |predictions, index, metadata| {
+                    let scores = predictions
+                        .remove(&index)
+                        .expect("prediction not found in results. This is a backend bug.");
+                    let start = cumulative_seq_lengths[index] as usize;
+                    let results = scores
+                        .into_iter()
+                        .enumerate()
+                        .map(|(token_index, scores)| {
+                            let global_index = start + token_index;
+                            make_token_prediction(
+                                global_index,
+                                scores,
+                                &input_ids,
+                                &mut tokens,
+                                &offsets,
+                            )
+                        })
+                        .collect();
+                    InferResult::TokenClassification(TokenClassificationInferResponse {
+                        results,
+                        metadata,
+                    })
+                });
+            });
+        }
+        ModelType::Classifier => {
+            send_batch_results(
+                entries,
+                execution.predict(batch).await,
+                |predictions, index, metadata| {
+                    InferResult::Classification(ClassificationInferResponse {
+                        results: predictions
+                            .remove(&index)
+                            .expect("prediction not found in results. This is a backend bug."),
+                        metadata,
+                    })
+                },
+            );
+        }
+        ModelType::Embedding(_) => {
+            send_batch_results(
+                entries,
+                execution.embed(batch).await,
+                |embeddings, index, metadata| match embeddings
+                    .remove(&index)
+                    .expect("embedding not found in results. This is a backend bug.")
+                {
+                    Embedding::Pooled(results) => {
+                        InferResult::PooledEmbedding(PooledEmbeddingsInferResponse {
+                            results,
+                            metadata,
+                        })
+                    }
+                    Embedding::All(results) => {
+                        InferResult::AllEmbedding(AllEmbeddingsInferResponse { results, metadata })
+                    }
+                },
+            );
+        }
+    }
+}
+
+fn send_batch_results<T>(
+    entries: Vec<Metadata>,
+    results: Result<(T, Duration), BackendError>,
+    mut response: impl FnMut(&mut T, usize, InferMetadata) -> InferResult,
+) {
+    match results {
+        Ok((mut outputs, inference)) => {
+            for (index, entry) in entries.into_iter().enumerate() {
+                let metadata = InferMetadata {
+                    prompt_tokens: entry.prompt_tokens,
+                    tokenization: entry.tokenization,
+                    queue: entry.queue_time.elapsed().saturating_sub(inference),
+                    inference,
+                };
+                let _ = entry
+                    .response_tx
+                    .send(Ok(response(&mut outputs, index, metadata)));
+            }
+        }
+        Err(error) => {
+            for entry in entries {
+                let _ = entry.response_tx.send(Err(error.clone()));
+            }
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -1067,6 +1021,53 @@ pub struct PooledEmbeddingsInferResponse {
 pub struct AllEmbeddingsInferResponse {
     pub results: Vec<Vec<f32>>,
     pub metadata: InferMetadata,
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+
+    #[test]
+    fn cancellation_after_dispatch_preserves_response_order_and_timing() {
+        let mut entries = Vec::new();
+        let mut receivers = Vec::new();
+        for prompt_tokens in [10, 20, 30] {
+            let (response_tx, receiver) = oneshot::channel();
+            receivers.push(receiver);
+            entries.push(Metadata {
+                decision: None,
+                client_batch: None,
+                response_tx,
+                tokenization: Duration::from_micros(7),
+                queue_time: Instant::now(),
+                prompt_tokens,
+                pooling: false,
+                token_classification: false,
+            });
+        }
+        drop(receivers.remove(0));
+        let inference = Duration::from_millis(1);
+        send_batch_results(
+            entries,
+            Ok(([vec![1.0], vec![2.0], vec![3.0]].into_iter(), inference)),
+            |outputs, _, metadata| {
+                InferResult::Classification(ClassificationInferResponse {
+                    results: outputs.next().unwrap(),
+                    metadata,
+                })
+            },
+        );
+        for (receiver, expected) in receivers.into_iter().zip([2.0, 3.0]) {
+            let InferResult::Classification(response) = receiver.blocking_recv().unwrap().unwrap()
+            else {
+                panic!("unexpected response type");
+            };
+            assert_eq!(response.results, [expected]);
+            assert_eq!(response.metadata.prompt_tokens, expected as usize * 10);
+            assert_eq!(response.metadata.tokenization, Duration::from_micros(7));
+            assert_eq!(response.metadata.inference, inference);
+        }
+    }
 }
 
 #[cfg(test)]

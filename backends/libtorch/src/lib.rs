@@ -11,8 +11,8 @@ use std::{
     ptr::NonNull,
 };
 use text_embeddings_backend_core::{
-    Backend, BackendError, Batch, DecisionInput, DecisionOutput, Embedding, Embeddings, ModelType,
-    Pool, Predictions, TokenPredictions,
+    Backend, BackendError, Batch, DecisionInput, DecisionOutput, Embedding, Embeddings, Inference,
+    ModelType, Pool, Predictions, TokenPredictions,
 };
 
 // Matches Candle's Gemma4 cache: source host pixels and every vision layout input.
@@ -220,6 +220,29 @@ extern "C" {
         audio_count: usize,
         radix: *const NativeRadix,
     ) -> i32;
+    fn tei_forward_submit(
+        handle: *mut c_void,
+        ids: *const i64,
+        types: *const i64,
+        positions: *const i64,
+        cumulative: *const i32,
+        batch: i64,
+        max_sequence: i64,
+        pool: i32,
+        pooled: *const i64,
+        pooled_count: usize,
+        raw: *const i64,
+        raw_count: usize,
+        capacity: usize,
+        media_positions: *const i64,
+        images: *const NativeImage,
+        image_count: usize,
+        audios: *const NativeAudio,
+        audio_count: usize,
+        radix: *const NativeRadix,
+    ) -> *mut c_void;
+    fn tei_output_wait(handle: *mut c_void) -> *const f32;
+    fn tei_output_destroy(handle: *mut c_void);
     fn tei_destroy(handle: *mut c_void);
 }
 
@@ -312,6 +335,7 @@ pub struct LibtorchBackend {
     classification_width: usize,
     decision: bool,
     supports_radix: bool,
+    cuda: bool,
 }
 // SAFETY: the handle owns its tensors and is used by TEI's single backend worker.
 // It can move between threads; it is deliberately not Sync. InferenceMode is set per native call.
@@ -693,6 +717,8 @@ impl LibtorchBackend {
             pooled_width: 0,
             classification_width: 0,
             supports_radix: false,
+            cuda: device.to_bytes().starts_with(b"cuda")
+                || (device.to_bytes() == b"auto" && device_count("cuda").unwrap_or(0) > 0),
             decision,
         };
         fn flatten(value: &serde_json::Value, key: &str, output: &mut Vec<(String, String)>) {
@@ -845,11 +871,62 @@ impl LibtorchBackend {
     }
 }
 
-impl LibtorchBackend {
-    fn run(&self, batch: Batch, pool: i32, hidden: usize) -> Result<Embeddings, BackendError> {
-        self.run_inner(batch, pool, hidden, None)
-            .map(|(embeddings, _)| embeddings)
+// A native lease owns pinned inputs/output and GPU temporaries independently
+// of the model. Only the completion worker reads it after submission.
+struct NativeOutput {
+    handle: NonNull<c_void>,
+    size: usize,
+}
+// SAFETY: the uniquely owned lease is transferred once; it never calls the model.
+unsafe impl Send for NativeOutput {}
+impl NativeOutput {
+    fn values(&self) -> Result<&[f32], BackendError> {
+        // SAFETY: wait synchronizes the lease's event before exposing its pinned output.
+        let values = unsafe { tei_output_wait(self.handle.as_ptr()) };
+        if values.is_null() {
+            return Err(inference(native_error()));
+        }
+        // SAFETY: native capacity was checked, and the lease stays live through this borrow.
+        Ok(unsafe { std::slice::from_raw_parts(values, self.size) })
     }
+}
+impl Drop for NativeOutput {
+    fn drop(&mut self) {
+        // SAFETY: uniquely owned lease; destruction drains work before buffer reuse.
+        unsafe { tei_output_destroy(self.handle.as_ptr()) };
+    }
+}
+
+fn pack_output(
+    output: &[f32],
+    pooled: Vec<i64>,
+    raw: Vec<i64>,
+    lengths: Vec<i64>,
+    hidden: usize,
+    raw_width: usize,
+) -> Embeddings {
+    let mut result = Embeddings::default();
+    let mut offset = 0;
+    for index in pooled {
+        result.insert(
+            index as usize,
+            Embedding::Pooled(output[offset..offset + hidden].to_vec()),
+        );
+        offset += hidden;
+    }
+    for index in raw {
+        let size = lengths[index as usize] as usize * raw_width;
+        let values = output[offset..offset + size]
+            .chunks_exact(raw_width)
+            .map(<[f32]>::to_vec)
+            .collect();
+        result.insert(index as usize, Embedding::All(values));
+        offset += size;
+    }
+    result
+}
+
+impl LibtorchBackend {
     fn run_inner(
         &self,
         batch: Batch,
@@ -857,6 +934,15 @@ impl LibtorchBackend {
         hidden: usize,
         requests: Option<&[DecisionInput]>,
     ) -> Result<(Embeddings, Vec<DecisionOutput>), BackendError> {
+        self.submit_inner(batch, pool, hidden, requests)?.complete()
+    }
+    fn submit_inner(
+        &self,
+        batch: Batch,
+        pool: i32,
+        hidden: usize,
+        requests: Option<&[DecisionInput]>,
+    ) -> Result<Inference<(Embeddings, Vec<DecisionOutput>)>, BackendError> {
         let ends = &batch.cumulative_seq_lengths;
         if ends.len() < 2
             || ends[0] != 0
@@ -1074,7 +1160,7 @@ impl LibtorchBackend {
                     result
                 })
                 .collect();
-            return Ok((Embeddings::default(), decisions));
+            return Ok(Inference::Ready((Embeddings::default(), decisions)));
         }
         let pooled: Vec<i64> = batch.pooled_indices.iter().map(|&n| n as i64).collect();
         let raw: Vec<i64> = batch.raw_indices.iter().map(|&n| n as i64).collect();
@@ -1104,6 +1190,47 @@ impl LibtorchBackend {
                     .and_then(|r| n.checked_add(r))
             })
             .ok_or_else(|| inference("Output size overflow"))?;
+        // CUDA results share one bounded completion path at every output size.
+        // The model thread can submit the next forward while CPU packing finishes.
+        if self.cuda {
+            // SAFETY: all descriptors remain live during submission. Native code
+            // copies staged inputs and owns every buffer needed after return.
+            let handle = NonNull::new(unsafe {
+                tei_forward_submit(
+                    self.handle.as_ptr(),
+                    ids.as_ptr(),
+                    types.as_ptr(),
+                    positions.as_ptr(),
+                    cumulative.as_ptr(),
+                    b as i64,
+                    seq as i64,
+                    pool,
+                    pooled.as_ptr(),
+                    pooled.len(),
+                    raw.as_ptr(),
+                    raw.len(),
+                    size,
+                    if media_positions.is_empty() {
+                        std::ptr::null()
+                    } else {
+                        media_positions.as_ptr()
+                    },
+                    images.as_ptr(),
+                    images.len(),
+                    audios.as_ptr(),
+                    audios.len(),
+                    native_radix
+                        .as_ref()
+                        .map_or(std::ptr::null(), |radix| radix),
+                )
+            })
+            .ok_or_else(|| inference(native_error()))?;
+            let output = NativeOutput { handle, size };
+            return Ok(Inference::Deferred(Box::new(move || {
+                let result = pack_output(output.values()?, pooled, raw, lengths, hidden, raw_width);
+                Ok((result, vec![]))
+            })));
+        }
         let mut output = vec![0f32; size];
         // SAFETY: validated dimensions and indices bound every native read/write. All buffers stay
         // live until this synchronous call returns; exceptions cannot cross the C ABI.
@@ -1140,29 +1267,65 @@ impl LibtorchBackend {
         {
             return Err(inference(native_error()));
         }
-        let mut result = Embeddings::default();
-        let mut offset = 0;
-        for index in pooled {
-            result.insert(
-                index as usize,
-                Embedding::Pooled(output[offset..offset + hidden].to_vec()),
-            );
-            offset += hidden;
-        }
-        for index in raw {
-            let size = lengths[index as usize] as usize * raw_width;
-            let values = output[offset..offset + size]
-                .chunks_exact(raw_width)
-                .map(<[f32]>::to_vec)
-                .collect();
-            result.insert(index as usize, Embedding::All(values));
-            offset += size;
-        }
-        Ok((result, vec![]))
+        Ok(Inference::Ready((
+            pack_output(&output, pooled, raw, lengths, hidden, raw_width),
+            vec![],
+        )))
     }
 }
 
 impl Backend for LibtorchBackend {
+    fn submit_embed(&self, batch: Batch) -> Result<Inference<Embeddings>, BackendError> {
+        let (pool, width) = match self.pool {
+            Pool::Cls => (0, self.pooled_width),
+            Pool::Mean => (1, self.pooled_width),
+            Pool::LastToken => (2, self.pooled_width),
+            Pool::Splade => (3, self.pooled_width),
+        };
+        self.submit_inner(batch, pool, width, None)
+            .map(|result| result.map(|(values, _)| values))
+    }
+    fn submit_predict(&self, mut batch: Batch) -> Result<Inference<Predictions>, BackendError> {
+        if self.classification_width == 0 {
+            return Err(inference("Checkpoint has no classification head"));
+        }
+        batch.pooled_indices = (0..batch.len() as u32).collect();
+        batch.raw_indices.clear();
+        self.submit_inner(batch, 4, self.classification_width, None)
+            .map(|result| {
+                result.map(|(values, _)| {
+                    values
+                        .into_iter()
+                        .filter_map(|(index, value)| match value {
+                            Embedding::Pooled(value) => Some((index, value)),
+                            _ => None,
+                        })
+                        .collect()
+                })
+            })
+    }
+    fn submit_predict_tokens(
+        &self,
+        mut batch: Batch,
+    ) -> Result<Inference<TokenPredictions>, BackendError> {
+        if self.classification_width == 0 {
+            return Err(inference("Checkpoint has no classification head"));
+        }
+        batch.raw_indices = (0..batch.len() as u32).collect();
+        batch.pooled_indices.clear();
+        self.submit_inner(batch, 5, self.classification_width, None)
+            .map(|result| {
+                result.map(|(values, _)| {
+                    values
+                        .into_iter()
+                        .filter_map(|(index, value)| match value {
+                            Embedding::All(value) => Some((index, value)),
+                            _ => None,
+                        })
+                        .collect()
+                })
+            })
+    }
     fn supports_radix_mlp(&self) -> bool {
         // Native models advertise folding only when their complete forward path supports it.
         self.supports_radix
@@ -1181,45 +1344,13 @@ impl Backend for LibtorchBackend {
         Ok(())
     }
     fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError> {
-        let (pool, width) = match self.pool {
-            Pool::Cls => (0, self.pooled_width),
-            Pool::Mean => (1, self.pooled_width),
-            Pool::LastToken => (2, self.pooled_width),
-            Pool::Splade => (3, self.pooled_width),
-        };
-        self.run(batch, pool, width)
+        self.submit_embed(batch)?.complete()
     }
-    fn predict(&self, mut batch: Batch) -> Result<Predictions, BackendError> {
-        if self.classification_width == 0 {
-            return Err(inference("Checkpoint has no classification head"));
-        }
-        batch.pooled_indices =
-            (0..batch.cumulative_seq_lengths.len().saturating_sub(1) as u32).collect();
-        batch.raw_indices.clear();
-        let values = self.run(batch, 4, self.classification_width)?;
-        let mut result = Predictions::default();
-        for (index, value) in values {
-            if let Embedding::Pooled(value) = value {
-                result.insert(index, value);
-            }
-        }
-        Ok(result)
+    fn predict(&self, batch: Batch) -> Result<Predictions, BackendError> {
+        self.submit_predict(batch)?.complete()
     }
-    fn predict_tokens(&self, mut batch: Batch) -> Result<TokenPredictions, BackendError> {
-        if self.classification_width == 0 {
-            return Err(inference("Checkpoint has no classification head"));
-        }
-        batch.raw_indices =
-            (0..batch.cumulative_seq_lengths.len().saturating_sub(1) as u32).collect();
-        batch.pooled_indices.clear();
-        let values = self.run(batch, 5, self.classification_width)?;
-        let mut result = TokenPredictions::default();
-        for (index, value) in values {
-            if let Embedding::All(value) = value {
-                result.insert(index, value);
-            }
-        }
-        Ok(result)
+    fn predict_tokens(&self, batch: Batch) -> Result<TokenPredictions, BackendError> {
+        self.submit_predict_tokens(batch)?.complete()
     }
 }
 
@@ -1230,6 +1361,48 @@ mod pytorch_checkpoint;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn synchronous_native_output_allows_spare_capacity() {
+        let fixture = fixture("", false);
+        let model = LibtorchBackend::new(
+            &fixture.0,
+            "float32",
+            ModelType::Embedding(Pool::Mean),
+            "cpu",
+        )
+        .unwrap();
+        let mut output = [42.0f32; 20];
+        // SAFETY: a valid two-token packed input and one 16-dimensional pooled
+        // result; the caller intentionally supplies four unused output elements.
+        let status = unsafe {
+            tei_forward_radix(
+                model.handle.as_ptr(),
+                [1i64, 2].as_ptr(),
+                [0i64, 0].as_ptr(),
+                [0i64, 1].as_ptr(),
+                [0i32, 2].as_ptr(),
+                1,
+                2,
+                1,
+                [0i64].as_ptr(),
+                1,
+                std::ptr::null(),
+                0,
+                output.as_mut_ptr(),
+                output.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(status, 0, "{}", native_error());
+        assert!(output[..16].iter().all(|value| value.is_finite()));
+        assert_eq!(output[16..], [42.0; 4]);
+    }
 
     #[test]
     fn image_feature_keys_and_descriptor_layout() {
@@ -1548,6 +1721,68 @@ mod tests {
             }
         }
     }
+    #[test]
+    #[ignore = "Requires an NVIDIA GPU and CUDA LibTorch 2.14.1"]
+    fn cuda_bulk_completion_preserves_mixed_projection_widths() {
+        let (fixture, _) = dense_fixture();
+        let mut gpu = LibtorchBackend::new(
+            &fixture.0,
+            "float16",
+            ModelType::Embedding(Pool::Mean),
+            "cuda:0",
+        )
+        .unwrap();
+        // The same CUDA path also accepts a valid batch with no requested rows.
+        let mut empty = batch();
+        empty.pooled_indices.clear();
+        empty.raw_indices.clear();
+        assert!(gpu
+            .submit_embed(empty)
+            .unwrap()
+            .complete()
+            .unwrap()
+            .is_empty());
+        let input = |pattern: u32| {
+            let mut input = batch();
+            input.input_ids = (0..6400).map(|i| (i + pattern) % 16).collect();
+            input.token_type_ids = vec![0; 6400];
+            input.position_ids = (0..6400).map(|i| i % 4).collect();
+            input.cumulative_seq_lengths = (0..=1600).map(|i| i * 4).collect();
+            input.max_length = 4;
+            input.pooled_indices = (0..400).collect();
+            input.raw_indices = (400..1600).collect();
+            input
+        };
+        // Use the existing synchronous native ABI as a full-output reference.
+        gpu.cuda = false;
+        let expected = [gpu.embed(input(0)).unwrap(), gpu.embed(input(3)).unwrap()];
+        gpu.cuda = true;
+        let first = gpu.submit_embed(input(0)).unwrap();
+        let second = gpu.submit_embed(input(3)).unwrap();
+        assert!(matches!(first, Inference::Deferred(_)));
+        assert!(matches!(second, Inference::Deferred(_)));
+        let actual =
+            std::thread::spawn(move || [first.complete().unwrap(), second.complete().unwrap()])
+                .join()
+                .unwrap();
+        for (expected, actual) in expected.into_iter().zip(actual) {
+            assert_eq!(actual.len(), expected.len());
+            for (index, value) in actual {
+                assert_eq!(values(&value), values(&expected[&index]));
+            }
+        }
+        // Tiny pooled results use the same staged path as larger outputs.
+        gpu.cuda = false;
+        let expected = gpu.embed(batch()).unwrap();
+        gpu.cuda = true;
+        let tiny = gpu.submit_embed(batch()).unwrap();
+        assert!(matches!(tiny, Inference::Deferred(_)));
+        let actual = tiny.complete().unwrap();
+        for (index, value) in actual {
+            assert_eq!(values(&value), values(&expected[&index]));
+        }
+    }
+
     #[test]
     #[ignore = "Requires an NVIDIA GPU and CUDA LibTorch 2.14.1"]
     fn cuda_dense_chain_matches_cpu_with_mixed_widths() {

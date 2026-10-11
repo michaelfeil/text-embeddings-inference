@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use text_embeddings_backend_core::Backend as CoreBackend;
+use text_embeddings_backend_core::{Backend as CoreBackend, Inference};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{instrument, Span};
 
@@ -18,6 +18,23 @@ pub use text_embeddings_backend_core::{
     AudioFeatures, BackendError, Batch, ClefField, DecisionInput, DecisionOutput, Embedding,
     Embeddings, ImagePatches, ModelType, MultimodalEncoding, Pool, Predictions, TokenPredictions,
 };
+
+/// A completed result or an owned completion handle after native submission.
+/// Deferred results have already been handed to the bounded completion worker,
+/// so the model lease can be released before awaiting the result.
+pub enum Submission<T> {
+    Ready(T, Duration),
+    Deferred(oneshot::Receiver<Result<(T, Duration), BackendError>>),
+}
+
+impl<T> Submission<T> {
+    pub async fn complete(self) -> Result<(T, Duration), BackendError> {
+        match self {
+            Self::Ready(value, duration) => Ok((value, duration)),
+            Self::Deferred(receiver) => receiver.await.map_err(|_| BackendError::Unhealthy)?,
+        }
+    }
+}
 
 #[cfg(feature = "candle")]
 use text_embeddings_backend_candle::CandleBackend;
@@ -336,14 +353,17 @@ impl Backend {
 
     #[instrument(skip_all)]
     pub async fn embed(&self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
+        self.submit_embed(batch).await?.complete().await
+    }
+
+    pub async fn submit_embed(&self, batch: Batch) -> Result<Submission<Embeddings>, BackendError> {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::Embed(batch, Span::current(), sender))
-            .expect("No backend receiver. This is a bug.");
-        receiver.await.expect(
-            "Backend blocking task dropped the sender without send a response. This is a bug.",
-        )
+            .send(BackendCommand::Embed(batch, Span::current(), sender))
+            .await
+            .map_err(|_| BackendError::Unhealthy)?;
+        receiver.await.map_err(|_| BackendError::Unhealthy)?
     }
 
     pub async fn decide(
@@ -366,14 +386,20 @@ impl Backend {
 
     #[instrument(skip_all)]
     pub async fn predict(&self, batch: Batch) -> Result<(Predictions, Duration), BackendError> {
+        self.submit_predict(batch).await?.complete().await
+    }
+
+    pub async fn submit_predict(
+        &self,
+        batch: Batch,
+    ) -> Result<Submission<Predictions>, BackendError> {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::Predict(batch, Span::current(), sender))
-            .expect("No backend receiver. This is a bug.");
-        receiver.await.expect(
-            "Backend blocking task dropped the sender without send a response. This is a bug.",
-        )
+            .send(BackendCommand::Predict(batch, Span::current(), sender))
+            .await
+            .map_err(|_| BackendError::Unhealthy)?;
+        receiver.await.map_err(|_| BackendError::Unhealthy)?
     }
 
     #[instrument(skip_all)]
@@ -381,18 +407,24 @@ impl Backend {
         &self,
         batch: Batch,
     ) -> Result<(TokenPredictions, Duration), BackendError> {
+        self.submit_predict_tokens(batch).await?.complete().await
+    }
+
+    pub async fn submit_predict_tokens(
+        &self,
+        batch: Batch,
+    ) -> Result<Submission<TokenPredictions>, BackendError> {
         let (sender, receiver) = oneshot::channel();
 
         self.backend_sender
-            .try_send(BackendCommand::PredictTokens(
+            .send(BackendCommand::PredictTokens(
                 batch,
                 Span::current(),
                 sender,
             ))
-            .expect("No backend receiver. This is a bug.");
-        receiver.await.expect(
-            "Backend blocking task dropped the sender without send a response. This is a bug.",
-        )
+            .await
+            .map_err(|_| BackendError::Unhealthy)?;
+        receiver.await.map_err(|_| BackendError::Unhealthy)?
     }
 }
 
@@ -576,6 +608,76 @@ async fn init_backend(
     }
 }
 
+type CompletionJob = Box<dyn FnOnce() + Send>;
+struct CompletionThread {
+    sender: Option<std::sync::mpsc::SyncSender<CompletionJob>>,
+    handle: Option<JoinHandle<()>>,
+}
+impl CompletionThread {
+    fn new() -> Self {
+        let (sender, receiver) = std::sync::mpsc::sync_channel::<CompletionJob>(2);
+        let handle = std::thread::Builder::new()
+            .name("tei-completion".into())
+            .spawn(move || {
+                while let Ok(job) = receiver.recv() {
+                    job();
+                }
+            })
+            .expect("Could not start completion worker");
+        Self {
+            sender: Some(sender),
+            handle: Some(handle),
+        }
+    }
+}
+impl Drop for CompletionThread {
+    fn drop(&mut self) {
+        self.sender.take();
+        let _ = self.handle.take().unwrap().join();
+    }
+}
+
+fn deliver<T: Send + 'static>(
+    result: Result<Inference<T>, BackendError>,
+    sender: oneshot::Sender<Result<Submission<T>, BackendError>>,
+    start: Instant,
+    span: Span,
+    health: &watch::Sender<bool>,
+    completion: &mut Option<CompletionThread>,
+) {
+    match result {
+        Ok(Inference::Deferred(complete)) => {
+            let health = health.clone();
+            let (response, receiver) = oneshot::channel();
+            let job = Box::new(move || {
+                let _span = span.entered();
+                // Complete even after receiver cancellation: retain pins/slots until
+                // the GPU finishes, and never free native work on a Tokio worker.
+                let result = complete().map(|value| (value, start.elapsed()));
+                let _ = health.send(result.is_ok());
+                let _ = response.send(result);
+            });
+            completion
+                .get_or_insert_with(CompletionThread::new)
+                .sender
+                .as_ref()
+                .unwrap()
+                .send(job)
+                .expect("Completion worker exited");
+            // Return the completion handle only after native submission and
+            // bounded handoff. Dropping it still leaves the worker owning the job.
+            let _ = sender.send(Ok(Submission::Deferred(receiver)));
+        }
+        result => {
+            let result = result
+                .and_then(Inference::complete)
+                .map(|value| Submission::Ready(value, start.elapsed()));
+            let _ = health.send(result.is_ok());
+            let _ = sender.send(result);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct BackendThread(Option<JoinHandle<()>>);
 
@@ -586,45 +688,47 @@ impl BackendThread {
         health_sender: watch::Sender<bool>,
     ) -> Self {
         let handle = std::thread::spawn(move || {
+            let mut completion = None;
             while let Some(cmd) = backend_receiver.blocking_recv() {
                 let start = Instant::now();
-                let mut healthy = false;
                 match cmd {
                     BackendCommand::Decide(batch, inputs, span, sender) => {
                         let _span = span.entered();
-                        let _ = sender.send(backend.decide(batch, inputs).map(|output| {
-                            healthy = true;
-                            (output, start.elapsed())
-                        }));
+                        let result = backend.decide(batch, inputs);
+                        let _ = health_sender.send(result.is_ok());
+                        let _ = sender.send(result.map(|output| (output, start.elapsed())));
                     }
                     BackendCommand::Health(span, sender) => {
                         let _span = span.entered();
-                        let _ = sender.send(backend.health().map(|_| healthy = true));
+                        let result = backend.health();
+                        let _ = health_sender.send(result.is_ok());
+                        let _ = sender.send(result);
                     }
                     BackendCommand::Embed(batch, span, sender) => {
-                        let _span = span.entered();
-                        let _ = sender.send(backend.embed(batch).map(|e| {
-                            healthy = true;
-                            (e, start.elapsed())
-                        }));
+                        let result = {
+                            let _span = span.enter();
+                            backend.submit_embed(batch)
+                        };
+                        deliver(result, sender, start, span, &health_sender, &mut completion);
                     }
                     BackendCommand::Predict(batch, span, sender) => {
-                        let _span = span.entered();
-                        let _ = sender.send(backend.predict(batch).map(|e| {
-                            healthy = true;
-                            (e, start.elapsed())
-                        }));
+                        let result = {
+                            let _span = span.enter();
+                            backend.submit_predict(batch)
+                        };
+                        deliver(result, sender, start, span, &health_sender, &mut completion);
                     }
                     BackendCommand::PredictTokens(batch, span, sender) => {
-                        let _span = span.entered();
-                        let _ = sender.send(backend.predict_tokens(batch).map(|e| {
-                            healthy = true;
-                            (e, start.elapsed())
-                        }));
+                        let result = {
+                            let _span = span.enter();
+                            backend.submit_predict_tokens(batch)
+                        };
+                        deliver(result, sender, start, span, &health_sender, &mut completion);
                     }
                 };
-                let _ = health_sender.send(healthy);
             }
+            // Join/drain completion before destroying the model and its graph cache.
+            drop(completion);
         });
         Self(Some(handle))
     }
@@ -647,19 +751,19 @@ enum BackendCommand {
     Embed(
         Batch,
         Span,
-        oneshot::Sender<Result<(Embeddings, Duration), BackendError>>,
+        oneshot::Sender<Result<Submission<Embeddings>, BackendError>>,
     ),
     Predict(
         Batch,
         Span,
         #[allow(clippy::type_complexity)]
-        oneshot::Sender<Result<(Predictions, Duration), BackendError>>,
+        oneshot::Sender<Result<Submission<Predictions>, BackendError>>,
     ),
     PredictTokens(
         Batch,
         Span,
         #[allow(clippy::type_complexity)]
-        oneshot::Sender<Result<(TokenPredictions, Duration), BackendError>>,
+        oneshot::Sender<Result<Submission<TokenPredictions>, BackendError>>,
     ),
 }
 
@@ -921,5 +1025,122 @@ pub fn visible_cuda_device_count() -> Result<usize, BackendError> {
         Err(BackendError::Start(
             "GPU replicas require the Candle CUDA backend".into(),
         ))
+    }
+}
+
+#[cfg(test)]
+mod completion_tests {
+    use super::*;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Mutex,
+    };
+
+    struct DeferredBackend {
+        gate: Arc<Mutex<std::sync::mpsc::Receiver<Result<(), BackendError>>>>,
+        started: std::sync::mpsc::Sender<()>,
+        completed: Arc<AtomicUsize>,
+    }
+    impl CoreBackend for DeferredBackend {
+        fn health(&self) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn embed(&self, _: Batch) -> Result<Embeddings, BackendError> {
+            unreachable!()
+        }
+        fn predict(&self, _: Batch) -> Result<Predictions, BackendError> {
+            unreachable!()
+        }
+        fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
+            unreachable!()
+        }
+        fn submit_embed(&self, _: Batch) -> Result<Inference<Embeddings>, BackendError> {
+            let (gate, started, completed) = (
+                self.gate.clone(),
+                self.started.clone(),
+                self.completed.clone(),
+            );
+            Ok(Inference::Deferred(Box::new(move || {
+                assert_eq!(std::thread::current().name(), Some("tei-completion"));
+                started.send(()).unwrap();
+                let result = gate.lock().unwrap().recv().unwrap();
+                completed.fetch_add(1, Ordering::SeqCst);
+                result.map(|_| Embeddings::default())
+            })))
+        }
+    }
+    fn batch() -> Batch {
+        Batch {
+            multimodal: vec![],
+            input_ids: vec![1],
+            token_type_ids: vec![0],
+            position_ids: vec![0],
+            cumulative_seq_lengths: vec![0, 1],
+            max_length: 1,
+            pooled_indices: vec![0],
+            raw_indices: vec![],
+            compact_input_ids: None,
+            compact_position_ids: None,
+            scatter_unfold: None,
+            fold_gather: None,
+            tokens: vec![],
+            offsets: vec![],
+        }
+    }
+    #[test]
+    fn deferred_completion_does_not_block_model_and_drains_after_cancellation() {
+        let (gate, wait) = std::sync::mpsc::channel();
+        let (started, start) = std::sync::mpsc::channel();
+        let completed = Arc::new(AtomicUsize::new(0));
+        let backend = Box::new(DeferredBackend {
+            gate: Arc::new(Mutex::new(wait)),
+            started,
+            completed: completed.clone(),
+        });
+        let (commands, receiver) = mpsc::channel(8);
+        let (health, _) = watch::channel(false);
+        let worker = BackendThread::new(backend, receiver, health);
+        let (response, canceled) = oneshot::channel();
+        commands
+            .blocking_send(BackendCommand::Embed(batch(), Span::none(), response))
+            .unwrap();
+        let canceled = canceled.blocking_recv().unwrap().unwrap();
+        assert!(matches!(canceled, Submission::Deferred(_)));
+        start.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
+        drop(canceled);
+        let (response, result) = oneshot::channel();
+        commands
+            .blocking_send(BackendCommand::Embed(batch(), Span::none(), response))
+            .unwrap();
+        let result = match result.blocking_recv().unwrap().unwrap() {
+            Submission::Deferred(result) => result,
+            Submission::Ready(..) => panic!("expected deferred completion"),
+        };
+        // Cancellation before the submission response must also leave the job
+        // owned by the worker, alongside the two existing completions.
+        let (response, canceled) = oneshot::channel();
+        drop(canceled);
+        commands
+            .blocking_send(BackendCommand::Embed(batch(), Span::none(), response))
+            .unwrap();
+        let (response, healthy) = oneshot::channel();
+        commands
+            .blocking_send(BackendCommand::Health(Span::none(), response))
+            .unwrap();
+        healthy.blocking_recv().unwrap().unwrap();
+        gate.send(Ok(())).unwrap();
+        start.recv_timeout(Duration::from_secs(5)).unwrap();
+        gate.send(Err(BackendError::Inference("completion failed".into())))
+            .unwrap();
+        assert!(matches!(
+            result.blocking_recv().unwrap(),
+            Err(BackendError::Inference(_))
+        ));
+        start.recv_timeout(Duration::from_secs(5)).unwrap();
+        gate.send(Ok(())).unwrap();
+        drop(commands);
+        drop(worker);
+        assert_eq!(completed.load(Ordering::SeqCst), 3);
     }
 }
