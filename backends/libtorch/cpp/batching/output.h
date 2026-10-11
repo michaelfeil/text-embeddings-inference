@@ -27,6 +27,7 @@ struct OutputPool {
   std::mutex mutex;
   std::condition_variable available;
   std::array<OutputSlot, 2> slots;
+  size_t next_slot = 0;
 };
 class OutputLease {
   std::shared_ptr<OutputPool> pool;
@@ -49,15 +50,12 @@ public:
 #endif
         size(count) {
     std::unique_lock lock(pool->mutex);
-    pool->available.wait(lock, [&] {
-      for (auto& candidate : pool->slots) if (!candidate.busy) return true;
-      return false;
-    });
-    for (auto& candidate : pool->slots) if (!candidate.busy) {
-      slot = &candidate;
-      slot->busy = true;
-      break;
-    }
+    // One model producer and FIFO completion alternate A/B, waiting through
+    // result packing before reusing the next slot.
+    pool->available.wait(lock, [&] { return !pool->slots[pool->next_slot].busy; });
+    slot = &pool->slots[pool->next_slot];
+    slot->busy = true;
+    pool->next_slot = (pool->next_slot + 1) % pool->slots.size();
   }
   ~OutputLease() {
 #ifdef TEI_TORCH_CUDA_KERNELS

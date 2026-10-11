@@ -2,8 +2,10 @@
 #include "batching/output.h"
 #include "batching/cuda_graph.h"
 #include <c10/core/InferenceMode.h>
+#include <chrono>
 #include <future>
 #include <iostream>
+#include <utility>
 
 class Model final : public tei::Model {
 public:
@@ -69,6 +71,31 @@ int main() {
     tei::OutputLease reused(pool, device, 768); reused.allocate();
     reused.copy(at::full({1,768}, 42, at::TensorOptions().device(device)), 0); reused.record();
     TORCH_CHECK(reused.wait()[767] == 42, "Abandoned lease contaminated reuse");
-    std::cout << "output staging, overlap, graph eviction, reuse and cancellation passed\n";
+    // GPU completion alone must not release A while CPU packing still owns it.
+    // Even if B is free, C waits for A rather than selecting any free slot.
+    auto alternating = std::make_shared<tei::OutputPool>();
+    auto first = std::make_unique<tei::OutputLease>(alternating, device, 1);
+    first->allocate(); first->copy(at::ones({1}, at::TensorOptions().device(device)), 0); first->record();
+    const auto first_host = first->wait();
+    { tei::OutputLease second(alternating, device, 1); second.allocate();
+      second.copy(at::full({1}, 2, at::TensorOptions().device(device)), 0); second.record();
+      TORCH_CHECK(second.wait() != first_host, "A and B shared an output buffer"); }
+    std::promise<void> started;
+    auto third = std::async(std::launch::async, [&] {
+      c10::InferenceMode worker_inference;
+      c10::cuda::CUDAGuard worker_guard(device);
+      started.set_value();
+      tei::OutputLease lease(alternating, device, 1); lease.allocate();
+      lease.copy(at::full({1}, 3, at::TensorOptions().device(device)), 0); lease.record();
+      const auto host = lease.wait();
+      return std::make_pair(host, host[0]);
+    });
+    started.get_future().wait();
+    const auto waiting = third.wait_for(std::chrono::milliseconds(20));
+    first.reset(); // Release only after simulated result packing finishes.
+    const auto [third_host, third_value] = third.get();
+    TORCH_CHECK(waiting == std::future_status::timeout, "C reused free B while A was still owned");
+    TORCH_CHECK(third_host == first_host && third_value == 3, "C did not reuse A safely");
+    std::cout << "output staging, overlap, graph eviction, alternation, reuse and cancellation passed\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -222,8 +222,9 @@ thread. Completion waits for the CUDA event and allocates
 the final Rust result vectors directly from that storage, avoiding an intermediate
 flat host copy. CPU inference completes inline.
 
-Two output leases bound pending CUDA work per replica; submission waits if both
-are busy. Buffer capacities grow to the largest observed batch and are reused.
+Two output leases alternate A/B per replica; the next submission waits until its
+slot finishes transfer and result packing. Serial traffic warms both slots.
+Buffer capacities grow to the largest observed batch and are reused.
 Pinned storage, FP32 device staging, and tensor-retention vector capacity are
 reused after warmup. Each lease owns its pinned
 input staging buffers, output buffer, and GPU transfer tensors through completion
