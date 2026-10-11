@@ -7,6 +7,9 @@
 #endif
 #include <vector>
 namespace tei {
+// Full rows retain each request's sequence boundaries. Compact rows deduplicate
+// tokens only when their attention context is identical. scatter_unfold maps
+// full -> compact; fold_gather selects one full representative per compact row.
 bool radix_enabled(const PackedInput& p) {
  return p.compact_ids.defined()||p.compact_positions.defined()||p.compact_types.defined()
    ||p.scatter_unfold.defined()||p.fold_gather.defined();
@@ -20,6 +23,8 @@ at::Tensor radix_unfold(const at::Tensor& x,const PackedInput& p) {
  TORCH_CHECK(p.scatter_unfold.defined()&&p.scatter_unfold.scalar_type()==at::kLong&&p.scatter_unfold.device()==x.device(),"Radix unfold requires matching on-device indices");
  return x.index_select(0,p.scatter_unfold);
 }
+// Attention still sees every actual token in each request. Only projections and
+// token-local work use compact rows; the CUDA path gathers Q/K/V in one launch.
 std::array<at::Tensor,3> radix_unfold_qkv(const at::Tensor& q,const at::Tensor& k,
  const at::Tensor& v,const PackedInput& p) {
  if(!radix_enabled(p))return {q,k,v};
@@ -37,6 +42,9 @@ at::Tensor radix_fold(const at::Tensor& x,const PackedInput& p) {
  TORCH_CHECK(p.fold_gather.defined()&&p.fold_gather.scalar_type()==at::kLong&&p.fold_gather.device()==x.device(),"Radix gather requires matching on-device indices");
  return x.index_select(0,p.fold_gather);
 }
+// Validate host metadata before moving it to the inference device. Token
+// equality alone cannot justify sharing: causal tokens must have the same past,
+// and bidirectional tokens must belong to the same complete sequence.
 void validate_radix(const PackedInput& p,bool causal) {
  if(!radix_enabled(p))return;
  auto host_vector=[](const at::Tensor& t,int64_t count,const char* name) {
@@ -56,6 +64,9 @@ void validate_radix(const PackedInput& p,bool causal) {
   TORCH_CHECK(gather[j]>=0&&gather[j]<n,"Radix representative index out of range");
   TORCH_CHECK(scatter[gather[j]]==j,"Radix compact rows must each represent an actual token (no padded rows)");
  }
+ // -2 means unseen; -1 identifies a sequence root. A shared compact row must
+ // have one parent, making prefix identity recursive across all aliased rows.
+ // For bidirectional attention its terminal row must also match.
  std::vector<int64_t> parent(m,-2),terminal(m,-2);
  for(int64_t row=0;row<p.batch;++row) {
   const int64_t begin=p.offsets[row],end=p.offsets[row+1];
