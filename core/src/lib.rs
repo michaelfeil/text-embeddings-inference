@@ -5,7 +5,7 @@ mod fast_tokenization;
 pub mod infer;
 pub mod input;
 pub mod multimodal;
-pub mod queue;
+pub mod queue_actor;
 mod radix;
 pub mod tokenization;
 
