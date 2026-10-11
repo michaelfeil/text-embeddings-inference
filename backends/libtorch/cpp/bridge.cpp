@@ -132,6 +132,11 @@ struct Engine {
       &&options.integer("head_dim",0)==128&&options.integer("num_attention_heads",0)==32
       &&options.integer("num_key_value_heads",0)==4)
       native_moe_graphs=tei::native_hopper_moe_available(device);
+    if(device.is_cuda()&&dtype==at::kBFloat16&&(family=="qwen3_5_moe"||family=="qwen3_5_moe_text")) {
+      auto ti=[&](const char* key){return options.integer(std::string("text_config.")+key,options.integer(key,0));};
+      if(ti("hidden_size")==2048&&ti("num_experts")==256&&ti("num_experts_per_tok")==8&&ti("moe_intermediate_size")==512&&ti("head_dim")==256&&ti("num_attention_heads")==16&&ti("num_key_value_heads")==2)
+        native_moe_graphs=tei::native_hopper_moe_available(device);
+    }
     if(device.is_cuda()&&dtype==at::kBFloat16&&(family=="gemma4"||family=="gemma4_text")) {
       auto text_integer=[&](const char* key,int64_t fallback=0) {
         return options.integer(std::string("text_config.")+key,options.integer(key,fallback));
