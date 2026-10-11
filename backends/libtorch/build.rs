@@ -2,6 +2,7 @@ use std::{env, path::PathBuf};
 
 fn main() {
     println!("cargo:rerun-if-env-changed=LIBTORCH");
+    println!("cargo:rerun-if-env-changed=CUDA_COMPUTE_CAP");
     println!("cargo:rerun-if-changed=cpp");
     println!("cargo:rerun-if-changed=cpp/vendor/torch_flash_attention");
     println!("cargo:rerun-if-changed=cpp/torch_flash_fma.cpp");
@@ -23,9 +24,12 @@ fn main() {
     let torch = PathBuf::from(env::var_os("LIBTORCH").expect(
         "Set LIBTORCH to the root of a LibTorch 2.14.1 C++ distribution (include/, lib/, share/)",
     ));
-    let dst = cmake::Config::new("cpp")
-        .define("CMAKE_PREFIX_PATH", &torch)
-        .build();
+    let mut config = cmake::Config::new("cpp");
+    config.define("CMAKE_PREFIX_PATH", &torch);
+    if let Some(compute_cap) = env::var_os("CUDA_COMPUTE_CAP") {
+        config.define("CMAKE_CUDA_ARCHITECTURES", compute_cap);
+    }
+    let dst = config.build();
     println!("cargo:rustc-link-search=native={}/lib", dst.display());
     println!("cargo:rustc-link-lib=dylib=tei_torch");
     println!("cargo:lib_dir={}/lib", dst.display());
