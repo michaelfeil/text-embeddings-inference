@@ -683,10 +683,25 @@ impl Backend for CandleBackend {
         self.model.supports_radix_mlp()
     }
 
-    fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError> {
+    fn embed(&self, mut batch: Batch) -> Result<Embeddings, BackendError> {
         let batch_size = batch.len();
         let pooled_indices = batch.pooled_indices.clone();
         let raw_indices = batch.raw_indices.clone();
+        if pooled_indices
+            .iter()
+            .chain(&raw_indices)
+            .any(|&index| index as usize >= batch_size)
+        {
+            return Err(BackendError::Inference("Invalid output index".into()));
+        }
+        // Packed model pooling historically assumes identity selectors when no
+        // raw rows are requested. Ask for canonical rows, then select before
+        // Dense modules so request order and repeated indices work for every model.
+        let select_pooled = !pooled_indices.is_empty()
+            && pooled_indices.iter().copied().ne(0..batch_size as u32);
+        if select_pooled {
+            batch.pooled_indices = (0..batch_size as u32).collect();
+        }
 
         // Used for indexing in the raw_embeddings tensor
         let input_lengths: Vec<usize> = (0..batch.len())
@@ -697,6 +712,17 @@ impl Backend for CandleBackend {
 
         // Run forward
         let (pooled_embeddings, raw_embeddings) = self.model.embed(batch).e()?;
+        let pooled_embeddings = if select_pooled {
+            pooled_embeddings
+                .map(|pooled| {
+                    let indices = candle::Tensor::new(pooled_indices.as_slice(), pooled.device())?;
+                    crate::layers::index_select(&pooled, &indices, 0)
+                })
+                .transpose()
+                .e()?
+        } else {
+            pooled_embeddings
+        };
 
         // Apply Dense layers sequentially if available
         let pooled_embeddings = match pooled_embeddings {
