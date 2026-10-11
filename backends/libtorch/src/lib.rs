@@ -179,7 +179,7 @@ extern "C" {
         count: usize,
         counts: *mut i64,
     ) -> i32;
-    fn tei_decide(
+    fn tei_decide_radix(
         handle: *mut c_void,
         ids: *const i64,
         types: *const i64,
@@ -196,6 +196,7 @@ extern "C" {
         image_count: usize,
         audios: *const NativeAudio,
         audio_count: usize,
+        radix: *const NativeRadix,
     ) -> i32;
     fn tei_forward_radix(
         handle: *mut c_void,
@@ -867,17 +868,26 @@ impl LibtorchBackend {
             return Err(inference("Invalid packed batch"));
         }
         let owned_radix = OwnedRadix::from_batch(&batch)?;
-        if owned_radix.is_some() && requests.is_some() {
-            return Err(inference(
-                "Radix folding is not yet supported for typed decisions",
-            ));
-        }
         let native_radix = owned_radix.as_ref().map(OwnedRadix::native);
         let b = ends.len() - 1;
         let lengths: Vec<i64> = ends.windows(2).map(|w| (w[1] - w[0]) as i64).collect();
         let seq = *lengths.iter().max().unwrap() as usize;
         if !batch.multimodal.is_empty() && batch.multimodal.len() != b {
             return Err(inference("Invalid multimodal batch length"));
+        }
+        if owned_radix.is_some()
+            && !batch.multimodal.is_empty()
+            && !text_embeddings_backend_core::MultimodalEncoding::allows_radix_fold(
+                &batch.multimodal,
+                &batch.input_ids,
+                &batch.cumulative_seq_lengths,
+                batch.scatter_unfold.as_ref().unwrap(),
+                batch.fold_gather.as_ref().unwrap(),
+            )
+        {
+            return Err(inference(
+                "Radix media folding requires identical images and image prefixes",
+            ));
         }
         let mut images = Vec::new();
         let cache_images = matches!(
@@ -1022,7 +1032,7 @@ impl LibtorchBackend {
             // SAFETY: native output counts bound capacity, validated packed/media buffers stay live,
             // and all exceptions are caught by the bridge before returning across the C ABI.
             if unsafe {
-                tei_decide(
+                tei_decide_radix(
                     self.handle.as_ptr(),
                     ids.as_ptr(),
                     types.as_ptr(),
@@ -1043,6 +1053,9 @@ impl LibtorchBackend {
                     images.len(),
                     audios.as_ptr(),
                     audios.len(),
+                    native_radix
+                        .as_ref()
+                        .map_or(std::ptr::null(), |radix| radix),
                 )
             } != 0
             {
@@ -1151,8 +1164,8 @@ impl LibtorchBackend {
 
 impl Backend for LibtorchBackend {
     fn supports_radix_mlp(&self) -> bool {
-        // Typed decision requests still require the full-token inference path.
-        self.supports_radix && !self.decision
+        // Native models advertise folding only when their complete forward path supports it.
+        self.supports_radix
     }
     fn decide(
         &self,

@@ -94,5 +94,22 @@ int main(int argc,char** argv) {
     }
     TORCH_CHECK(at::equal(actual.cpu(),expected.to(at::kBFloat16)),"Text reference FP32 norm differs from independent shared reduction-tree reference width",width);
   }
+  // Real strided heads and odd token counts, preserving BF16 rounding after
+  // each product in the original two-axis vision rotation.
+  for(int64_t dim:{4,64,768}) {
+    auto options=at::TensorOptions().device(device).dtype(at::kBFloat16);
+    auto input=at::randn({7,3,2*dim},options).narrow(-1,0,dim);
+    auto cos=at::randn({7,1,dim/2},options),sin=at::randn({7,1,dim/2},options);
+    std::vector<at::Tensor> axes;
+    for(int axis=0;axis<2;++axis) {
+      auto x=input.narrow(-1,axis*dim/2,dim/2);
+      auto a=x.narrow(-1,0,dim/4),b=x.narrow(-1,dim/4,dim/4);
+      auto rotated=at::cat({-b,a},-1);
+      auto c=cos.narrow(-1,axis*dim/4,dim/4).repeat({1,1,2});
+      auto t=sin.narrow(-1,axis*dim/4,dim/4).repeat({1,1,2});
+      axes.push_back(x*c+rotated*t);
+    }
+    TORCH_CHECK(at::equal(tei::gemma_vision_rotary_cuda(input,cos,sin),at::cat(axes,-1)),"Gemma two-axis vision rotation changed staged BF16 products or packed strides");
+  }
   std::cout<<"Vision norm/pooling, audio runtime-pow and text reference norm match independent references bitwise\n";
 }

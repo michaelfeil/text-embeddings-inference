@@ -63,6 +63,11 @@ int32_t tei_decide(void*,const int64_t* ids,const int64_t* types,
   const TeiDecision*,float* logits,size_t capacity,float* actions,
   const int64_t* media_positions,const TeiImage* images,size_t image_count,
   const TeiAudio* audios,size_t audio_count);
+int32_t tei_decide_radix(void*,const int64_t* ids,const int64_t* types,
+  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
+  const TeiDecision*,float* logits,size_t capacity,float* actions,
+  const int64_t* media_positions,const TeiImage* images,size_t image_count,
+  const TeiAudio* audios,size_t audio_count,const TeiRadix* radix);
 int32_t tei_forward(void*, const int64_t* ids, const int64_t* types,
                     const int64_t* positions, const int32_t* cumulative,
                     int64_t batch, int64_t max_sequence, int32_t pool,
