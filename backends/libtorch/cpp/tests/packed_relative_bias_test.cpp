@@ -11,7 +11,7 @@ int main(int argc,char** argv) {
   c10::InferenceMode guard;
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   at::manual_seed(2718);
-  for(auto dtype: {at::kHalf,at::kBFloat16}) for(auto lengths: {std::vector<int>{3,13,7},std::vector<int>{13,3,7},std::vector<int>{33},std::vector<int>{128,128,128,128},std::vector<int>{32,64,96,128,160,192,224,256}}) {
+  for(auto dtype: {at::kHalf,at::kBFloat16}) for(auto lengths: {std::vector<int>(16,3),std::vector<int>{3,13,7},std::vector<int>{13,3,7},std::vector<int>{33},std::vector<int>{128,128,128,128},std::vector<int>{32,64,96,128,160,192,224,256}}) {
     const int H=12,D=64; int total=0,m=0; std::vector<int> offsets{0};
     for(int n:lengths){ total+=n;m=std::max(m,n);offsets.push_back(total); }
     auto opt=at::TensorOptions().device(device).dtype(dtype);
@@ -47,6 +47,23 @@ int main(int argc,char** argv) {
       }
     }
 
+    // Shared metadata is indexed using the true longest real sequence, including
+    // ragged order and cases where m*m is smaller than total tokens.
+    auto shared_indices=at::randint(bins,{m,m},opt.dtype(at::kLong));
+    auto shared_cpu=shared_indices.cpu();
+    for(int mode:{3,0,1,2}) {
+      auto use_ck=(mode==0||mode==2)?ck:at::Tensor(),use_pc=(mode==1||mode==2)?pc:at::Tensor();
+      storage.fill_(NAN);
+      tei::packed_bias_fill(logical,use_ck,use_pc,shared_indices,at::Tensor(),cu,m);
+      for(size_t r=0;r<lengths.size();++r) {
+        int n=lengths[r],start=offsets[r];auto idx=shared_cpu.narrow(0,0,n).narrow(1,0,n);
+        auto expected=at::zeros({H,n,n},opt.device(at::kCPU));
+        if(use_ck.defined())expected=expected+ck_cpu.narrow(1,start,n).gather(2,idx.unsqueeze(0).expand({H,n,n}));
+        if(use_pc.defined())expected=expected+pc_cpu.narrow(1,start,n).gather(2,idx.transpose(0,1).unsqueeze(0).expand({H,n,n})).transpose(1,2);
+        TORCH_CHECK(at::equal(local[r].narrow(1,0,n).narrow(2,0,n),expected.to(device)),"Shared relative bias differs from independent CPU gather/add oracle");
+      }
+    }
+
     // Capture and replay the same packed layout with changed real bucket values.
     // No host metadata upload occurs during capture; allocation addresses stay fixed.
     if(lengths==std::vector<int>{3,13,7}) {
@@ -57,8 +74,9 @@ int main(int argc,char** argv) {
       at::cuda::CUDAGraph graph;
       graph.capture_begin();
       tei::packed_bias_fill(logical,ck,pc,packed_indices,ix,cu,m);
+      tei::packed_bias_fill(logical,ck,pc,shared_indices,at::Tensor(),cu,m);
       graph.capture_end();
-      packed_indices.zero_();graph.replay();
+      packed_indices.zero_();shared_indices.zero_();graph.replay();
       for(size_t r=0;r<lengths.size();++r) {
         int n=lengths[r],start=offsets[r];
         auto idx=at::zeros({n,n},at::TensorOptions().dtype(at::kLong));
