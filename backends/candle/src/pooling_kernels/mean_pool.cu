@@ -5,12 +5,14 @@
 // Match Candle fast_sum's dtype, strided partial sums and halving tree exactly.
 // Eight adjacent features share a block for coalesced input reads. Scaling keeps
 // the rounded sum and dtype-rounded reciprocal used by Candle's affine kernel.
-template <typename T>
+// Cumulative=true reads real packed offsets directly; default spans ABI is unchanged.
+template <typename T, bool Cumulative = false>
 __device__ void packed_mean_pool(const T* input, const uint32_t* spans,
                                 T* output, uint32_t width) {
     __shared__ T partial[1024 * 8];
-    const uint32_t start = spans[2 * blockIdx.y];
-    const uint32_t length = spans[2 * blockIdx.y + 1];
+    const uint32_t start = spans[Cumulative ? blockIdx.y : 2 * blockIdx.y];
+    const uint32_t length = Cumulative ? spans[blockIdx.y + 1] - start
+                                       : spans[2 * blockIdx.y + 1];
     uint32_t threads = 1;
     while (threads < length && threads < 1024) threads *= 2;
     const uint32_t base = blockIdx.x * 8;

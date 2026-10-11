@@ -416,14 +416,13 @@ struct Encoder final : Model {
         && hidden > 0 && hidden <= std::numeric_limits<uint32_t>::max()
         && input.batch > 0 && input.batch <= 65535
         && input.cumulative.defined() && input.cumulative.device() == h.device()
-        && input.cumulative.scalar_type() == at::kInt && input.cumulative.dim() == 1
+        && input.cumulative.scalar_type() == at::kInt && input.cumulative.is_contiguous()
+        && input.cumulative.dim() == 1
         && input.cumulative.numel() == input.batch + 1) {
       // Reuse Candle's packed model-dtype sum tree and rounded reciprocal.
       // Device cumulative offsets are replay inputs, so this metadata remains
       // capture-safe when actual token contents or sequence lengths change.
-      auto starts = input.cumulative.narrow(0, 0, input.batch);
-      auto lengths = input.cumulative.narrow(0, 1, input.batch) - starts;
-      h = packed_mean_pool(h, at::stack({starts, lengths}, 1));
+      h = packed_mean_pool_cumulative(h, input.cumulative);
     } else
 #endif
     {

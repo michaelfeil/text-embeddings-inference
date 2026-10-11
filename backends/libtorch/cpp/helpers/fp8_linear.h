@@ -16,7 +16,8 @@ class Fp8RowwiseExecutor {
 public:
   Fp8RowwiseExecutor();
   at::Tensor forward(const at::Tensor& activation, const at::Tensor& weight,
-    const at::Tensor& activation_scales, const at::Tensor& weight_scales) const;
+    const at::Tensor& activation_scales, const at::Tensor& weight_scales,
+    at::ScalarType output_dtype = at::kHalf) const;
 };
 
 // Checkpoint weights are quantized once, activations once per invocation.

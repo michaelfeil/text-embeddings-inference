@@ -134,6 +134,7 @@ struct Fp8RowwiseExecutor::Impl {
   struct Entry {
     size_t lane, workspace_bytes;
     int64_t m,n,k;
+    at::ScalarType output_dtype;
     std::unique_ptr<Plan> plan;
   };
   std::mutex mutex;
@@ -148,10 +149,11 @@ struct Fp8RowwiseExecutor::Impl {
 };
 Fp8RowwiseExecutor::Fp8RowwiseExecutor():impl_(std::make_shared<Impl>()) {}
 at::Tensor Fp8RowwiseExecutor::forward(const at::Tensor& x,const at::Tensor& weight,
-  const at::Tensor& xs,const at::Tensor& ws) const {
+  const at::Tensor& xs,const at::Tensor& ws,at::ScalarType output_dtype) const {
 #if defined(TEI_TORCH_CUDA_KERNELS) && CUDA_VERSION >= 12090
-  // Initial admission is exactly the proven ModernBERT-base Half Wi/Wo profile.
-  // Other profiles/precisions continue through the original ATen FP8 recipe.
+  // Original learned Half and BF16 Wi/Wo packets prove separate output layouts.
+  // Unknown output types retain ATen; model widths and real M are unchanged.
+  if(output_dtype!=at::kHalf && output_dtype!=at::kBFloat16)return {};
   if(!x.is_cuda() || x.dim()!=2 || !weight.is_cuda() || weight.dim()!=2 ||
     x.scalar_type()!=at::kFloat8_e4m3fn || weight.scalar_type()!=at::kFloat8_e4m3fn ||
     x.device()!=weight.device() || x.size(0)<=0 || x.size(1)!=weight.size(1) ||
@@ -200,13 +202,13 @@ at::Tensor Fp8RowwiseExecutor::forward(const at::Tensor& x,const at::Tensor& wei
   }
   Impl::Plan* plan=nullptr;
   for(auto& entry:cache.entries)if(entry.lane==lane && entry.workspace_bytes==workspace_bytes &&
-    entry.m==m && entry.n==n && entry.k==k) {plan=entry.plan.get();break;}
+    entry.m==m && entry.n==n && entry.k==k && entry.output_dtype==output_dtype) {plan=entry.plan.get();break;}
   if(!plan) {
     if(cache.entries.size()==Impl::max_plans)return {};
     auto owned=std::make_unique<Impl::Plan>();
     plan=owned.get();
     // Cache rejected geometry/policy too; no unbounded repeated host setup.
-    cache.entries.push_back({lane,workspace_bytes,m,n,k,std::move(owned)});
+    cache.entries.push_back({lane,workspace_bytes,m,n,k,output_dtype,std::move(owned)});
     plan->rejected=true;
     const auto ok=[](cublasStatus_t status) { return status==CUBLAS_STATUS_SUCCESS; };
     if(!ok(cublasLtMatmulDescCreate(&plan->operation,CUBLAS_COMPUTE_32F,CUDA_R_32F)))return {};
@@ -223,10 +225,11 @@ at::Tensor Fp8RowwiseExecutor::forward(const at::Tensor& x,const at::Tensor& wei
       !set(CUBLASLT_MATMUL_DESC_B_SCALE_MODE,scale_mode) ||
       !set(CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,a_scale) ||
       !set(CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,b_scale))return {};
+    const auto result_type=output_dtype==at::kHalf ? CUDA_R_16F : CUDA_R_16BF;
     if(!ok(cublasLtMatrixLayoutCreate(&plan->a,CUDA_R_8F_E4M3,k,n,k)) ||
       !ok(cublasLtMatrixLayoutCreate(&plan->b,CUDA_R_8F_E4M3,k,m,k)) ||
-      !ok(cublasLtMatrixLayoutCreate(&plan->c,CUDA_R_16F,n,m,n)) ||
-      !ok(cublasLtMatrixLayoutCreate(&plan->d,CUDA_R_16F,n,m,n)))return {};
+      !ok(cublasLtMatrixLayoutCreate(&plan->c,result_type,n,m,n)) ||
+      !ok(cublasLtMatrixLayoutCreate(&plan->d,result_type,n,m,n)))return {};
     struct Preference {
       cublasLtMatmulPreference_t value{};
       ~Preference(){if(value)cublasLtMatmulPreferenceDestroy(value);}
@@ -255,7 +258,7 @@ at::Tensor Fp8RowwiseExecutor::forward(const at::Tensor& x,const at::Tensor& wei
     CUBLASLT_MATMUL_DESC_A_SCALE_POINTER,&a_scale,sizeof(a_scale)));
   TORCH_CUDABLAS_CHECK(cublasLtMatmulDescSetAttribute(plan->operation,
     CUBLASLT_MATMUL_DESC_B_SCALE_POINTER,&b_scale,sizeof(b_scale)));
-  auto output=at::empty({m,n},x.options().dtype(at::kHalf));
+  auto output=at::empty({m,n},x.options().dtype(output_dtype));
   if(!aligned(output))return {};
   if(plan->workspace.defined())c10::cuda::CUDACachingAllocator::recordStream(
     plan->workspace.storage().data_ptr(),stream);
@@ -340,8 +343,8 @@ at::Tensor Fp8Linear::apply_quantized(const at::Tensor& input,const at::Tensor& 
   const at::Tensor& bias) const {
   at::Tensor output;
   if(rowwise_) {
-    if(cached_executor_ && dtype_==at::kHalf)output=cached_executor_->forward(input,matrix_,
-      scales,scales_);
+    if(cached_executor_)output=cached_executor_->forward(input,matrix_,
+      scales,scales_,dtype_);
     if(!output.defined())try {
       // Candle's Hopper recipe prefers fast accumulation. Some CUDA versions
       // lack fast tactics for short, wide-K shapes; preserve its full fallback.
