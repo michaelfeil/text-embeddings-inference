@@ -168,7 +168,17 @@ struct Bert : tei::Model {
     if (weights.count("classifier.dense.weight")) {
       return root_linear(at::tanh(root_linear(h, "classifier.dense")), "classifier.out_proj");
     }
-    if (!tokenwise && weights.count(prefix + "pooler.dense.weight")) h = at::tanh(linear(h, "pooler.dense"));
+    if (!tokenwise) {
+      // Candle's optional classifier pooler namespace is independent of the backbone.
+      const auto pooler = weights.find("bert.pooler.dense.weight");
+      if (pooler != weights.end() && pooler->second.dim() == 2
+          && pooler->second.size(0) == config.hidden && pooler->second.size(1) == config.hidden) {
+        const auto bias = weights.find("bert.pooler.dense.bias");
+        TORCH_CHECK(bias != weights.end() && bias->second.dim() == 1 && bias->second.numel() == config.hidden,
+                    "Invalid BERT classifier pooler bias");
+        h = at::tanh(root_linear(h, "bert.pooler.dense"));
+      }
+    }
     return root_linear(h, "classifier");
   }
   at::Tensor token_scores(const at::Tensor& h) const override {

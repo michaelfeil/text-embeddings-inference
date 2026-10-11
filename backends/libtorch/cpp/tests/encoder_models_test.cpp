@@ -101,6 +101,38 @@ int main(int argc, char** argv) {
       auto alias_output = alias_model->forward({ids,types,positions,cu,offsets,2,5});
       TORCH_CHECK(at::equal(packed,alias_output),"Nomic GELU alias changed checkpoint layout or outputs");
     }
+    if (std::string(type) == "new" || std::string(type) == "jina") {
+      // The backbone has root keys. Classifier pooler selection is a separate
+      // Candle contract: Jina uses bert.pooler; GTE prefers complete new.pooler.
+      auto head_weights = w;
+      linear(head_weights,"classifier",3,H,device,dtype);
+      linear(head_weights,"pooler.dense",H,H,device,dtype);
+      const std::string preferred = std::string(type)=="new" ? "new.pooler.dense" : "bert.pooler.dense";
+      linear(head_weights,preferred,H,H,device,dtype);
+      auto head_model=tei::create_encoder(o,head_weights,device,dtype);head_model->ready();
+      auto cls=at::cat({packed.narrow(0,0,1),packed.narrow(0,3,1)},0);
+      auto expected_head = [&](const std::string& key) {
+        auto pooled=at::tanh(at::linear(cls,head_weights.at(key+".weight"),head_weights.at(key+".bias")));
+        return at::linear(pooled,head_weights.at("classifier.weight"),head_weights.at("classifier.bias"));
+      };
+      auto scores=head_model->predict({ids,types,positions,cu,offsets,2,5},false);
+      auto head_tolerance=device.is_cuda() ? .002 : 1e-6;
+      TORCH_CHECK(at::allclose(scores,expected_head(preferred),0,head_tolerance),"Classifier pooler namespace/precedence mismatch for ",type);
+      head_weights.erase(preferred+".bias");
+      auto partial_model=tei::create_encoder(o,head_weights,device,dtype);partial_model->ready();
+      if(std::string(type)=="new") {
+        auto fallback=partial_model->predict({ids,types,positions,cu,offsets,2,5},false);
+        TORCH_CHECK(at::allclose(fallback,expected_head("pooler.dense"),0,head_tolerance),"Incomplete GTE new.pooler must fall back to complete root pooler");
+      } else {
+        bool rejected=false;
+        try {partial_model->predict({ids,types,positions,cu,offsets,2,5},false);} catch(const c10::Error& error) {
+          rejected=std::string(error.what()).find("Invalid Jina classifier pooler bias")!=std::string::npos;
+        }
+        TORCH_CHECK(rejected,"Jina must reject missing bert.pooler bias instead of using unrelated root pooler");
+        auto raw=head_model->predict({ids,types,positions,cu,offsets,2,5},true);
+        TORCH_CHECK(at::allclose(raw,at::linear(packed,head_weights.at("classifier.weight"),head_weights.at("classifier.bias")),0,head_tolerance),"Jina token classifier must skip sequence pooler");
+      }
+    }
     std::vector<at::Tensor> separate;
     for(int b=0;b<2;++b) {
       auto start=offsets[b],n=offsets[b+1]-start;
