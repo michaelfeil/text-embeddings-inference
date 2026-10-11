@@ -73,9 +73,11 @@ class Decoder final : public Model {
     // softmax contracts for causal and bidirectional attention. FP8 makes
     // upstream one-ULP differences observable at quantization boundaries.
     // Widths are registered kernel geometries, not checkpoint signatures.
-    return exact_mistral_math()||(dtype==at::kBFloat16&&hidden==2048
-      &&((family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
-        ||(family=="llama")));
+    // BF16 width 4096 uses Candle's registered 1x4 warp RMS layout.
+    // Trained Llama operands prove the same fused softmax contract.
+    return exact_mistral_math()||(dtype==at::kBFloat16
+      &&((hidden==2048&&family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
+        ||(family=="llama"&&(hidden==2048||hidden==4096))));
   }
   std::pair<at::Tensor,at::Tensor> residual_norm(const at::Tensor& x,
     const at::Tensor& residual,const at::Tensor& weight) const {
@@ -111,14 +113,17 @@ class Decoder final : public Model {
     for (int64_t i = 0; i < head_dim / 2; ++i) {
       float inv = 1.f / std::pow(static_cast<float>(theta), static_cast<float>(2 * i) / head_dim);
       if (kind == "llama3" || (!qwen&&options.values.count("rope_scaling.high_freq_factor"))) {
-        auto original = options.real("rope_scaling.original_max_position_embeddings", 8192);
-        auto low = options.real("rope_scaling.low_freq_factor", 1), high = options.real("rope_scaling.high_freq_factor", 4);
+        // Candle computes Llama3 scaling in F32, including PI and each
+        // smoothing stage; F64 changes long-context BF16 rotary tables.
+        const float original = options.real("rope_scaling.original_max_position_embeddings", 8192);
+        const float low = options.real("rope_scaling.low_freq_factor", 1), high = options.real("rope_scaling.high_freq_factor", 4);
         TORCH_CHECK(high > low && original > 0, "Invalid Llama3 RoPE scaling");
-        auto wavelength = 2 * M_PI / inv;
-        if (wavelength > original / low) inv /= scale;
+        const float wavelength = 2.f * static_cast<float>(M_PI) / inv;
+        if (wavelength > original / low) inv /= static_cast<float>(scale);
         else if (wavelength >= original / high) {
-          auto smooth = (original / wavelength - low) / (high - low);
-          inv = (1 - smooth) * inv / scale + smooth * inv;
+          const float smooth = (original / wavelength - low) / (high - low);
+          const float inv_scaled = inv / static_cast<float>(scale);
+          inv = (1.f - smooth) * inv_scaled + smooth * inv;
         }
       } else if (!kind.empty()) {
         // Match Candle's two-parameter NTK RoPE implementation.

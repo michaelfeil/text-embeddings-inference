@@ -5,7 +5,7 @@
 int main(int argc,char** argv) {
  c10::InferenceMode inference;at::manual_seed(43);
  auto options=at::TensorOptions().dtype(at::kBFloat16).device(c10::Device(argc>1?argv[1]:"cuda:0"));
- for(int64_t width:{2048,3072}) {
+ for(int64_t width:{2048,3072,4096}) {
  for(int64_t rows:{1,7,257}) {
   auto x=(at::rand({rows,width},options)-.5),r=(at::rand_like(x)-.5),w=at::ones({width},options);
   for(bool residual:{false,true})for(double eps:{1e-6,1e-3}) {
@@ -28,5 +28,5 @@ int main(int argc,char** argv) {
  bool rejected=false;try{tei::decoder_exact_rms_norm(x.to(at::kHalf),r.to(at::kHalf),w.to(at::kHalf),1e-6);}catch(const c10::Error&){rejected=true;}TORCH_CHECK(rejected,"Unvalidated dtype must be rejected");
  }
  bool rejected_width=false;try{auto x=at::ones({1,1024},options);tei::decoder_exact_rms_norm(x,{},at::ones({1024},options),1e-6);}catch(const c10::Error&){rejected_width=true;}TORCH_CHECK(rejected_width,"Unregistered width must be rejected");
- std::cout<<"Exact decoder RMS registered widths 2048/3072 tests passed\n";
+ std::cout<<"Exact decoder RMS registered widths 2048/3072/4096 tests passed\n";
 }
