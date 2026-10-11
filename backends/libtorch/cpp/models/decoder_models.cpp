@@ -73,9 +73,13 @@ class Decoder final : public Model {
     // softmax contracts for causal and bidirectional attention. FP8 makes
     // upstream one-ULP differences observable at quantization boundaries.
     // Widths are registered kernel geometries, not checkpoint signatures.
-    return exact_mistral_math()||(dtype==at::kBFloat16&&hidden==2048
-      &&((family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
-        ||(family=="llama")));
+    // Qwen3 width1024 uses the original registered 4x1 RMS layout.
+    // Same learned BF16 QK operands prove private Torch fused-softmax parity;
+    // both changes are required for original scalar-head accuracy.
+    return exact_mistral_math()||(dtype==at::kBFloat16
+      &&((hidden==2048&&family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
+        ||(family=="llama"&&hidden==2048)
+        ||(family=="qwen3"&&hidden==1024&&head_dim==128)));
   }
   std::pair<at::Tensor,at::Tensor> residual_norm(const at::Tensor& x,
     const at::Tensor& residual,const at::Tensor& weight) const {
