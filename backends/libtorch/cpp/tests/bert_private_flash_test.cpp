@@ -1,5 +1,6 @@
 #include "bridge.h"
 #include <ATen/ATen.h>
+#include <ATen/Context.h>
 #include <cmath>
 #include <iostream>
 #include <map>
@@ -60,5 +61,34 @@ int main(int argc,char** argv) {
   TORCH_CHECK(!at::equal(first.narrow(0,0,1),changed.narrow(0,0,1)),"Graph replay ignored changed input");
   TORCH_CHECK(at::equal(changed.narrow(0,0,1),changed.narrow(0,2,1)),"Repeated pooled request changed output");
   ids=original;TORCH_CHECK(at::equal(first,run()),"Restored inputs changed graph output");
+  tei_destroy(engine);
+  // Retained GEMM plans must read new IDs while reusing captured workspaces.
+  // Check classifier readouts against the independent exact-length reference.
+  at::globalContext().setBlasPreferredBackend(at::BlasBackend::Cublaslt);
+  fc("classifier",16,768);
+  engine=tei_create(&cfg,device,1);TORCH_CHECK(engine,tei_error());
+  check(tei_option(engine,"model_type","bert"));
+  check(tei_option(engine,"_pooling","classification"));
+  check(tei_option(engine,"_cuda_graphs","true"));
+  check(tei_option(engine,"_cudnn_varlen","true"));
+  for(const auto& [name,t]:weights)check(tei_weight(engine,name.c_str(),reinterpret_cast<const uint8_t*>(t.const_data_ptr()),t.sizes().data(),t.dim(),1));
+  check(tei_ready(engine));
+  auto classify=[&]() {
+    auto out=at::empty({3,16},at::kFloat);
+    check(tei_forward(engine,ids.data(),types.data(),positions.data(),cu.data(),3,129,4,pooled,3,nullptr,0,out.mutable_data_ptr<float>(),out.numel(),nullptr,nullptr,0,nullptr,0));
+    return out;
+  };
+  auto scores_reference=[&]() {
+    return at::linear(reference().narrow(0,0,3),weights.at("classifier.weight").to(at::kFloat),weights.at("classifier.bias").to(at::kFloat));
+  };
+  auto scores=classify();agreement(scores,scores_reference());
+  TORCH_CHECK(tei_graph_count(engine)==1,"Classifier GEMM plans were not captured");
+  for(int i=134;i<143;++i)ids[i]=(ids[i]+3)%64;
+  auto changed_scores=classify();agreement(changed_scores,scores_reference());
+  TORCH_CHECK(tei_graph_count(engine)==1,"Classifier changed IDs did not reuse capture");
+  TORCH_CHECK(!at::equal(scores.narrow(0,0,1),changed_scores.narrow(0,0,1)),"Classifier replay ignored changed IDs");
+  TORCH_CHECK(at::equal(scores.narrow(0,1,1),changed_scores.narrow(0,1,1)),"Classifier replay contaminated another sequence");
+  TORCH_CHECK(at::equal(changed_scores.narrow(0,0,1),changed_scores.narrow(0,2,1)),"Classifier duplicate readout changed output");
+  ids=original;TORCH_CHECK(at::equal(scores,classify()),"Restored classifier IDs changed output");
   tei_destroy(engine);std::cout<<"BERT head64 mixed pooled/raw independent reference, packed isolation and changed-input graph replay passed\n";
 }

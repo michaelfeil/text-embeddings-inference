@@ -11,12 +11,16 @@
 #include "kernels/torch_flash_fma.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/detail/CUDAHooksInterface.h>
+#include <cublasLt.h>
+#include <c10/cuda/CUDAGuard.h>
 #endif
 #include <ATen/ops/_addmm_activation.h>
 #include <ATen/ops/_cudnn_attention_forward.h>
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <array>
+#include <map>
 
 namespace {
 struct Bert : tei::Model {
@@ -32,16 +36,86 @@ struct Bert : tei::Model {
   bool private_flash_embedding = false;
   bool private_flash_roberta_embedding = false;
   bool exact_biased_norm = false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+  bool cached_classifier_gemm = false;
+  struct ClassifierPlan {
+    cublasLtMatmulDesc_t operation{};
+    cublasLtMatrixLayout_t weight{}, input{}, output{};
+    cublasLtMatmulAlgo_t algorithm{};
+    at::Tensor workspace;
+    size_t bytes{};
+    bool valid = false;
+    ~ClassifierPlan() {
+      if(output)cublasLtMatrixLayoutDestroy(output);
+      if(input)cublasLtMatrixLayoutDestroy(input);
+      if(weight)cublasLtMatrixLayoutDestroy(weight);
+      if(operation)cublasLtMatmulDescDestroy(operation);
+    }
+  };
+  mutable std::map<std::array<int64_t,5>,std::unique_ptr<ClassifierPlan>> classifier_plans;
+#endif
   Bert(TeiConfig cfg, c10::Device dev, at::ScalarType type): config(cfg), device(dev), dtype(type) {}
   const at::Tensor& w(const std::string& name) const {
     auto entry = weights.find(prefix + name);
     TORCH_CHECK(entry != weights.end(), "Missing BERT weight: ", prefix, name);
     return entry->second;
   }
+  at::Tensor classifier_projection(const at::Tensor& x,const at::Tensor& matrix,
+                                   const at::Tensor& bias,bool gelu=false) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(cached_classifier_gemm && x.dim()==2 && x.size(0)>0 && x.is_contiguous()
+        && matrix.dim()==2 && matrix.is_contiguous() && bias.defined() && bias.is_contiguous()
+        && x.scalar_type()==at::kHalf && matrix.scalar_type()==at::kHalf && bias.scalar_type()==at::kHalf
+        && matrix.size(1)==x.size(1) && matrix.size(0)%16==0 && x.size(1)%16==0
+        && bias.dim()==1 && bias.numel()==matrix.size(0)
+        && reinterpret_cast<uintptr_t>(x.const_data_ptr())%256==0
+        && reinterpret_cast<uintptr_t>(matrix.const_data_ptr())%256==0
+        && reinterpret_cast<uintptr_t>(bias.const_data_ptr())%256==0) {
+      c10::cuda::CUDAGuard guard(x.device());
+      const int64_t m=x.size(0),k=x.size(1),n=matrix.size(0);
+      const auto limit=at::cuda::getCUDABlasLtWorkspaceSize();
+      const std::array<int64_t,5> key{{m,k,n,gelu,static_cast<int64_t>(limit)}};
+      auto found=classifier_plans.find(key);
+      if(found==classifier_plans.end() && classifier_plans.size()<64) {
+        auto plan=std::make_unique<ClassifierPlan>();
+        auto transpose=CUBLAS_OP_T;
+        auto epilogue=gelu?CUBLASLT_EPILOGUE_GELU_BIAS:CUBLASLT_EPILOGUE_BIAS;
+        auto pointer=bias.const_data_ptr();
+        bool valid=cublasLtMatmulDescCreate(&plan->operation,CUBLAS_COMPUTE_32F,CUDA_R_32F)==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_TRANSA,&transpose,sizeof(transpose))==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_EPILOGUE,&epilogue,sizeof(epilogue))==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_BIAS_POINTER,&pointer,sizeof(pointer))==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatrixLayoutCreate(&plan->weight,CUDA_R_16F,k,n,k)==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatrixLayoutCreate(&plan->input,CUDA_R_16F,k,m,k)==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatrixLayoutCreate(&plan->output,CUDA_R_16F,n,m,n)==CUBLAS_STATUS_SUCCESS;
+        cublasLtMatmulPreference_t preference{};
+        if(valid)valid=cublasLtMatmulPreferenceCreate(&preference)==CUBLAS_STATUS_SUCCESS;
+        if(valid)valid=cublasLtMatmulPreferenceSetAttribute(preference,CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,&limit,sizeof(limit))==CUBLAS_STATUS_SUCCESS;
+        cublasLtMatmulHeuristicResult_t result{};int count=0;
+        if(valid)valid=cublasLtMatmulAlgoGetHeuristic(at::cuda::getCurrentCUDABlasLtHandle(),plan->operation,plan->weight,plan->input,plan->output,plan->output,preference,1,&result,&count)==CUBLAS_STATUS_SUCCESS && count==1 && result.state==CUBLAS_STATUS_SUCCESS;
+        if(preference)cublasLtMatmulPreferenceDestroy(preference);
+        if(valid) {
+          plan->algorithm=result.algo;plan->bytes=result.workspaceSize;
+          if(plan->bytes)plan->workspace=at::empty({static_cast<int64_t>(plan->bytes)},x.options().dtype(at::kByte));
+        }
+        plan->valid=valid;found=classifier_plans.emplace(key,std::move(plan)).first;
+      }
+      if(found!=classifier_plans.end() && found->second->valid) {
+        auto& plan=*found->second;auto pointer=bias.const_data_ptr();
+        TORCH_CHECK(cublasLtMatmulDescSetAttribute(plan.operation,CUBLASLT_MATMUL_DESC_BIAS_POINTER,&pointer,sizeof(pointer))==CUBLAS_STATUS_SUCCESS,"BERT cached bias update failed");
+        auto output=at::empty({m,n},x.options());const float alpha=1.f,beta=0.f;
+        auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.bytes?plan.workspace.mutable_data_ptr():nullptr,plan.bytes,at::cuda::getCurrentCUDAStream());
+        TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"BERT cached classifier projection failed: ",static_cast<int>(status)," m=",m," n=",n," k=",k," gelu=",gelu);
+        return output;
+      }
+    }
+#endif
+    return gelu?at::_addmm_activation(bias,x,matrix.t(),1,1,true):at::linear(x,matrix,bias);
+  }
   at::Tensor linear(const at::Tensor& x, const std::string& name) const {
     auto quantized=fp8_mlp.find(name);
     if(quantized!=fp8_mlp.end())return quantized->second.forward(x,w(name+".bias"));
-    return at::linear(x, w(name + ".weight"), w(name + ".bias"));
+    return classifier_projection(x,w(name+".weight"),w(name+".bias"));
   }
   at::Tensor activated_linear(const at::Tensor& x,const std::string& name) const {
     if(fp8_mlp.count(name)) {
@@ -61,7 +135,10 @@ struct Bert : tei::Model {
     }
     // Candle HiddenAct::Gelu is tanh GELU. Its CUDA linear fuses the same
     // cuBLASLt epilogue; avoid writing then rereading the full intermediate.
-    if(x.is_cuda()&&config.activation!=3)return at::_addmm_activation(w(name+".bias"),x,w(name+".weight").t(),1,1,config.activation!=2);
+    if(x.is_cuda()&&config.activation!=3) {
+      if(config.activation!=2)return classifier_projection(x,w(name+".weight"),w(name+".bias"),true);
+      return at::_addmm_activation(w(name+".bias"),x,w(name+".weight").t(),1,1,false);
+    }
     auto projected=linear(x,name);
     return config.activation==3?at::silu(projected):config.activation==2?at::relu(projected):at::gelu(projected,"tanh");
   }
@@ -105,6 +182,9 @@ struct Bert : tei::Model {
       && config.hidden == 768 && config.heads == 12 && (config.activation == 0 || config.activation == 1)
       && at::cuda::getDeviceProperties(device.index())->major == 9
       && (options.string("_pooling") != "splade" || options.boolean("_fp8_dynamic", false));
+    cached_classifier_gemm = private_flash_embedding && classification_width()>0
+      && !options.boolean("_fp8_dynamic",false)
+      && at::globalContext().blasPreferredBackend()==at::BlasBackend::Cublaslt;
 #endif
 #ifdef TEI_TORCH_CUDA_KERNELS
     // BERT and its aliases share Candle's biased LayerNorm primitive: residual
@@ -155,7 +235,7 @@ struct Bert : tei::Model {
     auto it = weights.find(name); return it == weights.end() ? 0 : it->second.size(0);
   }
   at::Tensor root_linear(const at::Tensor& h, const std::string& name) const {
-    return at::linear(h, tei::weight(weights, name + ".weight"), tei::weight(weights, name + ".bias"));
+    return classifier_projection(h,tei::weight(weights,name+".weight"),tei::weight(weights,name+".bias"));
   }
   at::Tensor head_activation(const at::Tensor& h, const at::Tensor& matrix,
                              const at::Tensor& bias, int activation) const {
