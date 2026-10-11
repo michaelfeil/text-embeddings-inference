@@ -68,7 +68,8 @@ struct Bert : tei::Model {
     if(cached_classifier_gemm && x.dim()==2 && x.size(0)>0 && x.is_contiguous()
         && matrix.dim()==2 && matrix.is_contiguous() && bias.defined() && bias.is_contiguous()
         && x.scalar_type()==at::kHalf && matrix.scalar_type()==at::kHalf && bias.scalar_type()==at::kHalf
-        && matrix.size(1)==x.size(1) && matrix.size(0)%16==0 && x.size(1)%16==0
+        && matrix.size(1)==x.size(1)
+        && (matrix.size(0)%16==0 || (!gelu && matrix.size(0)==1)) && x.size(1)%16==0
         && bias.dim()==1 && bias.numel()==matrix.size(0)
         && at::cuda::getCUDABlasLtWorkspaceSize()<=static_cast<size_t>(classifier_workspace.numel())
         && reinterpret_cast<uintptr_t>(x.const_data_ptr())%256==0
@@ -308,7 +309,10 @@ struct Bert : tei::Model {
     auto token_type = at::embedding(w("embeddings.token_type_embeddings.weight"), types);
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (word.is_cuda() && (exact_biased_norm || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
+    if (word.is_cuda() && exact_biased_norm)
+      h = tei::encoder_embedding_layer_norm(word, token_type, position,
+        w("embeddings.LayerNorm.weight"), config.epsilon, w("embeddings.LayerNorm.bias"));
+    else if (word.is_cuda() && private_flash_embedding && options.boolean("_fp8_dynamic", false))
       h = tei::encoder_layer_norm_only(word + token_type,
         w("embeddings.LayerNorm.weight"), config.epsilon, position, w("embeddings.LayerNorm.bias"), false);
     else if (word.is_cuda() && config.hidden == 384)

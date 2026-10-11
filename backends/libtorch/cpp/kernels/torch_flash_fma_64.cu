@@ -4,7 +4,10 @@
 #undef UNFUSE_FMA
 #endif
 #define FLASH_NAMESPACE tei_torch_flash
+#include "flash_launch_setup.h"
+#define cudaFuncSetAttribute tei::flash_set_attribute
 #include "vendor/torch_flash_attention/flash_fwd_launch_template.h"
+#undef cudaFuncSetAttribute
 namespace tei_torch_flash {
 void launch_64(Flash_fwd_params& params,cudaStream_t stream) {
   if(params.is_bf16) {
