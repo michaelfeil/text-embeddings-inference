@@ -4,18 +4,28 @@
 #include "models/decoder_models.h"
 #include "kernels/qwen35_kernels.h"
 #include "kernels/qwen35_reference.h"
+#include "kernels/qwen35_vision.h"
+#include "kernels/encoder_activation.h"
 #include "kernels/torch_flash_fma.h"
 #include "kernels/moe_kernels.h"
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <cmath>
+#include <algorithm>
 
 namespace tei {
 // Adapted from Candle qwen3_vl/vision.rs; upstream Apache-2.0 notices retained.
 const at::Tensor& Qwen3VL::w(const std::string& name) const { return weight(visual_weights,"model.visual."+name); }
 
-at::Tensor Qwen3VL::linear(const at::Tensor& x,const std::string& name) const { return at::linear(x,w(name+".weight"),w(name+".bias")); }
+at::Tensor Qwen3VL::linear(const at::Tensor& x,const std::string& name) const {
+    // Original Linear rounds the model-dtype GEMM before adding its bias.
+    if(exact_vision)return at::linear(x,w(name+".weight"))+w(name+".bias");
+    return at::linear(x,w(name+".weight"),w(name+".bias"));
+  }
 
 at::Tensor Qwen3VL::ln(const at::Tensor& x,const std::string& name) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_vision)return qwen35_vision_layer_norm(x.contiguous(),w(name+".weight"),w(name+".bias"),1e-6f);
+#endif
     return at::layer_norm(x,{x.size(-1)},w(name+".weight"),w(name+".bias"),1e-6);
   }
 
@@ -23,7 +33,11 @@ at::Tensor Qwen3VL::merger(const at::Tensor& x,const std::string& p,bool post) c
     auto grouped=x.view({-1,hidden*merge*merge});
     auto normalized=post?ln(grouped,p+".norm"):ln(x,p+".norm").view_as(grouped);
     // Candle Tensor::gelu is the tanh approximation; merger has no activation config.
-    return linear(at::gelu(linear(normalized,p+".linear_fc1"),"tanh"),p+".linear_fc2");
+    auto mid=linear(normalized,p+".linear_fc1");auto act=at::Tensor();
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_vision)act=encoder_gelu(mid);else
+#endif
+    act=at::gelu(mid,"tanh");auto out=linear(act,p+".linear_fc2");return out;
   }
 
 std::pair<at::Tensor,std::vector<at::Tensor>> Qwen3VL::vision(const ImageInput& image) const {
@@ -33,7 +47,17 @@ std::pair<at::Tensor,std::vector<at::Tensor>> Qwen3VL::vision(const ImageInput& 
       image.merge_size==merge && image.pixels.sizes()==at::IntArrayRef({frames*height*width,patch_dim}),"Invalid Qwen3-VL packed image grid");
     // Each preprocessed row is one complete temporal/spatial patch; Conv3D's
     // nonoverlapping kernel is exactly this flattened projection.
-    auto states=at::linear(image.pixels.to(dtype),w("patch_embed.proj.weight").reshape({hidden,patch_dim}),w("patch_embed.proj.bias"));
+    at::Tensor states;
+    if(exact_vision) {
+      // Candle temporal-2 projection: two actual K768 GEMMs, rounded FP16
+      // sum, then separate FP16 bias. No temporal or token padding.
+      auto patch=image.pixels.to(device,dtype).view({-1,3,2,16,16});
+      auto first=at::linear(patch.select(2,0).contiguous().view({-1,768}),temporal_first);
+      auto second=at::linear(patch.select(2,1).contiguous().view({-1,768}),temporal_second);
+      states=(first+second)+w("patch_embed.proj.bias");
+    } else {
+      states=at::linear(image.pixels.to(dtype),w("patch_embed.proj.weight").reshape({hidden,patch_dim}),w("patch_embed.proj.bias"));
+    }
     auto side=static_cast<int64_t>(std::llround(std::sqrt(double(w("pos_embed.weight").size(0)))));
     TORCH_CHECK(side*side==w("pos_embed.weight").size(0),"Qwen3-VL position table must be square");
     auto ix=at::arange(frames*height*width,states.options().dtype(at::kLong));
@@ -49,8 +73,11 @@ std::pair<at::Tensor,std::vector<at::Tensor>> Qwen3VL::vision(const ImageInput& 
       return table.index_select(0,rr*side+cc)*scale.to(dtype).unsqueeze(-1);
     };
     // Sum in table dtype, matching the four-corner interpolation stages.
-    states=states+at::stack({interpolate(r0,c0,(1-dr)*(1-dc)),interpolate(r0,c1,(1-dr)*dc),
-      interpolate(r1,c0,dr*(1-dc)),interpolate(r1,c1,dr*dc)},0).sum(0);
+    auto corners=at::stack({interpolate(r0,c0,(1-dr)*(1-dc)),interpolate(r0,c1,(1-dr)*dc),
+      interpolate(r1,c0,dr*(1-dc)),interpolate(r1,c1,dr*dc)},0);
+    auto positional=exact_vision?(corners.select(0,0)+corners.select(0,2))+(corners.select(0,1)+corners.select(0,3)):corners.sum(0);
+    states=states+positional;
+
     auto angles=at::cat({r.to(at::kFloat).unsqueeze(1)*vision_frequency,c.to(at::kFloat).unsqueeze(1)*vision_frequency},-1);
     auto cos=angles.cos().unsqueeze(1),sin=angles.sin().unsqueeze(1);
     auto rotate=[&](const at::Tensor& value) {
@@ -61,9 +88,41 @@ std::pair<at::Tensor,std::vector<at::Tensor>> Qwen3VL::vision(const ImageInput& 
     std::vector<at::Tensor> deep;
     for(int64_t layer=0;layer<depth;++layer) {
       auto p="blocks."+std::to_string(layer)+".";
-      auto qkv=linear(ln(states,p+"norm1"),p+"attn.qkv").view({states.size(0),3,heads,dim});
+      auto normalized=ln(states,p+"norm1");
+      auto qkv=linear(normalized,p+"attn.qkv").view({states.size(0),3,heads,dim});
       auto q=rotate(qkv.select(1,0)),k=rotate(qkv.select(1,1)),v=qkv.select(1,2).to(at::kFloat);
+
       at::Tensor attention;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(exact_vision) {
+        std::vector<at::Tensor> outputs;
+        for(int64_t t=0;t<frames;++t){auto slice=[&](const at::Tensor& x){return x.narrow(0,t*height*width,height*width).transpose(0,1).contiguous().unsqueeze(0);};
+          auto qframe=slice(q),kframe=slice(k),vframe=slice(v);
+          // Bound each F32 score/probability tensor to 16 MiB (or one
+          // complete query row). Every query still sees every real key;
+          // only independent query rows are chunked, without token padding.
+          constexpr int64_t score_elements=(16LL*1024*1024)/sizeof(float);
+          const auto patches=qframe.size(2);
+          const auto rows=std::max<int64_t>(1,std::min<int64_t>(patches,score_elements/heads/patches));
+          if(rows==patches) {
+            // Preserve the original small-image GEMM shapes and operators.
+            auto scaled=at::matmul(qframe,kframe.transpose(2,3))*(1./std::sqrt(double(dim)));
+            auto probs=qwen35_vision_softmax(scaled.contiguous());
+            outputs.push_back(at::matmul(probs,vframe).squeeze(0).transpose(0,1));
+          } else {
+            auto frame=at::empty({patches,heads,dim},qframe.options());
+            const auto transposed_keys=kframe.transpose(2,3);
+            for(int64_t start=0;start<patches;start+=rows) {
+              const auto count=std::min<int64_t>(rows,patches-start);
+              auto scaled=at::matmul(qframe.narrow(2,start,count),transposed_keys)*(1./std::sqrt(double(dim)));
+              auto probs=qwen35_vision_softmax(scaled.contiguous());
+              frame.narrow(0,start,count).copy_(at::matmul(probs,vframe).squeeze(0).transpose(0,1));
+            }
+            outputs.push_back(frame);
+          }}
+        attention=at::cat(outputs,0);
+      } else
+#endif
       if(device.is_cuda()) {
         attention=std::get<0>(at::_efficient_attention_forward(q.unsqueeze(0),k.unsqueeze(0),v.unsqueeze(0),
           std::nullopt,cu,cu,height*width,height*width,0.,0,false,1./std::sqrt(double(dim)))).squeeze(0);
@@ -75,11 +134,18 @@ std::pair<at::Tensor,std::vector<at::Tensor>> Qwen3VL::vision(const ImageInput& 
         }
         attention=at::cat(outputs,0);
       }
-      states=states+linear(attention.reshape({states.size(0),hidden}).to(dtype),p+"attn.proj");
-      auto ff=linear(ln(states,p+"norm2"),p+"mlp.linear_fc1");
+
+      auto projected=linear(attention.reshape({states.size(0),hidden}).to(dtype),p+"attn.proj");
+      states=states+projected;
+      auto normalized2=ln(states,p+"norm2");
+      auto ff=linear(normalized2,p+"mlp.linear_fc1");
       auto act=cfg.string("vision_config.hidden_act","gelu_pytorch_tanh");
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(exact_vision && act!="silu" && act!="gelu")ff=encoder_gelu(ff);else
+#endif
       ff=act=="silu"?at::silu(ff):at::gelu(ff,act=="gelu"?"none":"tanh");
-      states=states+linear(ff,p+"mlp.linear_fc2");
+      auto down=linear(ff,p+"mlp.linear_fc2");
+      states=states+down;
       for(int64_t i=0;cfg.values.count("vision_config.deepstack_visual_indexes."+std::to_string(i));++i)
         if(cfg.integer("vision_config.deepstack_visual_indexes."+std::to_string(i))==layer)
           deep.push_back(merger(states,"deepstack_merger_list."+std::to_string(i),true));
@@ -116,7 +182,16 @@ Qwen3VL::Qwen3VL(const Options& options,Weights& weights,c10::Device dev,at::Sca
 
 void Qwen3VL::ready() {
     TORCH_CHECK(hidden>0 && heads>0 && hidden%heads==0 && dim%4==0 && merge>0 && depth>0,"Invalid Qwen3-VL architecture");
-    w("patch_embed.proj.weight");w("pos_embed.weight");
+    const auto& patch_kernel=w("patch_embed.proj.weight");w("pos_embed.weight");
+#ifdef TEI_TORCH_CUDA_KERNELS
+    exact_vision=device.is_cuda() && dtype==at::kHalf && cfg.string("model_type").starts_with("qwen3_5") &&
+      patch_kernel.dim()==5 && patch_kernel.size(0)==hidden && patch_kernel.size(1)==3 &&
+      patch_kernel.size(2)==2 && patch_kernel.size(3)==16 && patch_kernel.size(4)==16;
+    if(exact_vision) {
+      temporal_first=patch_kernel.select(2,0).contiguous().view({hidden,768});
+      temporal_second=patch_kernel.select(2,1).contiguous().view({hidden,768});
+    }
+#endif
     std::vector<float> frequencies;
     for(int64_t j=0;j<dim/4;++j)frequencies.push_back(1.f/std::pow(10000.f,float(2*j)/float(dim/2)));
     vision_frequency=at::from_blob(frequencies.data(),{dim/4},at::TensorOptions().dtype(at::kFloat)).clone().to(device);

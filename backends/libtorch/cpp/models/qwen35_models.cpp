@@ -9,6 +9,16 @@
 #include "kernels/moe_kernels.h"
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <cmath>
+#include "batching/radix.h"
+#include <array>
+#include <map>
+#include <memory>
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <cublasLt.h>
+#endif
 
 namespace tei {
 namespace {
@@ -30,6 +40,91 @@ class Qwen35 final : public Model {
   int64_t integer(const std::string& name,int64_t fallback=0) const { return cfg.integer(key(name),fallback); }
   double real(const std::string& name,double fallback=0) const { return cfg.real(key(name),fallback); }
   std::string string(const std::string& name,const std::string& fallback="") const { return cfg.string(key(name),fallback); }
+  // Choose the same accumulation tree as the original logical-row GEMM,
+  // using descriptors only. Execute on actual compact rows, with no padding.
+#ifdef TEI_TORCH_CUDA_KERNELS
+  struct RadixLinearPlan {
+    cublasLtMatmulDesc_t operation{};
+    cublasLtMatrixLayout_t weight{},input{},output{};
+    cublasLtMatmulAlgo_t algorithm{};
+    size_t workspace_bytes{};
+    // Captured GEMMs retain this allocation even when a later policy grows it.
+    at::Tensor workspace;
+    bool valid=false;
+    ~RadixLinearPlan(){if(output)cublasLtMatrixLayoutDestroy(output);if(input)cublasLtMatrixLayoutDestroy(input);if(weight)cublasLtMatrixLayoutDestroy(weight);if(operation)cublasLtMatmulDescDestroy(operation);}
+  };
+  // Includes device, real logical/compact dimensions, operand strides/types,
+  // and the ATen workspace policy. Plans are shared by identical layer shapes.
+  using RadixLinearKey=std::array<int64_t,15>;
+  mutable std::map<RadixLinearKey,std::unique_ptr<RadixLinearPlan>> radix_linear_plans;
+  mutable at::Tensor radix_linear_workspace;
+#endif
+  at::Tensor linear_radix_projection(const at::Tensor& x,const std::string& name,const PackedInput& packed) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    const auto& matrix=w(name+".weight");
+    if(integer("num_experts",0)>0 && device.is_cuda() && dtype==at::kBFloat16 && hidden==2048 &&
+       at::globalContext().blasPreferredBackend()==at::BlasBackend::Cublaslt &&
+       x.dim()==2 && x.size(1)==4096 && x.size(0)>0 && x.is_contiguous() && matrix.is_contiguous() &&
+       x.scalar_type()==at::kBFloat16 && matrix.scalar_type()==at::kBFloat16 && matrix.dim()==2 &&
+       matrix.size(0)==2048 && matrix.size(1)==4096) {
+      c10::cuda::CUDAGuard guard(x.device());
+      auto property=at::cuda::getDeviceProperties(device.index());
+      if(property->major==9 && property->minor==0 &&
+         reinterpret_cast<uintptr_t>(x.const_data_ptr())%256==0 &&
+         reinterpret_cast<uintptr_t>(matrix.const_data_ptr())%256==0) {
+        const auto m=x.size(0),full_m=packed.ids.numel(),k=x.size(1),n=matrix.size(0);
+        const auto limit=at::cuda::getCUDABlasLtWorkspaceSize();
+        const RadixLinearKey key{{device.index(),full_m,m,k,n,x.stride(0),x.stride(1),matrix.stride(0),matrix.stride(1),n,1,static_cast<int64_t>(x.scalar_type()),static_cast<int64_t>(matrix.scalar_type()),static_cast<int64_t>(x.scalar_type()),static_cast<int64_t>(limit)}};
+        auto found=radix_linear_plans.find(key);
+        if(found==radix_linear_plans.end() && radix_linear_plans.size()<64) {
+          auto plan=std::make_unique<RadixLinearPlan>();
+          struct Planning {
+            cublasLtMatrixLayout_t input{},output{};
+            cublasLtMatmulPreference_t preference{};
+            ~Planning(){if(preference)cublasLtMatmulPreferenceDestroy(preference);if(output)cublasLtMatrixLayoutDestroy(output);if(input)cublasLtMatrixLayoutDestroy(input);}
+          } logical;
+          auto transpose=CUBLAS_OP_T,no_transpose=CUBLAS_OP_N;
+          const auto data_type=CUDA_R_16BF;
+          bool valid=cublasLtMatmulDescCreate(&plan->operation,CUBLAS_COMPUTE_32F,CUDA_R_32F)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_TRANSA,&transpose,sizeof(transpose))==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulDescSetAttribute(plan->operation,CUBLASLT_MATMUL_DESC_TRANSB,&no_transpose,sizeof(no_transpose))==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&plan->weight,data_type,k,n,k)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&plan->input,data_type,k,m,k)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&plan->output,data_type,n,m,n)==CUBLAS_STATUS_SUCCESS;
+          // Logical layouts never allocate or compute duplicated rows.
+          if(valid)valid=cublasLtMatrixLayoutCreate(&logical.input,data_type,k,full_m,k)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatrixLayoutCreate(&logical.output,data_type,n,full_m,n)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulPreferenceCreate(&logical.preference)==CUBLAS_STATUS_SUCCESS;
+          if(valid)valid=cublasLtMatmulPreferenceSetAttribute(logical.preference,CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,&limit,sizeof(limit))==CUBLAS_STATUS_SUCCESS;
+          cublasLtMatmulHeuristicResult_t original{},check{};int count=0;
+          auto handle=at::cuda::getCurrentCUDABlasLtHandle();
+          if(valid)valid=cublasLtMatmulAlgoGetHeuristic(handle,plan->operation,plan->weight,logical.input,logical.output,logical.output,logical.preference,1,&original,&count)==CUBLAS_STATUS_SUCCESS && count==1 && original.state==CUBLAS_STATUS_SUCCESS;
+          if(valid) {
+            plan->algorithm=original.algo;
+            valid=cublasLtMatmulAlgoCheck(handle,plan->operation,plan->weight,plan->input,plan->output,plan->output,&plan->algorithm,&check)==CUBLAS_STATUS_SUCCESS && check.state==CUBLAS_STATUS_SUCCESS && check.workspaceSize<=limit;
+            plan->workspace_bytes=check.workspaceSize;
+          }
+          if(valid && plan->workspace_bytes>0 && (!radix_linear_workspace.defined() || static_cast<size_t>(radix_linear_workspace.numel())<plan->workspace_bytes))
+            radix_linear_workspace=at::empty({static_cast<int64_t>(limit)},x.options().dtype(at::kByte));
+          if(valid && plan->workspace_bytes>0)plan->workspace=radix_linear_workspace;
+          plan->valid=valid;
+          found=radix_linear_plans.emplace(key,std::move(plan)).first;
+        }
+        if(found!=radix_linear_plans.end() && found->second->valid) {
+          auto& plan=*found->second;
+          auto output=at::empty({m,n},x.options());
+          const float alpha=1.f,beta=0.f;
+          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?plan.workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
+          TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"Qwen3.5 packed attention output projection failed: ",static_cast<int>(status));
+          return output;
+        }
+      }
+    }
+#endif
+    // Unsupported shapes retain original full-row arithmetic. These are the
+    // request's real logical rows, never rounded-up or padded rows.
+    return radix_fold(linear(radix_unfold(x,packed),name),packed);
+  }
   const at::Tensor& w(const std::string& name) const { return weight(weights,prefix+name); }
   at::Tensor linear(const at::Tensor& x,const std::string& name) const { return at::linear(x,w(name+".weight")); }
   at::Tensor gated(const at::Tensor& gu) const {
@@ -70,9 +165,10 @@ class Qwen35 final : public Model {
     at::Tensor cos,sin;
     if(input.multimodal_positions.defined()) {
       TORCH_CHECK(visual,"Qwen3.5 multimodal positions require vision configuration");
-      auto angles=input.multimodal_positions.index_select(0,rotary_axes).transpose(0,1).to(at::kFloat)*rotary_frequencies;
+      auto positions=radix_enabled(input)?input.multimodal_positions.index_select(1,input.fold_gather):input.multimodal_positions;
+      auto angles=positions.index_select(0,rotary_axes).transpose(0,1).to(at::kFloat)*rotary_frequencies;
       cos=angles.cos().to(dtype).unsqueeze(1);sin=angles.sin().to(dtype).unsqueeze(1);
-    } else {cos=cos_cache.index_select(0,input.positions).unsqueeze(1);sin=sin_cache.index_select(0,input.positions).unsqueeze(1);}
+    } else {cos=cos_cache.index_select(0,radix_positions(input)).unsqueeze(1);sin=sin_cache.index_select(0,radix_positions(input)).unsqueeze(1);}
     return at::cat({at::cat({a*cos-b*sin,b*cos+a*sin},-1),x.narrow(-1,rotary,dim-rotary)},-1).contiguous();
   }
   at::Tensor full_attention(const at::Tensor& x,const std::string& p,const PackedInput& input) const {
@@ -81,6 +177,8 @@ class Qwen35 final : public Model {
     auto q=rotate(norm(qg.narrow(-1,0,dim),p+"q_norm"),input);
     auto k=rotate(norm(linear(x,p+"k_proj").view({tokens,kv_heads,dim}),p+"k_norm"),input);
     auto v=linear(x,p+"v_proj").view({tokens,kv_heads,dim});
+    auto unfolded=radix_unfold_qkv(q,k,v,input);
+    q=unfolded[0];k=unfolded[1];v=unfolded[2];
     auto mode=cfg.string("_decision_attention_mode",cfg.string("decision_attention_mode","causal"));
     auto causal=mode!="noncausal_full_attention" && !cfg.boolean("use_bidirectional_attention",false);
     const bool reference=integer("num_experts",0)>0 && device.is_cuda() && dtype==at::kBFloat16;
@@ -91,10 +189,11 @@ class Qwen35 final : public Model {
     else
 #endif
       attention=packed_attention(q,k,v,input,1./std::sqrt(static_cast<double>(dim)),causal);
-    auto a=attention.view({tokens,heads,dim});
+    auto a=radix_fold(attention,input).view({tokens,heads,dim});
     auto logits=qg.narrow(-1,dim,dim);
     auto gate=reference ? at::reciprocal(at::ones_like(logits)+at::exp(-logits)) : at::sigmoid(logits);
-    return linear((a*gate).reshape({tokens,heads*dim}),p+"o_proj");
+    auto gated=(a*gate).reshape({tokens,heads*dim});
+    return radix_enabled(input)?linear_radix_projection(gated,p+"o_proj",input):linear(gated,p+"o_proj");
   }
   at::Tensor delta_cpu(const at::Tensor& qkv,const at::Tensor& z,const at::Tensor& ab,const std::string& p,const PackedInput& input) const {
     // Exact-length reference recurrence. No sequence padding and no persistent state.
@@ -144,6 +243,7 @@ class Qwen35 final : public Model {
   at::Tensor delta_attention(const at::Tensor& x,const std::string& p,const PackedInput& input) const {
     auto qkv=linear(x,p+"in_proj_qkv").contiguous(),z=linear(x,p+"in_proj_z").contiguous();
     auto ab=at::cat({linear(x,p+"in_proj_a"),linear(x,p+"in_proj_b")},-1).contiguous();
+    qkv=radix_unfold(qkv,input);z=radix_unfold(z,input);ab=radix_unfold(ab,input);
     at::Tensor output;
     if(device.is_cuda()) {
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -159,7 +259,8 @@ class Qwen35 final : public Model {
       TORCH_CHECK(false,"Qwen3.5 requires the native DeltaNet CUDA kernel build");
 #endif
     } else output=delta_cpu(qkv,z,ab,p,input);
-    return linear(output,p+"out_proj");
+    auto compact=radix_fold(output,input);
+    return radix_enabled(input)?linear_radix_projection(compact,p+"out_proj",input):linear(compact,p+"out_proj");
   }
  public:
   Qwen35(const Options& config,Weights& tensors,c10::Device dev,at::ScalarType type)
@@ -242,14 +343,21 @@ class Qwen35 final : public Model {
       }
     }
   }
+  bool supports_radix() const override {
+    auto mode=cfg.string("_decision_attention_mode",cfg.string("decision_attention_mode","causal"));
+    return mode!="noncausal_full_attention" && !cfg.boolean("use_bidirectional_attention",false);
+  }
   at::Tensor forward(const PackedInput& input) const override {
-    auto states=at::embedding(w("embed_tokens.weight"),input.ids);
+    TORCH_CHECK(!radix_enabled(input)||supports_radix(),"Noncausal Qwen3.5 attention does not support radix folding");
+    TORCH_CHECK(!radix_enabled(input)||input.audios.empty(),"Qwen3.5 radix audio is not supported");
+    auto states=at::embedding(w("embed_tokens.weight"),input.images.empty()?radix_ids(input):input.ids);
     for(const auto& image:input.images) {
       TORCH_CHECK(visual,"Qwen3.5 vision tower unavailable");
       auto features=visual->image_features(image).to(dtype);
       TORCH_CHECK(features.size(0)==image.token_count && features.size(1)==hidden,"Qwen3.5 visual token geometry mismatch");
       states.narrow(0,image.token_start,image.token_count).copy_(features);
     }
+    if(!input.images.empty())states=radix_fold(states,input);
     for(int64_t i=0;i<layer_count;++i) {
       auto p="layers."+std::to_string(i)+".";
       auto normalized=norm(states,p+"input_layernorm");
@@ -259,7 +367,7 @@ class Qwen35 final : public Model {
       normalized=norm(states,p+"post_attention_layernorm");
       states=states+feed_forward(normalized,i);
     }
-    return norm(states,"norm");
+    return radix_unfold(norm(states,"norm"),input);
   }
 };
 }

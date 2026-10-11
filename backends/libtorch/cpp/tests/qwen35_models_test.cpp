@@ -1,5 +1,6 @@
 #include "models/qwen35_models.h"
 #include "models/decision_models.h"
+#include "batching/radix.h"
 #include <iostream>
 using namespace tei;
 int main(int argc,char** argv) {
@@ -69,8 +70,27 @@ int main(int argc,char** argv) {
   auto changed=model->forward(make({31,2,3,4,5},offsets));
   TORCH_CHECK(at::allclose(output.narrow(0,3,2),changed.narrow(0,3,2),1e-5,1e-6),"DeltaNet state not reset at sequence boundary");
   std::cout<<"Qwen3.5 packed/single parity and recurrence reset passed\n";
+  auto shared=make({1,2,3,1,2},offsets),folded=shared;
+  folded.compact_ids=at::tensor({1,2,3},at::kLong);
+  folded.compact_positions=at::tensor({0,1,2},at::kLong);
+  folded.compact_types=at::zeros({3},at::kLong);
+  folded.scatter_unfold=at::tensor({0,1,2,0,1},at::kLong);
+  folded.fold_gather=at::tensor({0,1,2},at::kLong);
+  validate_radix(folded,true);
+  TORCH_CHECK(model->supports_radix(),"Causal Qwen3.5 folding capability missing");
+  auto shared_output=model->forward(shared);
+  TORCH_CHECK(at::allclose(shared_output,model->forward(folded),1e-5,1e-6),"Qwen3.5 folded Delta/full attention lost logical rows");
+  auto reordered=folded;
+  reordered.compact_ids=folded.compact_ids.flip({0});reordered.compact_positions=folded.compact_positions.flip({0});
+  reordered.fold_gather=folded.fold_gather.flip({0});reordered.scatter_unfold=2-folded.scatter_unfold;
+  validate_radix(reordered,true);
+  TORCH_CHECK(at::allclose(shared_output,model->forward(reordered),1e-5,1e-6),"Qwen3.5 reordered compact rows changed readout");
+
   auto bidirectional_cfg=cfg;bidirectional_cfg.values["decision_attention_mode"]="noncausal_full_attention";
   auto bidirectional=build(bidirectional_cfg,weights,c10::Device("cpu"),at::kFloat);bidirectional->ready();
+  TORCH_CHECK(!bidirectional->supports_radix(),"Noncausal Qwen3.5 must reject prefix folding");
+  bool rejected=false;try{bidirectional->forward(folded);}catch(const c10::Error&){rejected=true;}
+  TORCH_CHECK(rejected,"Noncausal Qwen3.5 accepted folded prefixes");
   auto bi=bidirectional->forward(make({1,2,3,4,5},offsets));
   auto future=bidirectional->forward(make({1,2,31,4,5},offsets));
   TORCH_CHECK((bi.select(0,0)-future.select(0,0)).abs().max().item<float>()>1e-5,"Qwen3.5 noncausal full attention ignored future tokens");

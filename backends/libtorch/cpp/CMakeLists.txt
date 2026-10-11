@@ -22,8 +22,13 @@ install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_to
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
-  target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_reference.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
+  target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_vision.cu kernels/qwen35_reference.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
     kernels/torch_flash_fma.cpp kernels/torch_flash_fma_32.cu kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
+  # Match independently verified core LayerNorm/softmax: default FMA and
+  # precise exp/division, without --use_fast_math.
+  set_source_files_properties(kernels/qwen35_vision.cu PROPERTIES COMPILE_OPTIONS "--fmad=true;--prec-div=true;--prec-sqrt=true")
+  install(FILES vendor/qwen35_vision/LICENSE-APACHE vendor/qwen35_vision/LICENSE-MIT
+    vendor/qwen35_vision/PROVENANCE.md DESTINATION share/licenses/tei_torch/qwen35_vision)
   set_source_files_properties(kernels/qwen35_reference.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--expt-relaxed-constexpr")
   set_source_files_properties(kernels/encoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
   set_source_files_properties(kernels/encoder_activation.cu PROPERTIES COMPILE_OPTIONS "--expt-relaxed-constexpr")
@@ -101,6 +106,7 @@ if(TEI_BUILD_NATIVE_TESTS)
     # Match the private cache header layout even when CUDA test registration is
     # disabled: CPU fixtures can still link against a CUDA-enabled library.
     target_compile_definitions(gemma_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
+    target_compile_definitions(qwen3_vl_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
   endif()
   if(TARGET torch_cuda AND TEI_RUN_CUDA_TESTS)
     foreach(test output bert_private_flash qwen35_reference fp8_linear decoder_fp8 fast_kernels encoder_activation encoder_norm decoder_norm cuda_graph gemma_vision_kernels gemma_rotary packed_pool packed_alibi packed_relative_bias moe_kernels moe_cuda_graph torch_flash_fma)

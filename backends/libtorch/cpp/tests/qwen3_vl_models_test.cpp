@@ -4,6 +4,10 @@
 #include <c10/core/InferenceMode.h>
 #include <ATen/Parallel.h>
 #include <iostream>
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDACachingAllocator.h>
+#endif
 using namespace tei;
 int main(int argc,char** argv) {
   c10::InferenceMode inference;at::set_num_threads(1);at::manual_seed(712);
@@ -97,5 +101,56 @@ int main(int argc,char** argv) {
     auto expected=reference->forward(host).to(at::kFloat),actual=native->forward(dev).cpu().to(at::kFloat);
     TORCH_CHECK(at::allclose(expected,actual,.03,.03),"Qwen3-VL CUDA/CPU image parity mismatch: ",(expected-actual).abs().max().item<float>());
     std::cout<<"Qwen3-VL CUDA/CPU float16 parity maxabs="<<(expected-actual).abs().max().item<float>()<<"\n";
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // Actual 64x64 patch grid: two heads make each original F32 score
+    // tensor 128 MiB, exercising production query chunking rather than the
+    // unchanged small-image branch. These are synthetic functional weights,
+    // not a replacement for the separate original learned-image oracle.
+    auto bounded_cfg=q35cfg;
+    bounded_cfg.values["text_config.max_position_embeddings"]="2048";
+    auto bounded_host_weights=q35weights;
+    bounded_host_weights[vp+"patch_embed.proj.weight"]=at::randn({16,3,2,16,16})*.002;
+    Weights bounded_weights;
+    for(const auto& [name,value]:bounded_host_weights)bounded_weights[name]=value.to(device,at::kBFloat16);
+    auto bounded_loader=bounded_weights;
+    auto bounded=create_qwen35(bounded_cfg,bounded_loader,device,at::kBFloat16);bounded->ready();
+    constexpr int64_t patches=4096,merged=1024,total=1027;
+    std::vector<int32_t> large_offsets={0,1025,1027};
+    auto long_options=at::TensorOptions().device(device).dtype(at::kLong);
+    auto positions=at::cat({at::arange(1025,long_options),at::arange(2,long_options)},0);
+    PackedInput large{at::arange(total,long_options).remainder(30)+1,at::zeros({total},long_options),positions,
+      at::from_blob(large_offsets.data(),{3},at::TensorOptions().dtype(at::kInt)).clone().to(device),large_offsets.data(),2,1025};
+    large.multimodal_positions=positions.unsqueeze(0).repeat({3,1});
+    auto without_image=bounded->forward(large);
+    large.images.push_back({at::rand({patches,1536},long_options.dtype(at::kHalf)),{1,64,64},2,1,merged,0});
+    Weights bounded_cpu_weights;
+    for(const auto& [name,value]:bounded_host_weights)bounded_cpu_weights[name]=value.to(at::kBFloat16).to(at::kHalf);
+    Qwen3VL cpu_vision(bounded_cfg,bounded_cpu_weights,c10::Device("cpu"),at::kHalf,true);cpu_vision.ready();
+    auto cpu_image=large.images[0];cpu_image.pixels=cpu_image.pixels.cpu();
+    auto original_cpu_features=cpu_vision.image_features(cpu_image).to(at::kFloat);
+    // Initialize vision workspaces before recording live allocation peak.
+    Qwen3VL vision_only(bounded_cfg,bounded_weights,device,at::kHalf,true);vision_only.ready();
+    ImageInput warm_image{large.images[0].pixels.narrow(0,0,4),{1,2,2},2,1,1,0};
+    vision_only.image_features(warm_image);
+    auto chunked_features=vision_only.image_features(large.images[0]).cpu().to(at::kFloat);
+    TORCH_CHECK(at::allclose(original_cpu_features,chunked_features,.03,.03),"Large chunked Qwen3.5 vision differs from independent original CPU path: ",(original_cpu_features-chunked_features).abs().max().item<float>());
+    at::cuda::getCurrentCUDAStream(device.index()).synchronize();
+    const auto allocated_before=c10::cuda::CUDACachingAllocator::getDeviceStats(device.index()).allocated_bytes[0].current;
+    c10::cuda::CUDACachingAllocator::resetPeakStats(device.index());
+    auto large_image=bounded->forward(large);
+    at::cuda::getCurrentCUDAStream(device.index()).synchronize();
+    const auto peak_extra=c10::cuda::CUDACachingAllocator::getDeviceStats(device.index()).allocated_bytes[0].peak-allocated_before;
+    TORCH_CHECK(peak_extra<128LL*1024*1024,"Large vision request recreated full square score/probability storage: ",peak_extra);
+    TORCH_CHECK(at::isfinite(large_image).all().item<bool>(),"Chunked large-image output is nonfinite");
+    TORCH_CHECK((large_image.narrow(0,1,merged)-without_image.narrow(0,1,merged)).abs().max().item<float>()>1e-5,"Large merged image span was ignored");
+    TORCH_CHECK(at::equal(large_image.narrow(0,1025,2),without_image.narrow(0,1025,2)),"Large image leaked into another packed request");
+    large.images[0].pixels=at::zeros_like(large.images[0].pixels);
+    auto changed_image=bounded->forward(large);
+    TORCH_CHECK(at::isfinite(changed_image).all().item<bool>() &&
+      (changed_image.narrow(0,1,merged)-large_image.narrow(0,1,merged)).abs().max().item<float>()>1e-5,"Large chunked image pixels ignored");
+    TORCH_CHECK(at::equal(changed_image.narrow(0,1025,2),large_image.narrow(0,1025,2)),"Changed large image leaked between requests");
+    std::cout<<"Qwen3.5 actual 4096 patches / 1024 merged image tokens, chunked F32 attention, changed pixels and packed isolation passed; peak extra bytes="<<peak_extra<<"\n";
+#endif
+
   }
 }
