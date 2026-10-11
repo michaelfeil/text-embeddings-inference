@@ -683,10 +683,34 @@ impl Backend for CandleBackend {
         self.model.supports_radix_mlp()
     }
 
-    fn embed(&self, batch: Batch) -> Result<Embeddings, BackendError> {
+    fn embed(&self, mut batch: Batch) -> Result<Embeddings, BackendError> {
         let batch_size = batch.len();
         let pooled_indices = batch.pooled_indices.clone();
         let raw_indices = batch.raw_indices.clone();
+        if pooled_indices
+            .iter()
+            .chain(&raw_indices)
+            .any(|&index| index as usize >= batch_size)
+        {
+            return Err(BackendError::Inference("Invalid output index".into()));
+        }
+        // Packed model pooling historically assumes identity selectors when no
+        // raw rows are requested. Ask for canonical rows, then select before
+        // Dense modules so request order and repeated indices work for every model.
+        let select_pooled =
+            !pooled_indices.is_empty() && pooled_indices.iter().copied().ne(0..batch_size as u32);
+        if select_pooled {
+            batch.pooled_indices = (0..batch_size as u32).collect();
+        }
+        // Raw-only packed models can also return canonical token rows regardless
+        // of the selectors. Request those rows explicitly and gather real spans
+        // on the device before transferring only the requested tokens to the host.
+        let select_raw =
+            !raw_indices.is_empty() && raw_indices.iter().copied().ne(0..batch_size as u32);
+        let raw_offsets = batch.cumulative_seq_lengths.clone();
+        if select_raw {
+            batch.raw_indices = (0..batch_size as u32).collect();
+        }
 
         // Used for indexing in the raw_embeddings tensor
         let input_lengths: Vec<usize> = (0..batch.len())
@@ -697,6 +721,37 @@ impl Backend for CandleBackend {
 
         // Run forward
         let (pooled_embeddings, raw_embeddings) = self.model.embed(batch).e()?;
+        let pooled_embeddings = if select_pooled {
+            pooled_embeddings
+                .map(|pooled| {
+                    let indices = candle::Tensor::new(pooled_indices.as_slice(), pooled.device())?;
+                    crate::layers::index_select(&pooled, &indices, 0)
+                })
+                .transpose()
+                .e()?
+        } else {
+            pooled_embeddings
+        };
+
+        let raw_embeddings = if select_raw {
+            raw_embeddings
+                .map(|raw| {
+                    let spans = raw_indices
+                        .iter()
+                        .map(|&index| {
+                            let index = index as usize;
+                            let start = raw_offsets[index] as usize;
+                            let length = (raw_offsets[index + 1] - raw_offsets[index]) as usize;
+                            raw.narrow(0, start, length)
+                        })
+                        .collect::<candle::Result<Vec<_>>>()?;
+                    candle::Tensor::cat(&spans, 0)
+                })
+                .transpose()
+                .e()?
+        } else {
+            raw_embeddings
+        };
 
         // Apply Dense layers sequentially if available
         let pooled_embeddings = match pooled_embeddings {

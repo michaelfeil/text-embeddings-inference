@@ -1169,15 +1169,6 @@ impl LibtorchBackend {
         if pooled.iter().chain(&raw).any(|&n| n as usize >= b) {
             return Err(inference("Invalid output index"));
         }
-        if pooled
-            .iter()
-            .chain(&raw)
-            .collect::<std::collections::HashSet<_>>()
-            .len()
-            != pooled.len() + raw.len()
-        {
-            return Err(inference("Duplicate output indices"));
-        }
         let raw_width = if pool >= 4 { hidden } else { self.output_width };
         let raw_rows = raw
             .iter()
@@ -1658,6 +1649,72 @@ mod tests {
                 let want = values(&expected[row]);
                 assert_eq!(got.len(), want.len());
                 assert!(got.iter().zip(want).all(|(a, b)| (a - b).abs() < 0.0001));
+            }
+            let mut canonical_raw = batch();
+            canonical_raw.pooled_indices.clear();
+            canonical_raw.raw_indices = (0..canonical_raw.len() as u32).collect();
+            let canonical_raw = candle.embed(canonical_raw).unwrap();
+            // Duplicate selectors preserve request order; raw overwrites pooled
+            // when both request the same sequence, matching Candle's public map.
+            for (pooled, raw) in [
+                (vec![0, 0], vec![]),
+                (vec![1], vec![]),
+                (vec![1, 0], vec![]),
+                (vec![0, 1, 0, 1], vec![]),
+                (vec![], vec![]),
+                (vec![], vec![0, 0]),
+                (vec![], vec![1]),
+                (vec![], vec![1, 0]),
+                (vec![], vec![0, 1, 0, 1]),
+                (vec![1, 1], vec![0]),
+                (vec![1], vec![0, 0]),
+                (vec![1, 0, 1], vec![0, 1, 0]),
+            ] {
+                let mut selected = batch();
+                selected.pooled_indices = pooled;
+                selected.raw_indices = raw;
+                let expected = candle.embed(selected.clone()).unwrap();
+                let actual = native.embed(selected).unwrap();
+                assert_eq!(actual.len(), expected.len());
+                for (row, got) in &actual {
+                    match (got, &expected[row]) {
+                        (Embedding::Pooled(v), Embedding::Pooled(_)) => assert_eq!(v.len(), 3),
+                        (Embedding::All(v), Embedding::All(w)) => {
+                            assert_eq!(v.len(), w.len());
+                            assert!(v.iter().all(|token| token.len() == 16));
+                            assert_eq!(values(&expected[row]), values(&canonical_raw[row]));
+                        }
+                        _ => panic!("Duplicate selector changed pooled/raw overwrite kind"),
+                    }
+                    let want = values(&expected[row]);
+                    assert!(values(got)
+                        .iter()
+                        .zip(want)
+                        .all(|(a, b)| (a - b).abs() < 0.0001));
+                }
+            }
+            let mut single = batch();
+            single.input_ids.truncate(3);
+            single.token_type_ids.truncate(3);
+            single.position_ids.truncate(3);
+            single.cumulative_seq_lengths.truncate(2);
+            single.pooled_indices.clear();
+            single.raw_indices = vec![0];
+            let canonical = candle.embed(single.clone()).unwrap();
+            for raw in [vec![0, 0], vec![0], vec![0, 0, 0, 0], vec![]] {
+                single.raw_indices = raw.clone();
+                let expected = candle.embed(single.clone()).unwrap();
+                let actual = native.embed(single.clone()).unwrap();
+                assert_eq!(expected.len(), usize::from(!raw.is_empty()));
+                assert_eq!(actual.len(), expected.len());
+                if !raw.is_empty() {
+                    assert_eq!(values(&expected[&0]), values(&canonical[&0]));
+                    let want = values(&expected[&0]);
+                    assert!(values(&actual[&0])
+                        .iter()
+                        .zip(want)
+                        .all(|(a, b)| (a - b).abs() < 0.0001));
+                }
             }
         }
         fs::write(
