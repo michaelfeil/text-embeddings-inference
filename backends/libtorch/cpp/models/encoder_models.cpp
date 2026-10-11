@@ -37,6 +37,7 @@ struct Encoder final : Model {
   std::vector<Layer> fused;
   std::unordered_map<std::string,Fp8Linear> fp8_mlp;
   std::shared_ptr<Fp8RowwiseExecutor> fp8_executor;
+  std::shared_ptr<OrdinaryLinearExecutor> ordinary_executor;
   at::Tensor global_cos, global_sin, local_cos, local_sin;
   std::optional<at::Tensor> alibi;
 
@@ -75,6 +76,10 @@ struct Encoder final : Model {
   at::Tensor linear(const at::Tensor& x, const std::string& n) const {
     auto quantized=fp8_mlp.find(n);
     if(quantized!=fp8_mlp.end())return quantized->second.forward(x,bias(n));
+    if(ordinary_executor && !bias(n).defined()) {
+      auto result=ordinary_executor->forward(x,w(n+".weight"));
+      if(result.defined())return result;
+    }
     return at::linear(x, w(n + ".weight"), bias(n));
   }
   at::Tensor activated_linear(const at::Tensor& x, const std::string& n) const {
@@ -170,6 +175,11 @@ struct Encoder final : Model {
     sine = at::sin(phase).to(dtype);
   }
   void ready() override {
+    ordinary_executor.reset();
+    if(family==Family::Modern && device.is_cuda() && (dtype==at::kHalf || dtype==at::kBFloat16) &&
+      hidden==768 && heads==12 && o.integer("intermediate_size",1152)==1152 &&
+      !o.boolean("_fp8_dynamic",false))
+      ordinary_executor=std::make_shared<OrdinaryLinearExecutor>();
     TORCH_CHECK(hidden > 0 && heads > 0 && hidden % heads == 0 && layers > 0, "Invalid encoder dimensions");
     TORCH_CHECK(activation=="gelu"||activation=="gelu_new"||activation=="gelu_fast"||activation=="gelu_pytorch_tanh"||activation=="gelu_approx"||activation=="relu"||activation=="silu"||activation=="swiglu"||activation=="tanh", "Unsupported encoder activation: ",activation);
     TORCH_CHECK(device.is_cpu() || device.is_cuda(), "Packed encoders currently support CPU and CUDA");
@@ -319,7 +329,11 @@ struct Encoder final : Model {
       } else
 #endif
       if(family==Family::Modern&&i>0)source=norm(h,p+"attn_norm");
-      auto qkv = at::linear(source, fused[i].qkv_weight, fused[i].qkv_bias).view({h.size(0), 3 * heads, hidden / heads});
+      at::Tensor qkv;
+      if(ordinary_executor && !fused[i].qkv_bias.defined())
+        qkv=ordinary_executor->forward(source,fused[i].qkv_weight);
+      if(!qkv.defined())qkv=at::linear(source,fused[i].qkv_weight,fused[i].qkv_bias);
+      qkv=qkv.view({h.size(0),3*heads,hidden/heads});
       auto q = qkv.narrow(1, 0, heads), k = qkv.narrow(1, heads, heads), v = qkv.narrow(1, 2 * heads, heads);
       if (family == Family::Modern || family == Family::Nomic || family == Family::Gte) {
         const auto& c = local || scaled ? cos_local : cos_global;

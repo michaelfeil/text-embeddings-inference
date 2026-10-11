@@ -276,6 +276,168 @@ at::Tensor Fp8RowwiseExecutor::forward(const at::Tensor& x,const at::Tensor& wei
 #endif
 }
 
+// Ordinary Modern projections: no quantization or scale descriptors.
+struct OrdinaryLinearExecutor::Impl {
+#if defined(TEI_TORCH_CUDA_KERNELS) && CUDA_VERSION >= 12090
+  struct Plan {
+    cublasLtMatmulDesc_t operation{};
+    cublasLtMatrixLayout_t a{}, b{}, c{}, d{};
+    cublasLtMatmulAlgo_t algorithm{};
+    at::Tensor workspace;
+    bool rejected=false;
+    ~Plan() {
+      if(d)cublasLtMatrixLayoutDestroy(d);
+      if(c)cublasLtMatrixLayoutDestroy(c);
+      if(b)cublasLtMatrixLayoutDestroy(b);
+      if(a)cublasLtMatrixLayoutDestroy(a);
+      if(operation)cublasLtMatmulDescDestroy(operation);
+    }
+  };
+  struct Lane {
+    int device;
+    CUcontext context;
+    std::thread::id thread;
+    cudaStream_t stream;
+    cublasLtHandle_t handle;
+    at::Tensor workspace;
+  };
+  struct Entry {
+    size_t lane, workspace_bytes;
+    int64_t m,n,k;
+    at::ScalarType output_dtype;
+    std::unique_ptr<Plan> plan;
+  };
+  std::mutex mutex;
+  std::vector<Lane> lanes;
+  std::vector<Entry> entries;
+  // Model-wide bounds: four execution lanes, 64 shapes/policies in total.
+  // Capacity overflow uses ATen; existing plans/workspaces are never evicted.
+  // Every lane allocates at most32MiB, shared by all its plans. Each plan
+  // retains the allocation; changing workspace policy cannot free old storage.
+  static constexpr size_t max_lanes=4, max_plans=64, max_workspace=32*1024*1024;
+#endif
+};
+OrdinaryLinearExecutor::OrdinaryLinearExecutor():impl_(std::make_shared<Impl>()) {}
+at::Tensor OrdinaryLinearExecutor::forward(const at::Tensor& x,const at::Tensor& weight) const {
+#if defined(TEI_TORCH_CUDA_KERNELS) && CUDA_VERSION >= 12090
+  // Independent saved Half/BF16 ordinary packets define these layouts.
+  // Unknown dtype/strides/policies retain original ATen.
+  if(!x.is_cuda() || x.dim()!=2 || !weight.is_cuda() || weight.dim()!=2 ||
+    (x.scalar_type()!=at::kHalf && x.scalar_type()!=at::kBFloat16) ||
+    weight.scalar_type()!=x.scalar_type() ||
+    x.device()!=weight.device() || x.size(0)<=0 || x.size(1)!=weight.size(1) ||
+    !x.is_contiguous() || !weight.is_contiguous())return {};
+  const auto m=x.size(0),n=weight.size(0),k=x.size(1);
+  if(!((k==768 && (n==2304 || n==768))||(k==1152 && n==768)))return {};
+  const auto output_dtype=x.scalar_type();
+  c10::cuda::CUDAGuard guard(x.device());
+  const auto stream=c10::cuda::getCurrentCUDAStream(x.get_device());
+  cudaStreamCaptureStatus capture;
+  C10_CUDA_CHECK(cudaStreamIsCapturing(stream.stream(),&capture));
+  if(capture!=cudaStreamCaptureStatusNone)return {};
+  if(at::globalContext()._SMCarveout_EXPERIMENTAL().has_value() ||
+    (output_dtype==at::kHalf && at::globalContext().allowFP16AccumulationCuBLAS()) ||
+    (output_dtype==at::kHalf ? at::globalContext().allowFP16ReductionCuBLAS() :
+      at::globalContext().allowBF16ReductionCuBLAS())!=
+      at::CuBLASReductionOption::AllowReducedPrecisionWithSplitK ||
+    at::globalContext().deterministicAlgorithms() ||
+    at::globalContext().blasPreferredBackend()!=at::BlasBackend::Cublaslt)return {};
+  const auto* properties=at::cuda::getDeviceProperties(x.get_device());
+  if(properties->major!=9 || properties->minor!=0)return {};
+  // Reuse Torch's dynamically loaded driver API; no direct libcuda dependency.
+  const auto get_context=c10::cuda::DriverAPI::get()->cuCtxGetCurrent_;
+  CUcontext context{};
+  if(!get_context || get_context(&context)!=CUDA_SUCCESS || !context)return {};
+  static const auto version=cublasLtGetVersion();
+  // The original learned-operand packet proves this library's first tactic.
+  if(version!=130200)return {};
+  const auto workspace_bytes=at::cuda::getCUDABlasLtWorkspaceSize();
+  if(workspace_bytes>Impl::max_workspace)return {};
+  const auto aligned=[](const at::Tensor& tensor) {
+    return reinterpret_cast<uintptr_t>(tensor.const_data_ptr())%256==0;
+  };
+  if(!aligned(x)||!aligned(weight))return {};
+  const auto handle=at::cuda::getCurrentCUDABlasLtHandle();
+  const auto thread=std::this_thread::get_id();
+  auto& cache=*impl_;
+  std::lock_guard<std::mutex> lock(cache.mutex);
+  size_t lane=0;
+  for(;lane<cache.lanes.size();++lane) {
+    const auto& v=cache.lanes[lane];
+    if(v.device==x.get_device() && v.context==context && v.thread==thread &&
+      v.stream==stream.stream() && v.handle==handle)break;
+  }
+  if(lane==cache.lanes.size()) {
+    if(lane==Impl::max_lanes)return {};
+    cache.lanes.push_back({x.get_device(),context,thread,stream.stream(),handle,{}});
+  }
+  Impl::Plan* plan=nullptr;
+  for(auto& entry:cache.entries)if(entry.lane==lane && entry.workspace_bytes==workspace_bytes &&
+    entry.m==m && entry.n==n && entry.k==k && entry.output_dtype==output_dtype) {plan=entry.plan.get();break;}
+  if(!plan) {
+    if(cache.entries.size()==Impl::max_plans)return {};
+    auto owned=std::make_unique<Impl::Plan>();
+    plan=owned.get();
+    // Cache rejected geometry/policy too; no unbounded repeated host setup.
+    cache.entries.push_back({lane,workspace_bytes,m,n,k,output_dtype,std::move(owned)});
+    plan->rejected=true;
+    const auto ok=[](cublasStatus_t status) { return status==CUBLAS_STATUS_SUCCESS; };
+    if(!ok(cublasLtMatmulDescCreate(&plan->operation,CUBLAS_COMPUTE_32F,CUDA_R_32F)))return {};
+    const auto set=[&](cublasLtMatmulDescAttributes_t attr,const auto& value) {
+      return ok(cublasLtMatmulDescSetAttribute(plan->operation,attr,&value,sizeof(value)));
+    };
+    const cublasOperation_t transpose=CUBLAS_OP_T,normal=CUBLAS_OP_N;
+    const int8_t fast=0;
+    const cublasLtEpilogue_t epilogue=CUBLASLT_EPILOGUE_DEFAULT;
+    if(!set(CUBLASLT_MATMUL_DESC_TRANSA,transpose) || !set(CUBLASLT_MATMUL_DESC_TRANSB,normal) ||
+      !set(CUBLASLT_MATMUL_DESC_FAST_ACCUM,fast) ||
+      !set(CUBLASLT_MATMUL_DESC_EPILOGUE,epilogue))return {};
+    const auto type=output_dtype==at::kHalf ? CUDA_R_16F : CUDA_R_16BF;
+    if(!ok(cublasLtMatrixLayoutCreate(&plan->a,type,k,n,k)) ||
+      !ok(cublasLtMatrixLayoutCreate(&plan->b,type,k,m,k)) ||
+      !ok(cublasLtMatrixLayoutCreate(&plan->c,type,n,m,n)) ||
+      !ok(cublasLtMatrixLayoutCreate(&plan->d,type,n,m,n)))return {};
+    struct Preference {
+      cublasLtMatmulPreference_t value{};
+      ~Preference(){if(value)cublasLtMatmulPreferenceDestroy(value);}
+    } preference;
+    if(!ok(cublasLtMatmulPreferenceCreate(&preference.value)) ||
+      !ok(cublasLtMatmulPreferenceSetAttribute(preference.value,
+        CUBLASLT_MATMUL_PREF_MAX_WORKSPACE_BYTES,&workspace_bytes,sizeof(workspace_bytes))))return {};
+    // Remaining preference defaults match Torch: alignment256, reductionmask7.
+    cublasLtMatmulHeuristicResult_t heuristic{}; int returned=0;
+    if(!ok(cublasLtMatmulAlgoGetHeuristic(handle,plan->operation,plan->a,plan->b,
+      plan->c,plan->d,preference.value,1,&heuristic,&returned)) || returned!=1 ||
+      heuristic.state!=CUBLAS_STATUS_SUCCESS || heuristic.workspaceSize>workspace_bytes)return {};
+    int id=0;size_t written=0;
+    if(!ok(cublasLtMatmulAlgoConfigGetAttribute(&heuristic.algo,CUBLASLT_ALGO_CONFIG_ID,
+      &id,sizeof(id),&written)) || written!=sizeof(id) || id!=66)return {};
+    plan->algorithm=heuristic.algo; // Original first tactic, not a custom search.
+    auto& workspace=cache.lanes[lane].workspace;
+    if(workspace_bytes && !workspace.defined())
+      workspace=at::empty({static_cast<int64_t>(Impl::max_workspace)},x.options().dtype(at::kByte));
+    plan->workspace=workspace; // Keep this exact allocation alive independently.
+    plan->rejected=false;
+  }
+  if(plan->rejected)return {};
+  auto output=at::empty({m,n},x.options().dtype(output_dtype));
+  if(!aligned(output))return {};
+  if(plan->workspace.defined())c10::cuda::CUDACachingAllocator::recordStream(
+    plan->workspace.storage().data_ptr(),stream);
+  const float alpha=1.f,beta=0.f;
+  const auto status=cublasLtMatmul(handle,plan->operation,&alpha,
+    weight.const_data_ptr(),plan->a,x.const_data_ptr(),plan->b,&beta,
+    output.const_data_ptr(),plan->c,output.mutable_data_ptr(),plan->d,
+    &plan->algorithm,workspace_bytes?plan->workspace.mutable_data_ptr():nullptr,
+    workspace_bytes,stream.stream());
+  if(status==CUBLAS_STATUS_NOT_SUPPORTED) { plan->rejected=true;return {}; }
+  TORCH_CUDABLAS_CHECK(status);
+  return output;
+#else
+  return {};
+#endif
+}
+
 #ifndef TEI_TORCH_CUDA_KERNELS
 std::pair<at::Tensor, at::Tensor> fp8_quantize_rows(const at::Tensor&) {
   TORCH_CHECK(false, "Dynamic FP8 requires a CUDA LibTorch build");
