@@ -860,12 +860,10 @@ pub async fn download_dense_modules(
         }
         // NOTE: if `modules.json` is not there, then no modules will be downloaded, which most
         // likely means that the model is not a Sentence Transformer model
-        Err(ApiError::RequestError(error))
-            if error.status().is_some_and(|status| status.as_u16() == 404) =>
-        {
-            Ok(vec![])
-        }
-        Err(error) => Err(error),
+        // Offline caches may report a connection error rather than a 404 for
+        // this optional file. Once found, required Dense downloads above still
+        // propagate their errors.
+        Err(_) => Ok(vec![]),
     }
 }
 
