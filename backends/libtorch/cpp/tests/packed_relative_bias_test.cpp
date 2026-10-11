@@ -1,11 +1,12 @@
-#include "helpers/attention.h"
-#include "models/model.h"
-#include "helpers/options.h"
+#include "helpers/model.h"
 #include <c10/core/InferenceMode.h>
 #include <ATen/ops/_efficient_attention_forward.h>
+#include <ATen/cuda/CUDAGraph.h>
+#include <c10/cuda/CUDAGuard.h>
 #include <iostream>
 #include <vector>
 #include <cmath>
+#include "kernels/encoder_bias.h"
 int main(int argc,char** argv) {
   c10::InferenceMode guard;
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
@@ -22,7 +23,52 @@ int main(int argc,char** argv) {
     auto logical=tei::packed_sequence_bias(q,input);
     auto storage=logical.as_strided({backing},{1});storage.fill_(NAN);
     auto local=storage.as_strided({(long)lengths.size(),H,m,m},{H*tile,tile,stride,1});
-    for(size_t r=0;r<lengths.size();++r)local[r].narrow(1,0,lengths[r]).narrow(2,0,lengths[r]).copy_(at::randn({H,lengths[r],lengths[r]},opt)*.5);
+    const int bins=256;
+    auto ck=at::randn({H,total,bins},opt),pc=at::randn({H,total,bins},opt);
+    std::vector<at::Tensor> index_rows;std::vector<int64_t> index_offsets{0};
+    for(size_t r=0;r<lengths.size();++r) {
+      int n=lengths[r];auto idx=at::randint(bins,{n,n},opt.dtype(at::kLong));
+      index_rows.push_back(idx.reshape({-1}));index_offsets.push_back(index_offsets.back()+n*n);
+    }
+    auto packed_indices=at::cat(index_rows,0);
+    auto ix=at::from_blob(index_offsets.data(),{int64_t(index_offsets.size())},at::kLong).to(device);
+    auto ck_cpu=ck.cpu(),pc_cpu=pc.cpu();
+    for(int mode:{3,0,1,2}) {
+      auto use_ck=(mode==0||mode==2)?ck:at::Tensor(),use_pc=(mode==1||mode==2)?pc:at::Tensor();
+      storage.fill_(NAN);
+      tei::packed_bias_fill(logical,use_ck,use_pc,packed_indices,ix,cu,m);
+      for(size_t r=0;r<lengths.size();++r) {
+        int n=lengths[r],start=offsets[r];auto idx=index_rows[r].view({n,n}).cpu();
+        // Independent CPU gather and separate model-dtype additions, unchanged rounding.
+        auto expected=at::zeros({H,n,n},opt.device(at::kCPU));
+        if(use_ck.defined())expected=expected+ck_cpu.narrow(1,start,n).gather(2,idx.unsqueeze(0).expand({H,n,n}));
+        if(use_pc.defined())expected=expected+pc_cpu.narrow(1,start,n).gather(2,idx.transpose(0,1).unsqueeze(0).expand({H,n,n})).transpose(1,2);
+        TORCH_CHECK(at::equal(local[r].narrow(1,0,n).narrow(2,0,n),expected.to(device)),"Packed gather/add bias differs from original operation oracle");
+      }
+    }
+
+    // Capture and replay the same packed layout with changed real bucket values.
+    // No host metadata upload occurs during capture; allocation addresses stay fixed.
+    if(lengths==std::vector<int>{3,13,7}) {
+      c10::cuda::CUDAGuard device_guard(device);
+      C10_CUDA_CHECK(cudaDeviceSynchronize());
+      auto stream=c10::cuda::getStreamFromPool(false,device.index());
+      c10::cuda::CUDAStreamGuard stream_guard(stream);
+      at::cuda::CUDAGraph graph;
+      graph.capture_begin();
+      tei::packed_bias_fill(logical,ck,pc,packed_indices,ix,cu,m);
+      graph.capture_end();
+      packed_indices.zero_();graph.replay();
+      for(size_t r=0;r<lengths.size();++r) {
+        int n=lengths[r],start=offsets[r];
+        auto idx=at::zeros({n,n},at::TensorOptions().dtype(at::kLong));
+        auto expected=at::zeros({H,n,n},opt.device(at::kCPU));
+        expected=expected+ck_cpu.narrow(1,start,n).gather(2,idx.unsqueeze(0).expand({H,n,n}));
+        expected=expected+pc_cpu.narrow(1,start,n).gather(2,idx.transpose(0,1).unsqueeze(0).expand({H,n,n})).transpose(1,2);
+        TORCH_CHECK(at::equal(local[r].narrow(1,0,n).narrow(2,0,n),expected.to(device)),"Packed relative bias changed-bucket graph replay mismatch");
+      }
+      stream.synchronize();
+    }
     auto got=std::get<0>(at::_efficient_attention_forward(q.unsqueeze(0),k.unsqueeze(0),v.unsqueeze(0),logical,cu,cu,m,m,0.,0,false,1./std::sqrt(D))).squeeze(0);
     TORCH_CHECK(at::isfinite(got).all().item<bool>(),"Unused relative bias storage was read");
     double max_perseq=0,max_reference=0,max_isolation=0;

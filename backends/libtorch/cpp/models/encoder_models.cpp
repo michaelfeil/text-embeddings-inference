@@ -4,6 +4,7 @@
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "kernels/fast_kernels.h"
 #include "kernels/encoder_norm.h"
+#include "kernels/encoder_bias.h"
 #include "kernels/encoder_activation.h"
 #include "kernels/torch_flash_fma.h"
 #endif
@@ -533,7 +534,21 @@ struct Deberta final : Model {
   const at::Tensor& w(const std::string& n) const {return weight(weights,prefix+n);}
   bool has(const std::string& n) const {return weights.count(prefix+n);}
   at::Tensor linear(const at::Tensor& x,const std::string& n) const {return at::linear(x,w(n+".weight"),has(n+".bias")?w(n+".bias"):at::Tensor());}
-  at::Tensor norm(const at::Tensor& x,const std::string& n) const {return at::layer_norm(x,{hidden},w(n+".weight"),w(n+".bias"),o.real("layer_norm_eps",1e-7));}
+  // Candle DeBERTa rounds its model-dtype residual sum before standalone
+  // LayerNorm. Keep that contract while avoiding a separate add launch.
+  bool exact_cuda_norm() const {return device.is_cuda() && hidden==768 && (dtype==at::kHalf||dtype==at::kBFloat16);}
+  at::Tensor norm(const at::Tensor& x,const std::string& n) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_cuda_norm())return encoder_layer_norm_only(x,w(n+".weight"),o.real("layer_norm_eps",1e-7),at::Tensor(),w(n+".bias"),true);
+#endif
+    return at::layer_norm(x,{hidden},w(n+".weight"),w(n+".bias"),o.real("layer_norm_eps",1e-7));
+  }
+  at::Tensor residual_norm(const at::Tensor& x,const at::Tensor& residual,const std::string& n) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_cuda_norm())return encoder_layer_norm_only(x,w(n+".weight"),o.real("layer_norm_eps",1e-7),residual,w(n+".bias"),true);
+#endif
+    return norm(x+residual,n);
+  }
   at::Tensor activation(const at::Tensor& x,const std::string& kind) const {
     if(kind=="relu")return at::relu(x);if(kind=="silu")return at::silu(x);if(kind=="tanh")return at::tanh(x);
     TORCH_CHECK(kind=="gelu" || kind=="gelu_new" || kind=="gelu_pytorch_tanh","Unsupported DeBERTa activation: ",kind);
@@ -578,7 +593,25 @@ struct Deberta final : Model {
     if(has("embeddings.embed_proj.weight"))h=linear(h,"embeddings.embed_proj");
     h=norm(h,"embeddings.LayerNorm");auto embedding=h;
     std::vector<at::Tensor> indices;
-    for(int64_t row=0;row<input.batch;++row)indices.push_back(buckets(input.offsets[row+1]-input.offsets[row]));
+    // Relative buckets depend only on local sequence length and model options.
+    // Reuse exact original tensors inside this forward; no persistent cache or
+    // padded token coordinates are introduced, including during graph capture.
+    std::unordered_map<int64_t,at::Tensor> indices_by_length;
+    for(int64_t row=0;row<input.batch;++row) {
+      const auto length=input.offsets[row+1]-input.offsets[row];
+      auto found=indices_by_length.find(length);
+      if(found==indices_by_length.end())found=indices_by_length.emplace(length,buckets(length)).first;
+      indices.push_back(found->second);
+    }
+#ifdef TEI_TORCH_CUDA_KERNELS
+    at::Tensor packed_indices,index_offsets;
+    if(device.is_cuda()&&(dtype==at::kHalf||dtype==at::kBFloat16)) {
+      std::vector<at::Tensor> flat;for(const auto& t:indices)flat.push_back(t.reshape({-1}));
+      packed_indices=at::cat(flat,0);
+      auto lengths=(input.cumulative.narrow(0,1,input.batch)-input.cumulative.narrow(0,0,input.batch)).to(at::kLong);
+      index_offsets=at::cat({at::zeros({1},lengths.options()),at::cumsum(lengths*lengths,0)},0);
+    }
+#endif
     auto scale=at::full({},std::sqrt((1+c2p+p2c)*dim),h.options());
     for(int64_t layer=0;layer<layers;++layer) {
       const auto p="encoder.layer."+std::to_string(layer)+".";
@@ -596,12 +629,19 @@ struct Deberta final : Model {
         at::Tensor content_key,position_content;
         if(position_key[layer].defined())content_key=at::matmul(q.transpose(0,1),position_key[layer])/scale;
         if(position_query[layer].defined())position_content=at::matmul(k.transpose(0,1),position_query[layer])/scale;
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if(packed_indices.defined()) {
+          packed_bias_fill(packed_bias,content_key,position_content,packed_indices,index_offsets,input.cumulative,nmax);
+        } else
+#endif
+        {
         for(int64_t row=0;row<input.batch;++row) {
           const int64_t start=input.offsets[row],n=input.offsets[row+1]-start;
           auto bias=at::zeros({heads,n,n},h.options());
           if(content_key.defined())bias=bias+content_key.narrow(1,start,n).gather(2,indices[row].unsqueeze(0).expand({heads,n,n}));
           if(position_content.defined())bias=bias+position_content.narrow(1,start,n).gather(2,indices[row].transpose(0,1).unsqueeze(0).expand({heads,n,n})).transpose(1,2);
           packed_bias.as_strided({heads,n,n},{tile,stride,1},row*batch_stride).copy_(bias);
+        }
         }
         attended=std::get<0>(at::_efficient_attention_forward(q.unsqueeze(0),keys.unsqueeze(0),v.unsqueeze(0),packed_bias,input.cumulative,input.cumulative,nmax,nmax,0.,0,false,1.)).squeeze(0);
       } else {
@@ -617,8 +657,8 @@ struct Deberta final : Model {
         }
         attended=at::cat(result,0);
       }
-      h=norm(h+linear(attended.contiguous().view({h.size(0),heads*dim}),p+"attention.output.dense"),p+"attention.output.LayerNorm");
-      h=norm(h+linear(activation(linear(h,p+"intermediate.dense"),o.string("hidden_act","gelu")),p+"output.dense"),p+"output.LayerNorm");
+      h=residual_norm(linear(attended.contiguous().view({h.size(0),heads*dim}),p+"attention.output.dense"),h,p+"attention.output.LayerNorm");
+      h=residual_norm(linear(activation(linear(h,p+"intermediate.dense"),o.string("hidden_act","gelu")),p+"output.dense"),h,p+"output.LayerNorm");
       if(layer==0&&o.integer("conv_kernel_size",0)>0) {
         std::vector<at::Tensor> pieces;
         for(int64_t row=0;row<input.batch;++row) {
