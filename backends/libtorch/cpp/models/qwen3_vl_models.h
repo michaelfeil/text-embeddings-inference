@@ -11,6 +11,8 @@ class Qwen3VL final : public Model {
   c10::Device device;
   at::ScalarType dtype;
   bool tower_only;
+  bool exact_vision=false;
+  at::Tensor temporal_first,temporal_second;
   int64_t hidden,heads,dim,merge,depth,text_dim;
   at::Tensor vision_frequency,text_frequency,text_axes;
   const at::Tensor& w(const std::string& name) const;
