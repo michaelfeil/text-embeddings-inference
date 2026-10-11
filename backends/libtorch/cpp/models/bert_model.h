@@ -110,7 +110,8 @@ struct Bert : tei::Model {
     // BERT and its aliases share Candle's biased LayerNorm primitive: residual
     // statistics use the unrounded FP32 sum. Kernel eligibility is independent
     // of model alias, pooling and head architecture; CPU/other CUDA scopes stay unchanged.
-    exact_biased_norm = device.is_cuda() && dtype == at::kHalf && config.hidden == 768
+    exact_biased_norm = device.is_cuda() &&
+      (dtype == at::kHalf || (roberta && dtype == at::kBFloat16)) && config.hidden == 768
       && at::cuda::getDeviceProperties(device.index())->major == 9;
     // Initial measured RoBERTa eager scope: H100 FP16 hidden768/head64 mean
     // embeddings. Keep dynamic FP8, trained heads and other pools unchanged.
