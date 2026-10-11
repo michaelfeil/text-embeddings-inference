@@ -1,4 +1,4 @@
-#include "helpers/model.h"
+#include "helpers/attention.h"
 #include <c10/core/InferenceMode.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <ATen/cuda/CUDAGraph.h>
