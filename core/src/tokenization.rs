@@ -802,8 +802,9 @@ pub fn into_tokens(encoding: tokenizers::Encoding, input: &str) -> Vec<SimpleTok
                     stop: None,
                 },
                 false => {
-                    let text: Vec<u8> = input.bytes().skip(start).take(stop - start).collect();
-                    let text: String = String::from_utf8_lossy(&text).to_string();
+                    let bytes = input.as_bytes().get(start..).unwrap_or_default();
+                    let bytes = &bytes[..(stop - start).min(bytes.len())];
+                    let text = String::from_utf8_lossy(bytes).into_owned();
                     SimpleToken {
                         id,
                         text,
@@ -821,6 +822,32 @@ pub fn into_tokens(encoding: tokenizers::Encoding, input: &str) -> Vec<SimpleTok
 mod tests {
     use super::*;
     use hf_hub::api::sync::ApiBuilder;
+
+    #[test]
+    fn source_tokens_preserve_byte_offsets_and_special_text() {
+        let offsets = vec![(0, 0), (0, 5), (6, 12), (6, 7), (9, 99), (99, 100)];
+        let encoding = tokenizers::Encoding::new(
+            vec![0, 1, 2, 3, 4, 5],
+            vec![0; 6],
+            vec!["<s>".into(); 6],
+            vec![None; 6],
+            offsets.clone(),
+            vec![1, 0, 0, 0, 0, 0],
+            vec![1; 6],
+            vec![],
+            Default::default(),
+        );
+        let tokens = into_tokens(encoding, "hello 東京");
+        let expected = ["<s>", "hello", "東京", "�", "京", ""];
+        for (index, token) in tokens.iter().enumerate() {
+            assert_eq!(token.id, index as u32);
+            assert_eq!(token.text, expected[index]);
+            assert_eq!(token.special, index == 0);
+            assert_eq!(token.start, (index != 0).then_some(offsets[index].0));
+            assert_eq!(token.stop, (index != 0).then_some(offsets[index].1));
+        }
+        assert_eq!(tokens.len(), expected.len());
+    }
 
     #[test]
     fn tokenizer() {
