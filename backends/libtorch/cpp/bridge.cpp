@@ -476,7 +476,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
         group.push_back(tensor);
       }
       flush();
-      TORCH_CHECK(offset == capacity, "Native output size mismatch");
+      if (completion) TORCH_CHECK(offset == capacity, "Native output size mismatch");
     }
     if (completion) completion->record();
   });

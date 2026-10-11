@@ -1363,6 +1363,48 @@ mod tests {
     use super::*;
 
     #[test]
+    fn synchronous_native_output_allows_spare_capacity() {
+        let fixture = fixture("", false);
+        let model = LibtorchBackend::new(
+            &fixture.0,
+            "float32",
+            ModelType::Embedding(Pool::Mean),
+            "cpu",
+        )
+        .unwrap();
+        let mut output = [42.0f32; 20];
+        // SAFETY: a valid two-token packed input and one 16-dimensional pooled
+        // result; the caller intentionally supplies four unused output elements.
+        let status = unsafe {
+            tei_forward_radix(
+                model.handle.as_ptr(),
+                [1i64, 2].as_ptr(),
+                [0i64, 0].as_ptr(),
+                [0i64, 1].as_ptr(),
+                [0i32, 2].as_ptr(),
+                1,
+                2,
+                1,
+                [0i64].as_ptr(),
+                1,
+                std::ptr::null(),
+                0,
+                output.as_mut_ptr(),
+                output.len(),
+                std::ptr::null(),
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+            )
+        };
+        assert_eq!(status, 0, "{}", native_error());
+        assert!(output[..16].iter().all(|value| value.is_finite()));
+        assert_eq!(output[16..], [42.0; 4]);
+    }
+
+    #[test]
     fn image_feature_keys_and_descriptor_layout() {
         assert_eq!(std::mem::size_of::<NativeImage>(), 120);
         assert_eq!(std::mem::offset_of!(NativeImage, feature_key), 80);
