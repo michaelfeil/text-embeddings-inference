@@ -238,7 +238,10 @@ static __global__ void g2_candidate_warp(const __nv_bfloat16* x,const float* sca
 static __global__ void g2_candidate_compact(const __nv_bfloat16* x,const float* scale,__nv_bfloat16* out,unsigned w,unsigned h,unsigned long long s,float e){g2_candidate_reference_impl<true>(x,scale,out,w,h,s,e);}
 at::Tensor gemma2_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double eps){
  TORCH_CHECK(x.is_cuda() && x.scalar_type()==at::kBFloat16 && scale.scalar_type()==at::kFloat && (x.dim()==2 || x.dim()==3) && x.stride(-1)==1 && scale.device()==x.device(),"Gemma2 compact RMS requires original packed BF16/F32 operands");
- const auto width=x.size(-1),rows=x.numel()/width;
+ const auto width=x.size(-1);
+ TORCH_CHECK(width>0,"Gemma2 norm width must be positive");
+ const auto rows=x.numel()/width;
+ TORCH_CHECK(rows>0 && rows<=INT32_MAX,"Gemma2 norm row bounds");
  if(!((width==256 && rows>=4096)||(width==512 && rows>=2048))) return gemma_norm_cuda(x,scale,eps,true);
  TORCH_CHECK(scale.numel()==width && scale.is_contiguous() && (x.dim()!=3 || x.stride(1)==width),"Gemma2 compact RMS scale/layout mismatch");
  c10::cuda::CUDAGuard guard(x.device());auto out=at::empty(x.sizes(),x.options());
