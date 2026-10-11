@@ -371,7 +371,7 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
   std::vector<at::Tensor> values;for(size_t i=0;i<results.size();++i){TORCH_CHECK(results[i].logits.numel()==engine.decision->output_count(converted[i]),"Decision head output width mismatch");values.push_back(results[i].logits.flatten());}
   std::vector<at::Tensor> action_values;for(const auto& result:results)action_values.push_back(result.action_probability);
-  values.push_back(at::stack(action_values));auto output=at::cat(values).to(at::kCPU,at::kFloat).contiguous();
+  values.push_back(at::stack(action_values));auto output=at::cat(values).to(at::kFloat).to(at::kCPU).contiguous();
   std::memcpy(logits,output.data_ptr<float>(),expected*sizeof(float));std::memcpy(actions,output.data_ptr<float>()+expected,batch*sizeof(float));
  });
 }
@@ -453,7 +453,9 @@ int32_t tei_forward_radix(void* handle, const int64_t* ids, const int64_t* types
       std::vector<at::Tensor> group;
       auto flush = [&] {
         if (group.empty()) return;
-        auto cpu = at::cat(group, 0).to(at::kCPU, at::kFloat).contiguous();
+        // Cast on the producing device before transfer. A combined device/dtype
+        // copy may instead cast on CPU using its unrelated compute thread pool.
+        auto cpu = at::cat(group, 0).to(at::kFloat).to(at::kCPU).contiguous();
         TORCH_CHECK(static_cast<size_t>(cpu.numel()) <= capacity - offset, "Native output exceeds provided capacity");
         std::memcpy(output + offset, cpu.data_ptr<float>(), cpu.nbytes());
         offset += cpu.numel();

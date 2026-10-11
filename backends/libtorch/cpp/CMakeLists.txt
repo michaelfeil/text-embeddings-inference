@@ -2,6 +2,14 @@ cmake_minimum_required(VERSION 3.18)
 project(tei_torch LANGUAGES CXX)
 set(TEI_REQUESTED_CUDA_ARCHITECTURES "${CMAKE_CUDA_ARCHITECTURES}")
 find_package(Torch 2.14.1 EXACT REQUIRED)
+# Torch appends its own gencode flags and disables CMake architecture selection.
+# Honor the caller's architectures for our kernels, retaining other Torch flags.
+if(TARGET torch_cuda AND TEI_REQUESTED_CUDA_ARCHITECTURES)
+  torch_cuda_get_nvcc_gencode_flag(TEI_TORCH_ARCH_FLAGS)
+  string(JOIN " " TEI_TORCH_ARCH_FLAGS_JOINED ${TEI_TORCH_ARCH_FLAGS})
+  string(REPLACE " ${TEI_TORCH_ARCH_FLAGS_JOINED}" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
+  set(CMAKE_CUDA_ARCHITECTURES "${TEI_REQUESTED_CUDA_ARCHITECTURES}")
+endif()
 add_library(tei_torch SHARED bridge.cpp batching/radix.cpp helpers/fp8_linear.cpp models/decoder_models.cpp models/decision_models.cpp models/dense_models.cpp models/encoder_models.cpp models/gemma_models.cpp models/qwen3_vl_models.cpp models/qwen35_models.cpp batching/cuda_graph.cpp kernels/moe_kernels.cpp)
 target_compile_features(tei_torch PRIVATE cxx_std_20)
 target_include_directories(tei_torch PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -15,7 +23,7 @@ install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_to
 if(TARGET torch_cuda)
   enable_language(CUDA)
   target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_vision.cu kernels/qwen35_reference.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
-    kernels/torch_flash_fma.cpp kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
+    kernels/torch_flash_fma.cpp kernels/torch_flash_fma_32.cu kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
   # Match independently verified core LayerNorm/softmax: default FMA and
   # precise exp/division, without --use_fast_math.
   set_source_files_properties(kernels/qwen35_vision.cu PROPERTIES COMPILE_OPTIONS "--fmad=true;--prec-div=true;--prec-sqrt=true")
@@ -35,6 +43,10 @@ if(TARGET torch_cuda)
   set_source_files_properties(kernels/torch_flash_fma_72.cu
     PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
     COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_ALIBI;FLASHATTENTION_DISABLE_SOFTCAP")
+  # Scope ALiBi to head32; retain all existing head specialization flags.
+  set_source_files_properties(kernels/torch_flash_fma_32.cu
+    PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
+    COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_SOFTCAP;FLASHATTENTION_DISABLE_UNEVEN_K")
   install(FILES vendor/torch_flash_attention/LICENSE vendor/torch_flash_attention/AUTHORS
     vendor/torch_flash_attention/provenance.json DESTINATION share/licenses/tei_torch/torch_flash_attention)
   install(FILES ../../candle/extensions/candle-layer-norm/LICENSE

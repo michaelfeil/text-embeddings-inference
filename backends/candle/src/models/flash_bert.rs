@@ -313,23 +313,16 @@ impl FlashBertModel {
             candle::bail!("FlashBert only supports absolute position embeddings")
         }
 
-        let (pool, classifier, splade) = match model_type {
+        let (pool, classifier) = match model_type {
             ModelType::Decision => candle::bail!("Typed decisions require a Laya checkpoint"),
             // Classifier models always use CLS pooling
             ModelType::Classifier => {
                 let pool = Pool::Cls;
 
                 let classifier = load_roberta_classification_head(vb.clone(), config)?;
-                (pool, Some(classifier), None)
+                (pool, Some(classifier))
             }
-            ModelType::Embedding(pool) => {
-                let splade = if pool == Pool::Splade {
-                    Some(BertSpladeHead::load_roberta(vb.clone(), config)?)
-                } else {
-                    None
-                };
-                (pool, None, splade)
-            }
+            ModelType::Embedding(pool) => (pool, None),
         };
 
         let (embeddings, encoder) = match (
@@ -369,6 +362,16 @@ impl FlashBertModel {
                     return Err(err);
                 }
             }
+        };
+
+        let splade = if pool == Pool::Splade {
+            Some(BertSpladeHead::load_roberta(
+                vb.clone(),
+                config,
+                embeddings.word_embeddings_weight(),
+            )?)
+        } else {
+            None
         };
 
         Ok(Self {

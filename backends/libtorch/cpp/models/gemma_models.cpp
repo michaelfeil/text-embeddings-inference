@@ -13,7 +13,9 @@
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <ATen/ops/_cudnn_attention_forward.h>
+#include <charconv>
 #include <cmath>
+#include <string_view>
 #include <array>
 #include <limits>
 #include <map>
@@ -58,6 +60,9 @@ class Gemma final : public Model {
     cublasLtMatrixLayout_t weight{},input{},output{};
     cublasLtMatmulAlgo_t algorithm{};
     size_t workspace_bytes{};
+    // Captured graphs retain this allocation address even when a later plan
+    // grows the shared workspace. Keep each cached plan's generation alive.
+    at::Tensor workspace;
     bool valid=false;
     ~RadixLinearPlan(){if(output)cublasLtMatrixLayoutDestroy(output);if(input)cublasLtMatrixLayoutDestroy(input);if(weight)cublasLtMatrixLayoutDestroy(weight);if(operation)cublasLtMatmulDescDestroy(operation);}
   };
@@ -118,8 +123,11 @@ class Gemma final : public Model {
             valid=cublasLtMatmulAlgoCheck(handle,plan->operation,plan->weight,plan->input,plan->output,plan->output,&plan->algorithm,&check)==CUBLAS_STATUS_SUCCESS && check.state==CUBLAS_STATUS_SUCCESS && check.workspaceSize<=limit;
             plan->workspace_bytes=check.workspaceSize;
           }
-          if(valid && plan->workspace_bytes>0 && (!radix_linear_workspace.defined() || static_cast<size_t>(radix_linear_workspace.numel())<plan->workspace_bytes))
-            radix_linear_workspace=at::empty({static_cast<int64_t>(limit)},x.options().dtype(at::kByte));
+          if(valid && plan->workspace_bytes>0) {
+            if(!radix_linear_workspace.defined() || static_cast<size_t>(radix_linear_workspace.numel())<plan->workspace_bytes)
+              radix_linear_workspace=at::empty({static_cast<int64_t>(limit)},x.options().dtype(at::kByte));
+            plan->workspace=radix_linear_workspace;
+          }
           plan->valid=valid;
           found=radix_linear_plans.emplace(key,std::move(plan)).first;
         }
@@ -127,7 +135,7 @@ class Gemma final : public Model {
           auto& plan=*found->second;
           auto output=at::empty({m,n},x.options());
           const float alpha=1.f,beta=0.f;
-          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?radix_linear_workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
+          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?plan.workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
           TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"Gemma4 packed projection failed: ",static_cast<int>(status));
           return output;
         }
@@ -546,6 +554,57 @@ class Gemma final : public Model {
     }
     return at::cat(rows, 0);
   }
+  void normalize_layer_overrides() {
+    // Match Rust usize::from_str: ASCII digits, optional +, checked overflow.
+    // Normalize only actual layers once; invalid/unused keys remain ignored.
+    for (const std::string scope : {"per_layer_config.", "text_config.per_layer_config."}) {
+      using Fields = std::map<std::string, int64_t>;
+      std::map<size_t, std::map<std::string, Fields>> aliases;
+      for (const auto& [name, value] : cfg.values) {
+        if (!name.starts_with(scope)) continue;
+        const auto end = name.find('.', scope.size());
+        if (end == std::string::npos) continue;
+        const auto field = name.substr(end + 1);
+        if (field != "head_dim" && field != "num_key_value_heads") continue;
+        const auto spelling = name.substr(scope.size(), end - scope.size());
+        std::string_view digits(spelling);
+        if (digits.starts_with('+')) digits.remove_prefix(1);
+        if (digits.empty() || digits.front() < '0' || digits.front() > '9') continue;
+        size_t index = 0;
+        const auto parsed = std::from_chars(digits.data(), digits.data() + digits.size(), index);
+        if (parsed.ec != std::errc() || parsed.ptr != digits.data() + digits.size()
+            || layers <= 0 || index >= static_cast<size_t>(layers)) continue;
+        aliases[index][spelling][field] = cfg.integer(name);
+      }
+      for (const auto& [index, spellings] : aliases) {
+        const bool k_equals_v = string("layer_types." + std::to_string(index), "full_attention")
+          != "sliding_attention" && boolean("attention_k_eq_v", false);
+        Fields fallback{{"head_dim", integer("head_dim", heads > 0 ? hidden / heads : 0)},
+          {"num_key_value_heads", k_equals_v ? integer("num_global_key_value_heads",
+             integer("num_key_value_heads", heads)) : integer("num_key_value_heads", heads)}};
+        // An omitted nested field still inherits an explicit root override.
+        if (scope == "text_config.per_layer_config.")
+          for (auto& [field, value] : fallback)
+            value = cfg.integer("per_layer_config." + std::to_string(index) + "." + field, value);
+        auto effective = [&](const Fields& fields) {
+          auto result = fallback;
+          for (const auto& [field, value] : fields) result[field] = value;
+          return result;
+        };
+        const auto expected = effective(spellings.begin()->second);
+        Fields explicit_fields;
+        for (const auto& [spelling, candidate] : spellings) {
+          TORCH_CHECK(effective(candidate) == expected,
+                      "Conflicting Gemma per_layer_config aliases for layer ",
+                      index, ": ", spellings.begin()->first, " and ", spelling);
+          explicit_fields.insert(candidate.begin(), candidate.end());
+        }
+        // Do not materialize defaults: preserve root/nested field precedence.
+        for (const auto& [field, value] : explicit_fields)
+          cfg.values[scope + std::to_string(index) + "." + field] = std::to_string(value);
+      }
+    }
+  }
   int64_t override_int(int64_t index, const std::string& name, int64_t fallback) const {
     // Accept both "05" (released checkpoints) and "5" layer keys.
     for (auto stem : {"per_layer_config." + std::to_string(index),
@@ -597,6 +656,7 @@ class Gemma final : public Model {
     hidden = integer("hidden_size", 0); heads = integer("num_attention_heads", 0);
     layers = integer("num_hidden_layers", 0); epsilon = real("rms_norm_eps", 1e-6);
     ple_width = integer("hidden_size_per_layer_input", 0);
+    if (embedding2) normalize_layer_overrides();
     // The fork's Gemma4 option-token decision path always requests causal
     // hidden states; embedding requests retain their bidirectional contract.
     causal = legacy ? !boolean("use_bidirectional_attention", false)
@@ -708,9 +768,9 @@ class Gemma final : public Model {
     TORCH_CHECK(classification_width()>0,"Gemma classifier score head is missing");
     TORCH_CHECK(!tokens,"Gemma4 classifier supports sequence logits only");
     auto states=forward_impl(input,true);
-    std::vector<int64_t> indices;
-    for(int64_t i=1;i<=input.batch;++i)indices.push_back(input.offsets[i]-1);
-    auto ids=at::from_blob(indices.data(),{input.batch},at::TensorOptions().dtype(at::kLong)).clone().to(device);
+    // Read current packed ends on the producing device, including graph replay.
+    // A host-backed index upload cannot run inside CUDA graph capture.
+    auto ids=input.cumulative.narrow(0,1,input.batch).to(at::kLong)-1;
     auto logits=at::linear(states.index_select(0,ids),weight(weights,"score.weight"));
     auto cap=real("final_logit_softcapping",cfg.real("final_logit_softcapping",0));
     return cap>0?at::tanh(logits/cap)*cap:logits;

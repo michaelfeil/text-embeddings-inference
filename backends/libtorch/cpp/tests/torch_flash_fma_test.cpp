@@ -50,11 +50,62 @@ static void media_spans(const c10::Device& device) {
   }
 }
 
+// Independent reference computes the bias from real per-sequence positions;
+// it does not share the Flash kernel's pre-scaled ALiBi implementation.
+static void alibi32_spans(const c10::Device& device) {
+  const bool supported=at::cuda::getDeviceProperties(device.index())->major>=8;
+  TORCH_CHECK(tei::torch_flash_fma_alibi32_supported(device,at::kHalf,32)==supported,
+    "Head32 ALiBi architecture guard mismatch");
+  TORCH_CHECK(!tei::torch_flash_fma_alibi32_supported(c10::Device(at::kCPU),at::kHalf,32)
+    && !tei::torch_flash_fma_alibi32_supported(device,at::kBFloat16,32)
+    && !tei::torch_flash_fma_alibi32_supported(device,at::kFloat,32)
+    && !tei::torch_flash_fma_alibi32_supported(device,at::kHalf,64),
+    "Head32 ALiBi unsupported geometry/dtype must retain fallback");
+  if(!supported)return;
+  const int64_t heads=12,dim=32;
+  // Original non-power-of-two Jina slope order, with a zero-slope case too.
+  std::vector<float> values{.5f,.25f,.125f,.0625f,.03125f,.015625f,.0078125f,.00390625f,
+    static_cast<float>(std::sqrt(.5)),static_cast<float>(std::pow(.5,1.5)),
+    static_cast<float>(std::pow(.5,2.5)),static_cast<float>(std::pow(.5,3.5))};
+  auto options=at::TensorOptions().device(device).dtype(at::kHalf);
+  for(bool zero_slope:{false,true})for(const auto& lengths:{std::vector<int32_t>{3,1,17},std::vector<int32_t>{32,129,7}}) {
+    auto slopes=at::tensor(values,at::TensorOptions().dtype(at::kFloat)).to(device);
+    if(zero_slope)slopes.zero_();
+    std::vector<int32_t> offsets{0};int64_t total=0,maximum=0;
+    for(auto length:lengths){total+=length;maximum=std::max<int64_t>(maximum,length);offsets.push_back(total);}
+    auto combined=at::randn({total,3*heads,dim},options);
+    auto q=combined.narrow(1,0,heads),k=combined.narrow(1,heads,heads),v=combined.narrow(1,2*heads,heads);
+    auto cumulative=at::tensor(offsets,at::TensorOptions().dtype(at::kInt)).to(device);
+    const double scale=1./std::sqrt(static_cast<double>(dim));
+    auto result=tei::torch_flash_fma_alibi32(q,k,v,cumulative,slopes,maximum,scale);
+    TORCH_CHECK(result.sizes()==q.sizes() && result.numel()==total*heads*dim
+      && at::isfinite(result).all().item<bool>(),"Head32 ALiBi changed real token/head geometry or finiteness");
+    double worst=0;
+    auto cpu_slopes=slopes.cpu().to(at::kDouble).view({heads,1,1});
+    for(size_t b=0;b<lengths.size();++b) {
+      auto cpu=[&](const at::Tensor& t){return t.narrow(0,offsets[b],lengths[b]).cpu().to(at::kDouble).transpose(0,1);};
+      auto qr=cpu(q),kr=cpu(k),vr=cpu(v),positions=at::arange(lengths[b],at::kDouble);
+      auto distance=(positions.unsqueeze(0)-positions.unsqueeze(1)).abs();
+      auto scores=at::matmul(qr,kr.transpose(1,2))*scale-cpu_slopes*distance;
+      auto expected=at::matmul(at::softmax(scores,-1),vr).transpose(0,1);
+      worst=std::max(worst,(result.narrow(0,offsets[b],lengths[b]).cpu().to(at::kDouble)-expected).abs().max().item<double>());
+    }
+    TORCH_CHECK(worst<.004,"Head32 ALiBi independent FP64 bias/attention mismatch: ",worst);
+    auto changed=v.clone();changed.select(0,lengths[0]-1).add_(5.);
+    auto isolated=tei::torch_flash_fma_alibi32(q,k,changed,cumulative,slopes,maximum,scale);
+    TORCH_CHECK(at::equal(result.narrow(0,lengths[0],total-lengths[0]),isolated.narrow(0,lengths[0],total-lengths[0])),
+      "Head32 ALiBi packed sequence isolation failed");
+    TORCH_CHECK(!at::equal(result[0],isolated[0]),"Head32 ALiBi unexpectedly masked future tokens");
+    std::cout<<"FP16 head32 ALiBi total="<<total<<" zero_slope="<<zero_slope<<" maxabs="<<worst<<'\n';
+  }
+}
+
 int main(int argc,char** argv) {
   c10::InferenceMode guard;
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   media_spans(device);
   at::manual_seed(9917);at::set_num_threads(1);
+  alibi32_spans(device);
   for(auto dtype:{at::kHalf,at::kBFloat16})for(int64_t dim:{64,128,256})
   for(bool grouped:{false,true})for(bool causal:{false,true})for(int64_t window:{-1,2})
   for(auto lengths:{std::vector<int32_t>{3,13,7},std::vector<int32_t>{32,129,17}}) {
