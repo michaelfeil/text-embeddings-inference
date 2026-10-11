@@ -5,6 +5,15 @@ fn default_mlp_bias() -> bool {
     false
 }
 
+// Hugging Face Llama checkpoints retain either one EOS token or a list.
+// This metadata is not used by the embedding/reward inference path.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(untagged)]
+pub enum EosTokenIds {
+    Single(usize),
+    Multiple(Vec<usize>),
+}
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct LLamaConfig {
     pub vocab_size: usize,
@@ -27,7 +36,7 @@ pub struct LLamaConfig {
     pub attention_bias: Option<bool>,
     pub attention_dropout: Option<f32>,
     pub bos_token_id: Option<usize>,
-    pub eos_token_id: Option<usize>,
+    pub eos_token_id: Option<EosTokenIds>,
     pub pad_token_id: Option<usize>,
     #[serde(default = "default_mlp_bias")]
     pub mlp_bias: bool,
