@@ -571,11 +571,30 @@ class Gemma final : public Model {
         aliases[index][spelling][field] = cfg.integer(name);
       }
       for (const auto& [index, spellings] : aliases) {
-        const auto& fields = spellings.begin()->second;
-        for (const auto& [spelling, candidate] : spellings)
-          TORCH_CHECK(candidate == fields, "Conflicting Gemma per_layer_config aliases for layer ",
+        const bool k_equals_v = string("layer_types." + std::to_string(index), "full_attention")
+          != "sliding_attention" && boolean("attention_k_eq_v", false);
+        Fields fallback{{"head_dim", integer("head_dim", heads > 0 ? hidden / heads : 0)},
+          {"num_key_value_heads", k_equals_v ? integer("num_global_key_value_heads",
+             integer("num_key_value_heads", heads)) : integer("num_key_value_heads", heads)}};
+        // An omitted nested field still inherits an explicit root override.
+        if (scope == "text_config.per_layer_config.")
+          for (auto& [field, value] : fallback)
+            value = cfg.integer("per_layer_config." + std::to_string(index) + "." + field, value);
+        auto effective = [&](const Fields& fields) {
+          auto result = fallback;
+          for (const auto& [field, value] : fields) result[field] = value;
+          return result;
+        };
+        const auto expected = effective(spellings.begin()->second);
+        Fields explicit_fields;
+        for (const auto& [spelling, candidate] : spellings) {
+          TORCH_CHECK(effective(candidate) == expected,
+                      "Conflicting Gemma per_layer_config aliases for layer ",
                       index, ": ", spellings.begin()->first, " and ", spelling);
-        for (const auto& [field, value] : fields)
+          explicit_fields.insert(candidate.begin(), candidate.end());
+        }
+        // Do not materialize defaults: preserve root/nested field precedence.
+        for (const auto& [field, value] : explicit_fields)
           cfg.values[scope + std::to_string(index) + "." + field] = std::to_string(value);
       }
     }
