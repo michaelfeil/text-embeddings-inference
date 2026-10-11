@@ -432,8 +432,8 @@ at::Tensor OrdinaryLinearExecutor::forward(const at::Tensor& x,const at::Tensor&
     output.const_data_ptr(),plan->c,output.mutable_data_ptr(),plan->d,
     &plan->algorithm,workspace_bytes?plan->workspace.mutable_data_ptr():nullptr,
     workspace_bytes,stream.stream());
-  if(status==CUBLAS_STATUS_NOT_SUPPORTED) { plan->rejected=true;return {}; }
-  TORCH_CUDABLAS_CHECK(status);
+  // Preserve ATen’s retry through cuBLAS after any failed cuBLASLt attempt.
+  if(status!=CUBLAS_STATUS_SUCCESS) { plan->rejected=true;return {}; }
   return output;
 #else
   return {};
