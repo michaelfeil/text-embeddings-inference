@@ -273,6 +273,14 @@ int main(int argc,char** argv) {
       compact.scatter_unfold=at::tensor({0,1,2,0,1,3,4},at::kLong);
       compact.fold_gather=at::tensor({0,1,2,5,6},at::kLong);
       validate_radix(compact,true);
+      auto scored_weights=f.weights;scored_weights["score.weight"]=at::randn({2,16})*.03;
+      auto scored=create_gemma(f.cfg,scored_weights,c10::Device("cpu"),at::kFloat);scored->ready();
+      TORCH_CHECK(scored->supports_radix(),"Loaded Gemma sequence score head must support causal folding");
+      auto full_score=scored->predict(logical,false);
+      TORCH_CHECK(at::allclose(full_score,scored->predict(compact,false),1e-5,1e-6),"Gemma folded classifier changed sequence-end readout");
+      bool embedding_fold_rejected=false;
+      try { scored->forward(compact); } catch(const c10::Error&) { embedding_fold_rejected=true; }
+      TORCH_CHECK(embedding_fold_rejected,"Loaded score head must not enable bidirectional embedding folding");
       auto full_hidden=decision->forward(logical),fold_hidden=decision->forward(compact);
       TORCH_CHECK(fold_hidden.sizes()==full_hidden.sizes() && at::allclose(full_hidden,fold_hidden,1e-5,1e-6),"Gemma causal folding changed logical readout rows or shared KV/PLE");
       // Reordered representatives must reconstruct exactly the same logical rows.
@@ -280,6 +288,7 @@ int main(int argc,char** argv) {
       compact.fold_gather=compact.fold_gather.flip({0});compact.scatter_unfold=4-compact.scatter_unfold;
       validate_radix(compact,true);
       TORCH_CHECK(at::allclose(full_hidden,decision->forward(compact),1e-5,1e-6),"Gemma folded output depends on representative order");
+      TORCH_CHECK(at::allclose(full_score,scored->predict(compact,false),1e-5,1e-6),"Gemma folded classifier depends on representative order");
       std::cout<<"Gemma4 decisions causal; embeddings bidirectional; packed sequence isolation passed\n";
       Fixture mf(family);
       mf.cfg.values["enable_moe_block"]="true";mf.cfg.values["num_experts"]="3";mf.cfg.values["top_k_experts"]="2";
