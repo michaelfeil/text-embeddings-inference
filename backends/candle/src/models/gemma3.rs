@@ -418,7 +418,9 @@ mod packed {
                 || config.sliding_window == Some(0)
                 || config.num_key_value_heads == 0
                 || config.num_attention_heads == 0
-                || config.num_attention_heads % config.num_key_value_heads != 0
+                || !config
+                    .num_attention_heads
+                    .is_multiple_of(config.num_key_value_heads)
                 || config.query_pre_attn_scalar == 0
             {
                 candle::bail!("Invalid Gemma3 attention configuration");
