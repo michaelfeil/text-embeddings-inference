@@ -108,6 +108,27 @@ Provide LibTorch's shared libraries via `LD_LIBRARY_PATH` and retain their
 licenses/notices as well. The executable and bridge also search their own directory
 on Linux. No `libtorch_python` library is linked by the bridge.
 
+## Warm CUDA deployment
+
+Configure LibTorch's CPU worker pool before starting the process. A one-thread
+pool is a measured option for warm ModernBERT CUDA inference:
+
+```bash
+OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+target/release/text-embeddings-router \
+  --backend libtorch --torch-device cuda --dtype bfloat16 \
+  --model-id /path/to/modernbert-reranker --pooling mean \
+  --enable-fp8-dynamic
+```
+
+On H100 with Torch 2.14.1, the original nine ModernBERT BF16 FP8 reranker cases
+preserved every output bit with this configuration and passed the unchanged
+accuracy and warm latency gates in both GPU assignments. Without CUDA graphs,
+the worst 200-iteration case was 9.39%/7.00% faster than Candle. Loading and
+initialization were excluded; input transfers and output materialization stayed
+inside request timing. These results cover single-worker H100 inference with this model profile.
+Configure the environment variables explicitly.
+
 ## Validation and performance
 
 ```bash
