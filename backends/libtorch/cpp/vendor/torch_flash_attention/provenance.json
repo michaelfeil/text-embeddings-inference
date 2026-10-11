@@ -27,18 +27,53 @@
   "private_compile_definitions": [
     "FLASHATTENTION_DISABLE_DROPOUT",
     "FLASHATTENTION_DISABLE_BACKWARD",
-    "FLASHATTENTION_DISABLE_ALIBI",
-    "FLASHATTENTION_DISABLE_SOFTCAP",
-    "FLASHATTENTION_DISABLE_UNEVEN_K"
+    "FLASHATTENTION_DISABLE_SOFTCAP"
   ],
-  "private_compile_scope": "Forward inference only; zero dropout; no ALiBi/softcap; exact head widths64/128/256, plus restricted SM90 BF16 noncausal global width512. Ragged actual token lengths and local attention remain enabled for64/128/256.",
+  "private_compile_scope": "Forward inference only; zero dropout; no softcap. ALiBi is enabled only for the separate FP16 noncausal global head32 specialization. All specializations consume actual packed token rows without token padding. Per-specialization compile definitions and restrictions are recorded below.",
   "head512_specialization": {
     "traits": "Flash_fwd_kernel_traits<512,64,32,4,false,false,cutlass::bfloat16_t>",
     "dynamic_shared_memory_bytes": 131072,
     "architecture": "SM90 with sufficient optin shared memory",
     "dtype": "BF16",
-    "mask": "noncausal global only",
+    "mask": "causal or noncausal global only",
     "fallback": "unsupported geometry/dtype/architecture retains native efficient attention",
+    "token_padding": false
+  },
+  "private_specialization_compile_definitions": {
+    "head32_alibi": [
+      "FLASHATTENTION_DISABLE_DROPOUT",
+      "FLASHATTENTION_DISABLE_BACKWARD",
+      "FLASHATTENTION_DISABLE_SOFTCAP",
+      "FLASHATTENTION_DISABLE_UNEVEN_K"
+    ],
+    "head64_128_256_512": [
+      "FLASHATTENTION_DISABLE_DROPOUT",
+      "FLASHATTENTION_DISABLE_BACKWARD",
+      "FLASHATTENTION_DISABLE_SOFTCAP",
+      "FLASHATTENTION_DISABLE_ALIBI",
+      "FLASHATTENTION_DISABLE_UNEVEN_K"
+    ],
+    "head72": [
+      "FLASHATTENTION_DISABLE_DROPOUT",
+      "FLASHATTENTION_DISABLE_BACKWARD",
+      "FLASHATTENTION_DISABLE_SOFTCAP",
+      "FLASHATTENTION_DISABLE_ALIBI"
+    ]
+  },
+  "head32_specialization": {
+    "source": "kernels/torch_flash_fma_32.cu",
+    "architecture": "SM80 or newer",
+    "dtype": "FP16",
+    "mask": "noncausal global only",
+    "alibi": "one contiguous FP32 slope per head, original Jina slope order",
+    "fallback": "unsupported family/geometry/dtype/architecture retains existing attention",
+    "token_padding": false
+  },
+  "head72_specialization": {
+    "traits": "Internal head96 traits with actual params.d=72 and uneven-K masking enabled",
+    "architecture": "SM90 with at least 48 KiB optin shared memory",
+    "dtype": "BF16",
+    "mask": "noncausal global only",
     "token_padding": false
   }
 }
