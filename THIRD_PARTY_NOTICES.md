@@ -23,3 +23,8 @@ package carries Apache-2.0 licensing and additional component notices; consult
 its [license audit](https://github.com/basetenlabs/basetenkenizer/blob/main/THIRD_PARTY_LICENSES.md)
 for the version used by the release. Other dependencies must likewise be audited
 from their actual pinned versions when assembling distributed artifacts.
+
+The native Nomic eight-expert router in `backends/libtorch/cpp/kernels/fast_kernels.cu`
+derives its strict bitonic ordering from Candle `sort.cu` at revision
+`036f39e44015e78ba18d716d73dfdc2e78730c44`, adapted upstream from llama.cpp.
+The selected MIT permission notice is retained beside the derived kernel.

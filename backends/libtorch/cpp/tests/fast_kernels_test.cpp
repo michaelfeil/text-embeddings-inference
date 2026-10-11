@@ -25,6 +25,24 @@ at::Tensor round_model_double(const at::Tensor& values,at::ScalarType dtype) {
 }
 int main(){c10::InferenceMode guard;
  {
+  // Original router1 row250 and router11 row148 tied probabilities, plus
+  // all-equal and strict-order cases: index policy and unchanged score dtype.
+  auto p=at::tensor({
+    .10291401296854019f,.03378089517354965f,.04312211647629738f,.07706139981746674f,.20502214133739471f,.038391076028347015f,.2946861982345581f,.20502214133739471f,
+    .13516762852668762f,.11556561291217804f,.15189653635025024f,.14100748300552368f,.08601745963096619f,.09910222142934799f,.13023561239242554f,.14100748300552368f,
+    .125f,.125f,.125f,.125f,.125f,.125f,.125f,.125f,
+    0.f,1.f,2.f,3.f,4.f,5.f,6.f,7.f},at::TensorOptions().dtype(at::kFloat)).view({4,8}).cuda();
+  auto expected=at::tensor({6,7,4,0,3,2,5,1,2,3,7,0,6,1,5,4,0,1,2,3,4,5,6,7,7,6,5,4,3,2,1,0},at::TensorOptions().dtype(at::kLong)).view({4,8}).cuda();
+  for(int k:{1,2,8}) {
+    auto selected=tei::nomic_router_topk8(p,k);auto ids=expected.narrow(-1,0,k);
+    TORCH_CHECK(at::equal(selected.second,ids),"Nomic router must match pinned Candle bitonic tie order");
+    TORCH_CHECK(selected.first.scalar_type()==at::kFloat&&selected.second.scalar_type()==at::kLong,"Nomic router score/index dtype changed");
+    TORCH_CHECK(at::equal(selected.first,p.gather(-1,ids)),"Nomic router probabilities changed during selection");
+    TORCH_CHECK(at::equal(selected.first.to(at::kHalf),p.gather(-1,ids).to(at::kHalf)),"Nomic original Half score conversion changed");
+  }
+ }
+
+ {
   auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kHalf);
   auto words=at::randn({257,768},opts),types=at::randn({3,768},opts),positions=at::randn({514,768},opts);
   auto weight=at::randn({768},opts),bias=at::randn({768},opts);

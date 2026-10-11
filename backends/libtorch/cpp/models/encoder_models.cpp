@@ -236,7 +236,17 @@ struct Encoder final : Model {
     // Route packed tokens without expanding or padding any sequence. Only the
     // selected token rows are sent to each expert, matching Candle's dispatch.
     auto logits = linear(h, p + "mlp.router.layer").to(at::kFloat);
-    auto top = at::softmax(logits, -1).topk(o.integer("moe_top_k", 2), -1);
+    auto probabilities = at::softmax(logits, -1);
+    const auto top_k = o.integer("moe_top_k", 2);
+    auto top = [&]() {
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if (exact_moe && h.is_cuda() && probabilities.size(-1) == 8) {
+        auto selected = nomic_router_topk8(probabilities, top_k);
+        return std::make_tuple(selected.first, selected.second);
+      }
+#endif
+      return probabilities.topk(top_k, -1);
+    }();
     auto scores = std::get<0>(top).to(dtype), experts = std::get<1>(top);
     const auto count = o.integer("num_experts", 0), width = o.integer("n_inner", 0);
     auto first = w(p + "mlp.experts.mlp.w1").view({count, width, hidden});
@@ -275,9 +285,16 @@ struct Encoder final : Model {
     if (family == Family::Modern) h = norm(at::embedding(w("embeddings.tok_embeddings.weight"), input.ids), "embeddings.norm");
     else {
       h = at::embedding(w("embeddings.word_embeddings.weight"), input.ids);
-      if (has("embeddings.token_type_embeddings.weight")) h = h + at::embedding(w("embeddings.token_type_embeddings.weight"), input.types);
-      if (family == Family::Distil || ((family == Family::Jina || family == Family::JinaCode) && !alibi)) h = h + at::embedding(w("embeddings.position_embeddings.weight"), input.positions);
-      h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
+      auto types = has("embeddings.token_type_embeddings.weight") ? at::embedding(w("embeddings.token_type_embeddings.weight"), input.types) : at::Tensor();
+      if (exact_moe && h.is_cuda() && types.defined()) {
+        // Candle fuses word/type embeddings into FP32 residual statistics.
+        // Keep their sum unrounded until the embedding norm has completed.
+        h = residual_norm(h, types, "emb_ln");
+      } else {
+        if (types.defined()) h = h + types;
+        if (family == Family::Distil || ((family == Family::Jina || family == Family::JinaCode) && !alibi)) h = h + at::embedding(w("embeddings.position_embeddings.weight"), input.positions);
+        h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
+      }
     }
     // All Jina layers share slopes and local positions, so materialize their
     // packed bias once per request rather than once per layer.

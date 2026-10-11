@@ -16,6 +16,65 @@ extern "C" __global__ void qk_norm_rope_bf16(const __nv_bfloat16*, const __nv_bf
 
 namespace tei {
 namespace {
+// Eight-way descending bitonic network derived from Candle's sort.cu:
+// https://github.com/michaelfeil/candle/blob/036f39e44015e78ba18d716d73dfdc2e78730c44/candle-kernels/src/sort.cu
+// Original source: Adapted from https://github.com/ggerganov/llama.cpp/blob/master/ggml-cuda/argsort.cu
+// This derived portion is licensed under MIT; retained permission notice:
+/*
+ * Permission is hereby granted, free of charge, to any
+ * person obtaining a copy of this software and associated
+ * documentation files (the "Software"), to deal in the
+ * Software without restriction, including without
+ * limitation the rights to use, copy, modify, merge,
+ * publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software
+ * is furnished to do so, subject to the following
+ * conditions:
+ *
+ * The above copyright notice and this permission notice
+ * shall be included in all copies or substantial portions
+ * of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ * ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+ * TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+ * PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+ * SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+ * CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+ * IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+__global__ void nomic_topk8_kernel(const float* probabilities, float* scores,
+ int64_t* indices, int64_t rows, int k) {
+  for(int64_t row=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;row<rows;
+      row+=int64_t(gridDim.x)*blockDim.x) {
+    int order[8];
+#pragma unroll
+    for(int col=0;col<8;++col)order[col]=col;
+#pragma unroll
+    for(int width=2;width<=8;width*=2) {
+#pragma unroll
+      for(int stride=width/2;stride>0;stride/=2) {
+#pragma unroll
+        for(int col=0;col<8;++col) {
+          const int partner=col^stride;
+          if(partner>col) {
+            const float left=probabilities[row*8+order[col]];
+            const float right=probabilities[row*8+order[partner]];
+            if(((col&width)==0 && left<right) || ((col&width)!=0 && left>right)) {
+              const int tmp=order[col];order[col]=order[partner];order[partner]=tmp;
+            }
+          }
+        }
+      }
+    }
+    for(int col=0;col<k;++col) {
+      indices[row*k+col]=order[col];scores[row*k+col]=probabilities[row*8+order[col]];
+    }
+  }
+}
+
 __global__ void qk_bf16_bridge(const __nv_bfloat16* q,const __nv_bfloat16* k,const __nv_bfloat16* qw,const __nv_bfloat16* kw,const __nv_bfloat16* cosine,const __nv_bfloat16* sine,__nv_bfloat16* out,int tokens,int qheads,int kheads,int qstride,int kstride,float eps) {
   ::fused_qk_norm_rope(q,k,qw,kw,cosine,sine,out,tokens,qheads,kheads,qstride,kstride,eps);
 }
@@ -421,4 +480,21 @@ std::pair<at::Tensor,at::Tensor> fused_qk_norm_rope(const at::Tensor& q,const at
   }
   return {output.narrow(0,0,qrows).view({q.size(0),q.size(1),128}),output.narrow(0,qrows,krows).view({k.size(0),k.size(1),128})};
 }
+std::pair<at::Tensor, at::Tensor> nomic_router_topk8(const at::Tensor& p, int64_t k) {
+  TORCH_CHECK(p.is_cuda()&&p.scalar_type()==at::kFloat&&p.dim()==2&&p.size(1)==8&&p.is_contiguous(),
+    "Nomic eight-expert router requires contiguous CUDA FP32 probabilities");
+  TORCH_CHECK(k>0&&k<=8,"Invalid Nomic eight-expert top-k count");
+  c10::cuda::CUDAGuard guard(p.device());
+  auto scores=at::empty({p.size(0),k},p.options());
+  auto indices=at::empty({p.size(0),k},p.options().dtype(at::kLong));
+  const auto blocks=std::min<int64_t>((p.size(0)+127)/128,65535);
+  if(blocks>0) {
+    auto stream=at::cuda::getCurrentCUDAStream(p.get_device());
+    nomic_topk8_kernel<<<blocks,128,0,stream>>>(p.const_data_ptr<float>(),scores.mutable_data_ptr<float>(),
+      indices.mutable_data_ptr<int64_t>(),p.size(0),int(k));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+  }
+  return {scores,indices};
+}
+
 }
