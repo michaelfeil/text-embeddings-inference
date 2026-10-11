@@ -138,8 +138,14 @@ impl Tokenization {
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
-        self.encode_request(inputs, truncate, truncation_direction, prompt_name, false)
-            .await
+        self.encode_request(
+            inputs,
+            truncate,
+            truncation_direction,
+            prompt_name,
+            EncodeMode::Aligned,
+        )
+        .await
     }
 
     pub fn with_embedding_gemma2(
@@ -199,8 +205,14 @@ impl Tokenization {
                 offsets: vec![],
             });
         }
-        self.encode_request(inputs, truncate, truncation_direction, prompt_name, true)
-            .await
+        self.encode_request(
+            inputs,
+            truncate,
+            truncation_direction,
+            prompt_name,
+            EncodeMode::Embedding,
+        )
+        .await
     }
 
     async fn encode_request(
@@ -209,7 +221,7 @@ impl Tokenization {
         truncate: bool,
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
-        embedding: bool,
+        mode: EncodeMode,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
         if let EncodingInput::Ids(mut ids) = inputs {
             if ids.is_empty() {
@@ -277,7 +289,7 @@ impl Tokenization {
                 truncate,
                 truncation_direction,
                 prompt_name,
-                embedding,
+                mode,
                 response_sender,
                 Span::current(),
             ))
@@ -376,7 +388,7 @@ fn tokenizer_worker(
                 truncate,
                 truncation_direction,
                 prompt_name,
-                embedding,
+                mode,
                 response_tx,
                 parent_span,
             ) => {
@@ -399,12 +411,13 @@ fn tokenizer_worker(
                             prompt_name,
                             prompts.as_ref(),
                             &mut tokenizer,
-                            if embedding {
+                            if matches!(mode, EncodeMode::Embedding) {
                                 fast_tokenizer.as_deref()
                             } else {
                                 None
                             },
                             chat.as_deref(),
+                            mode,
                         ));
                     }
                 })
@@ -624,6 +637,7 @@ fn encode_input(
     tokenizer: &mut Tokenizer,
     fast_tokenizer: Option<&crate::fast_tokenization::FastTokenizer>,
     chat: Option<&crate::chat::ChatProcessor>,
+    mode: EncodeMode,
 ) -> Result<ValidEncoding, TextEmbeddingsError> {
     // Default truncation params
     let truncate_params = truncate.then_some(TruncationParams {
@@ -660,15 +674,15 @@ fn encode_input(
         token_type_ids: encoding.get_type_ids().to_vec(),
         position_ids: (position_offset as u32..(seq_len + position_offset) as u32)
             .collect::<Vec<_>>(),
-        tokens: if fast_tokenizer.is_some() {
-            Vec::new()
-        } else {
+        tokens: if matches!(mode, EncodeMode::Aligned) {
             encoding.get_tokens().to_vec()
-        },
-        offsets: if fast_tokenizer.is_some() {
-            Vec::new()
         } else {
+            Vec::new()
+        },
+        offsets: if matches!(mode, EncodeMode::Aligned) {
             encoding.get_offsets().to_vec()
+        } else {
+            Vec::new()
         },
     })
 }
@@ -759,13 +773,19 @@ impl From<(String, String)> for EncodingInput {
     }
 }
 
+#[derive(Clone, Copy)]
+enum EncodeMode {
+    Embedding,
+    Aligned,
+}
+
 enum TokenizerRequest {
     Encode(
         EncodingInput,
         bool,
         TruncationDirection,
         Option<String>,
-        bool, // Embedding request: token strings and source offsets are not consumed.
+        EncodeMode,
         oneshot::Sender<Result<ValidEncoding, TextEmbeddingsError>>,
         Span,
     ),
@@ -1116,6 +1136,45 @@ mod fast_embedding_tests {
             assert!(matches!(error, TextEmbeddingsError::Tokenizer(_)));
             assert!(error.to_string().contains("no conversation processor"));
             assert!(!error.to_string().contains("secret"));
+        }
+    }
+
+    #[tokio::test]
+    async fn hf_embedding_fallback_keeps_ids_without_copying_alignment() {
+        let model = tokenizers::models::wordpiece::WordPiece::builder()
+            .vocab(
+                [
+                    ("[UNK]".into(), 0),
+                    ("hello".into(), 1),
+                    ("world".into(), 2),
+                ]
+                .into_iter()
+                .collect(),
+            )
+            .unk_token("[UNK]".into())
+            .build()
+            .unwrap();
+        let mut hf = Tokenizer::new(model);
+        hf.with_pre_tokenizer(Some(tokenizers::pre_tokenizers::whitespace::Whitespace));
+        let tokenization = Tokenization::new(1, hf, 3, 2, None, None, None);
+        for direction in [TruncationDirection::Left, TruncationDirection::Right] {
+            let text = "hello world hello world";
+            let aligned = tokenization
+                .encode(text.to_owned().into(), true, direction, None)
+                .await
+                .unwrap();
+            let embedding = tokenization
+                .encode_embedding(text.to_owned().into(), true, direction, None)
+                .await
+                .unwrap();
+            assert_eq!(embedding.input_ids, aligned.input_ids);
+            assert_eq!(embedding.token_type_ids, aligned.token_type_ids);
+            assert_eq!(embedding.position_ids, aligned.position_ids);
+            assert_eq!(embedding.input_ids.len(), 3);
+            assert!(!aligned.tokens.is_empty());
+            assert!(!aligned.offsets.is_empty());
+            assert!(embedding.tokens.is_empty());
+            assert!(embedding.offsets.is_empty());
         }
     }
 
