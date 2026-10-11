@@ -216,8 +216,9 @@ observed graph count alongside timings; graph requests can fall back to eager
 execution. `TEI_BENCHMARK_LONG_CONTEXT=1` appends these to the short suite.
 
 CUDA embedding and classifier outputs of at least 256 KiB use one persistent CPU completion thread per
-replica. The model thread enqueues D2H into reusable pinned storage and returns
-a submission acknowledgment. Completion waits for the CUDA event and allocates
+replica. Submission returns either a ready result or an owned completion handle,
+after enqueuing D2H into reusable pinned storage and handing work to the completion
+thread. Completion waits for the CUDA event and allocates
 the final Rust result vectors directly from that storage, avoiding an intermediate
 flat host copy. Smaller outputs and CPU inference complete inline.
 

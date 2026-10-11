@@ -5,7 +5,7 @@ use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{Backend, BackendError, Batch, Embeddings, ModelType};
+use text_embeddings_backend::{Backend, BackendError, Batch, Embeddings, ModelType, Submission};
 use tokio::sync::watch;
 
 #[derive(Debug)]
@@ -216,8 +216,8 @@ impl Execution {
     ) -> Result<(T, Duration), BackendError>
     where
         T: Send + 'static,
-        F: FnOnce(Backend, tokio::sync::oneshot::Sender<()>) -> Fut + Send + 'static,
-        Fut: Future<Output = Result<(T, Duration), BackendError>> + Send + 'static,
+        F: FnOnce(Backend) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Submission<T>, BackendError>> + Send + 'static,
     {
         let mut execution = self;
         execution.submitted = true;
@@ -227,15 +227,14 @@ impl Execution {
         tokio::spawn(async move {
             let backend = execution.pool.inner.backends[execution.id].clone();
             execution.started();
-            let (submitted, submission) = tokio::sync::oneshot::channel();
-            let result = call(backend, submitted);
-            tokio::pin!(result);
-            let result = tokio::select! {
-                result = &mut result => result,
-                submission = submission => {
-                    if submission.is_ok() { execution.release(); }
-                    result.await
+            let result = match call(backend).await {
+                Ok(submission) => {
+                    if matches!(submission, Submission::Deferred(_)) {
+                        execution.release();
+                    }
+                    submission.complete().await
                 }
+                Err(error) => Err(error),
             };
             execution.finish(tokens, sequences, &result);
             result
@@ -246,8 +245,8 @@ impl Execution {
 
     pub async fn embed(self, batch: Batch) -> Result<(Embeddings, Duration), BackendError> {
         let tokens = batch.input_ids.len();
-        self.run(tokens, batch.len(), move |backend, submitted| async move {
-            backend.embed_with_submission(batch, Some(submitted)).await
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend.submit_embed(batch).await
         })
         .await
     }
@@ -258,8 +257,11 @@ impl Execution {
         inputs: Vec<text_embeddings_backend::DecisionInput>,
     ) -> Result<(Vec<text_embeddings_backend::DecisionOutput>, Duration), BackendError> {
         let tokens = batch.input_ids.len();
-        self.run(tokens, batch.len(), move |backend, _submitted| async move {
-            backend.decide(batch, inputs).await
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend
+                .decide(batch, inputs)
+                .await
+                .map(|(output, duration)| Submission::Ready(output, duration))
         })
         .await
     }
@@ -269,10 +271,8 @@ impl Execution {
         batch: Batch,
     ) -> Result<(text_embeddings_backend::Predictions, Duration), BackendError> {
         let tokens = batch.input_ids.len();
-        self.run(tokens, batch.len(), move |backend, submitted| async move {
-            backend
-                .predict_with_submission(batch, Some(submitted))
-                .await
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend.submit_predict(batch).await
         })
         .await
     }
@@ -281,10 +281,8 @@ impl Execution {
         batch: Batch,
     ) -> Result<(text_embeddings_backend::TokenPredictions, Duration), BackendError> {
         let tokens = batch.input_ids.len();
-        self.run(tokens, batch.len(), move |backend, submitted| async move {
-            backend
-                .predict_tokens_with_submission(batch, Some(submitted))
-                .await
+        self.run(tokens, batch.len(), move |backend| async move {
+            backend.submit_predict_tokens(batch).await
         })
         .await
     }
