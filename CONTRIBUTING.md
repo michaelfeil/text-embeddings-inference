@@ -104,8 +104,5 @@ happy to make the changes or help you make a contribution if you're interested!
 
 ## I want to become a maintainer of the project. How do I get there?
 
-infinity_v3 is a project led and managed by Hugging Face as it powers our internal services. However, we are happy to have
-motivated individuals from other organizations join us as maintainers with the goal of making infinity_v3 the best inference
-service for embedding models on production on production.
-
-If you are such an individual (or organization), please reach out to us and let's collaborate.
+infinity_v3 is a fork of Hugging Face's Text Embeddings Inference, maintained by this repository's maintainers.
+If you are interested in helping maintain the fork, open an issue in this repository to discuss how you would like to contribute.
