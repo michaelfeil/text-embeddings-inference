@@ -7,7 +7,7 @@ extern crate accelerate_src;
 extern crate intel_mkl_src;
 
 use candle::{Result, Tensor};
-use text_embeddings_backend_core::Batch;
+use infinity_v3_backend_core::Batch;
 
 mod bert;
 mod clef;
@@ -97,8 +97,8 @@ pub(crate) trait Model {
     fn decide(
         &self,
         _batch: Batch,
-        _inputs: Vec<text_embeddings_backend_core::DecisionInput>,
-    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>> {
+        _inputs: Vec<infinity_v3_backend_core::DecisionInput>,
+    ) -> Result<Vec<infinity_v3_backend_core::DecisionOutput>> {
         candle::bail!("Model does not support typed decisions")
     }
 

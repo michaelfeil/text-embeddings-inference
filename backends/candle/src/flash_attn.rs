@@ -46,7 +46,7 @@ pub(crate) fn flash_attn_varlen(
     window_size_right: Option<usize>,
 ) -> Result<Tensor, candle::Error> {
     if q.device().is_cpu() {
-        // TEI/GPU callers supply cumulative offsets; Candle's CPU API takes lengths.
+        // infinity_v3/GPU callers supply cumulative offsets; Candle's CPU API takes lengths.
         let lengths = |offsets: &Tensor| -> candle::Result<Tensor> {
             let offsets = offsets.to_vec1::<u32>()?;
             if offsets.first() != Some(&0) || offsets.len() < 2 {

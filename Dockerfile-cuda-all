@@ -83,21 +83,21 @@ COPY Cargo.lock ./
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    CUDA_COMPUTE_CAP=75 cargo build --release --bin text-embeddings-router -F candle-cuda-turing && sccache -s;
+    CUDA_COMPUTE_CAP=75 cargo build --release --bin infinity_v3 -F candle-cuda-turing && sccache -s;
 
-RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-75
-
-RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
-    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    CUDA_COMPUTE_CAP=80 cargo build --release --bin text-embeddings-router -F candle-cuda && sccache -s;
-
-RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-80
+RUN mv /usr/src/target/release/infinity_v3 /usr/src/target/release/infinity_v3-75
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    CUDA_COMPUTE_CAP=90 cargo build --release --bin text-embeddings-router -F candle-cuda,fa4,experimental-deberta,experimental-fp8 && sccache -s;
+    CUDA_COMPUTE_CAP=80 cargo build --release --bin infinity_v3 -F candle-cuda && sccache -s;
 
-RUN mv /usr/src/target/release/text-embeddings-router /usr/src/target/release/text-embeddings-router-90
+RUN mv /usr/src/target/release/infinity_v3 /usr/src/target/release/infinity_v3-80
+
+RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
+    --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
+    CUDA_COMPUTE_CAP=90 cargo build --release --bin infinity_v3 -F candle-cuda,fa4,experimental-deberta,experimental-fp8 && sccache -s;
+
+RUN mv /usr/src/target/release/infinity_v3 /usr/src/target/release/infinity_v3-90
 
 FROM nvidia/cuda:12.9.0-runtime-ubuntu22.04 AS base
 COPY --from=fa4-builder /opt/fa4 /opt/fa4
@@ -116,9 +116,9 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
     ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/src/target/release/text-embeddings-router-75 /usr/local/bin/text-embeddings-router-75
-COPY --from=builder /usr/src/target/release/text-embeddings-router-80 /usr/local/bin/text-embeddings-router-80
-COPY --from=builder /usr/src/target/release/text-embeddings-router-90 /usr/local/bin/text-embeddings-router-90
+COPY --from=builder /usr/src/target/release/infinity_v3-75 /usr/local/bin/infinity_v3-75
+COPY --from=builder /usr/src/target/release/infinity_v3-80 /usr/local/bin/infinity_v3-80
+COPY --from=builder /usr/src/target/release/infinity_v3-90 /usr/local/bin/infinity_v3-90
 
 COPY --chmod=775 cuda-all-entrypoint.sh entrypoint.sh
 

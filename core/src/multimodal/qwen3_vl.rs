@@ -10,8 +10,8 @@ use crate::{
     tokenization::EncodingInput,
     TextEmbeddingsError,
 };
+use infinity_v3_backend::{ImagePatches, MultimodalEncoding};
 use std::{path::Path, sync::Arc, time::Duration};
-use text_embeddings_backend::{ImagePatches, MultimodalEncoding};
 use tokenizers::{Tokenizer, TruncationDirection};
 use tokio::sync::{oneshot, Semaphore};
 

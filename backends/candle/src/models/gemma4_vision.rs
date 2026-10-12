@@ -4,9 +4,9 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::gemma4::{
     config::Gemma4VisionConfig, multimodal_embedding::MultimodalEmbedder, vision::VisionTower,
 };
+use infinity_v3_backend_core::Batch;
 use sha2::{Digest, Sha256};
 use std::{collections::VecDeque, sync::Mutex};
-use text_embeddings_backend_core::Batch;
 
 const FEATURE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const FEATURE_CACHE_ENTRIES: usize = 32;
@@ -45,7 +45,7 @@ impl FeatureCache {
     }
 }
 
-fn image_key(image: &text_embeddings_backend_core::ImagePatches) -> [u8; 32] {
+fn image_key(image: &infinity_v3_backend_core::ImagePatches) -> [u8; 32] {
     let mut hash = Sha256::new();
     for value in image
         .grid_thw
@@ -201,7 +201,7 @@ mod tests {
 
     #[test]
     fn feature_cache_tracks_content_and_evicts_old_entries() -> Result<()> {
-        let image = text_embeddings_backend_core::ImagePatches {
+        let image = infinity_v3_backend_core::ImagePatches {
             pixels: vec![0.; 12],
             grid_thw: [1, 2, 2],
             patch_dim: 3,

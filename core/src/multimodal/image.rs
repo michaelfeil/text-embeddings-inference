@@ -1,8 +1,8 @@
 //! Qwen image preprocessing matching the pinned Transformers Torchvision processor.
 use image::{DynamicImage, ImageDecoder, ImageReader};
+use infinity_v3_backend::ImagePatches;
 use serde::Deserialize;
 use std::{io::Cursor, path::Path};
-use text_embeddings_backend::ImagePatches;
 
 #[derive(Clone, Debug, Deserialize)]
 pub struct QwenImageProcessor {

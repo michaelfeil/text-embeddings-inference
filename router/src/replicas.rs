@@ -20,10 +20,10 @@ where
 pub(crate) fn resolve_devices(
     value: Option<&str>,
     device: Option<usize>,
-    kind: text_embeddings_backend::BackendKind,
-    torch: text_embeddings_backend::TorchDevice,
+    kind: infinity_v3_backend::BackendKind,
+    torch: infinity_v3_backend::TorchDevice,
 ) -> Result<Vec<usize>> {
-    use text_embeddings_backend::{BackendKind, TorchDevice};
+    use infinity_v3_backend::{BackendKind, TorchDevice};
     if kind == BackendKind::Libtorch && torch == TorchDevice::Cpu {
         ensure!(device.is_none_or(|id| id == 0), "CPU uses device index 0");
     }
@@ -96,7 +96,7 @@ mod tests {
             resolve_devices_with(None, None, false, || panic!("CPU must not query CUDA")).unwrap(),
             vec![0]
         );
-        use text_embeddings_backend::{BackendKind, TorchDevice};
+        use infinity_v3_backend::{BackendKind, TorchDevice};
         assert!(!BackendKind::Libtorch.supports_replication(TorchDevice::Cpu));
         assert!(BackendKind::Libtorch.supports_replication(TorchDevice::Cuda));
         assert_eq!(

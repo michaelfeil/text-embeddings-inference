@@ -18,12 +18,12 @@ rendered properly in your Markdown viewer.
 
 ## Set up
 
-The easiest way to get started with TEI is to use one of the official Docker containers
+The easiest way to get started with infinity_v3 is to build a Docker image from this fork
 (see [Supported models and hardware](supported_models) to choose the right container).
 
 Hence one needs to install Docker following their [installation instructions](https://docs.docker.com/get-docker/).
 
-TEI supports inference both on GPU and CPU. If you plan on using a GPU, make sure to check that your hardware is supported by checking [this table](https://github.com/huggingface/text-embeddings-inference?tab=readme-ov-file#docker-images).
+infinity_v3 supports inference both on GPU and CPU. If you plan on using a GPU, make sure to check that your hardware is supported by checking [this table](supported_models).
 Next, install the [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html). NVIDIA drivers on your device need to be compatible with CUDA version 12.2 or higher.
 
 ## Deploy
@@ -34,7 +34,10 @@ Next it's time to deploy your model. Let's say you want to use [`Qwen/Qwen3-Embe
 model=Qwen/Qwen3-Embedding-0.6B
 volume=$PWD/data
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+# Build once for your GPU; 80 is for A100.
+docker build -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=80 -t infinity_v3:latest .
+
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 <Tip>
@@ -49,7 +52,7 @@ Inference can be performed in 3 ways: using cURL, or via the `InferenceClient` o
 
 #### cURL
 
-To send a POST request to the TEI endpoint using cURL, you can run the following command:
+To send a POST request to the infinity_v3 endpoint using cURL, you can run the following command:
 
 ```bash
 curl 127.0.0.1:8080/embed \
@@ -77,7 +80,7 @@ print(len(embedding[0]))
 ```
 
 #### OpenAI
-To send requests to the [OpenAI Embeddings API](https://platform.openai.com/docs/api-reference/embeddings/create) exposed on Text Embeddings Inference (TEI) with the OpenAI Python SDK, you can install it as `pip install --upgrade openai`, and then run the following snippet:
+To send requests to the [OpenAI Embeddings API](https://platform.openai.com/docs/api-reference/embeddings/create) exposed on infinity_v3 with the OpenAI Python SDK, you can install it as `pip install --upgrade openai`, and then run the following snippet:
 
 ```python
 import os
@@ -86,7 +89,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8080/v1", api_key= "-")
 
 response = client.embeddings.create(
-    model="text-embeddings-inference",
+    model="infinity_v3",
     input="What is Deep Learning?",
 )
 
@@ -99,14 +102,14 @@ curl http://localhost:8080/v1/embeddings \
   -H "Content-Type: application/json" \
   -d '{
     "input": "What is Deep Learning?",
-    "model": "text-embeddings-inference",
+    "model": "infinity_v3",
     "encoding_format": "float"
   }'
 ```
 
 ## Re-rankers and sequence classification
 
-TEI also supports re-ranker and classic sequence classification models.
+infinity_v3 also supports re-ranker and classic sequence classification models.
 
 ### Re-rankers
 
@@ -120,7 +123,7 @@ Let's say you want to use [`BAAI/bge-reranker-large`](https://huggingface.co/BAA
 model=BAAI/bge-reranker-large
 volume=$PWD/data
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 Once you have deployed a model, you can use the `rerank` endpoint to rank the similarity between a query and a list of texts. With `cURL` this can be done like so:
@@ -140,7 +143,7 @@ You can also use classic Sequence Classification models like [`SamLowe/roberta-b
 model=SamLowe/roberta-base-go_emotions
 volume=$PWD/data
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 Once you have deployed the model you can use the `predict` endpoint to get the emotions most associated with an input:
@@ -174,7 +177,7 @@ curl 127.0.0.1:8080/predict \
 
 ## Air gapped deployment
 
-To deploy Text Embeddings Inference in an air-gapped environment, first download the weights and then mount them inside
+To deploy infinity_v3 in an air-gapped environment, first download the weights and then mount them inside
 the container using a volume.
 
 For example:
@@ -192,5 +195,5 @@ git clone https://huggingface.co/Alibaba-NLP/gte-base-en-v1.5
 volume=$PWD
 
 # Mount the models directory inside the container with a volume and set the model ID
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id /data/gte-base-en-v1.5
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id /data/gte-base-en-v1.5
 ```

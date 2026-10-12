@@ -1,5 +1,5 @@
 [package]
-name = "text-embeddings-backend-core"
+name = "infinity_v3-backend-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

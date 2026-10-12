@@ -14,13 +14,13 @@ rendered properly in your Markdown viewer.
 
 -->
 
-# Build a custom container for TEI
+# Build a custom container for infinity_v3
 
-You can build our own CPU or CUDA TEI container using Docker.  To build a CPU container, run the following command in the
+You can build our own CPU or CUDA infinity_v3 container using Docker.  To build a CPU container, run the following command in the
 directory containing your custom Dockerfile:
 
 ```shell
-docker build .
+docker build -t infinity_v3:cpu-latest .
 ```
 
 To build a CUDA container, it is essential to determine the compute capability (compute cap) of the GPU that will be
@@ -42,5 +42,5 @@ git submodule update --init
 
 runtime_compute_cap=80
 
-docker build . -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=$runtime_compute_cap
+docker build . -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=$runtime_compute_cap -t infinity_v3:latest
 ```

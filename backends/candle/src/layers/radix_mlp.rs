@@ -4,7 +4,7 @@
 
 use crate::layers::index_select::index_select;
 use candle::{Device, Result, Tensor};
-use text_embeddings_backend_core::Batch;
+use infinity_v3_backend_core::Batch;
 
 /// Helper struct to manage compact/unfold tensor operations for RadixMLP.
 #[allow(dead_code)]

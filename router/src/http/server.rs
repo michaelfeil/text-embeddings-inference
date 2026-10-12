@@ -29,17 +29,17 @@ use base64::Engine;
 use futures::future::join_all;
 use futures::FutureExt;
 use http::header::AUTHORIZATION;
+use infinity_v3_backend::BackendError;
+use infinity_v3_core::infer::{
+    AllEmbeddingsInferResponse, Infer, InferMetadata, PooledEmbeddingsInferResponse,
+};
+use infinity_v3_core::tokenization::{into_tokens, SimpleToken as CoreSimpleToken};
+use infinity_v3_core::TextEmbeddingsError;
 use metrics_exporter_prometheus::{PrometheusBuilder, PrometheusHandle};
 use simsimd::SpatialSimilarity;
 use std::net::SocketAddr;
 use std::sync::{atomic::AtomicUsize, Arc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use text_embeddings_backend::BackendError;
-use text_embeddings_core::infer::{
-    AllEmbeddingsInferResponse, Infer, InferMetadata, PooledEmbeddingsInferResponse,
-};
-use text_embeddings_core::tokenization::{into_tokens, SimpleToken as CoreSimpleToken};
-use text_embeddings_core::TextEmbeddingsError;
 use tokio::sync::OwnedSemaphorePermit;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::instrument;
@@ -47,10 +47,10 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
 
-///Text Embeddings Inference endpoint info
+///infinity_v3 endpoint info
 #[utoipa::path(
 get,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/info",
 responses((status = 200, description = "Served model info", body = Info))
 )]
@@ -61,7 +61,7 @@ async fn get_model_info(info: Extension<Info>) -> Json<Info> {
 
 #[utoipa::path(
 get,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/health",
 responses(
 (status = 200, description = "Everything is working fine"),
@@ -84,7 +84,7 @@ async fn health(infer: Extension<Infer>) -> Result<(), (StatusCode, Json<ErrorRe
 /// Deprecated: use /v1/classify. This route retains the legacy label/score response.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/predict",
 request_body = PredictRequest,
 responses(
@@ -326,7 +326,7 @@ async fn run_classification(
 }
 
 #[utoipa::path(
-    post, tag = "Text Embeddings Inference", path = "/v1/classify",
+    post, tag = "infinity_v3", path = "/v1/classify",
     request_body = ClassifyRequest,
     responses(
         (status = 200, description = "Classification probabilities and token usage", body = ClassifyResponse),
@@ -470,7 +470,7 @@ async fn deprecate_predict(mut response: axum::response::Response) -> axum::resp
 /// Get Token Predictions. Returns a 424 status code if the model is not a Sequence Classification model
 #[utoipa::path(
     post,
-    tag = "Text Embeddings Inference",
+    tag = "infinity_v3",
     path = "/predict_tokens",
     request_body = PredictTokensRequest,
     responses(
@@ -657,7 +657,7 @@ async fn predict_tokens(
 /// a single class.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/rerank",
 request_body = RerankRequest,
 responses(
@@ -862,7 +862,7 @@ async fn rerank(
 /// Get Sentence Similarity. Returns a 424 status code if the model is not an embedding model.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/similarity",
 request_body = SimilarityRequest,
 responses(
@@ -948,7 +948,7 @@ async fn similarity(
 /// Get Embeddings. Returns a 424 status code if the model is not an embedding model.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/embed",
 request_body = EmbedRequest,
 responses(
@@ -1132,7 +1132,7 @@ async fn embed(
 /// Get Sparse Embeddings. Returns a 424 status code if the model is not an embedding model with SPLADE pooling.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/embed_sparse",
 request_body = EmbedSparseRequest,
 responses(
@@ -1323,7 +1323,7 @@ async fn embed_sparse(
 /// Returns a 424 status code if the model is not an embedding model.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/embed_all",
 request_body = EmbedAllRequest,
 responses(
@@ -1503,7 +1503,7 @@ async fn embed_all(
 /// OpenAI compatible route. Returns a 424 status code if the model is not an embedding model.
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/v1/embeddings",
 request_body = OpenAICompatRequest,
 responses(
@@ -1722,7 +1722,7 @@ async fn openai_embed(
 /// Tokenize inputs
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/tokenize",
 request_body = TokenizeRequest,
 responses(
@@ -1828,7 +1828,7 @@ async fn tokenize(
 /// Decode input ids
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/decode",
 request_body = DecodeRequest,
 responses(
@@ -1903,7 +1903,7 @@ async fn decode(
 /// Generate embeddings from a Vertex request
 #[utoipa::path(
 post,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/vertex",
 request_body = VertexRequest,
 responses(
@@ -2011,7 +2011,7 @@ async fn vertex_compatibility(
 /// Prometheus metrics scrape endpoint
 #[utoipa::path(
 get,
-tag = "Text Embeddings Inference",
+tag = "infinity_v3",
 path = "/metrics",
 responses((status = 200, description = "Prometheus Metrics", body = String))
 )]
@@ -2042,17 +2042,17 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     components(
     schemas(
     super::systemone::SystemOneRequest,
-    text_embeddings_core::input::ModelInput,
-    text_embeddings_core::input::MessageInput,
-    text_embeddings_core::input::Message,
-    text_embeddings_core::input::MessageRole,
-    text_embeddings_core::input::MessageContent,
-    text_embeddings_core::input::ContentPart,
-    text_embeddings_core::input::ImageSource,
-    text_embeddings_core::input::ImageDetail,
-    text_embeddings_core::input::AudioSource,
-    text_embeddings_core::input::AudioFormat,
-    text_embeddings_core::input::VideoSource,
+    infinity_v3_core::input::ModelInput,
+    infinity_v3_core::input::MessageInput,
+    infinity_v3_core::input::Message,
+    infinity_v3_core::input::MessageRole,
+    infinity_v3_core::input::MessageContent,
+    infinity_v3_core::input::ContentPart,
+    infinity_v3_core::input::ImageSource,
+    infinity_v3_core::input::ImageDetail,
+    infinity_v3_core::input::AudioSource,
+    infinity_v3_core::input::AudioFormat,
+    infinity_v3_core::input::VideoSource,
     PredictInput,
     EmbeddingInput,
     Info,
@@ -2102,10 +2102,10 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     )
     ),
     tags(
-    (name = "Text Embeddings Inference", description = "Hugging Face Text Embeddings Inference API")
+    (name = "infinity_v3", description = "infinity_v3 API")
     ),
     info(
-    title = "Text Embeddings Inference",
+    title = "infinity_v3",
     license(
     name = "Apache 2.0",
     url = "https://www.apache.org/licenses/LICENSE-2.0"

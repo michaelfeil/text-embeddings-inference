@@ -1,37 +1,26 @@
 <div align="center">
 
-# Text Embeddings Inference
+# infinity_v3
 
-<a href="https://github.com/huggingface/text-embeddings-inference">
-  <img alt="GitHub Repo stars" src="https://img.shields.io/github/stars/huggingface/text-embeddings-inference?style=social">
-</a>
-<a href="https://huggingface.github.io/text-embeddings-inference">
+<a href="docs/openapi.json">
   <img alt="Swagger API documentation" src="https://img.shields.io/badge/API-Swagger-informational">
 </a>
 
 A blazing fast inference solution for text embeddings models.
 
-Benchmark for [BAAI/bge-base-en-v1.5](https://huggingface.co/BAAI/bge-base-en-v1.5) on an NVIDIA A10 with a sequence
-length of 512 tokens:
-
-<p>
-  <img src="assets/bs1-lat.png" width="400" />
-  <img src="assets/bs1-tp.png" width="400" />
-</p>
-<p>
-  <img src="assets/bs32-lat.png" width="400" />
-  <img src="assets/bs32-tp.png" width="400" />
-</p>
-
 </div>
 
-This repository is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
+`infinity_v3` is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
 
 Upstream code retains its Apache-2.0 license and notices; see [LICENSE](LICENSE).
 Relicensing status: TBD - fork of what was originally huggingface/text-embeddings-inference.
 No replacement license has been selected; this is a planning note. See
 [LICENSING.md](LICENSING.md), [NOTICE](NOTICE), and
 [third-party notices](THIRD_PARTY_NOTICES.md) for scope and attribution.
+
+The server command is `infinity_v3`; shared Rust packages use the `infinity_v3-`
+prefix. LibTorch keeps its existing package name, source imports, and native
+symbols. Existing `TEI_*` environment variables remain supported.
 
 ## Table of contents
 
@@ -56,9 +45,9 @@ This fork serves inference through HTTP using Candle by default, with an optiona
 backend, Intel IPEX/Gaudi images, and public gRPC API have been removed.
 OpenTelemetry export over OTLP/gRPC remains supported.
 
-Text Embeddings Inference (TEI) is a toolkit for deploying and serving open source text embeddings and sequence
-classification models. TEI enables high-performance extraction for the most popular models, including FlagEmbedding,
-Ember, GTE and E5. TEI implements many features such as:
+infinity_v3 is a toolkit for deploying and serving open source text embeddings and sequence
+classification models. infinity_v3 enables high-performance extraction for the most popular models, including FlagEmbedding,
+Ember, GTE and E5. infinity_v3 implements many features such as:
 
 * No model graph compilation step
 * Small docker images and fast boot times. Get ready for true serverless!
@@ -107,7 +96,7 @@ The effective worker count and queue capacity are reported by `/info`.
 
 #### Text Embeddings
 
-Text Embeddings Inference currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
+infinity_v3 currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
 model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, dense Gemma4 text models, and multimodal EmbeddingGemma 2.
 
 Below are some examples of the currently supported models:
@@ -139,7 +128,7 @@ To explore the list of best performing text embeddings models, visit the
 
 #### Sequence Classification and Re-Ranking
 
-Text Embeddings Inference currently supports CamemBERT, and XLM-RoBERTa Sequence Classification models with absolute positions.
+infinity_v3 currently supports CamemBERT, and XLM-RoBERTa Sequence Classification models with absolute positions.
 
 Below are some examples of the currently supported models:
 
@@ -153,11 +142,19 @@ Below are some examples of the currently supported models:
 
 ### Docker
 
+Build this fork before running it. The examples use a local `infinity_v3:latest`
+image; upstream TEI images do not contain this fork's changes. Set the compute
+capability for your GPU (80 below is for A100):
+
+```shell
+docker build -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=80 -t infinity_v3:latest .
+```
+
 ```shell
 model=Qwen/Qwen3-Embedding-0.6B
 volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 And then you can make requests like
@@ -176,10 +173,10 @@ NVIDIA drivers on your machine need to be compatible with CUDA version 12.2 or h
 To see all options to serve your models:
 
 ```console
-$ text-embeddings-router --help
+$ infinity_v3 --help
 Text Embedding Webserver
 
-Usage: text-embeddings-router [OPTIONS]
+Usage: infinity_v3 [OPTIONS]
 
 Options:
       --model-id <MODEL_ID>
@@ -242,7 +239,7 @@ Options:
 
           For `max_batch_tokens=1000`, you could fit `10` queries of `total_tokens=100` or a single query of `1000` tokens.
 
-          Overall this number should be the largest possible until the model is compute bound. Since the actual memory overhead depends on the model implementation, text-embeddings-inference cannot infer this number automatically.
+          Overall this number should be the largest possible until the model is compute bound. Since the actual memory overhead depends on the model implementation, infinity_v3 cannot infer this number automatically.
 
           [env: MAX_BATCH_TOKENS=]
           [default: 16384]
@@ -352,10 +349,10 @@ Options:
           [env: OTLP_ENDPOINT=]
 
       --otlp-service-name <OTLP_SERVICE_NAME>
-          The service name for opentelemetry. e.g. `text-embeddings-inference.server`
+          The service name for opentelemetry. e.g. `infinity_v3.server`
 
           [env: OTLP_SERVICE_NAME=]
-          [default: text-embeddings-inference.server]
+          [default: infinity_v3.server]
 
       --prometheus-port <PROMETHEUS_PORT>
           The Prometheus port to listen on
@@ -375,31 +372,33 @@ Options:
 
 ### Docker Images
 
-Text Embeddings Inference ships with multiple Docker images that you can use to target a specific backend:
+Use these local tags when building the corresponding Docker variants. These
+names are build examples, not a claim that images have been published. Use
+`Dockerfile` for CPU or `Dockerfile-cuda` with the appropriate
+`CUDA_COMPUTE_CAP` for GPU, and set `-t` to the tag below:
 
 | Architecture                        | Image                                                                   |
 |-------------------------------------|-------------------------------------------------------------------------|
-| CPU                                 | ghcr.io/huggingface/text-embeddings-inference:cpu-1.8                   |
+| CPU                                 | infinity_v3:cpu-latest                   |
 | Volta                               | NOT SUPPORTED                                                           |
-| Turing (T4, RTX 2000 series, ...)   | ghcr.io/huggingface/text-embeddings-inference:turing-1.8 (experimental) |
-| Ampere 80 (A100, A30)               | ghcr.io/huggingface/text-embeddings-inference:1.8                       |
-| Ampere 86 (A10, A40, ...)           | ghcr.io/huggingface/text-embeddings-inference:86-1.8                    |
-| Ada Lovelace (RTX 4000 series, ...) | ghcr.io/huggingface/text-embeddings-inference:89-1.8                    |
-| Hopper (H100)                       | ghcr.io/huggingface/text-embeddings-inference:hopper-1.8 (experimental) |
+| Turing (T4, RTX 2000 series, ...)   | infinity_v3:turing-latest (experimental) |
+| Ampere 80 (A100, A30)               | infinity_v3:latest                       |
+| Ampere 86 (A10, A40, ...)           | infinity_v3:86-latest                    |
+| Ada Lovelace (RTX 4000 series, ...) | infinity_v3:89-latest                    |
+| Hopper (H100)                       | infinity_v3:hopper-latest (experimental) |
 
 Turing uses packed FlashAttention v1 with float16. Models requiring sliding-window
 attention or ALiBi require FlashAttention v2 on Ampere or newer GPUs.
 
 ### API documentation
 
-You can consult the OpenAPI documentation of the `text-embeddings-inference` REST API using the `/docs` route.
-The Swagger UI is also available
-at: [https://huggingface.github.io/text-embeddings-inference](https://huggingface.github.io/text-embeddings-inference).
+You can consult the OpenAPI documentation of the `infinity_v3` REST API using the `/docs` route.
+A checked-in [OpenAPI specification](docs/openapi.json) and [Swagger UI](docs/index.html) are also included.
 
 ### Using a private or gated model
 
 You have the option to utilize the `HF_TOKEN` environment variable for configuring the token employed by
-`text-embeddings-inference`. This allows you to gain access to protected resources.
+`infinity_v3`. This allows you to gain access to protected resources.
 
 For example:
 
@@ -414,12 +413,12 @@ model=<your private model>
 volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 token=<your CLI READ token>
 
-docker run --gpus all -e HF_TOKEN=$token -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -e HF_TOKEN=$token -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 ### Air gapped deployment
 
-To deploy Text Embeddings Inference in an air-gapped environment, first download the weights and then mount them inside
+To deploy infinity_v3 in an air-gapped environment, first download the weights and then mount them inside
 the container using a volume.
 
 For example:
@@ -437,12 +436,12 @@ git clone https://huggingface.co/Qwen/Qwen3-Embedding-0.6B
 volume=$PWD
 
 # Mount the models directory inside the container with a volume and set the model ID
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id /data/Qwen3-Embedding-0.6B
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id /data/Qwen3-Embedding-0.6B
 ```
 
 ### Using Re-rankers models
 
-`text-embeddings-inference` v0.4.0 added support for CamemBERT, RoBERTa, XLM-RoBERTa, and GTE Sequence Classification models.
+Upstream TEI v0.4.0 added support for CamemBERT, RoBERTa, XLM-RoBERTa, and GTE Sequence Classification models.
 Re-rankers models are Sequence Classification cross-encoders models with a single class that scores the similarity
 between a query and a text.
 
@@ -454,7 +453,7 @@ downstream performance.
 model=BAAI/bge-reranker-large
 volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 And then you can rank the similarity between a query and a list of texts with:
@@ -474,7 +473,7 @@ You can also use classic Sequence Classification models like `SamLowe/roberta-ba
 model=SamLowe/roberta-base-go_emotions
 volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```
 
 Once you have deployed the model you can use the `predict` endpoint to get the emotions most associated with an input:
@@ -491,12 +490,12 @@ curl 127.0.0.1:8080/predict \
 Serve `convaiinnovations/laya-typed-decisions` with the Candle HTTP build:
 
 ```shell
-text-embeddings-router --model-id convaiinnovations/laya-typed-decisions
+infinity_v3 --model-id convaiinnovations/laya-typed-decisions
 ```
 
 For CPU inference, add `--dtype float32`.
 
-The existing API server exposes `POST /v1/systemone`. Questions use TEI's shared
+The existing API server exposes `POST /v1/systemone`. Questions use infinity_v3's shared
 batch queue, backend replicas, concurrency limits, authentication, and metrics.
 ModernBERT encodes the batch once; Laya's custom head scores each question's
 options. This is bidirectional inference; RadixMLP is disabled for this model.
@@ -628,7 +627,7 @@ Optional `model`, `user` and `rid` fields are accepted as metadata; the response
 identifies the deployed model and generates its own request ID. A batch of `rid`
 values must match the input batch length. Nonzero `priority` is rejected because
 priority scheduling is unsupported. `truncate` and `truncation_direction` are
-TEI extensions. Errors use an `object`, `message`, `type`, `param` and `code` envelope.
+infinity_v3 extensions. Errors use an `object`, `message`, `type`, `param` and `code` envelope.
 
 `/predict` is deprecated; new clients should use `/v1/classify`. It remains
 available with its existing text/pair/token-ID inputs, conversation objects and
@@ -677,7 +676,7 @@ nonzero segment IDs for prepared pairs need a future structured input format.
 With a Candle CUDA/FlashAttention build, serve `Qwen/Qwen3-VL-Embedding-2B`:
 
 ```shell
-text-embeddings-router --model-id Qwen/Qwen3-VL-Embedding-2B \
+infinity_v3 --model-id Qwen/Qwen3-VL-Embedding-2B \
   --dtype float16 --max-batch-tokens 8192 --auto-truncate \
   --image-allowed-hosts bucket.s3.us-east-1.amazonaws.com
 ```
@@ -708,7 +707,7 @@ Qwen3 embedding models retain their existing behavior and do not accept images.
 Use the existing `/v1/systemone` endpoint with a Candle CUDA/FlashAttention build:
 
 ```shell
-text-embeddings-router --model-id michaelfeil/rune-26b-a4b \
+infinity_v3 --model-id michaelfeil/rune-26b-a4b \
   --decision-protocol rune --dtype bfloat16 --radix-mlp-threshold 0.92
 ```
 
@@ -782,7 +781,7 @@ You can choose to activate SPLADE pooling for Bert and Distilbert MaskedLM archi
 model=naver/efficient-splade-VI-BT-large-query
 volume=$PWD/data # share a volume with the Docker container to avoid downloading weights every run
 
-docker run --gpus all -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model --pooling splade
+docker run --gpus all -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model --pooling splade
 ```
 
 Once you have deployed the model you can use the `/embed_sparse` endpoint to get the sparse embedding:
@@ -796,7 +795,7 @@ curl 127.0.0.1:8080/embed_sparse \
 
 ### Distributed Tracing
 
-`text-embeddings-inference` is instrumented with distributed tracing using OpenTelemetry. You can use this feature
+`infinity_v3` is instrumented with distributed tracing using OpenTelemetry. You can use this feature
 by setting the address to an OTLP collector with the `--otlp-endpoint` argument.
 
 ## Local install
@@ -813,7 +812,7 @@ bias-free projections and the standard head dimension. The CPU batch-size cap
 remains four sequences.
 
 
-You can also opt to install `text-embeddings-inference` locally.
+You can also opt to install `infinity_v3` locally.
 
 First [install Rust](https://rustup.rs/):
 
@@ -832,12 +831,12 @@ cargo install --path router -F mkl
 cargo install --path router -F metal
 ```
 
-You can now launch Text Embeddings Inference on CPU with:
+You can now launch infinity_v3 on CPU with:
 
 ```shell
 model=Qwen/Qwen3-Embedding-0.6B
 
-text-embeddings-router --model-id $model --port 8080
+infinity_v3 --model-id $model --port 8080
 ```
 
 **Note:** on some machines, you may also need the OpenSSL libraries and gcc. On Linux machines, run:
@@ -870,12 +869,12 @@ cargo install --path router -F candle-cuda-turing
 cargo install --path router -F candle-cuda
 ```
 
-You can now launch Text Embeddings Inference on GPU with:
+You can now launch infinity_v3 on GPU with:
 
 ```shell
 model=Qwen/Qwen3-Embedding-0.6B
 
-text-embeddings-router --model-id $model --port 8080
+infinity_v3 --model-id $model --port 8080
 ```
 
 ## Docker build
@@ -883,7 +882,7 @@ text-embeddings-router --model-id $model --port 8080
 You can build the CPU container with:
 
 ```shell
-docker build .
+docker build -t infinity_v3:cpu-latest .
 ```
 
 To build the CUDA containers, you need to know the compute cap of the GPU you will be using
@@ -910,7 +909,7 @@ runtime_compute_cap=89
 # Example for H100
 runtime_compute_cap=90
 
-docker build . -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=$runtime_compute_cap
+docker build . -f Dockerfile-cuda --build-arg CUDA_COMPUTE_CAP=$runtime_compute_cap -t infinity_v3:latest
 ```
 
 ### Apple M1/M2 arm64 architectures
@@ -922,10 +921,12 @@ supported via Docker. As such inference will be CPU bound and most likely pretty
 M1/M2 ARM CPU.
 
 ```
-docker build . -f Dockerfile --platform=linux/arm64
+docker build . -f Dockerfile --platform=linux/arm64 -t infinity_v3:cpu-latest
 ```
 
 ## Examples
+
+These upstream TEI examples may need adaptation for this fork:
 
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)
@@ -991,7 +992,7 @@ For text decisions, launch `perplexity-ai/pplx-decider-v1-27b` or
 The shorthand alias selects the v1.1 checkpoint and Pplx protocol automatically:
 
 ```bash
-text-embeddings-router --model-id pplx-decider-v1.1-27b --dtype bfloat16
+infinity_v3 --model-id pplx-decider-v1.1-27b --dtype bfloat16
 ```
 
 The Qwen3.5 Candle backbone loads the checkpoint's `readout.safetensors` and

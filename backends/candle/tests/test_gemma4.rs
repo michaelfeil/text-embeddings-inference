@@ -1,9 +1,9 @@
 #![cfg(feature = "flash-attn")]
 
 use anyhow::{Context, Result};
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{Backend, Batch, ModelType, Pool};
 use std::path::PathBuf;
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, Batch, ModelType, Pool};
 use tokenizers::Tokenizer;
 
 #[test]

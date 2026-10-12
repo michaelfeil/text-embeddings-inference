@@ -9,8 +9,8 @@ use crate::{
     TextEmbeddingsError,
 };
 use base64::{engine::general_purpose::STANDARD, Engine};
+use infinity_v3_backend::{AudioFeatures, ImagePatches, MultimodalEncoding};
 use std::{collections::HashMap, path::Path, process::Stdio, sync::Arc};
-use text_embeddings_backend::{AudioFeatures, ImagePatches, MultimodalEncoding};
 use tokenizers::{Tokenizer, TruncationDirection};
 use tokio::{
     io::AsyncReadExt,

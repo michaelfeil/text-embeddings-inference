@@ -1,12 +1,12 @@
 use anyhow::Result;
 use hf_hub::api::sync::{ApiBuilder, ApiError, ApiRepo};
 use hf_hub::{Repo, RepoType};
+use infinity_v3_backend_core::{Batch, Embedding, Embeddings};
 use insta::internals::YamlMatcher;
 use serde::{Deserialize, Serialize};
 use std::cmp::max;
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
-use text_embeddings_backend_core::{Batch, Embedding, Embeddings};
 use tokenizers::pre_tokenizers::metaspace::PrependScheme;
 use tokenizers::pre_tokenizers::sequence::Sequence;
 use tokenizers::{Encoding, PreTokenizerWrapper, Tokenizer};

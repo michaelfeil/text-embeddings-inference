@@ -1,7 +1,7 @@
 use crate::DecisionProtocol;
 use anyhow::Result;
+use infinity_v3_backend::Pool;
 use std::path::Path;
-use text_embeddings_backend::Pool;
 
 /// Resolve CLI shorthands before downloading model artifacts.
 pub(crate) fn resolve(

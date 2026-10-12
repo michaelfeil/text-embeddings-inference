@@ -17,7 +17,7 @@ Fixes # (issue)
 ## Before submitting
 
 - [ ] This PR fixes a typo or improves the docs (you can dismiss the other checks if that's the case).
-- [ ] Did you read the [contributor guideline](https://github.com/huggingface/text-embeddings-inference/blob/main/CONTRIBUTING.md)?
+- [ ] Did you read the [contributor guideline](https://github.com/michaelfeil/text-embeddings-inference/blob/main/CONTRIBUTING.md)?
 - [ ] Was this discussed/approved via a GitHub issue or the [forum](https://discuss.huggingface.co/)? Please add a link to it if that's the case.
 - [ ] Did you make sure to update the documentation with your changes? Here are the [documentation guidelines](https://github.com/huggingface/transformers/tree/main/docs).
 - [ ] Did you write any new necessary tests? If applicable, did you include or update the `insta` snapshots?

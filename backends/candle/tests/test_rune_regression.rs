@@ -1,13 +1,13 @@
 #![cfg(feature = "flash-attn")]
 use anyhow::{Context, Result};
 use candle::{DType, Device, IndexOp};
+use infinity_v3_backend_candle::CandleBackend;
 use serde_json::Value;
-use text_embeddings_backend_candle::CandleBackend;
 
-use std::{path::PathBuf, sync::Arc};
-use text_embeddings_backend_core::{
+use infinity_v3_backend_core::{
     Backend, Batch, DecisionInput, ImagePatches, ModelType, MultimodalEncoding,
 };
+use std::{path::PathBuf, sync::Arc};
 #[test]
 #[ignore = "requires Rune checkpoint, image fixtures, and CUDA"]
 fn rune_text_and_image_logits_are_identical_to_branch_head() -> anyhow::Result<()> {

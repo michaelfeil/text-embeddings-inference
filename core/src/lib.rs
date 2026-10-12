@@ -9,7 +9,7 @@ pub mod queue_actor;
 mod radix;
 pub mod tokenization;
 
-use text_embeddings_backend::BackendError;
+use infinity_v3_backend::BackendError;
 use thiserror::Error;
 use tokio::sync::TryAcquireError;
 

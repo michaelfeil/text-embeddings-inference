@@ -1,6 +1,6 @@
 //! Perplexity's calibrated 255-option readout on the shared decision queue.
 use super::*;
-use text_embeddings_core::{
+use infinity_v3_core::{
     chat::ChatProcessor,
     input::{ContentPart, MessageContent, MessageRole},
 };

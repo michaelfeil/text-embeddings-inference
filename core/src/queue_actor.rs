@@ -1,6 +1,7 @@
 use crate::infer::InferResult;
 use crate::log_response_dropped_after;
 use crate::tokenization::ValidEncoding;
+use infinity_v3_backend::{BackendError, Batch};
 use std::cmp::max;
 use std::collections::VecDeque;
 use std::sync::{
@@ -8,7 +9,6 @@ use std::sync::{
     Arc,
 };
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{BackendError, Batch};
 use tokio::sync::{mpsc, oneshot};
 use tracing::{instrument, Span};
 
@@ -49,7 +49,7 @@ pub struct Entry {
 /// Entry metadata
 #[derive(Debug)]
 pub struct Metadata {
-    pub decision: Option<text_embeddings_backend::DecisionInput>,
+    pub decision: Option<infinity_v3_backend::DecisionInput>,
     /// Shared HTTP-request identity and count of inputs still tokenizing.
     pub(crate) client_batch: Option<Arc<AtomicUsize>>,
     /// InferResponse sender to communicate between the Infer struct and the batching_task
@@ -702,11 +702,11 @@ mod tests {
             .collect();
         let permits = Arc::new(tokio::sync::Semaphore::new(2));
         let make_media = |value| {
-            Arc::new(text_embeddings_backend::MultimodalEncoding {
+            Arc::new(infinity_v3_backend::MultimodalEncoding {
                 audios: vec![],
                 images: vec![(
                     0,
-                    Arc::new(text_embeddings_backend::ImagePatches {
+                    Arc::new(infinity_v3_backend::ImagePatches {
                         pixels: vec![value],
                         grid_thw: [1, 1, 1],
                         patch_dim: 1,
@@ -774,7 +774,7 @@ mod tests {
                 prompt_tokens: i + 2,
                 pooling: false,
                 token_classification: false,
-                decision: Some(text_embeddings_backend::DecisionInput::Laya {
+                decision: Some(infinity_v3_backend::DecisionInput::Laya {
                     question_type: i * 2,
                     markers: if i == 0 { vec![0] } else { vec![1, 2] },
                 }),
@@ -798,7 +798,7 @@ mod tests {
         };
         let (metadata, batch) = prune_canceled_batch((metadata, batch)).unwrap();
         assert_eq!(metadata.len(), 1);
-        let text_embeddings_backend::DecisionInput::Laya {
+        let infinity_v3_backend::DecisionInput::Laya {
             question_type,
             markers,
         } = metadata[0].decision.as_ref().unwrap()

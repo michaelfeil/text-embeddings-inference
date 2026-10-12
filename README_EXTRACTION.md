@@ -7,7 +7,7 @@ This directory contains scripts to extract linear output projection layers from 
 1. **Modularity**: Dense modules can be used with any model architecture
 2. **Standardization**: Follows sentence-transformers ecosystem conventions
 3. **Flexibility**: Easy to swap projection layers without modifying model code
-4. **Compatibility**: Works with existing text-embeddings-inference dense_paths system
+4. **Compatibility**: Works with existing infinity_v3 dense_paths system
 
 ## Files
 
@@ -76,7 +76,7 @@ The extracted dense module will have a config like:
 Once extracted, the dense module integrates seamlessly:
 
 ```bash
-text-embeddings-inference --model-id ./voyage_dense
+infinity_v3 --model-id ./voyage_dense
 ```
 
 The system will automatically:
@@ -88,8 +88,8 @@ The system will automatically:
 ## Manual Loading Example
 
 ```python
-from text_embeddings_backend_candle import CandleBackend
-from text_embeddings_backend_core import ModelType, Pool
+from infinity_v3_backend_candle import CandleBackend
+from infinity_v3_backend_core import ModelType, Pool
 
 # The dense_paths will be auto-detected from modules.json
 backend = CandleBackend::new(

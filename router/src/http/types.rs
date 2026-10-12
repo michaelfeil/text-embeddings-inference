@@ -1,10 +1,10 @@
 use crate::ErrorType;
+use infinity_v3_core::input::{Message, MessageInput};
+use infinity_v3_core::tokenization::EncodingInput;
 use serde::de::{value::MapAccessDeserializer, MapAccess, SeqAccess, Visitor};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use serde_json::json;
 use std::fmt::Formatter;
-use text_embeddings_core::input::{Message, MessageInput};
-use text_embeddings_core::tokenization::EncodingInput;
 use utoipa::openapi::{RefOr, Schema};
 use utoipa::ToSchema;
 
@@ -32,7 +32,7 @@ impl Sequence {
                 .messages
                 .iter()
                 .map(|message| {
-                    use text_embeddings_core::input::{ContentPart, MessageContent};
+                    use infinity_v3_core::input::{ContentPart, MessageContent};
                     match &message.content {
                         MessageContent::Text(text) => text.chars().count(),
                         MessageContent::Parts(parts) => parts
@@ -504,7 +504,7 @@ pub(crate) struct Rank {
 #[derive(Serialize, ToSchema)]
 pub(crate) struct RerankResponse(pub Vec<Rank>);
 
-pub(crate) use text_embeddings_core::input::EmbeddingInput;
+pub(crate) use infinity_v3_core::input::EmbeddingInput;
 
 /// Internal batching shape. A conversation remains a single model input.
 pub(crate) enum InputBatch {

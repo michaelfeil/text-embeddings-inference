@@ -2,12 +2,12 @@ use crate::backend_pool::BackendPool;
 use crate::queue_actor::{prune_canceled_batch, Entry, Metadata, NextBatch, Queue};
 use crate::tokenization::{EncodingInput, RawEncoding, Tokenization};
 use crate::TextEmbeddingsError;
+use infinity_v3_backend::{Backend, BackendError, Embedding, ModelType};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
 };
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{Backend, BackendError, Embedding, ModelType};
 use tokenizers::TruncationDirection;
 use tokio::sync::{mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::instrument;
@@ -29,7 +29,7 @@ impl Infer {
     pub async fn decide(
         &self,
         encoding: crate::tokenization::ValidEncoding,
-        input: text_embeddings_backend::DecisionInput,
+        input: infinity_v3_backend::DecisionInput,
         tokenization: Duration,
         batch_counter: Arc<AtomicUsize>,
     ) -> Result<DecisionInferResponse, TextEmbeddingsError> {
@@ -729,7 +729,7 @@ impl Infer {
     pub fn is_splade(&self) -> bool {
         matches!(
             self.backend.model_type,
-            ModelType::Embedding(text_embeddings_backend::Pool::Splade)
+            ModelType::Embedding(infinity_v3_backend::Pool::Splade)
         )
     }
 
@@ -974,7 +974,7 @@ pub(crate) enum InferResult {
 
 #[derive(Debug)]
 pub struct DecisionInferResponse {
-    pub results: text_embeddings_backend::DecisionOutput,
+    pub results: infinity_v3_backend::DecisionOutput,
     pub metadata: InferMetadata,
 }
 

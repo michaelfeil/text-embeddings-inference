@@ -20,7 +20,7 @@ We are continually expanding our support for other model types and plan to inclu
 
 ## Supported embeddings models
 
-Text Embeddings Inference currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
+infinity_v3 currently supports Nomic, BERT, CamemBERT, XLM-RoBERTa models with absolute positions, JinaBERT
 model with Alibi positions and Mistral, Alibaba GTE, Qwen2 models with Rope positions, ModernBERT, Qwen3, Gemma3, and dense Gemma4 text models.
 
 Below are some examples of the currently supported models:
@@ -67,7 +67,7 @@ CPU, Metal, FP16, and classification execution are unsupported for this model.
 
 ## Supported re-rankers and sequence classification models
 
-Text Embeddings Inference supports encoder classification models and native
+infinity_v3 supports encoder classification models and native
 `LlamaForSequenceClassification`, `Qwen2ForSequenceClassification`,
 `Qwen3ForSequenceClassification` and `Qwen3MoeForSequenceClassification`
 checkpoints with a `score.weight` head.
@@ -75,7 +75,7 @@ Decoder classification selects the final non-padding token and reuses the
 existing batching and Radix execution paths.
 
 ```bash
-text-embeddings-router --model-id /path/to/qwen3-sequence-classifier --dtype float16
+infinity_v3 --model-id /path/to/qwen3-sequence-classifier --dtype float16
 ```
 
 ```bash
@@ -114,7 +114,7 @@ Below are some examples of the currently supported models:
 
 ## Supported hardware
 
-Text Embeddings Inference supports can be used on CPU, Turing (T4, RTX 2000 series, ...), Ampere 80 (A100, A30),
+infinity_v3 supports can be used on CPU, Turing (T4, RTX 2000 series, ...), Ampere 80 (A100, A30),
 Ampere 86 (A10, A40, ...), Ada Lovelace (RTX 4000 series, ...), Hopper (H100),
 and Blackwell SM120 (RTX Pro 6000 Blackwell, ...) architectures.
 
@@ -126,15 +126,18 @@ NVIDIA drivers with CUDA version 12.2 or higher.
 
 Find the appropriate Docker image for your hardware in the following table:
 
+The following are suggested local image tags. Build them from this fork using
+[custom containers](custom_container); they are not pre-published upstream images.
+
 | Architecture                        | Image                                                                    |
 |-------------------------------------|--------------------------------------------------------------------------|
-| CPU                                 | ghcr.io/huggingface/text-embeddings-inference:cpu-1.8                    |
+| CPU                                 | infinity_v3:cpu-latest                    |
 | Volta                               | NOT SUPPORTED                                                            |
-| Turing (T4, RTX 2000 series, ...)   | ghcr.io/huggingface/text-embeddings-inference:turing-1.8 (experimental)  |
-| Ampere 80 (A100, A30)               | ghcr.io/huggingface/text-embeddings-inference:1.8                        |
-| Ampere 86 (A10, A40, ...)           | ghcr.io/huggingface/text-embeddings-inference:86-1.8                     |
-| Ada Lovelace (RTX 4000 series, ...) | ghcr.io/huggingface/text-embeddings-inference:89-1.8                     |
-| Hopper (H100)                       | ghcr.io/huggingface/text-embeddings-inference:hopper-1.8 (experimental)  |
+| Turing (T4, RTX 2000 series, ...)   | infinity_v3:turing-latest (experimental)  |
+| Ampere 80 (A100, A30)               | infinity_v3:latest                        |
+| Ampere 86 (A10, A40, ...)           | infinity_v3:86-latest                     |
+| Ada Lovelace (RTX 4000 series, ...) | infinity_v3:89-latest                     |
+| Hopper (H100)                       | infinity_v3:hopper-latest (experimental)  |
 | Blackwell SM120 (RTX Pro 6000, ...) | Build `Dockerfile-cuda` with `--build-arg CUDA_COMPUTE_CAP=120` (`sm120-` image family) |
 
 Turing uses packed FlashAttention v1 with float16. ALiBi and sliding-window

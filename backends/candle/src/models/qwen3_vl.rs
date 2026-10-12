@@ -3,7 +3,7 @@ use crate::models::{FlashQwen3Model, Model, Qwen3Config};
 use candle::{DType, Device, Result, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3_vl::{config::VisionConfig, vision::Qwen3VLVisionModel};
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 
 pub struct Qwen3VlModel {
     text: FlashQwen3Model,

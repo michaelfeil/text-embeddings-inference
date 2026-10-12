@@ -12,7 +12,7 @@ BASE_URL = "http://localhost:8000"
 MODEL_NAME = "./bert-base-NER-uncased"
 
 print("=" * 80)
-print("Comparing TEI NER Implementation vs Hugging Face Transformers")
+print("Comparing infinity_v3 NER Implementation vs Hugging Face Transformers")
 print("=" * 80)
 print(f"Model: {MODEL_NAME}")
 
@@ -60,7 +60,7 @@ test_sentences = [
 
 
 def get_tei_predictions(sentence, strategy="max"):
-    """Get predictions from TEI implementation"""
+    """Get predictions from infinity_v3 implementation"""
     try:
         response = requests.post(
             f"{BASE_URL}/predict_tokens",
@@ -69,10 +69,10 @@ def get_tei_predictions(sentence, strategy="max"):
         if response.status_code == 200:
             return response.json()[0]
         else:
-            print(f"TEI Error: {response.status_code} - {response.text}")
+            print(f"infinity_v3 Error: {response.status_code} - {response.text}")
             return None
     except Exception as e:
-        print(f"TEI Request Error: {e}")
+        print(f"infinity_v3 Request Error: {e}")
         return None
 
 
@@ -90,9 +90,9 @@ def normalize_entities(entities):
     normalized = []
     for entity in entities:
         if isinstance(entity, dict):
-            # Handle TEI format
+            # Handle infinity_v3 format
             if "token" in entity and "results" in entity:
-                # TEI format
+                # infinity_v3 format
                 best_label = max(entity["results"].items(), key=lambda x: x[1])
                 normalized.append(
                     {
@@ -110,7 +110,7 @@ def normalize_entities(entities):
 
 
 def compare_entities(tei_entities, hf_entities, sentence):
-    """Compare entities between TEI and HF using position-based comparison"""
+    """Compare entities between infinity_v3 and HF using position-based comparison"""
 
     # Create position-based mappings
     tei_by_position = {}
@@ -168,14 +168,14 @@ def compare_entities(tei_entities, hf_entities, sentence):
                 )
             else:
                 matches.append(
-                    f"✗ [{start},{end}): '{actual_text}' - TEI={tei_label} vs HF={hf_label}"
+                    f"✗ [{start},{end}): '{actual_text}' - infinity_v3={tei_label} vs HF={hf_label}"
                 )
         elif tei_entity:
             start, end = pos
             actual_text = sentence[start:end]
             tei_label = get_entity_label(tei_entity)
             matches.append(
-                f"- [{start},{end}): '{actual_text}' - TEI only ({tei_label})"
+                f"- [{start},{end}): '{actual_text}' - infinity_v3 only ({tei_label})"
             )
         elif hf_entity:
             start, end = pos
@@ -195,7 +195,7 @@ def compare_entities(tei_entities, hf_entities, sentence):
 def get_entity_label(entity):
     """Extract entity label from different formats"""
     if "results" in entity:
-        # TEI format
+        # infinity_v3 format
         best_label = max(entity["results"].items(), key=lambda x: x[1])
         return best_label[0]
     elif "entity_group" in entity:
@@ -207,7 +207,7 @@ def get_entity_label(entity):
 def get_entity_score(entity):
     """Extract entity score from different formats"""
     if "results" in entity:
-        # TEI format
+        # infinity_v3 format
         best_label = max(entity["results"].items(), key=lambda x: x[1])
         return best_label[1]
     elif "score" in entity:
@@ -245,7 +245,7 @@ for strategy in strategies:
             comparison = compare_entities(tei_pred, hf_pred, sentence)
 
             print(
-                f"TEI entities: {comparison['total_te']}, HF entities: {comparison['total_hf']}"
+                f"infinity_v3 entities: {comparison['total_te']}, HF entities: {comparison['total_hf']}"
             )
             print(
                 f"Exact matches: {comparison['exact_matches']}, Partial: {comparison['partial_matches']}"
@@ -278,7 +278,7 @@ print(f"Model: {MODEL_NAME}")
 print(f"Device: {'CUDA' if torch.cuda.is_available() else 'CPU'}")
 
 print(
-    f"\n{'Strategy':<12} {'TEI Entities':<12} {'HF Entities':<12} {'Exact':<8} {'Partial':<8} {'Match Rate':<12}"
+    f"\n{'Strategy':<12} {'infinity_v3 Entities':<12} {'HF Entities':<12} {'Exact':<8} {'Partial':<8} {'Match Rate':<12}"
 )
 print("-" * 70)
 

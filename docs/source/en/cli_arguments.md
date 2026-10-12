@@ -19,10 +19,10 @@ rendered properly in your Markdown viewer.
 To see all options to serve your models, run the following:
 
 ```console
-$ text-embeddings-router --help
+$ infinity_v3 --help
 Text Embedding Webserver
 
-Usage: text-embeddings-router [OPTIONS]
+Usage: infinity_v3 [OPTIONS]
 
 Options:
       --model-id <MODEL_ID>
@@ -85,7 +85,7 @@ Options:
 
           For `max_batch_tokens=1000`, you could fit `10` queries of `total_tokens=100` or a single query of `1000` tokens.
 
-          Overall this number should be the largest possible until the model is compute bound. Since the actual memory overhead depends on the model implementation, text-embeddings-inference cannot infer this number automatically.
+          Overall this number should be the largest possible until the model is compute bound. Since the actual memory overhead depends on the model implementation, infinity_v3 cannot infer this number automatically.
 
           [env: MAX_BATCH_TOKENS=]
           [default: 16384]
@@ -187,10 +187,10 @@ Options:
           [env: OTLP_ENDPOINT=]
 
       --otlp-service-name <OTLP_SERVICE_NAME>
-          The service name for opentelemetry. e.g. `text-embeddings-inference.server`
+          The service name for opentelemetry. e.g. `infinity_v3.server`
 
           [env: OTLP_SERVICE_NAME=]
-          [default: text-embeddings-inference.server]
+          [default: infinity_v3.server]
 
       --prometheus-port <PROMETHEUS_PORT>
           The Prometheus port to listen on

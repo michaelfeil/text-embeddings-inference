@@ -689,7 +689,7 @@ fn encode_input(
 
 #[derive(Debug)]
 pub struct ValidEncoding {
-    pub multimodal: Option<Arc<text_embeddings_backend::MultimodalEncoding>>,
+    pub multimodal: Option<Arc<infinity_v3_backend::MultimodalEncoding>>,
     pub input_ids: Vec<u32>,
     pub token_type_ids: Vec<u32>,
     pub position_ids: Vec<u32>,

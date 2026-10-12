@@ -21,5 +21,5 @@ Use the Candle CPU backend for models with packed CPU support:
 
 ```shell
 cargo install --path router --no-default-features --features candle,http
-text-embeddings-router --model-id BAAI/bge-small-en-v1.5 --dtype float32
+infinity_v3 --model-id BAAI/bge-small-en-v1.5 --dtype float32
 ```

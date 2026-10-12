@@ -1,8 +1,8 @@
 {
   "openapi": "3.0.3",
   "info": {
-    "title": "Text Embeddings Inference",
-    "description": "Text Embedding Webserver",
+    "title": "infinity_v3",
+    "description": "infinity_v3 inference server",
     "contact": {
       "name": "Olivier Dehaene"
     },
@@ -16,7 +16,7 @@
     "/decode": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Decode input ids",
         "operationId": "decode",
@@ -109,7 +109,7 @@
     "/embed": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Get Embeddings. Returns a 424 status code if the model is not an embedding model.",
         "operationId": "embed",
@@ -240,7 +240,7 @@
     "/embed_all": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Get all Embeddings without Pooling.",
         "description": "Returns a 424 status code if the model is not an embedding model.",
@@ -372,7 +372,7 @@
     "/embed_sparse": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Get Sparse Embeddings. Returns a 424 status code if the model is not an embedding model with SPLADE pooling.",
         "operationId": "embed_sparse",
@@ -503,7 +503,7 @@
     "/health": {
       "get": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Health check method",
         "operationId": "health",
@@ -554,9 +554,9 @@
     "/info": {
       "get": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
-        "summary": "Text Embeddings Inference endpoint info",
+        "summary": "infinity_v3 endpoint info",
         "operationId": "get_model_info",
         "responses": {
           "200": {
@@ -580,7 +580,7 @@
     "/metrics": {
       "get": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Prometheus metrics scrape endpoint",
         "operationId": "metrics",
@@ -611,7 +611,7 @@
     "/predict": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Deprecated: use /v1/classify. This route retains the legacy label/score response.",
         "operationId": "predict",
@@ -743,7 +743,7 @@
     "/rerank": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Get Ranks. Returns a 424 status code if the model is not a Sequence Classification model with",
         "description": "a single class.",
@@ -875,7 +875,7 @@
     "/similarity": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Get Sentence Similarity. Returns a 424 status code if the model is not an embedding model.",
         "operationId": "similarity",
@@ -1006,7 +1006,7 @@
     "/tokenize": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "Tokenize inputs",
         "operationId": "tokenize",
@@ -1099,7 +1099,7 @@
     "/v1/embeddings": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "summary": "OpenAI compatible route. Returns a 424 status code if the model is not an embedding model.",
         "operationId": "openai_embed",
@@ -1230,7 +1230,7 @@
     "/v1/classify": {
       "post": {
         "tags": [
-          "Text Embeddings Inference"
+          "infinity_v3"
         ],
         "operationId": "classify",
         "requestBody": {
@@ -2787,8 +2787,8 @@
   },
   "tags": [
     {
-      "name": "Text Embeddings Inference",
-      "description": "Hugging Face Text Embeddings Inference API"
+      "name": "infinity_v3",
+      "description": "infinity_v3 API"
     }
   ]
 }

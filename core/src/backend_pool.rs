@@ -1,11 +1,11 @@
 //! Exclusive replica leases shared by inference and health calls.
 //! The pool contains no prepared-batch queue.
 //! All transitions use one short lock; model calls and queue operations run outside it.
+use infinity_v3_backend::{Backend, BackendError, Batch, Embeddings, ModelType, Submission};
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{Backend, BackendError, Batch, Embeddings, ModelType, Submission};
 use tokio::sync::watch;
 
 #[derive(Debug)]
@@ -254,8 +254,8 @@ impl Execution {
     pub async fn decide(
         self,
         batch: Batch,
-        inputs: Vec<text_embeddings_backend::DecisionInput>,
-    ) -> Result<(Vec<text_embeddings_backend::DecisionOutput>, Duration), BackendError> {
+        inputs: Vec<infinity_v3_backend::DecisionInput>,
+    ) -> Result<(Vec<infinity_v3_backend::DecisionOutput>, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend
@@ -269,7 +269,7 @@ impl Execution {
     pub async fn predict(
         self,
         batch: Batch,
-    ) -> Result<(text_embeddings_backend::Predictions, Duration), BackendError> {
+    ) -> Result<(infinity_v3_backend::Predictions, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend.submit_predict(batch).await
@@ -279,7 +279,7 @@ impl Execution {
     pub async fn predict_tokens(
         self,
         batch: Batch,
-    ) -> Result<(text_embeddings_backend::TokenPredictions, Duration), BackendError> {
+    ) -> Result<(infinity_v3_backend::TokenPredictions, Duration), BackendError> {
         let tokens = batch.input_ids.len();
         self.run(tokens, batch.len(), move |backend| async move {
             backend.submit_predict_tokens(batch).await

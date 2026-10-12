@@ -5,8 +5,8 @@ mod common;
 use crate::common::{sort_embeddings, SnapshotEmbeddings};
 use anyhow::Result;
 use common::{batch, cosine_matcher, download_artifacts, load_tokenizer};
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, ModelType, Pool};
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{Backend, ModelType, Pool};
 
 #[test]
 #[ignore = "requires CUDA and downloads the EmbeddingGemma checkpoint"]

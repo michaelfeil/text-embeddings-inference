@@ -21,7 +21,7 @@ resolver = "2"
 version = "1.8.18-rc.0"
 edition = "2021"
 authors = ["Olivier Dehaene", "Nicolas Patry", "Alvaro Bartolome"]
-homepage = "https://github.com/huggingface/text-embeddings-inference"
+homepage = "https://github.com/michaelfeil/text-embeddings-inference"
 
 [workspace.dependencies]
 anyhow = "1.0.75"

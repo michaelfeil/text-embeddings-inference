@@ -1,11 +1,11 @@
 //! Exact segmented prompt encoding for Cloudflare's joint schema head.
 use super::{Question, SystemOneRequest};
-use serde_json::{json, Map, Value};
-use text_embeddings_backend::{ClefField, DecisionInput, DecisionOutput};
-use text_embeddings_core::{
+use infinity_v3_backend::{ClefField, DecisionInput, DecisionOutput};
+use infinity_v3_core::{
     input::{ContentPart, MessageContent, MessageRole, ModelInput},
     tokenization::ValidEncoding,
 };
+use serde_json::{json, Map, Value};
 use tokenizers::Tokenizer;
 
 pub struct Clef {

@@ -57,7 +57,7 @@ FROM builder AS http-builder
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
-    cargo build --release --bin text-embeddings-router --features candle,mkl,static-linking,http --no-default-features && sccache -s
+    cargo build --release --bin infinity_v3 --features candle,mkl,static-linking,http --no-default-features && sccache -s
 
 FROM debian:bookworm-slim AS base
 
@@ -89,7 +89,7 @@ COPY --from=builder /usr/src/libfakeintel.so /usr/local/libfakeintel.so
 
 FROM base AS http
 
-COPY --from=http-builder /usr/src/target/release/text-embeddings-router /usr/local/bin/text-embeddings-router
+COPY --from=http-builder /usr/src/target/release/infinity_v3 /usr/local/bin/infinity_v3
 
-ENTRYPOINT ["text-embeddings-router"]
+ENTRYPOINT ["infinity_v3"]
 CMD ["--json-output"]

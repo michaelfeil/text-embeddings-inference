@@ -5,7 +5,7 @@
 // use insta::internals::YamlMatcher;
 // use serde::{Deserialize, Serialize};
 // use serde_json::json;
-// use text_embeddings_backend::DType;
+// use infinity_v3_backend::DType;
 //
 // #[derive(Serialize, Deserialize, Debug, PartialEq)]
 // pub struct SnapshotRank {

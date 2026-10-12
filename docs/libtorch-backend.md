@@ -1,7 +1,7 @@
 # Experimental native LibTorch backend
 
 LibTorch 2.14.1 runs alongside Candle as an optional inference runtime. Rust owns
-model configuration, checkpoint loading, batch validation and TEI integration;
+model configuration, checkpoint loading, batch validation and infinity_v3 integration;
 a small C ABI bridge runs the model with the PyTorch C++ tensor API. Python is
 not required at build time or inference time when using a standalone LibTorch
 distribution. There is no TorchScript export step.
@@ -10,7 +10,7 @@ distribution. There is no TorchScript export step.
 
 Token embeddings, projections, attention outputs and MLP activations use
 `[total_tokens, hidden_size]`, with Q/K/V shaped
-`[total_tokens, heads, head_dim]`. Sequence boundaries come directly from TEI's
+`[total_tokens, heads, head_dim]`. Sequence boundaries come directly from infinity_v3's
 cumulative lengths. No token padding is allocated. Relative position bias paths use attention bias at each sequence's actual length.
 
 On CUDA, attention calls `aten::_flash_attention_forward` with device-resident
@@ -77,16 +77,16 @@ export LIBTORCH=/opt/libtorch
 export LD_LIBRARY_PATH="$LIBTORCH/lib:${LD_LIBRARY_PATH:-}"
 
 # Compile both backends; Candle remains the default.
-cargo build --release -p text-embeddings-router --features libtorch
+cargo build --release -p infinity_v3-router --features libtorch
 
-target/release/text-embeddings-router \
+target/release/infinity_v3 \
   --backend libtorch --torch-device cuda --dtype float16 \
   --model-id /path/to/bert-model --pooling mean \
   --backend-device-ids 0,1
 ```
 
 An A10 uses the CUDA path. Each selected GPU loads a complete model and uses
-TEI's existing replica queue; this is data parallel serving. Use `--device-id 0`
+infinity_v3's existing replica queue; this is data parallel serving. Use `--device-id 0`
 for one GPU or omit device selection to use all visible CUDA devices.
 `CUDA_VISIBLE_DEVICES` controls visible ordinals. Auto chooses CUDA when a device
 is available, otherwise CPU. Other accelerator families are not implemented yet.

@@ -3,7 +3,7 @@ use super::qwen35_config::Qwen35TextConfig;
 use candle::{DType, Result, Tensor};
 use candle_nn::VarBuilder;
 use candle_transformers::models::qwen3_vl::{config::VisionConfig, vision::Qwen3VLVisionModel};
-use text_embeddings_backend_core::Batch;
+use infinity_v3_backend_core::Batch;
 
 pub(super) struct Qwen35Vision {
     tower: Qwen3VLVisionModel,
