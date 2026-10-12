@@ -29,7 +29,7 @@
     "FLASHATTENTION_DISABLE_BACKWARD",
     "FLASHATTENTION_DISABLE_SOFTCAP"
   ],
-  "private_compile_scope": "Forward inference only; zero dropout; no softcap. ALiBi is enabled only for the separate FP16 noncausal global head32 specialization. All specializations consume actual packed token rows without token padding. Per-specialization compile definitions and restrictions are recorded below.",
+  "private_compile_scope": "Forward inference only; zero dropout; no softcap. ALiBi is enabled for the separate FP16 noncausal global head32 specialization and the isolated JinaCode FP16/BF16 noncausal global head64 specialization. All specializations consume actual packed token rows without token padding. Per-specialization compile definitions and restrictions are recorded below.",
   "head512_specialization": {
     "traits": "Flash_fwd_kernel_traits<512,64,32,4,false,false,cutlass::bfloat16_t>",
     "dynamic_shared_memory_bytes": 131072,
@@ -58,6 +58,12 @@
       "FLASHATTENTION_DISABLE_BACKWARD",
       "FLASHATTENTION_DISABLE_SOFTCAP",
       "FLASHATTENTION_DISABLE_ALIBI"
+    ],
+    "head64_alibi": [
+      "FLASHATTENTION_DISABLE_DROPOUT",
+      "FLASHATTENTION_DISABLE_BACKWARD",
+      "FLASHATTENTION_DISABLE_SOFTCAP",
+      "FLASHATTENTION_DISABLE_UNEVEN_K"
     ]
   },
   "head32_specialization": {
@@ -74,6 +80,42 @@
     "architecture": "SM90 with at least 48 KiB optin shared memory",
     "dtype": "BF16",
     "mask": "noncausal global only",
+    "token_padding": false
+  },
+  "head64_alibi_specialization": {
+    "sources": [
+      "kernels/torch_flash_alibi64.cpp",
+      "kernels/torch_flash_alibi64.cu",
+      "kernels/torch_flash_alibi64.h"
+    ],
+    "adapter_source_sha256": {
+      "kernels/torch_flash_alibi64.cpp": "5016e68f1c098e16773d379efdfe913fbf511cd4fcfca3d5f1103520de40241d",
+      "kernels/torch_flash_alibi64.cu": "3997c0a137af36e2c35dd499cda88f1414cb874a8a77ac18e512ac62f24cb1b8",
+      "kernels/torch_flash_alibi64.h": "901fd35668f0f1a95130457e7df1c28622e087ff0564c6017a8a4e4ba2a3dfd3"
+    },
+    "namespace": "tei_torch_flash_alibi64",
+    "architecture": "SM80 or newer; build must include the target architecture",
+    "dtypes": [
+      "FP16",
+      "BF16"
+    ],
+    "head_dimension": 64,
+    "family": "JinaCode",
+    "mask": "noncausal global only",
+    "alibi": "one contiguous FP32 slope per head, original JinaCode slope order",
+    "compile_options": [
+      "--use_fast_math",
+      "--expt-relaxed-constexpr",
+      "--expt-extended-lambda"
+    ],
+    "compile_definitions": [
+      "FLASHATTENTION_DISABLE_DROPOUT",
+      "FLASHATTENTION_DISABLE_BACKWARD",
+      "FLASHATTENTION_DISABLE_SOFTCAP",
+      "FLASHATTENTION_DISABLE_UNEVEN_K"
+    ],
+    "source_macro_contract": "FLASH_NAMESPACE=tei_torch_flash_alibi64 in both adapters; UNFUSE_FMA and FLASHATTENTION_DISABLE_ALIBI undefined in the CUDA specialization",
+    "fallback": "unsupported family/geometry/dtype/architecture retains existing attention",
     "token_padding": false
   }
 }
