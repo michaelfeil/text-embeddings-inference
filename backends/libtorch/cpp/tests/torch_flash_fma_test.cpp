@@ -1,5 +1,6 @@
 // Independent exact-length reference for the private native Torch Flash adapter.
 #include "kernels/torch_flash_fma.h"
+#include "kernels/torch_flash_exact32.h"
 #include <ATen/Parallel.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/InferenceMode.h>
@@ -106,10 +107,12 @@ int main(int argc,char** argv) {
   media_spans(device);
   at::manual_seed(9917);at::set_num_threads(1);
   alibi32_spans(device);
-  for(auto dtype:{at::kHalf,at::kBFloat16})for(int64_t dim:{64,128,256})
+  for(auto dtype:{at::kHalf,at::kBFloat16})for(int64_t dim:{32,64,128,256})
   for(bool grouped:{false,true})for(bool causal:{false,true})for(int64_t window:{-1,2})
   for(auto lengths:{std::vector<int32_t>{3,13,7},std::vector<int32_t>{32,129,17}}) {
-    const int64_t heads=4,key_heads=grouped?2:4;
+    // Dedicated head32 profile keeps the generic adapter's guards unchanged.
+    if(dim==32 && (grouped || causal || window>=0 || at::cuda::getDeviceProperties(device.index())->major!=9))continue;
+    const int64_t heads=dim==32?12:4,key_heads=grouped?2:heads;
     std::vector<int32_t> offsets{0};int64_t total=0,max_sequence=0;
     for(auto n:lengths){total+=n;max_sequence=std::max<int64_t>(max_sequence,n);offsets.push_back(total);}
     auto options=at::TensorOptions().device(device).dtype(dtype);
@@ -118,7 +121,7 @@ int main(int argc,char** argv) {
     auto q=combined.narrow(1,0,heads),k=combined.narrow(1,heads,key_heads),v=combined.narrow(1,heads+key_heads,key_heads);
     auto cu=at::tensor(offsets,at::TensorOptions().dtype(at::kInt)).to(device);
     const double scale=1./std::sqrt(dim);
-    auto output=tei::torch_flash_fma(q,k,v,cu,max_sequence,scale,causal,window,window);
+    auto output=dim==32?tei::torch_flash_exact32(q,k,v,cu,max_sequence,scale):tei::torch_flash_fma(q,k,v,cu,max_sequence,scale,causal,window,window);
     TORCH_CHECK(at::isfinite(output).all().item<bool>(),"Nonfinite native Torch Flash output");
     double worst=0;
     for(size_t row=0;row+1<offsets.size();++row) {
@@ -136,7 +139,7 @@ int main(int argc,char** argv) {
     }
     TORCH_CHECK(worst<(dtype==at::kHalf?.004:.04),"Native Torch Flash reference mismatch: ",worst);
     auto changed=v.clone();changed.narrow(0,0,lengths[0]).add_(20);
-    auto isolated=tei::torch_flash_fma(q,k,changed,cu,max_sequence,scale,causal,window,window);
+    auto isolated=dim==32?tei::torch_flash_exact32(q,k,changed,cu,max_sequence,scale):tei::torch_flash_fma(q,k,changed,cu,max_sequence,scale,causal,window,window);
     TORCH_CHECK(at::isfinite(isolated).all().item<bool>() && at::equal(output.narrow(0,lengths[0],total-lengths[0]),isolated.narrow(0,lengths[0],total-lengths[0])),"Packed sequence isolation failed");
     std::cout<<"dtype="<<dtype<<" total="<<total<<" dim="<<dim<<" grouped="<<grouped<<" causal="<<causal<<" window="<<window<<" maxabs="<<worst<<'\n';
   }

@@ -29,6 +29,25 @@ int main(int argc,char** argv) {
       auto actual=tei::encoder_layer_norm_only(x,scale,1e-12,residual,bias,false);
       TORCH_CHECK((actual-reference).abs().max().item<float>()<=(dtype==at::kHalf?.003:.03125),"Width384 biased unrounded norm differs from independent FP32 reference");
     }
+    if(dtype==at::kHalf) {
+      // Both rounding boundaries matter: round word+type, retain FP32 position.
+      auto word=at::full({17,768},32,opts);
+      auto type=(at::arange(768,opts.dtype(at::kFloat)).remainder(3)*.016-.008).to(dtype).repeat({17,1});
+      auto position=(at::arange(768,opts.dtype(at::kFloat)).remainder(2)*.008-.004).to(dtype).repeat({17,1});
+      auto fused=tei::encoder_embedding_layer_norm(word,type,position,gamma,1e-5,beta);
+      auto separate=tei::encoder_layer_norm_only(word+type,gamma,1e-5,position,beta,false);
+      TORCH_CHECK(at::equal(fused,separate),"Three-input embedding norm changed sequential Half addition or norm arithmetic");
+      auto all_float=word.to(at::kFloat)+type.to(at::kFloat)+position.to(at::kFloat);
+      auto wrong_first=at::layer_norm(all_float,{768},gamma.to(at::kFloat),beta.to(at::kFloat),1e-5).to(dtype);
+      auto wrong_second=tei::encoder_layer_norm_only(word+type,gamma,1e-5,position,beta,true);
+      TORCH_CHECK((fused-wrong_first).abs().max().item<float>()>.1,"Embedding fixture does not discriminate missing first Half rounding");
+      TORCH_CHECK((fused-wrong_second).abs().max().item<float>()>.1,"Embedding fixture does not discriminate erroneous position rounding");
+      auto random_word=at::randn({17,768},opts),random_type=at::randn_like(random_word),random_position=at::randn_like(random_word);
+      auto random_gamma=at::randn({768},opts)*.1+1,random_beta=at::randn({768},opts)*.1;
+      auto actual=tei::encoder_embedding_layer_norm(random_word,random_type,random_position,random_gamma,1e-12,random_beta);
+      auto expected=tei::encoder_layer_norm_only(random_word+random_type,random_gamma,1e-12,random_position,random_beta,false);
+      TORCH_CHECK(at::equal(actual,expected),"Three-input embedding norm differs from original exact adapter");
+    }
     for(int64_t width:{8,32,40,256,384,768,1024,1152,1536,2048}) {
       auto options=at::TensorOptions().device(c10::Device(argc>1?argv[1]:"cuda:0")).dtype(dtype);
       auto x=at::randn({7,width},options),residual=at::randn_like(x);

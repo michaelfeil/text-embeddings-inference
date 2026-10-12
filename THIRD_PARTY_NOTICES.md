@@ -18,6 +18,11 @@ CUDA libraries, model weights, or container base images.
 | CUTLASS-derived Gemma4 and Nomic MoE kernels | [BSD-3-Clause text](backends/candle/extensions/candle-gemma4-moe/LICENSE.cutlass). |
 | ALiBi implementation | [Source notices](backends/candle/src/alibi.rs) for Google AI Language Team, Hugging Face, and Jina AI. |
 
+The native Torch [embedding normalization kernel](backends/libtorch/cpp/kernels/encoder_embedding_norm.cuh)
+derives from the bundled Candle layer-norm extension's
+`kernels/ln_fwd_kernels.cuh`. It retains the BSD-3-Clause copyright and license
+header; the extension's BSD license text is also installed with the native library.
+
 Basetenkenizer is a Cargo dependency rather than vendored source. Its published
 package carries Apache-2.0 licensing and additional component notices; consult
 its [license audit](https://github.com/basetenlabs/basetenkenizer/blob/main/THIRD_PARTY_LICENSES.md)
