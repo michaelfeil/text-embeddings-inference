@@ -324,6 +324,10 @@ struct Config {
     add_cross_attention: bool,
     #[serde(default)]
     position_embedding_type: Option<String>,
+    #[serde(default)]
+    relative_attention: bool,
+    #[serde(default)]
+    position_biased_input: Option<bool>,
 }
 
 pub struct LibtorchBackend {
@@ -571,6 +575,13 @@ impl LibtorchBackend {
                 .get("position_embedding_type")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned),
+            relative_attention: text
+                .get("relative_attention")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+            position_biased_input: text
+                .get("position_biased_input")
+                .and_then(serde_json::Value::as_bool),
         };
         if config.model_type == "bert"
             && ![
@@ -1072,12 +1083,19 @@ impl LibtorchBackend {
             .iter()
             .map(|&end| i32::try_from(end).map_err(inference))
             .collect::<Result<Vec<_>, _>>()?;
+        // Relative-only DeBERTa buckets long distances instead of indexing a
+        // learned absolute-position table. Keep that table bound for other models
+        // and for DeBERTa configurations that enable position-biased input.
+        let relative_positions = self.config.model_type == "deberta-v2"
+            && self.config.relative_attention
+            && self.config.position_biased_input == Some(false);
         if ids.iter().any(|&id| id >= self.config.vocab_size)
             || (self.config.type_vocab_size > 0
                 && types.iter().any(|&id| id >= self.config.type_vocab_size))
-            || positions
-                .iter()
-                .any(|&id| id >= self.config.max_position_embeddings)
+            || (!relative_positions
+                && positions
+                    .iter()
+                    .any(|&id| id >= self.config.max_position_embeddings))
         {
             return Err(inference(
                 "Token/type/position ID exceeds configured limits",
