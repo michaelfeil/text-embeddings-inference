@@ -90,6 +90,38 @@ int main(int argc, char** argv) {
   int32_t offsets[]={0,3,8}, short_offsets[]={0,3},long_offsets[]={0,5};
   auto ids=at::tensor({2,3,4,5,6,7,8,9},opts), types=at::zeros({8},opts), positions=at::tensor({0,1,2,0,1,2,3,4},opts);
   auto cu=at::tensor({0,3,8},opts.dtype(at::kInt));
+  if(device.is_cuda()) {
+    // Optional Distil segment tables must remain observable at the optimized
+    // Hopper geometry. Changing one request's types must not affect its peer.
+    constexpr int64_t width=768, inner=16;
+    auto o=config("distilbert");
+    o.values["dim"]=o.values["hidden_size"]="768";
+    o.values["n_heads"]=o.values["num_attention_heads"]="12";
+    o.values["n_layers"]=o.values["num_hidden_layers"]="1";
+    tei::Weights w;
+    add(w,"embeddings.word_embeddings.weight",{64,width},device,dtype);
+    add(w,"embeddings.position_embeddings.weight",{32,width},device,dtype);
+    add(w,"embeddings.token_type_embeddings.weight",{2,width},device,dtype);
+    auto wide_norm=[&](const std::string& n) {
+      add(w,n+".weight",{width},device,dtype,true);
+      add(w,n+".bias",{width},device,dtype);
+    };
+    wide_norm("embeddings.LayerNorm");
+    const std::string p="transformer.layer.0.";
+    for(auto q:{"q_lin","k_lin","v_lin","out_lin"})
+      linear(w,p+"attention."+q,width,width,device,dtype);
+    linear(w,p+"ffn.lin1",inner,width,device,dtype);
+    linear(w,p+"ffn.lin2",width,inner,device,dtype);
+    wide_norm(p+"sa_layer_norm");wide_norm(p+"output_layer_norm");
+    auto model=tei::create_encoder(o,w,device,dtype);model->ready();
+    auto baseline=model->forward({ids,types,positions,cu,offsets,2,5});
+    auto changed_types=types.clone();changed_types.narrow(0,0,3).fill_(1);
+    auto changed=model->forward({ids,changed_types,positions,cu,offsets,2,5});
+    TORCH_CHECK(!at::equal(baseline.narrow(0,0,3),changed.narrow(0,0,3)),
+      "Distil optional token-type embeddings were ignored");
+    TORCH_CHECK(at::equal(baseline.narrow(0,3,5),changed.narrow(0,3,5)),
+      "Distil token-type change contaminated another packed request");
+  }
   for(auto type:{"distilbert","modernbert","nomic_bert","new","jina","jina-code","mpnet"}) {
     auto o=config(type);auto w=weights(type,device,dtype);auto model=tei::create_encoder(o,w,device,dtype);model->ready();
     auto packed=model->forward({ids,types,positions,cu,offsets,2,5});

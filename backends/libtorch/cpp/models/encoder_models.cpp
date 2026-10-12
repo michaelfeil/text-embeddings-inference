@@ -2,6 +2,8 @@
 #include "models/encoder_models.h"
 #include "helpers/fp8_linear.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
+#include <ATen/cuda/CUDAContext.h>
+#include "kernels/distil_embedding.h"
 #include "kernels/fast_kernels.h"
 #include "kernels/qwen35_vision.h"
 #include "kernels/encoder_norm.h"
@@ -70,6 +72,7 @@ struct Encoder final : Model {
   }
   bool exact_alibi32 = false;
   bool exact_alibi64 = false;
+  bool exact_distil_flash = false;
   struct Layer {
     at::Tensor qkv_weight, qkv_bias;
     at::Tensor gate_weight, gate_bias;
@@ -214,6 +217,11 @@ struct Encoder final : Model {
     TORCH_CHECK(activation=="gelu"||activation=="gelu_new"||activation=="gelu_fast"||activation=="gelu_pytorch_tanh"||activation=="gelu_approx"||activation=="relu"||activation=="silu"||activation=="swiglu"||activation=="tanh", "Unsupported encoder activation: ",activation);
     TORCH_CHECK(device.is_cpu() || device.is_cuda(), "Packed encoders currently support CPU and CUDA");
     if (device.is_cuda()) TORCH_CHECK((dtype == at::kHalf || dtype == at::kBFloat16) && (hidden / heads) % 8 == 0 && hidden / heads <= 256, "CUDA varlen requires half/bfloat16 and head dimension divisible by eight, at most 256");
+#ifdef TEI_TORCH_CUDA_KERNELS
+    exact_distil_flash=family==Family::Distil && device.is_cuda() && dtype==at::kHalf
+      && hidden==768 && heads==12 && activation=="gelu"
+      && at::cuda::getDeviceProperties(device.index())->major==9;
+#endif
     if (family == Family::Distil) prefix = weights.count("distilbert.embeddings.word_embeddings.weight") ? "distilbert." : "";
     if (family == Family::Modern) prefix = weights.count("model.embeddings.tok_embeddings.weight") ? "model." : "";
     if (family == Family::Gte) prefix = weights.count("new.embeddings.word_embeddings.weight") ? "new." : "";
@@ -353,7 +361,7 @@ struct Encoder final : Model {
     if(exact_alibi32)
       return torch_flash_fma_alibi32(q,k,v,input.cumulative,*alibi,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))));
-    if((family==Family::Modern||family==Family::Nomic||family==Family::Gte||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
+    if((family==Family::Modern||family==Family::Nomic||family==Family::Gte||exact_moe||exact_distil_flash) && !bias && torch_flash_fma_supported(q,k,v))
       return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
 #endif
@@ -362,6 +370,11 @@ struct Encoder final : Model {
   at::Tensor forward(const PackedInput& input) const override {
     at::Tensor h, modern_residual;
     if (family == Family::Modern) h = norm(at::embedding(w("embeddings.tok_embeddings.weight"), input.ids), "embeddings.norm");
+#ifdef TEI_TORCH_CUDA_KERNELS
+    else if(exact_distil_flash && !has("embeddings.token_type_embeddings.weight")) h=distil_embedding_norm(w("embeddings.word_embeddings.weight"),
+      w("embeddings.position_embeddings.weight"),input.ids,input.positions,
+      w("embeddings.LayerNorm.weight"),w("embeddings.LayerNorm.bias"),eps);
+#endif
     else {
       h = at::embedding(w("embeddings.word_embeddings.weight"), input.ids);
       auto types = has("embeddings.token_type_embeddings.weight") ? at::embedding(w("embeddings.token_type_embeddings.weight"), input.types) : at::Tensor();
@@ -511,7 +524,10 @@ struct Encoder final : Model {
   }
   at::Tensor token_scores(const at::Tensor& h) const override {
     TORCH_CHECK(family == Family::Distil, "SPLADE is only supported for DistilBERT in this encoder family");
-    auto transformed = act(root_linear(h, "vocab_transform"));
+    auto transformed = h.is_cuda() && activation == "gelu"
+      ? at::_addmm_activation(weight(weights, "vocab_transform.bias"), h,
+          weight(weights, "vocab_transform.weight").t(), 1, 1, true)
+      : act(root_linear(h, "vocab_transform"));
     transformed = at::layer_norm(transformed, {hidden}, weight(weights, "vocab_layer_norm.weight"), weight(weights, "vocab_layer_norm.bias"), 1e-12);
     const auto projector = weights.find("vocab_projector.weight");
     const auto& matrix = projector == weights.end() ? w("embeddings.word_embeddings.weight") : projector->second;
