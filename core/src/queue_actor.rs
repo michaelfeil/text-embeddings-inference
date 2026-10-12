@@ -209,6 +209,9 @@ fn queue_blocking_task(
         .and_then(|s| s.parse().ok());
 
     let mut entries: VecDeque<Entry> = VecDeque::with_capacity(max_concurrent_requests);
+    // Canceled entries stay counted until removal. This may disable a soft
+    // dispatch cut, but never bypasses the hard token/request limits.
+    let mut queued_tokens = 0;
     // Reuse selection storage; outgoing batch vectors belong to the backend.
     let mut selected: Vec<Entry> = Vec::new();
     let allocate_token_buffers = || {
@@ -232,6 +235,7 @@ fn queue_blocking_task(
                     .response_tx
                     .send(Err(BackendError::Unhealthy));
             }
+            queued_tokens = 0;
             metrics::gauge!("te_queue_size").set(0.0);
             match cmd {
                 QueueCommand::Append(entry, _) => {
@@ -253,6 +257,7 @@ fn queue_blocking_task(
             QueueCommand::Close => {}
             QueueCommand::Append(entry, span) => {
                 let _span = span.entered();
+                queued_tokens += entry.encoding.input_ids.len();
                 entries.push_back(*entry);
                 let gauge = metrics::gauge!("te_queue_size");
                 gauge.increment(1.0);
@@ -262,13 +267,8 @@ fn queue_blocking_task(
                 span,
             } => {
                 let _span = span.entered();
-                // Snapshot live queued work once, including the batch being selected.
+                // Snapshot the target once, including the batch being selected.
                 // Draining a busy queue must not enable the cut midway through this batch.
-                let queued_tokens = entries
-                    .iter()
-                    .filter(|entry| !entry.metadata.response_tx.is_closed())
-                    .map(|entry| entry.encoding.input_ids.len())
-                    .sum();
                 let target = target_for_backlog(queued_tokens, early_dispatch_tokens, replicas);
 
                 let mut current_tokens = 0;
@@ -280,6 +280,7 @@ fn queue_blocking_task(
                     // Filter entries where the response receiver was dropped (== entries where the request
                     // was dropped by the client)
                     if entry.metadata.response_tx.is_closed() {
+                        queued_tokens -= entry.encoding.input_ids.len();
                         log_response_dropped_after("after tokenization / before batching");
                         continue;
                     }
@@ -327,6 +328,7 @@ fn queue_blocking_task(
                         break;
                     }
 
+                    queued_tokens -= entry_tokens;
                     current_tokens = total_tokens;
                     pooled_count += usize::from(entry.metadata.pooling);
                     token_count += entry.encoding.tokens.len();
@@ -560,17 +562,25 @@ pub(crate) fn prune_canceled_batch((metadata, batch): NextBatch) -> Option<NextB
 mod tests {
     use super::*;
     fn test_queue(max_tokens: usize) -> Queue {
+        test_queue_with_limits(max_tokens, None, None)
+    }
+
+    fn test_queue_with_limits(
+        max_tokens: usize,
+        max_requests: Option<usize>,
+        target: Option<usize>,
+    ) -> Queue {
         let (queue_sender, queue_receiver) = mpsc::channel(32);
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = closed.clone();
         std::thread::spawn(move || {
             queue_blocking_task(
                 max_tokens,
-                None,
+                max_requests,
                 0.0,
                 16,
                 queue_receiver,
-                None,
+                target,
                 1,
                 worker_closed,
             );
@@ -610,6 +620,68 @@ mod tests {
             },
             response_rx,
         )
+    }
+
+    #[tokio::test]
+    async fn backlog_accounting_preserves_hard_cuts_and_cancellation() {
+        let queue = test_queue_with_limits(15_000, None, Some(5_000));
+        let mut responses = Vec::new();
+        for value in 0..4 {
+            let (entry, response) = test_entry(vec![value; 5_000], true);
+            responses.push(response);
+            queue.append(entry).await;
+        }
+        // The original 20k backlog disables the soft target for the entire batch.
+        let (metadata, batch) = queue.next_batch().await.unwrap();
+        assert_eq!(metadata.len(), 3);
+        assert_eq!(batch.input_ids.len(), 15_000);
+        assert_eq!(queue.next_batch().await.unwrap().0.len(), 1);
+        assert!(queue.next_batch().await.is_none());
+
+        let (canceled, response) = test_entry(vec![9; 15_000], true);
+        drop(response);
+        queue.append(canceled).await;
+        let (live, response) = test_entry(vec![10; 5_000], true);
+        responses.push(response);
+        queue.append(live).await;
+        let (live, response) = test_entry(vec![10; 5_000], true);
+        responses.push(response);
+        queue.append(live).await;
+        // The canceled input conservatively disables only this soft cut.
+        assert_eq!(queue.next_batch().await.unwrap().0.len(), 2);
+        assert!(queue.next_batch().await.is_none());
+        // Neither a hard-cut front entry nor a canceled entry leaves a stale charge.
+        for value in 11..14 {
+            let (entry, response) = test_entry(vec![value; 5_000], true);
+            responses.push(response);
+            queue.append(entry).await;
+        }
+        for value in 11..14 {
+            let (metadata, batch) = queue.next_batch().await.unwrap();
+            assert_eq!(metadata.len(), 1);
+            assert_eq!(batch.input_ids, vec![value; 5_000]);
+        }
+        assert!(queue.next_batch().await.is_none());
+        queue.close();
+    }
+
+    #[tokio::test]
+    async fn request_limit_keeps_remaining_tokens_in_the_snapshot() {
+        let queue = test_queue_with_limits(32_000, Some(2), Some(5_000));
+        let mut responses = Vec::new();
+        for value in 0..6 {
+            let (entry, response) = test_entry(vec![value; 5_000], true);
+            responses.push(response);
+            queue.append(entry).await;
+        }
+        assert_eq!(queue.next_batch().await.unwrap().0.len(), 2);
+        // Twenty thousand tokens remain, so the next selection still bypasses
+        // the soft target while respecting the two-request hard limit.
+        assert_eq!(queue.next_batch().await.unwrap().0.len(), 2);
+        assert_eq!(queue.next_batch().await.unwrap().0.len(), 1);
+        assert_eq!(queue.next_batch().await.unwrap().0.len(), 1);
+        assert!(queue.next_batch().await.is_none());
+        queue.close();
     }
 
     #[tokio::test]
