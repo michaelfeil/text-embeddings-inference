@@ -7,8 +7,8 @@
       "name": "Olivier Dehaene"
     },
     "license": {
-      "name": "Apache 2.0",
-      "url": "https://www.apache.org/licenses/LICENSE-2.0"
+      "name": "INFOIL 1.0 (see scope and retained third-party licenses)",
+      "url": "https://github.com/michaelfeil/text-embeddings-inference/blob/infinity_v3-infoil-1.0/LICENSE"
     },
     "version": "1.8.3"
   },

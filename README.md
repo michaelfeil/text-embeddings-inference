@@ -12,11 +12,15 @@ A blazing fast inference solution for text embeddings models.
 
 `infinity_v3` is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
 
-Upstream code retains its Apache-2.0 license and notices; see [LICENSE](LICENSE).
-Relicensing status: TBD - fork of what was originally huggingface/text-embeddings-inference.
-No replacement license has been selected; this is a planning note. See
-[LICENSING.md](LICENSING.md), [NOTICE](NOTICE), and
-[third-party notices](THIRD_PARTY_NOTICES.md) for scope and attribution.
+This fork adopts **INFOIL 1.0**, a source-available license with commercial
+inference-provider and infrastructure restrictions, including private
+single-customer endpoints and GPU-hour billing. Baseten deployments are
+expressly permitted under Section 4. See the [adoption notice and full terms](LICENSE)
+and [licensing examples](LICENSING.md).
+
+Existing Apache-2.0 grants and third-party licenses remain in effect for the
+material they cover. Retained attribution is in [NOTICE](NOTICE) and
+[third-party notices](THIRD_PARTY_NOTICES.md).
 
 The server command is `infinity_v3`; shared Rust packages use the `infinity_v3-`
 prefix. LibTorch keeps its existing package name, source imports, and native

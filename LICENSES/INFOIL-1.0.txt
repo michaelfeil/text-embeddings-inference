@@ -1,10 +1,8 @@
 INFINITY OPTIMIZED INFERENCE LICENSE
-INFOIL 1.0 -- DRAFT
+INFOIL 1.0
 
-DRAFT STATUS: These are proposed terms. Inclusion of this draft in a
-repository does not apply it to that repository, change an existing license,
-or establish a relicensing date. An authorized Adoption Notice, as defined
-below, is required to apply an adopted version of these terms to Software.
+Application of this License is defined by the applicable Adoption Notice.
+The adoption notice for infinity_v3 appears at the start of its root LICENSE.
 
 1. SCOPE AND DEFINITIONS
 
@@ -12,8 +10,8 @@ below, is required to apply an adopted version of these terms to Software.
 authorized representative identifying: the Licensor; the code and rights
 offered under INFOIL; the applicable license version; the first covered
 release or full commit identifier and effective date; and any exclusions or
-separately licensed material. A proposal, roadmap, or copy of this draft is
-not an Adoption Notice.
+separately licensed material. A proposal, roadmap, or copy of license terms without an express
+adoption notice is not an Adoption Notice.
 
 1.2 Licensor means the person or legal entity identified in the Adoption
 Notice that owns, or is authorized to license, the applicable rights.
@@ -327,4 +325,4 @@ provisions continue to the extent they can operate independently. A delay
 in enforcing a term does not alone waive it. Nothing here excludes rights
 that applicable law makes nonwaivable.
 
-END OF PROPOSED INFOIL 1.0 TERMS
+END OF INFOIL 1.0 TERMS

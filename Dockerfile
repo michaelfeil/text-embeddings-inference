@@ -1,3 +1,4 @@
+# Modified by Infinity Core Contributors: package license adoption and retained notices.
 FROM lukemathwalker/cargo-chef:latest-rust-1.85-bookworm AS chef
 WORKDIR /usr/src
 COPY rust-toolchain.toml rust-toolchain.toml
@@ -17,6 +18,7 @@ COPY core core
 COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
+COPY LICENSE ./
 
 RUN cargo chef prepare  --recipe-path recipe.json
 
@@ -42,6 +44,7 @@ RUN echo "int mkl_serv_intel_cpu_true() {return 1;}" > fakeintel.c && \
     gcc -shared -fPIC -o libfakeintel.so fakeintel.c
 
 COPY --from=planner /usr/src/recipe.json recipe.json
+COPY LICENSE ./
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
@@ -52,6 +55,11 @@ COPY core core
 COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
+COPY LICENSE ./
+COPY NOTICE LICENSING.md THIRD_PARTY_NOTICES.md ./
+COPY LICENSES LICENSES
+COPY scripts/collect-license-notices.sh scripts/collect-license-notices.sh
+RUN sh scripts/collect-license-notices.sh /usr/src/distribution-licenses
 
 FROM builder AS http-builder
 
@@ -90,6 +98,8 @@ COPY --from=builder /usr/src/libfakeintel.so /usr/local/libfakeintel.so
 FROM base AS http
 
 COPY --from=http-builder /usr/src/target/release/infinity_v3 /usr/local/bin/infinity_v3
+
+COPY --from=builder /usr/src/distribution-licenses/ /usr/share/licenses/infinity_v3/
 
 ENTRYPOINT ["infinity_v3"]
 CMD ["--json-output"]

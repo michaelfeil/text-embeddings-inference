@@ -17,7 +17,10 @@ set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 target_link_libraries(tei_torch PRIVATE "${TORCH_LIBRARIES}")
 set_target_properties(tei_torch PROPERTIES INSTALL_RPATH "${TORCH_INSTALL_PREFIX}/lib;$ORIGIN")
 install(TARGETS tei_torch LIBRARY DESTINATION lib RUNTIME DESTINATION bin)
-install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_torch)
+# Fork license adoption by Infinity Core Contributors; retain native component notices.
+install(FILES ../../../LICENSE ../../../NOTICE ../../../LICENSING.md
+  ../../../THIRD_PARTY_NOTICES.md DESTINATION share/licenses/tei_torch)
+install(DIRECTORY ../../../LICENSES/ DESTINATION share/licenses/tei_torch/LICENSES)
 
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)

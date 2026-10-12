@@ -1,50 +1,58 @@
-# Licensing and proposed relicensing
+# infinity_v3 licensing
 
-This project is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
-The upstream Apache-2.0 license remains in [LICENSE](LICENSE); a copy is also
-available at [LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt). Existing copyright
-and attribution notices remain in the source files and documentation.
+This fork adopts [INFOIL 1.0](LICENSES/INFOIL-1.0.txt). The authoritative
+[Adoption Notice and complete license bundle](LICENSE) identify the scope,
+licensors, effective date, and retained independent licenses. INFOIL is a
+custom source-available license with use restrictions; it is not an
+unrestricted open-source license.
 
-No replacement license has been selected. “TBD - fork of what was originally
-huggingface/text-embeddings-inference” records a pending decision about fork
-modifications; it is not license text and does not amend existing license grants.
-Third-party components retain their own terms, indexed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+## Adoption and existing rights
 
-## INFOIL proposal (not adopted)
+- **Licensor:** Infinity Core Contributors, meaning each copyright holder or
+  authorized licensor for their own contributions, identified by source
+  notices and contribution records. This collective label does not assign
+  copyright, create a legal entity, or authorize relicensing others' work.
+- **Effective date:** 2026-10-12.
+- **First covered source release:** `infinity_v3-infoil-1.0`, identified by
+  the Git tag of the same name. This marks the license transition, not a
+  public Docker release.
+- **Pre-adoption base:** `9486dd9ee89575442fda1a491c381046b37e116e`.
 
-The proposed [Infinity Optimized Inference License, INFOIL 1.0](LICENSES/INFOIL-1.0-DRAFT.txt)
-is available for review. It is a custom source-available proposal, not an
-open-source license. Adding this draft does not adopt it, change `LICENSE`,
-or restrict any rights already granted under Apache-2.0 or another license.
+INFOIL covers the original fork contributions and copyrightable modifications
+first offered under this adoption, and subsequent contributions accepted on
+that basis, within the scope in `LICENSE`. It also governs the contributors'
+covered rights in the derivative distribution as a whole. It does not
+revoke rights already granted for inherited or previously published code.
+Earlier Apache-covered source can still be used and redistributed under its
+existing grant, including by people who obtain a copy after this transition.
 
-The draft covers commercial inference providers and deployments on their
-capacity, including Fireworks AI, Modal, Together AI, CoreWeave, and Nebius.
+Hugging Face Text Embeddings Inference retains Apache-2.0. The complete prior
+root license and upstream attribution remain in the root `LICENSE` bundle;
+[LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt) remains unchanged.
+Bundled components keep their own terms and source notices, indexed in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Naming a permitted operator
+or a maintainer does not establish ownership of those components.
+
+## Provider restrictions and the Baseten exception
+
+Commercial inference providers and deployments on their capacity are
+restricted, including Fireworks AI, Modal, Together AI, CoreWeave, and Nebius.
 The general definition is broader than those names: helping even one paying
 customer stand up an inference endpoint on supplied capacity qualifies,
-including when billing is for GPU hours rather than tokens. The restriction
-also covers internal, research, testing, and free deployments on restricted
-capacity. It does not depend on requests arriving through OpenRouter.
+including when billing is for GPU hours rather than tokens. Internal,
+research, testing, and free deployments on restricted capacity are also
+covered. Routing through OpenRouter or another intermediary does not avoid
+the restrictions. See INFOIL Sections 1 and 3 for the full definitions.
 
-Baseten deployments are expressly permitted, including infrastructure Baseten
-leases from other providers while actually operating the model-serving
+Section 4 expressly permits Baseten-operated deployments, including capacity
+Baseten leases from other providers while actually operating the serving
 deployment. A customer that is itself an inference provider may use that
-exception within a Baseten deployment. An endpoint operated independently
+exception within a Baseten deployment. An independently operated endpoint
 elsewhere does not qualify merely because traffic or billing passes through
-Baseten. Naming Baseten as a permitted operator does not identify it as the
-copyright owner or Licensor.
+Baseten. This exception does not name Baseten as the owner or Licensor of
+other contributors' work.
 
-Distributing covered modifications would require retaining INFOIL and giving
-recipients the corresponding source. Private modifications and network use
-alone would not trigger publication. Existing Apache and other third-party
-rights remain independently available. There is no blanket contributor
-relicensing grant; separate commercial exceptions require authority over
-the affected rights.
-
-Examples below describe the proposed terms only. They do not change the
-license of the current repository.
-
-| Scenario | Proposed INFOIL treatment |
+| Scenario | INFOIL treatment |
 | --- | --- |
 | Internal application on company-owned hardware, where the company is not an inference provider | Permitted. |
 | Commercial application on unrestricted capacity that does not expose a general-purpose inference or model-deployment service | Permitted. |
@@ -58,49 +66,43 @@ license of the current repository.
 | An allowed application calls an unrelated external inference API | That call alone does not make its execution infrastructure restricted. |
 | A recipient uses or redistributes an earlier Apache-licensed version | Governed by the earlier grant, which INFOIL does not revoke. |
 
-Adoption remains a separate change. Its notice must identify the authorized
-Licensor, covered code and rights, first covered full commit or release,
-effective date, and third-party or previously licensed exclusions. None of
-those adoption facts is established merely by publishing this proposal.
+## Contributions and redistribution
 
-Drafting references: [historical HFOIL 1.0](https://github.com/huggingface/text-generation-inference/blob/v1.0.0/LICENSE),
-[Apache-2.0 sections 2 and 4](https://www.apache.org/licenses/LICENSE-2.0), and
-[Baseten's published legal name](https://www.baseten.co/terms-and-conditions/).
-The INFOIL draft uses its own definitions and terms; it is not a claim of
-endorsement by Hugging Face, Baseten, or any named provider.
+New covered contributions are offered under INFOIL 1.0 unless different terms
+are expressly agreed before inclusion. Contributors retain ownership.
+There is no blanket grant to relicense their work or issue commercial
+exceptions on their behalf; a separate agreement must come from parties
+holding the needed rights. The Baseten exception is part of INFOIL itself.
 
-## File structure
+Redistributed covered modifications must retain this version of INFOIL and
+include corresponding source, as specified in Section 5. Private
+modifications and network use alone do not require publication. Preserve
+all inherited notices, prominently identify modified files, and distinguish
+new INFOIL-covered modifications from independently licensed material.
+
+The root `LICENSE` contains the Adoption Notice and full INFOIL and retained
+Apache texts so packages and native library installations carry the actual
+terms rather than only links. First-party workspace packages reference this
+bundle through `license-file`; independently licensed extension crates keep
+their own declarations.
+
+Docker builds install that bundle, the licensing notes, and bundled license
+files at `/usr/share/licenses/infinity_v3/`. The collection is not a complete
+audit of transitive dependencies, model weights, CUDA libraries, or base
+images; distributors must retain the additional notices their artifacts
+require. LibTorch's existing native notices remain installed with its library.
+
+## License files
 
 | File | Purpose |
 | --- | --- |
-| `LICENSE` | Current upstream license; if new terms are adopted, clearly explain their scope here and include or reference their full text. |
-| `LICENSES/Apache-2.0.txt` | Retained copy of the upstream license. |
-| `LICENSES/INFOIL-1.0-DRAFT.txt` | Proposed INFOIL terms; not an effective license change. |
-| `NOTICE` | Attribution for the upstream project and the fork. |
-| `THIRD_PARTY_NOTICES.md` | Index of bundled component notices and dependency audit scope. |
-| `README.md` | User-facing origin acknowledgment and license summary. |
+| `LICENSE` | Adoption Notice, scope and exclusions, complete INFOIL terms, and retained original Apache license. |
+| `LICENSES/INFOIL-1.0.txt` | INFOIL 1.0 terms. |
+| `LICENSES/Apache-2.0.txt` | Retained upstream license copy. |
+| `NOTICE` | Upstream and fork attribution; does not amend license grants. |
+| `THIRD_PARTY_NOTICES.md` | Bundled component notice index and dependency-audit scope. |
 
-## Before adopting new terms
-
-1. Identify the copyright holders and existing license grants for fork
-   contributions. Obtain authorization where the proposed change requires it;
-   do not assume every contribution is owned by the fork maintainer.
-2. Choose the actual license and specify whether it covers fork modifications
-   or the derivative distribution as a whole. Review compatibility with the
-   inherited code and the dependencies included in each release artifact.
-3. Put the full chosen terms in the repository, define their scope in `LICENSE`,
-   and update the README, package metadata, and API metadata consistently.
-   Do not replace inherited file notices or label third-party code as owned by
-   the fork. Modified upstream files need prominent notices of modification.
-4. Include applicable license texts and attribution notices in source archives,
-   binary releases, and container images. Audit each artifact's included
-   dependencies; the current third-party index is not a complete inventory of
-   transitive dependencies or container contents.
-5. Record the effective release or commit for the new terms. Do not describe
-   this as revoking rights already granted under an earlier license.
-
-Apache-2.0 permits different terms for modifications or derivative works as a
-whole, subject to its redistribution conditions, including retaining applicable
-notices and providing a copy of the Apache license. See
-[Apache-2.0 section 4](https://www.apache.org/licenses/LICENSE-2.0) and the
-[Apache licensing FAQ](https://www.apache.org/foundation/license-faq.html).
+References: [historical HFOIL 1.0](https://github.com/huggingface/text-generation-inference/blob/v1.0.0/LICENSE),
+[Apache-2.0 sections 2 and 4](https://www.apache.org/licenses/LICENSE-2.0), and
+[Baseten's published legal name](https://www.baseten.co/terms-and-conditions/).
+INFOIL is a distinct license; these references do not imply endorsement.

@@ -1,3 +1,4 @@
+// Fork license metadata updated by Infinity Core Contributors; see LICENSE.
 use super::response_format::Json;
 use crate::http::ner::apply_aggregation;
 /// HTTP Server logic
@@ -2107,8 +2108,8 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     info(
     title = "infinity_v3",
     license(
-    name = "Apache 2.0",
-    url = "https://www.apache.org/licenses/LICENSE-2.0"
+    name = "INFOIL 1.0 (see scope and retained third-party licenses)",
+    url = "https://github.com/michaelfeil/text-embeddings-inference/blob/infinity_v3-infoil-1.0/LICENSE"
     )
     )
     )]
