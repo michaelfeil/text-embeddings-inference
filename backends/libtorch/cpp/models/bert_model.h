@@ -106,11 +106,13 @@ struct Bert : tei::Model {
       }
       if(found!=classifier_plans.end() && found->second->valid) {
         auto& plan=*found->second;auto pointer=bias.const_data_ptr();
-        TORCH_CHECK(cublasLtMatmulDescSetAttribute(plan.operation,CUBLASLT_MATMUL_DESC_BIAS_POINTER,&pointer,sizeof(pointer))==CUBLAS_STATUS_SUCCESS,"BERT cached bias update failed");
-        auto output=at::empty({m,n},x.options());const float alpha=1.f,beta=0.f;
-        auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.bytes?classifier_workspace.mutable_data_ptr():nullptr,plan.bytes,at::cuda::getCurrentCUDAStream());
-        TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"BERT cached classifier projection failed: ",static_cast<int>(status)," m=",m," n=",n," k=",k," gelu=",gelu);
-        return output;
+        if(cublasLtMatmulDescSetAttribute(plan.operation,CUBLASLT_MATMUL_DESC_BIAS_POINTER,&pointer,sizeof(pointer))==CUBLAS_STATUS_SUCCESS) {
+          auto output=at::empty({m,n},x.options());const float alpha=1.f,beta=0.f;
+          auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.bytes?classifier_workspace.mutable_data_ptr():nullptr,plan.bytes,at::cuda::getCurrentCUDAStream());
+          if(status==CUBLAS_STATUS_SUCCESS)return output;
+        }
+        // Match ATen's retry policy and stop resubmitting this failed plan.
+        plan.valid=false;
       }
     }
 #endif
