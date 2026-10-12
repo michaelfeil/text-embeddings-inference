@@ -25,6 +25,9 @@ std::pair<at::Tensor, at::Tensor> fused_rotary(const at::Tensor& q, const at::Te
 // Writes each rotary pair in place and preserves the untouched V storage.
 void encoder_rotary_inplace(const at::Tensor& q, const at::Tensor& k,
  const at::Tensor& cosine, const at::Tensor& sine);
+// Same arithmetic using the original position tensor and full RoPE tables.
+void encoder_rotary_indexed_inplace(const at::Tensor& q,const at::Tensor& k,
+ const at::Tensor& cosine,const at::Tensor& sine,const at::Tensor& positions);
 at::Tensor fused_gelu(const at::Tensor& x, bool approximate_tanh);
 at::Tensor fused_bias_gelu(const at::Tensor& x, const at::Tensor& bias, bool approximate_tanh);
 std::pair<at::Tensor, at::Tensor> fused_qk_norm_rope(const at::Tensor& q,

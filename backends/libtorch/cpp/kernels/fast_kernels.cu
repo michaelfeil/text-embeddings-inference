@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <cmath>
+#include "../../../candle/extensions/candle-layer-norm/kernels/ln_fwd_kernels.cuh"
 // Candle emits PTX directly and guards its BF16 kernel by __CUDA_ARCH__.
 // LibTorch builds a host CUDA translation unit, which also needs the declaration.
 extern "C" __global__ void qk_norm_rope_bf16(const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int, int, int, int, int, float);
@@ -197,6 +198,33 @@ template<class T> __global__ void add_rms_large_kernel(const T* x,const T* resid
     out[row*width+col]=T(value*inverse*float(weight[col]));
   }
 }
+void run_candle_half4096_rms(const at::Tensor& x,const at::Tensor& residual,
+    const at::Tensor& weight,at::Tensor& output,at::Tensor& sum,float epsilon,
+    cudaStream_t stream) {
+  // Candle registers Half/half-residual width4096 with one CTA per row and
+  // warp layout1x4. Its Welford statistics avoid the generic sum-of-squares
+  // reduction's one-Half-ULP divergence on independently captured operands.
+  layer_norm::FwdParams p;
+  p.rows=x.numel()/4096;p.cols=4096;
+  p.x0=const_cast<void*>(x.const_data_ptr());p.x1=nullptr;
+  p.residual=residual.defined()?const_cast<void*>(residual.const_data_ptr()):nullptr;
+  p.x=residual.defined()?sum.mutable_data_ptr():nullptr;p.z=output.mutable_data_ptr();
+  p.gamma=const_cast<void*>(weight.const_data_ptr());p.beta=nullptr;
+  p.dmask=nullptr;p.dmask1=nullptr;p.x0_subset=nullptr;p.z_subset=nullptr;
+  p.epsilon=epsilon;p.inverse_cols=1.f/4096;
+  p.dropout_keep_p=1.f;p.dropout_scale=1.f;p.rowscale_const=1.f;
+  p.round_residual=false;p.is_rms_norm=true;
+  using Traits=layer_norm::Kernel_traits<half,half,half,half,float,int,4096,1,1,4,16>;
+  auto kernel=layer_norm::ln_fwd_kernel<Traits,false,false,false,true>;
+  static thread_local std::vector<int> occupancy;
+  const int device=x.get_device();
+  if(occupancy.size()<=static_cast<size_t>(device))occupancy.resize(device+1,-1);
+  int& blocks=occupancy[device];
+  if(blocks<0)C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    &blocks,kernel,Traits::THREADS_PER_CTA,Traits::SMEM_BYTES_FWD));
+  p.ctas_per_col=at::cuda::getDeviceProperties(device)->multiProcessorCount*blocks;
+  kernel<<<p.ctas_per_col,Traits::THREADS_PER_CTA,Traits::SMEM_BYTES_FWD,stream>>>(p);
+}
 template<class T> void run_rms(const at::Tensor& x,const at::Tensor& residual,const at::Tensor& weight,at::Tensor& out,at::Tensor& sum,float epsilon,cudaStream_t stream){
  auto xp=reinterpret_cast<const T*>(x.const_data_ptr());
  auto rp=residual.defined()?reinterpret_cast<const T*>(residual.const_data_ptr()):nullptr;
@@ -307,9 +335,10 @@ template<class T> __global__ void paired_rotary_kernel(const T* q,const T* k,con
     output[row*dim+lane+half]=T(float(T(b*c))+float(T(a*s)));
   }
 }
-template<class T> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const T* cosine,const T* sine,
- int64_t qheads,int64_t kheads,int64_t qstride,int64_t kstride,int64_t tokens,int64_t dim,int64_t half) {
-  const int64_t index=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+template<class T,class Index,bool Indexed> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const T* cosine,const T* sine,
+ Index qheads,Index kheads,Index qstride,Index kstride,Index tokens,Index dim,Index half,
+ const int64_t* positions,Index table_rows) {
+  const Index index=Index(blockIdx.x)*blockDim.x+threadIdx.x;
   if(index>=tokens*(qheads+kheads)*half)return;
   const auto row=index/half,lane=index%half;
   const bool isq=row<tokens*qheads;
@@ -317,7 +346,13 @@ template<class T> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const 
   const auto token=r/heads,head=r%heads;
   T* x=isq?q:k;
   const auto offset=token*(isq?qstride:kstride)+head*dim+lane;
-  const T a=x[offset],b=x[offset+half],c=cosine[token*half+lane],s=sine[token*half+lane];
+  Index frequency=token;
+  if constexpr(Indexed) {
+    const int64_t position=positions[token];
+    CUDA_KERNEL_ASSERT(position>=0 && uint64_t(position)<uint64_t(table_rows));
+    frequency=Index(position);
+  }
+  const T a=x[offset],b=x[offset+half],c=cosine[frequency*half+lane],s=sine[frequency*half+lane];
   // Load both original lanes before either write; every pair has one owner.
   x[offset]=encoder_rotary_fma(a,c,T(-float(T(b*s))));
   x[offset+half]=encoder_rotary_fma(b,c,T(a*s));
@@ -378,6 +413,10 @@ std::pair<at::Tensor,at::Tensor> fused_add_rms_norm(const at::Tensor& x,const at
   validate(x,residual,"residual",true);validate(x,weight,"weight",false);TORCH_CHECK(weight.defined(),"RMSNorm weight must be defined");
   c10::cuda::CUDAGuard guard(x.device());auto output=at::empty_like(x),sum=residual.defined()?at::empty_like(x):x;if(x.numel()==0)return {output,sum};
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
+  if(x.scalar_type()==at::kHalf&&x.size(-1)==4096) {
+    run_candle_half4096_rms(x,residual,weight,output,sum,epsilon,stream);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();return {output,sum};
+  }
 #define TEI_RMS_DISPATCH(T) run_rms<T>(x,residual,weight,output,sum,epsilon,stream)
   if(x.scalar_type()==at::kHalf){TEI_RMS_DISPATCH(__half);}
   else if(x.scalar_type()==at::kBFloat16){TEI_RMS_DISPATCH(__nv_bfloat16);}
@@ -436,20 +475,34 @@ std::pair<at::Tensor,at::Tensor> fused_rotary(const at::Tensor& q,const at::Tens
   }
   return {output.narrow(0,0,qr).view({q.size(0),q.size(1),dim}),output.narrow(0,qr,kr).view({k.size(0),k.size(1),dim})};
 }
-void encoder_rotary_inplace(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine) {
+static void encoder_rotary_dispatch(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine,const at::Tensor& positions) {
+  const bool indexed=positions.defined();
   TORCH_CHECK(q.is_cuda()&&q.dim()==3&&k.dim()==3&&q.size(0)==k.size(0)&&q.size(2)==k.size(2),"Invalid packed encoder Q/K");
   TORCH_CHECK(q.device()==k.device()&&q.scalar_type()==k.scalar_type(),"Encoder Q/K dtype/device mismatch");
   for(const auto& t:{q,k})TORCH_CHECK(t.stride(2)==1&&t.stride(1)==t.size(2)&&t.stride(0)>=t.size(1)*t.size(2),"Encoder rotary requires nonoverlapping packed head views");
-  TORCH_CHECK(cosine.dim()>0&&cosine.size(-1)>0&&2*cosine.size(-1)<=q.size(-1)&&cosine.numel()==q.size(0)*cosine.size(-1)&&sine.sizes()==cosine.sizes(),"Invalid encoder rotary frequencies");
+  TORCH_CHECK(cosine.dim()>0&&cosine.size(-1)>0&&2*cosine.size(-1)<=q.size(-1)&&(indexed?(cosine.dim()==2&&cosine.size(0)>0):cosine.numel()==q.size(0)*cosine.size(-1))&&sine.sizes()==cosine.sizes(),"Invalid encoder rotary frequencies");
   for(const auto& t:{cosine,sine})TORCH_CHECK(t.device()==q.device()&&t.scalar_type()==q.scalar_type()&&t.is_contiguous(),"Encoder rotary frequencies must match Q/K");
+  if(indexed)TORCH_CHECK(positions.device()==q.device()&&positions.scalar_type()==at::kLong&&
+    positions.is_contiguous()&&positions.dim()==1&&positions.numel()==q.size(0),"Invalid encoder rotary position indices");
   c10::cuda::CUDAGuard guard(q.device());const auto count=q.size(0)*(q.size(1)+k.size(1))*cosine.size(-1);
   if(!count)return;
   auto stream=at::cuda::getCurrentCUDAStream(q.device().index());
-#define TEI_ENCODER_ROPE(T) encoder_rotary_inplace_kernel<T><<<(count+255)/256,256,0,stream>>>(reinterpret_cast<T*>(q.mutable_data_ptr()),reinterpret_cast<T*>(k.mutable_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),q.size(1),k.size(1),q.stride(0),k.stride(0),q.size(0),q.size(2),cosine.size(-1))
-  if(q.scalar_type()==at::kHalf){TEI_ENCODER_ROPE(__half);}else if(q.scalar_type()==at::kBFloat16){TEI_ENCODER_ROPE(__nv_bfloat16);}else if(q.scalar_type()==at::kFloat){TEI_ENCODER_ROPE(float);}else TORCH_CHECK(false,"Unsupported encoder rotary dtype");
+  const bool narrow=count<=UINT32_MAX && uint64_t(q.size(0))*q.stride(0)<=UINT32_MAX &&
+    uint64_t(k.size(0))*k.stride(0)<=UINT32_MAX && uint64_t(cosine.numel())<=UINT32_MAX;
+#define TEI_ENCODER_ROPE(T,I,P) encoder_rotary_inplace_kernel<T,I,P><<<(count+255)/256,256,0,stream>>>(reinterpret_cast<T*>(q.mutable_data_ptr()),reinterpret_cast<T*>(k.mutable_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),I(q.size(1)),I(k.size(1)),I(q.stride(0)),I(k.stride(0)),I(q.size(0)),I(q.size(2)),I(cosine.size(-1)),indexed?positions.const_data_ptr<int64_t>():nullptr,I(cosine.size(0)))
+#define TEI_ENCODER_ROPE_WIDTH(T) if(indexed){if(narrow){TEI_ENCODER_ROPE(T,uint32_t,true);}else{TEI_ENCODER_ROPE(T,uint64_t,true);}}else{if(narrow){TEI_ENCODER_ROPE(T,uint32_t,false);}else{TEI_ENCODER_ROPE(T,uint64_t,false);}}
+  if(q.scalar_type()==at::kHalf){TEI_ENCODER_ROPE_WIDTH(__half);}else if(q.scalar_type()==at::kBFloat16){TEI_ENCODER_ROPE_WIDTH(__nv_bfloat16);}else if(q.scalar_type()==at::kFloat){TEI_ENCODER_ROPE_WIDTH(float);}else TORCH_CHECK(false,"Unsupported encoder rotary dtype");
+#undef TEI_ENCODER_ROPE_WIDTH
 #undef TEI_ENCODER_ROPE
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+void encoder_rotary_inplace(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine) {
+  encoder_rotary_dispatch(q,k,cosine,sine,{});
+}
+void encoder_rotary_indexed_inplace(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine,const at::Tensor& positions) {
+  encoder_rotary_dispatch(q,k,cosine,sine,positions);
+}
+
 at::Tensor fused_gelu(const at::Tensor& x,bool approximate){return fused_bias_gelu(x,at::Tensor(),approximate);}
 std::pair<at::Tensor,at::Tensor> fused_qk_norm_rope(const at::Tensor& q,const at::Tensor& k,const at::Tensor& qw,const at::Tensor& kw,const at::Tensor& cosine,const at::Tensor& sine,double epsilon) {
   TORCH_CHECK(q.is_cuda()&&k.is_cuda()&&q.dim()==3&&k.dim()==3&&q.size(0)==k.size(0)&&q.size(2)==k.size(2),"Invalid packed Q/K tensors");

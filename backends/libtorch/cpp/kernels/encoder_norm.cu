@@ -77,13 +77,16 @@ template<class T> void dispatch(layer_norm::FwdParams& p,cudaStream_t stream) {
   }
 }
 }
-static std::pair<at::Tensor,at::Tensor> encoder_layer_norm_impl(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual,bool save_residual) {
+static std::pair<at::Tensor,at::Tensor> encoder_layer_norm_impl(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual,bool save_residual,bool update_residual=false,const at::Tensor& normalized_scratch=at::Tensor()) {
   TORCH_CHECK(x.is_cuda()&&x.is_contiguous()&&x.dim()>=2&&x.size(-1)>0,"Exact encoder norm requires contiguous CUDA token rows");
   TORCH_CHECK(weight.device()==x.device()&&weight.scalar_type()==x.scalar_type()&&weight.is_contiguous()&&weight.numel()==x.size(-1),"Encoder normalization weight mismatch");
   if(residual.defined())TORCH_CHECK(residual.device()==x.device()&&residual.scalar_type()==x.scalar_type()&&residual.is_contiguous()&&residual.sizes()==x.sizes(),"Encoder normalization residual mismatch");
   if(bias.defined())TORCH_CHECK(bias.device()==x.device()&&bias.scalar_type()==x.scalar_type()&&bias.is_contiguous()&&bias.numel()==x.size(-1),"Encoder normalization bias mismatch");
   c10::cuda::CUDAGuard guard(x.device());
-  auto normalized=at::empty_like(x),sum=residual.defined()&&save_residual?at::empty_like(x):at::Tensor();
+  const bool reuse=update_residual&&residual.defined()&&x.size(-1)<=1536;
+  auto normalized=normalized_scratch.defined()?normalized_scratch:at::empty_like(x);
+  auto sum=residual.defined()&&save_residual?
+    (reuse?residual:at::empty_like(x)):at::Tensor();
   if(x.size(-1)>1536) {
     if(residual.defined()&&save_residual)sum=x+residual;
     if(residual.defined()&&!round_residual) {
@@ -107,6 +110,26 @@ static std::pair<at::Tensor,at::Tensor> encoder_layer_norm_impl(const at::Tensor
   else if(x.scalar_type()==at::kFloat)dispatch<float>(p,stream);
   else TORCH_CHECK(false,"Unsupported encoder normalization dtype");
   C10_CUDA_KERNEL_LAUNCH_CHECK();return {normalized,sum};
+}
+std::pair<at::Tensor,at::Tensor> encoder_layer_norm_update_residual(const at::Tensor& x,
+    const at::Tensor& weight,double epsilon,at::Tensor& residual) {
+  // Each vector is loaded into registers before the same disjoint vector is
+  // saved. Statistics and normalization use those registers, never reread sum.
+  // CTAS_PER_ROW==1 and the existing row geometry prevent cross-CTA aliasing.
+  return encoder_layer_norm_impl(x,weight,epsilon,residual,{},true,true,true);
+}
+std::pair<at::Tensor,at::Tensor> encoder_layer_norm_update_residual_scratch(
+    const at::Tensor& x,const at::Tensor& weight,double epsilon,
+    at::Tensor& residual,const at::Tensor& scratch) {
+  const bool reusable=scratch.defined()&&x.size(-1)<=1536&&
+    scratch.device()==x.device()&&scratch.scalar_type()==x.scalar_type()&&
+    scratch.sizes()==x.sizes()&&scratch.is_contiguous()&&
+    !scratch.is_alias_of(x)&&!scratch.is_alias_of(weight)&&
+    (!residual.defined()||!scratch.is_alias_of(residual));
+  // Invalid destinations are never written, including aliases of residual or
+  // affine storage. Keep both original allocating outputs in this fallback.
+  return encoder_layer_norm_impl(x,weight,epsilon,residual,{},true,true,
+    reusable,reusable?scratch:at::Tensor());
 }
 std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual) {
   return encoder_layer_norm_impl(x,weight,epsilon,residual,bias,round_residual,true);

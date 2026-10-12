@@ -1,5 +1,6 @@
 #include "helpers/attention.h"
 #include "models/encoder_models.h"
+#include "batching/packed_pool.h"
 #include "helpers/fp8_linear.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include <ATen/cuda/CUDAContext.h>
@@ -16,6 +17,9 @@
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_addmm_activation.h>
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include <c10/cuda/CUDAGuard.h>
+#endif
 #include <cmath>
 #include <cstdlib>
 #include <map>
@@ -79,6 +83,7 @@ struct Encoder final : Model {
   };
   std::vector<Layer> fused;
   std::unordered_map<std::string,Fp8Linear> fp8_mlp;
+  std::shared_ptr<OrdinaryLinearExecutor> ordinary_executor;
   at::Tensor global_cos, global_sin, local_cos, local_sin;
   std::optional<at::Tensor> alibi;
 
@@ -114,9 +119,15 @@ struct Encoder final : Model {
     return it->second;
   }
   at::Tensor bias(const std::string& n) const { return has(n + ".bias") ? w(n + ".bias") : at::Tensor(); }
-  at::Tensor linear(const at::Tensor& x, const std::string& n) const {
+  at::Tensor linear(const at::Tensor& x, const std::string& n,
+      const OrdinaryLinearExecutor::Session* session=nullptr) const {
     auto quantized=fp8_mlp.find(n);
     if(quantized!=fp8_mlp.end())return quantized->second.forward(x,bias(n));
+    if(ordinary_executor && !bias(n).defined()) {
+      auto result=session?ordinary_executor->forward(x,w(n+".weight"),*session):
+        ordinary_executor->forward(x,w(n+".weight"));
+      if(result.defined())return result;
+    }
     return at::linear(x, w(n + ".weight"), bias(n));
   }
   at::Tensor activated_linear(const at::Tensor& x, const std::string& n) const {
@@ -213,6 +224,11 @@ struct Encoder final : Model {
     sine = at::sin(phase).to(dtype);
   }
   void ready() override {
+    ordinary_executor.reset();
+    if(family==Family::Modern && device.is_cuda() && (dtype==at::kHalf || dtype==at::kBFloat16) &&
+      hidden==768 && heads==12 && o.integer("intermediate_size",1152)==1152 &&
+      !o.boolean("_fp8_dynamic",false))
+      ordinary_executor=std::make_shared<OrdinaryLinearExecutor>();
     TORCH_CHECK(hidden > 0 && heads > 0 && hidden % heads == 0 && layers > 0, "Invalid encoder dimensions");
     TORCH_CHECK(activation=="gelu"||activation=="gelu_new"||activation=="gelu_fast"||activation=="gelu_pytorch_tanh"||activation=="gelu_approx"||activation=="relu"||activation=="silu"||activation=="swiglu"||activation=="tanh", "Unsupported encoder activation: ",activation);
     TORCH_CHECK(device.is_cpu() || device.is_cuda(), "Packed encoders currently support CPU and CUDA");
@@ -368,7 +384,16 @@ struct Encoder final : Model {
     return packed_attention(q, k, v, input, 1.0 / std::sqrt(hidden / heads), false, window, window, alibi, bias);
   }
   at::Tensor forward(const PackedInput& input) const override {
-    at::Tensor h, modern_residual;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // The guard belongs to this synchronous call, never to a copyable session.
+    c10::cuda::OptionalCUDAGuard ordinary_guard;
+    if(ordinary_executor)ordinary_guard.set_device(device);
+#endif
+    // Every projection in this synchronous encoder call uses the same CUDA
+    // stream/context and backend policy. Keep the snapshot request-local.
+    auto ordinary_session=ordinary_executor?ordinary_executor->prepare(w("embeddings.tok_embeddings.weight")):
+      OrdinaryLinearExecutor::Session{};
+    at::Tensor h, modern_residual, modern_normalized;
     if (family == Family::Modern) h = norm(at::embedding(w("embeddings.tok_embeddings.weight"), input.ids), "embeddings.norm");
 #ifdef TEI_TORCH_CUDA_KERNELS
     else if(exact_distil_flash && !has("embeddings.token_type_embeddings.weight")) h=distil_embedding_norm(w("embeddings.word_embeddings.weight"),
@@ -418,11 +443,18 @@ struct Encoder final : Model {
     if(alibi && h.is_cuda() && !exact_alibi32 && !exact_alibi64)attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
     bool scaled = family == Family::Nomic && local_cos.defined() && input.max_sequence > o.integer("max_trained_positions", 2048);
     at::Tensor cos_global, sin_global, cos_local, sin_local;
-    if (global_cos.defined()) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    const bool indexed_modern=family==Family::Modern && h.is_cuda() &&
+      input.positions.device()==h.device() && input.positions.scalar_type()==at::kLong &&
+      input.positions.is_contiguous() && input.positions.dim()==1 && input.positions.numel()==h.size(0);
+#else
+    constexpr bool indexed_modern=false;
+#endif
+    if (global_cos.defined() && !indexed_modern) {
       cos_global = global_cos.index_select(0, input.positions).unsqueeze(1);
       sin_global = global_sin.index_select(0, input.positions).unsqueeze(1);
     }
-    if (local_cos.defined()) {
+    if (local_cos.defined() && !indexed_modern) {
       cos_local = local_cos.index_select(0, input.positions).unsqueeze(1);
       sin_local = local_sin.index_select(0, input.positions).unsqueeze(1);
     }
@@ -432,15 +464,23 @@ struct Encoder final : Model {
       auto source = h;
 #ifdef TEI_TORCH_CUDA_KERNELS
       if(exact_norm&&family==Family::Modern&&h.is_cuda()) {
-        if(i==0)modern_residual=h;
+        if(i==0) {
+          modern_residual=h;
+          // One private allocation per request; never model-owned or returned.
+          if(h.size(-1)<=1536)modern_normalized=at::empty_like(h);
+        }
         else {
-          auto normalized=encoder_layer_norm(h,w(p+"attn_norm.weight"),eps,modern_residual);
+          auto normalized=encoder_layer_norm_update_residual_scratch(h,w(p+"attn_norm.weight"),eps,modern_residual,modern_normalized);
           source=normalized.first;modern_residual=normalized.second;
         }
       } else
 #endif
       if(family==Family::Modern&&i>0)source=norm(h,p+"attn_norm");
-      auto qkv = at::linear(source, fused[i].qkv_weight, fused[i].qkv_bias).view({h.size(0), 3 * heads, hidden / heads});
+      at::Tensor qkv;
+      if(ordinary_executor && !fused[i].qkv_bias.defined())
+        qkv=ordinary_executor->forward(source,fused[i].qkv_weight,ordinary_session);
+      if(!qkv.defined())qkv=at::linear(source,fused[i].qkv_weight,fused[i].qkv_bias);
+      qkv=qkv.view({h.size(0),3*heads,hidden/heads});
       auto q = qkv.narrow(1, 0, heads), k = qkv.narrow(1, heads, heads), v = qkv.narrow(1, 2 * heads, heads);
       if (family == Family::Modern || family == Family::Nomic || family == Family::Gte) {
         const auto& c = local || scaled ? cos_local : cos_global;
@@ -450,7 +490,9 @@ struct Encoder final : Model {
           if(family==Family::Modern) {
             // Q/K occupy distinct head ranges in this fresh linear QKV output.
             // No later operation reads unrotated Q/K; the disjoint V view stays intact.
-            encoder_rotary_inplace(q,k,c,s);
+            if(indexed_modern)encoder_rotary_indexed_inplace(q,k,
+              local?local_cos:global_cos,local?local_sin:global_sin,input.positions);
+            else encoder_rotary_inplace(q,k,c,s);
           } else {auto rotated=fused_rotary(q,k,c,s,true);q=rotated.first;k=rotated.second;}
         }
         else
@@ -470,13 +512,13 @@ struct Encoder final : Model {
       }
       const auto output = p + (family == Family::Distil ? "attention.out_lin" : family == Family::Modern ? "attn.Wo" : family == Family::Nomic ? "attn.out_proj" : family == Family::Gte ? "attention.o_proj" : "attention.output.dense");
       auto residual = h;
-      auto projected = linear(a, output);
+      auto projected = linear(a, output, &ordinary_session);
       if (family == Family::Modern) {
 #ifdef TEI_TORCH_CUDA_KERNELS
         if(exact_norm&&h.is_cuda()) {
-          auto normalized=encoder_layer_norm(projected,w(p+"mlp_norm.weight"),eps,modern_residual);
+          auto normalized=encoder_layer_norm_update_residual_scratch(projected,w(p+"mlp_norm.weight"),eps,modern_residual,modern_normalized);
           modern_residual=normalized.second;
-          h=linear(gated(linear(normalized.first,p+"mlp.Wi")),p+"mlp.Wo");
+          h=linear(gated(linear(normalized.first,p+"mlp.Wi",&ordinary_session)),p+"mlp.Wo",&ordinary_session);
         } else
 #endif
         {
@@ -511,7 +553,7 @@ struct Encoder final : Model {
     }
     if (family == Family::Modern) {
 #ifdef TEI_TORCH_CUDA_KERNELS
-      if(exact_norm&&h.is_cuda())h=encoder_layer_norm(h,w("final_norm.weight"),eps,modern_residual).first;
+      if(exact_norm&&h.is_cuda())h=encoder_layer_norm_only(h,w("final_norm.weight"),eps,modern_residual);
       else
 #endif
       h = norm(h, "final_norm");
@@ -540,16 +582,33 @@ struct Encoder final : Model {
     if (tokenwise) return root_linear(h, "classifier");
     std::vector<at::Tensor> rows;
     const auto pool = family == Family::Modern ? o.string("classifier_pooling", "cls") : "cls";
-    for (int64_t row = 0; row < input.batch; ++row) {
-      const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
-      if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
-      else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
-      else {
-        TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
-        rows.push_back(h.narrow(0, start, 1));
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if (family == Family::Modern && pool == "mean" && h.is_cuda()
+        && h.is_contiguous() && (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)
+        && hidden > 0 && hidden <= std::numeric_limits<uint32_t>::max()
+        && input.batch > 0 && input.batch <= 65535
+        && input.cumulative.defined() && input.cumulative.device() == h.device()
+        && input.cumulative.scalar_type() == at::kInt && input.cumulative.is_contiguous()
+        && input.cumulative.dim() == 1
+        && input.cumulative.numel() == input.batch + 1) {
+      // Reuse Candle's packed model-dtype sum tree and rounded reciprocal.
+      // Device cumulative offsets are replay inputs, so this metadata remains
+      // capture-safe when actual token contents or sequence lengths change.
+      h = packed_mean_pool_cumulative(h, input.cumulative);
+    } else
+#endif
+    {
+      for (int64_t row = 0; row < input.batch; ++row) {
+        const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
+        if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
+        else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
+        else {
+          TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
+          rows.push_back(h.narrow(0, start, 1));
+        }
       }
+      h = at::cat(rows, 0);
     }
-    h = at::cat(rows, 0);
     if (family == Family::Modern) {
       // Candle intentionally omits a dense bias and normalizes with no bias.
       h = at::linear(h, weight(weights, "head.dense.weight"));
