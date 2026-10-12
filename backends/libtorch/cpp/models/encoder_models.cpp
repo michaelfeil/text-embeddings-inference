@@ -7,6 +7,7 @@
 #include "kernels/encoder_norm.h"
 #include "kernels/encoder_bias.h"
 #include "kernels/encoder_activation.h"
+#include "kernels/nomic_moe.h"
 #include "kernels/torch_flash_fma.h"
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
@@ -52,6 +53,7 @@ struct Encoder final : Model {
   std::string prefix, activation;
   bool exact_norm = false;
   bool exact_moe = false;
+  at::Tensor nomic_split_policy;
   bool exact_alibi32 = false;
   struct Layer {
     at::Tensor qkv_weight, qkv_bias;
@@ -212,6 +214,10 @@ struct Encoder final : Model {
       TORCH_CHECK(!o.boolean("prenorm", false) && o.real("rotary_emb_fraction", 1.0) == 1.0 && !o.boolean("rotary_emb_interleaved", false), "Nomic supports postnorm, full noninterleaved rotary (same as Candle)");
       if (o.integer("moe_every_n_layers", 0) > 0) {
         TORCH_CHECK(o.integer("num_experts", 0) > 0 && o.integer("moe_top_k", 0) > 0 && o.integer("moe_top_k", 0) <= o.integer("num_experts", 0), "Invalid Nomic MoE expert count/top-k");
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if (activation == "gelu") nomic_split_policy = nomic_moe_split_policy(device, dtype,
+            hidden, o.integer("n_inner",0), o.integer("num_experts",0), o.integer("moe_top_k",0));
+#endif
       }
       rotary_cache(o.real("rotary_emb_base", 1000), global_cos, global_sin);
       if (o.values.count("rotary_scaling_factor")) {
@@ -289,6 +295,12 @@ struct Encoder final : Model {
     const auto count = o.integer("num_experts", 0), width = o.integer("n_inner", 0);
     auto first = w(p + "mlp.experts.mlp.w1").view({count, width, hidden});
     auto second = w(p + "mlp.experts.mlp.w2").view({count, width, hidden});
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if (nomic_split_policy.defined() && h.size(0) > 0 && h.size(0) <= kNomicGroupedMaxTokens) {
+      return nomic_grouped_experts(h, first, second, experts, scores, nomic_split_policy)
+          + w(p + "mlp.experts.bias");
+    }
+#endif
     auto output = at::zeros_like(h);
     for (int64_t e = 0; e < count; ++e) {
       auto matches = at::nonzero(experts == e);

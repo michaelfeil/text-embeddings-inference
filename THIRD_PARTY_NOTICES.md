@@ -15,7 +15,7 @@ CUDA libraries, model weights, or container base images.
 | Candle layer-norm extension | [Apache text](backends/candle/extensions/candle-layer-norm/LICENSE-APACHE), [MIT text](backends/candle/extensions/candle-layer-norm/LICENSE-MIT), and [BSD text](backends/candle/extensions/candle-layer-norm/LICENSE). |
 | Candle rotary extension | [Apache text](backends/candle/extensions/candle-rotary/LICENSE-APACHE) and [MIT text](backends/candle/extensions/candle-rotary/LICENSE-MIT). |
 | RadixMLP-derived layers | MIT attribution in [index-select](backends/candle/src/layers/index_select.rs) and [RadixMLP](backends/candle/src/layers/radix_mlp.rs) source headers. |
-| CUTLASS-derived Gemma4 MoE kernels | [BSD-3-Clause text](backends/candle/extensions/candle-gemma4-moe/LICENSE.cutlass). |
+| CUTLASS-derived Gemma4 and Nomic MoE kernels | [BSD-3-Clause text](backends/candle/extensions/candle-gemma4-moe/LICENSE.cutlass). |
 | ALiBi implementation | [Source notices](backends/candle/src/alibi.rs) for Google AI Language Team, Hugging Face, and Jina AI. |
 
 Basetenkenizer is a Cargo dependency rather than vendored source. Its published

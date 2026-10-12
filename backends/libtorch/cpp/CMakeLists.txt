@@ -77,6 +77,8 @@ if(TARGET torch_cuda)
     set(CUTLASS_ROOT "${tei_cutlass_SOURCE_DIR}")
   endif()
   target_sources(tei_torch PRIVATE kernels/moe_portable.cu)
+  target_sources(tei_torch PRIVATE kernels/nomic_moe.cpp kernels/nomic_moe.cu)
+  set_source_files_properties(kernels/nomic_moe.cu PROPERTIES COMPILE_OPTIONS "--expt-relaxed-constexpr")
   target_include_directories(tei_torch PRIVATE "${CUTLASS_ROOT}/include" "${CUTLASS_ROOT}/tools/util/include")
   target_compile_definitions(tei_torch PRIVATE TEI_TORCH_MOE_KERNELS)
   install(FILES ../../candle/extensions/candle-gemma4-moe/LICENSE.cutlass
