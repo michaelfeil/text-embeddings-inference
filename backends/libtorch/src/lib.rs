@@ -512,8 +512,18 @@ impl LibtorchBackend {
         for (env, key, default, minimum) in [
             ("TEI_TORCH_CUDA_GRAPH_ENTRIES", "_cuda_graph_entries", 4, 0),
             ("TEI_TORCH_CUDA_GRAPH_REUSE", "_cuda_graph_reuse", 3, 1),
-            ("TEI_TORCH_CUDA_GRAPH_MAX_BYTES", "_cuda_graph_max_bytes", 512 << 20, 1),
-            ("TEI_TORCH_CUDA_GRAPH_MAX_CAPTURES", "_cuda_graph_max_captures", 8, 0),
+            (
+                "TEI_TORCH_CUDA_GRAPH_MAX_BYTES",
+                "_cuda_graph_max_bytes",
+                512 << 20,
+                1,
+            ),
+            (
+                "TEI_TORCH_CUDA_GRAPH_MAX_CAPTURES",
+                "_cuda_graph_max_captures",
+                8,
+                0,
+            ),
         ] {
             let value = std::env::var(env)
                 .map(|value| value.parse::<i64>().map_err(start))
