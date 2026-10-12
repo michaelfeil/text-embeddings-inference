@@ -43,7 +43,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 namespace tei {
 namespace {
-template<int Width,int WarpsM,int WarpsN>
+template<int Width,int WarpsM,int WarpsN,class T=nv_bfloat16>
 std::pair<at::Tensor,at::Tensor> exact_norm(const at::Tensor& x,const at::Tensor& residual,
  const at::Tensor& w,double epsilon) {
  const c10::cuda::CUDAGuard guard(x.device());
@@ -52,7 +52,7 @@ std::pair<at::Tensor,at::Tensor> exact_norm(const at::Tensor& x,const at::Tensor
  tei_decoder_exact_norm::FwdParams p;
  p.rows=x.size(0);p.cols=Width;p.x0=x.data_ptr();p.x1=nullptr;p.residual=residual.defined()?residual.data_ptr():nullptr;p.x=residual.defined()?sum.data_ptr():nullptr;p.z=out.data_ptr();
  p.dmask=nullptr;p.dmask1=nullptr;p.x0_subset=nullptr;p.z_subset=nullptr;p.gamma=w.data_ptr();p.epsilon=epsilon;p.inverse_cols=1.f/Width;p.dropout_keep_p=1.f;p.dropout_scale=1.f;p.rowscale_const=1.f;p.round_residual=false;p.is_rms_norm=true;
- using Traits=tei_decoder_exact_norm::Kernel_traits<nv_bfloat16,nv_bfloat16,nv_bfloat16,nv_bfloat16,float,int,Width,1,WarpsM,WarpsN,16>;
+ using Traits=tei_decoder_exact_norm::Kernel_traits<T,T,T,T,float,int,Width,1,WarpsM,WarpsN,16>;
  auto kernel=tei_decoder_exact_norm::ln_fwd_kernel<Traits,false,false,false,true>;
  // Each registered width uses its original Candle warp geometry. Cache
  // occupancy separately per specialization and device, before graph capture.
@@ -65,9 +65,14 @@ std::pair<at::Tensor,at::Tensor> exact_norm(const at::Tensor& x,const at::Tensor
 }
 std::pair<at::Tensor,at::Tensor> decoder_exact_rms_norm(const at::Tensor& x,
  const at::Tensor& residual,const at::Tensor& w,double epsilon) {
- TORCH_CHECK(x.is_cuda()&&x.scalar_type()==at::kBFloat16&&x.dim()==2&&(x.size(1)==1024||x.size(1)==2048||x.size(1)==3072||x.size(1)==4096)&&x.is_contiguous(),"Exact decoder RMS expects contiguous CUDA BF16 width 1024, 2048, 3072 or 4096");
+ TORCH_CHECK(x.is_cuda()&&x.dim()==2&&x.is_contiguous()
+   &&((x.scalar_type()==at::kBFloat16&&(x.size(1)==1024||x.size(1)==2048||x.size(1)==3072||x.size(1)==4096))
+     ||(x.scalar_type()==at::kHalf&&x.size(1)==1024)),
+   "Exact decoder RMS expects CUDA BF16 width 1024, 2048, 3072 or 4096, or FP16 width 1024");
  TORCH_CHECK(w.device()==x.device()&&w.scalar_type()==x.scalar_type()&&w.dim()==1&&w.numel()==x.size(1)&&w.is_contiguous(),"Invalid exact decoder RMS weight");
  TORCH_CHECK(!residual.defined()||(residual.device()==x.device()&&residual.scalar_type()==x.scalar_type()&&residual.sizes()==x.sizes()&&residual.is_contiguous()),"Invalid exact decoder RMS residual");
+ // Retain Candle's registered 4x1 warp geometry and FP16 rounding.
+ if(x.scalar_type()==at::kHalf)return exact_norm<1024,4,1,__half>(x,residual,w,epsilon);
  if(x.size(1)==1024)return exact_norm<1024,4,1>(x,residual,w,epsilon);
  if(x.size(1)==2048)return exact_norm<2048,4,1>(x,residual,w,epsilon);
  if(x.size(1)==3072)return exact_norm<3072,1,4>(x,residual,w,epsilon);
