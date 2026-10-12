@@ -14,7 +14,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 -->
 
+<!-- Fork contribution policy added by Infinity Core Contributors under the scope in LICENSE. -->
 # Contribute to infinity_v3
+
+New original fork contributions and covered modifications are offered under
+[INFOIL 1.0](LICENSES/INFOIL-1.0.txt), subject to the [adoption scope](LICENSE).
+Contributors retain ownership; this does not assign copyright or grant a
+blanket right to issue commercial exceptions for their work. Identify any
+separately licensed material and obtain agreement on different inbound terms
+before inclusion. Preserve inherited notices and prominently identify modified
+files and the applicable fork license scope. See [LICENSING.md](LICENSING.md).
 
 Everyone is welcome to contribute, and we value everybody's contribution. Code
 contributions are not the only way to help the community. Answering questions, helping

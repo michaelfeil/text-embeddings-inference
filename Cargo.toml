@@ -18,6 +18,8 @@ default-members = [
 resolver = "2"
 
 [workspace.package]
+# Fork license adoption; inherited and third-party grants remain in LICENSE.
+license-file = "LICENSE"
 version = "1.8.18-rc.0"
 edition = "2021"
 authors = ["Olivier Dehaene", "Nicolas Patry", "Alvaro Bartolome"]

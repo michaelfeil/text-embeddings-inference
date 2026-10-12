@@ -1,3 +1,4 @@
+# Modified by Infinity Core Contributors: package license adoption and retained notices.
 FROM nvidia/cuda:12.9.0-devel-ubuntu22.04 AS base-builder
 
 ENV SCCACHE=0.10.0
@@ -37,6 +38,7 @@ COPY core core
 COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
+COPY LICENSE ./
 
 RUN cargo chef prepare  --recipe-path recipe.json
 
@@ -58,6 +60,7 @@ ARG CARGO_BUILD_INCREMENTAL
 WORKDIR /usr/src
 
 COPY --from=planner /usr/src/recipe.json recipe.json
+COPY LICENSE ./
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
@@ -80,6 +83,11 @@ COPY core core
 COPY router router
 COPY Cargo.toml ./
 COPY Cargo.lock ./
+COPY LICENSE ./
+COPY NOTICE LICENSING.md THIRD_PARTY_NOTICES.md ./
+COPY LICENSES LICENSES
+COPY scripts/collect-license-notices.sh scripts/collect-license-notices.sh
+RUN sh scripts/collect-license-notices.sh /usr/src/distribution-licenses
 
 RUN --mount=type=secret,id=actions_results_url,env=ACTIONS_RESULTS_URL \
     --mount=type=secret,id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN \
@@ -121,6 +129,8 @@ COPY --from=builder /usr/src/target/release/infinity_v3-80 /usr/local/bin/infini
 COPY --from=builder /usr/src/target/release/infinity_v3-90 /usr/local/bin/infinity_v3-90
 
 COPY --chmod=775 cuda-all-entrypoint.sh entrypoint.sh
+
+COPY --from=builder /usr/src/distribution-licenses/ /usr/share/licenses/infinity_v3/
 
 ENTRYPOINT ["./entrypoint.sh"]
 CMD ["--json-output"]

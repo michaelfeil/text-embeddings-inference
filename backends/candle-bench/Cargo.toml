@@ -1,4 +1,6 @@
 [package]
+# Fork license adoption; see the scoped workspace license bundle.
+license-file.workspace = true
 name = "candle-bench"
 version = "0.1.0"
 edition = "2021"

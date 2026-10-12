@@ -1,8 +1,9 @@
 [package]
+# Fork license adoption; see the scoped workspace license bundle.
+license-file.workspace = true
 name = "text-embeddings-backend-libtorch"
 version.workspace = true
 edition.workspace = true
-license = "Apache-2.0"
 links = "tei_torch"
 autoexamples = false
 

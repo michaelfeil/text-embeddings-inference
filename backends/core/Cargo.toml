@@ -1,4 +1,6 @@
 [package]
+# Fork license adoption; see the scoped workspace license bundle.
+license-file.workspace = true
 name = "infinity_v3-backend-core"
 version.workspace = true
 edition.workspace = true
