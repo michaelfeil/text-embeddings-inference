@@ -1,5 +1,6 @@
 #include "helpers/attention.h"
 #include "models/encoder_models.h"
+#include "batching/packed_pool.h"
 #include "helpers/fp8_linear.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "kernels/fast_kernels.h"
@@ -483,16 +484,33 @@ struct Encoder final : Model {
     if (tokenwise) return root_linear(h, "classifier");
     std::vector<at::Tensor> rows;
     const auto pool = family == Family::Modern ? o.string("classifier_pooling", "cls") : "cls";
-    for (int64_t row = 0; row < input.batch; ++row) {
-      const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
-      if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
-      else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
-      else {
-        TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
-        rows.push_back(h.narrow(0, start, 1));
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if (family == Family::Modern && pool == "mean" && h.is_cuda()
+        && h.is_contiguous() && (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)
+        && hidden > 0 && hidden <= std::numeric_limits<uint32_t>::max()
+        && input.batch > 0 && input.batch <= 65535
+        && input.cumulative.defined() && input.cumulative.device() == h.device()
+        && input.cumulative.scalar_type() == at::kInt && input.cumulative.is_contiguous()
+        && input.cumulative.dim() == 1
+        && input.cumulative.numel() == input.batch + 1) {
+      // Reuse Candle's packed model-dtype sum tree and rounded reciprocal.
+      // Device cumulative offsets are replay inputs, so this metadata remains
+      // capture-safe when actual token contents or sequence lengths change.
+      h = packed_mean_pool_cumulative(h, input.cumulative);
+    } else
+#endif
+    {
+      for (int64_t row = 0; row < input.batch; ++row) {
+        const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
+        if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
+        else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
+        else {
+          TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
+          rows.push_back(h.narrow(0, start, 1));
+        }
       }
+      h = at::cat(rows, 0);
     }
-    h = at::cat(rows, 0);
     if (family == Family::Modern) {
       // Candle intentionally omits a dense bias and normalizes with no bias.
       h = at::linear(h, weight(weights, "head.dense.weight"));
