@@ -1,11 +1,12 @@
 // Independent CUDA checks for residual precision and BF16 normalization.
 #include "kernels/decoder_norm.h"
+#include "kernels/decoder_packed_readout.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 int main(int argc,char** argv) {
  c10::InferenceMode inference;at::manual_seed(43);
  auto options=at::TensorOptions().dtype(at::kBFloat16).device(c10::Device(argc>1?argv[1]:"cuda:0"));
- for(int64_t width:{1024,2048,3072,4096}) {
+ for(int64_t width:{896,1024,2048,3072,4096}) {
  for(int64_t rows:{1,7,257}) {
   auto x=(at::rand({rows,width},options)-.5),r=(at::rand_like(x)-.5),w=at::ones({width},options);
   for(bool residual:{false,true})for(double eps:{1e-6,1e-3}) {
@@ -42,5 +43,21 @@ int main(int argc,char** argv) {
   if(!residual)TORCH_CHECK(result.second.is_alias_of(x),"Plain FP16 RMS must retain the input residual");
  }
  bool rejected_width=false;try{auto x=at::ones({1,512},options);tei::decoder_exact_rms_norm(x,{},at::ones({512},options),1e-6);}catch(const c10::Error&){rejected_width=true;}TORCH_CHECK(rejected_width,"Unregistered width must be rejected");
- std::cout<<"Exact decoder RMS registered widths 1024/2048/3072/4096 tests passed\n";
+ // Independent packed readout oracle: interior/trailing PAD, all-PAD first
+ // fallback, then changing actual IDs without changing cumulative layout.
+ {
+  constexpr int64_t pad=31;
+  auto hidden=at::arange(10*896,options.dtype(at::kFloat)).view({10,896}).to(at::kBFloat16);
+  auto ids=at::tensor(at::IntArrayRef{5,pad,6,pad,pad,pad,pad,9,pad,11},options.dtype(at::kLong));
+  auto cu=at::tensor({0,4,6,10},options.dtype(at::kInt));
+  auto expected=hidden.index_select(0,at::tensor({2,4,9},options.dtype(at::kLong)));
+  auto selected=tei::qwen2_packed_classifier_rows(hidden,ids,cu,3,pad);
+  TORCH_CHECK(at::equal(selected,expected),"Packed classifier readout changed selected hidden bits");
+  ids.copy_(at::tensor(at::IntArrayRef{5,pad,6,7,pad,7,pad,9,pad,pad},options.dtype(at::kLong)));
+  expected=hidden.index_select(0,at::tensor({3,5,7},options.dtype(at::kLong)));
+  TORCH_CHECK(at::equal(tei::qwen2_packed_classifier_rows(hidden,ids,cu,3,pad),expected),"Packed readout reused stale ID selection");
+  bool rejected=false;try{tei::qwen2_packed_classifier_rows(hidden.to(at::kHalf),ids,cu,3,pad);}catch(const c10::Error&){rejected=true;}
+  TORCH_CHECK(rejected,"Unvalidated packed readout dtype must be rejected");
+ }
+ std::cout<<"Exact decoder RMS registered widths 896/1024/2048/3072/4096 tests passed\n";
 }

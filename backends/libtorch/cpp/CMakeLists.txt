@@ -25,7 +25,7 @@ install(DIRECTORY ../../../LICENSES/ DESTINATION share/licenses/tei_torch/LICENS
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
-  target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_vision.cu kernels/qwen35_reference.cu kernels/qwen35_recurrent.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
+  target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_vision.cu kernels/qwen35_reference.cu kernels/qwen35_recurrent.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/decoder_packed_readout.cu kernels/packed_pool.cu
     kernels/torch_flash_alibi64.cpp kernels/torch_flash_alibi64.cu
     kernels/torch_flash_fma.cpp kernels/torch_flash_fma_32.cu kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
   # Match independently verified core LayerNorm/softmax: default FMA and
@@ -55,6 +55,8 @@ if(TARGET torch_cuda)
   set_source_files_properties(kernels/torch_flash_fma_32.cu kernels/torch_flash_alibi64.cu
     PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
     COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_SOFTCAP;FLASHATTENTION_DISABLE_UNEVEN_K")
+  install(FILES vendor/pytorch_cublaslt/LICENSE vendor/pytorch_cublaslt/PROVENANCE.md
+    DESTINATION share/licenses/tei_torch/pytorch_cublaslt)
   install(FILES vendor/torch_flash_attention/LICENSE vendor/torch_flash_attention/AUTHORS
     vendor/torch_flash_attention/provenance.json DESTINATION share/licenses/tei_torch/torch_flash_attention)
   install(FILES ../../candle/extensions/candle-layer-norm/LICENSE
