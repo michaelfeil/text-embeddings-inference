@@ -320,7 +320,7 @@ public:
       const auto* properties=at::cuda::getDeviceProperties(device.index());
       auto major=properties->major;
       // Other architectures retain installed Torch arithmetic until qualified.
-      qwen3_half_exact=dtype==at::kHalf&&family=="qwen3"&&hidden==1024
+      qwen3_half_exact=!fp8_dynamic&&dtype==at::kHalf&&family=="qwen3"&&hidden==1024
         &&head_dim==128&&major==9&&properties->minor==0;
       cudnn_varlen=options.boolean("_cudnn_varlen",false)&&(major==9||major==10)
         &&at::detail::getCUDAHooks().versionRuntimeCuDNN()>=91800;
