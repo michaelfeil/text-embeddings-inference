@@ -39,7 +39,8 @@ bool torch_flash_fma_supported(const at::Tensor& q,const at::Tensor& k,const at:
     const auto* properties=at::cuda::getDeviceProperties(q.device().index());
     return properties->major==9 && properties->minor==0 && properties->sharedMemPerBlockOptin>=48*1024;
   }
-  if(q.size(2)==64 || q.size(2)==128 || q.size(2)==256)return true;
+  if(q.size(2)==64 || q.size(2)==128 || q.size(2)==256)
+    return at::cuda::getDeviceProperties(q.device().index())->major>=8;
   if(q.size(2)!=512 || q.scalar_type()!=at::kBFloat16 || window_left!=-1 || window_right!=-1)return false;
   // The proven wide-head launch uses128KiB dynamic shared memory on SM90.
   // Other architectures/dtypes/masks retain their native efficient fallback.
