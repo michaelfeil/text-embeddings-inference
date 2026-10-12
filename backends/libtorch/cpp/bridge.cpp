@@ -78,6 +78,10 @@ struct Engine {
   std::unique_ptr<tei::DecisionHead> decision;
   std::unique_ptr<tei::CudaGraphCache> graphs;
   bool media_graphs=false;
+  bool nomic_moe_graphs=false;
+  bool graph_policy_ready() const {
+    return !nomic_moe_graphs || tei::encoder_nomic_device_routing_ready(*model);
+  }
   Engine(TeiConfig cfg, c10::Device dev, at::ScalarType type) : config(cfg), device(dev), dtype(type) {}
   void ready() {
     dense = std::make_unique<tei::DenseChain>(options, weights);
@@ -126,7 +130,8 @@ struct Engine {
     media_graphs=options.boolean("_media_cuda_graphs",false);
     // These Hopper BF16 geometries use device-only routing. Other MoE
     // geometries retain eager execution rather than synchronizing in capture.
-    bool native_moe_graphs=false;
+    nomic_moe_graphs=tei::encoder_nomic_device_routing_ready(*model);
+    bool native_moe_graphs=nomic_moe_graphs;
 #if defined(TEI_TORCH_MOE_KERNELS) && defined(TEI_TORCH_MOE_HOPPER)
     if(device.is_cuda()&&dtype==at::kBFloat16&&family=="qwen3_moe"
       &&options.integer("hidden_size",0)==2048&&options.integer("num_experts",0)==128
@@ -163,7 +168,10 @@ struct Engine {
       auto entries=options.integer("_cuda_graph_entries",4), reuse=options.integer("_cuda_graph_reuse",3);
       auto bytes=options.integer("_cuda_graph_max_bytes",512LL<<20), captures=options.integer("_cuda_graph_max_captures",8);
       TORCH_CHECK(entries>=0 && reuse>0 && bytes>0 && captures>=0,"Invalid CUDA graph admission budgets");
-      graphs=std::make_unique<tei::CudaGraphCache>(entries,options.integer("_cuda_graph_max_tokens",4096),reuse,bytes,captures);
+      auto max_tokens=options.integer("_cuda_graph_max_tokens",4096);
+      // Larger Nomic batches use host-count reference routing and remain eager.
+      if(nomic_moe_graphs) max_tokens=std::min<int64_t>(max_tokens,8192);
+      graphs=std::make_unique<tei::CudaGraphCache>(entries,max_tokens,reuse,bytes,captures);
     }
   }
 };
@@ -384,7 +392,7 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
   auto packed=packed_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count);
   attach_radix(engine,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
-  const bool use_graph=engine.graphs&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
+  const bool use_graph=engine.graphs&&engine.graph_policy_ready()&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
   if(!use_graph)engine.model->prepare_input(packed);
   auto hidden=use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
   auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
@@ -425,7 +433,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
       media_positions,images,image_count,audios,audio_count,completion);
     auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
     attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix,completion);
-    const bool graph_eligible = model.graphs && (model.media_graphs || (!image_count && !audio_count && !media_positions));
+    const bool graph_eligible = model.graphs && model.graph_policy_ready() && (model.media_graphs || (!image_count && !audio_count && !media_positions));
     if(!graph_eligible)model.model->prepare_input(packed);
     auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
       : pool >= 4 ? model.model->predict(packed, pool == 5) : model.model->forward(packed);
