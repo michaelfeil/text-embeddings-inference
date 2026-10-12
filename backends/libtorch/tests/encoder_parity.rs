@@ -615,10 +615,14 @@ fn mpnet_cuda_varlen_matches_cpu() {
     )
     .unwrap();
     let expected = cpu.embed(batch()).unwrap();
-    let got = gpu.embed(batch()).unwrap();
+    let mut got = gpu.embed(batch()).unwrap();
     if std::env::var("TEI_TORCH_CUDA_GRAPHS")
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
     {
+        // The default admission policy captures after three identical requests.
+        for _ in 0..2 {
+            got = gpu.embed(batch()).unwrap();
+        }
         assert!(
             gpu.cuda_graph_count() > 0,
             "MPNet CUDA graph was not captured"
