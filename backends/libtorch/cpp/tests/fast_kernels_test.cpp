@@ -13,6 +13,13 @@ void close(const at::Tensor& x,const at::Tensor& expected,double tolerance,const
  auto error=(x.to(at::kFloat)-expected.to(at::kFloat)).abs().max().item<float>();
  TORCH_CHECK(error<=tolerance,label," max abs=",error," tolerance=",tolerance);
 }
+uint64_t tensor_byte_hash(const at::Tensor& value) {
+ auto host=value.to(at::kCPU).contiguous();
+ auto bytes=static_cast<const unsigned char*>(host.const_data_ptr());
+ uint64_t hash=1469598103934665603ull;
+ for(size_t i=0;i<host.nbytes();++i)hash=(hash^bytes[i])*1099511628211ull;
+ return hash;
+}
 // Round the double oracle directly to the model format. ATen's CPU double
 // conversion passes through float, which double-rounds rare HFMA midpoint cases.
 at::Tensor round_model_double(const at::Tensor& values,at::ScalarType dtype) {
@@ -30,6 +37,27 @@ at::Tensor round_model_double(const at::Tensor& values,at::ScalarType dtype) {
  return output;
 }
 int main(){c10::InferenceMode guard;
+ {
+  // Captured strict failure: generic Half4096 RMS returned -8.28125 at
+  // row14,col3320; original Candle4096, FP32 and direct FP64 return -8.2734375.
+  // Restore these exact operands rather than selecting a passing random seed.
+  at::manual_seed(248);auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kHalf);
+  at::Tensor x,residual,weight;
+  for(int width:{7,16,63,128,257,513,768,769,1024,1152,2048,4096}) {
+   x=at::randn({33,width},opts);residual=at::randn_like(x);weight=at::randn({width},opts);
+  }
+  TORCH_CHECK(tensor_byte_hash(x)==9953450669979115434ull
+   &&tensor_byte_hash(residual)==4182254403794363395ull
+   &&tensor_byte_hash(weight)==14218794327604558931ull,"Captured RMS operands changed");
+  auto actual=tei::fused_add_rms_norm(x,residual,weight,1e-5);
+  TORCH_CHECK(tensor_byte_hash(actual.first)==13182671632785942803ull,
+   "Half4096 RMS differs from independently executed original registered Candle kernel");
+  auto unrounded=x.to(at::kFloat)+residual.to(at::kFloat);
+  auto reference=(unrounded*at::rsqrt(unrounded.square().mean(-1,true)+1e-5)*weight.to(at::kFloat)).to(at::kHalf);
+  close(actual.first,reference,.006,"Captured Half4096 original RMS gate");
+  close(actual.second,x+residual,0,"Captured RMS residual model-dtype bytes");
+ }
+
  {
   // Actual learned layer7/token678 router values: the previous softmax lands
   // exactly on a Half midpoint, which changes later MoE embedding outputs.

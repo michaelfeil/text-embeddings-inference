@@ -9,6 +9,7 @@
 #include <cuda_fp16.h>
 #include <cstdint>
 #include <cmath>
+#include "../../../candle/extensions/candle-layer-norm/kernels/ln_fwd_kernels.cuh"
 // Candle emits PTX directly and guards its BF16 kernel by __CUDA_ARCH__.
 // LibTorch builds a host CUDA translation unit, which also needs the declaration.
 extern "C" __global__ void qk_norm_rope_bf16(const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, const __nv_bfloat16*, __nv_bfloat16*, int, int, int, int, int, float);
@@ -196,6 +197,33 @@ template<class T> __global__ void add_rms_large_kernel(const T* x,const T* resid
     float value=float(x[row*width+col]);if(residual)value+=float(residual[row*width+col]);
     out[row*width+col]=T(value*inverse*float(weight[col]));
   }
+}
+void run_candle_half4096_rms(const at::Tensor& x,const at::Tensor& residual,
+    const at::Tensor& weight,at::Tensor& output,at::Tensor& sum,float epsilon,
+    cudaStream_t stream) {
+  // Candle registers Half/half-residual width4096 with one CTA per row and
+  // warp layout1x4. Its Welford statistics avoid the generic sum-of-squares
+  // reduction's one-Half-ULP divergence on independently captured operands.
+  layer_norm::FwdParams p;
+  p.rows=x.numel()/4096;p.cols=4096;
+  p.x0=const_cast<void*>(x.const_data_ptr());p.x1=nullptr;
+  p.residual=residual.defined()?const_cast<void*>(residual.const_data_ptr()):nullptr;
+  p.x=residual.defined()?sum.mutable_data_ptr():nullptr;p.z=output.mutable_data_ptr();
+  p.gamma=const_cast<void*>(weight.const_data_ptr());p.beta=nullptr;
+  p.dmask=nullptr;p.dmask1=nullptr;p.x0_subset=nullptr;p.z_subset=nullptr;
+  p.epsilon=epsilon;p.inverse_cols=1.f/4096;
+  p.dropout_keep_p=1.f;p.dropout_scale=1.f;p.rowscale_const=1.f;
+  p.round_residual=false;p.is_rms_norm=true;
+  using Traits=layer_norm::Kernel_traits<half,half,half,half,float,int,4096,1,1,4,16>;
+  auto kernel=layer_norm::ln_fwd_kernel<Traits,false,false,false,true>;
+  static thread_local std::vector<int> occupancy;
+  const int device=x.get_device();
+  if(occupancy.size()<=static_cast<size_t>(device))occupancy.resize(device+1,-1);
+  int& blocks=occupancy[device];
+  if(blocks<0)C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(
+    &blocks,kernel,Traits::THREADS_PER_CTA,Traits::SMEM_BYTES_FWD));
+  p.ctas_per_col=at::cuda::getDeviceProperties(device)->multiProcessorCount*blocks;
+  kernel<<<p.ctas_per_col,Traits::THREADS_PER_CTA,Traits::SMEM_BYTES_FWD,stream>>>(p);
 }
 template<class T> void run_rms(const at::Tensor& x,const at::Tensor& residual,const at::Tensor& weight,at::Tensor& out,at::Tensor& sum,float epsilon,cudaStream_t stream){
  auto xp=reinterpret_cast<const T*>(x.const_data_ptr());
@@ -385,6 +413,10 @@ std::pair<at::Tensor,at::Tensor> fused_add_rms_norm(const at::Tensor& x,const at
   validate(x,residual,"residual",true);validate(x,weight,"weight",false);TORCH_CHECK(weight.defined(),"RMSNorm weight must be defined");
   c10::cuda::CUDAGuard guard(x.device());auto output=at::empty_like(x),sum=residual.defined()?at::empty_like(x):x;if(x.numel()==0)return {output,sum};
   auto stream=at::cuda::getCurrentCUDAStream(x.device().index());
+  if(x.scalar_type()==at::kHalf&&x.size(-1)==4096) {
+    run_candle_half4096_rms(x,residual,weight,output,sum,epsilon,stream);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();return {output,sum};
+  }
 #define TEI_RMS_DISPATCH(T) run_rms<T>(x,residual,weight,output,sum,epsilon,stream)
   if(x.scalar_type()==at::kHalf){TEI_RMS_DISPATCH(__half);}
   else if(x.scalar_type()==at::kBFloat16){TEI_RMS_DISPATCH(__nv_bfloat16);}
