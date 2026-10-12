@@ -309,10 +309,10 @@ struct Bert : tei::Model {
     auto token_type = at::embedding(w("embeddings.token_type_embeddings.weight"), types);
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (word.is_cuda() && exact_biased_norm)
+    if (word.is_cuda() && exact_biased_norm && word.scalar_type() == at::kHalf)
       h = tei::encoder_embedding_layer_norm(word, token_type, position,
         w("embeddings.LayerNorm.weight"), config.epsilon, w("embeddings.LayerNorm.bias"));
-    else if (word.is_cuda() && private_flash_embedding && options.boolean("_fp8_dynamic", false))
+    else if (word.is_cuda() && (exact_biased_norm || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
       h = tei::encoder_layer_norm_only(word + token_type,
         w("embeddings.LayerNorm.weight"), config.epsilon, position, w("embeddings.LayerNorm.bias"), false);
     else if (word.is_cuda() && config.hidden == 384)
