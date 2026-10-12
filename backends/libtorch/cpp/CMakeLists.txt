@@ -134,6 +134,7 @@ if(TEI_BUILD_NATIVE_TESTS)
     target_link_libraries(fast_kernels_test PRIVATE CUDA::cublasLt)
     set_tests_properties(fast_kernels_cuda PROPERTIES
       ENVIRONMENT "TORCH_BLAS_PREFER_CUBLASLT=1;CUBLASLT_WORKSPACE_SIZE=32768")
+    target_link_libraries(decoder_norm_test PRIVATE CUDA::cublasLt)
     foreach(test encoder_models gemma_models qwen35_models qwen3_vl_models)
       add_test(NAME ${test}_cuda COMMAND ${test}_test cuda:0)
     endforeach()

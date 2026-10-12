@@ -3,6 +3,37 @@
 #include "kernels/decoder_packed_readout.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
+#include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDACachingAllocator.h>
+#include <utility>
+namespace {
+bool fail_cached_matmul=false;
+int cached_matmul_calls=0;
+int64_t expected_live_bytes_at_fallback=-1;
+template<class... Args> cublasStatus_t probe_cached_matmul(Args... args) {
+ ++cached_matmul_calls;
+ if(std::exchange(fail_cached_matmul,false))return CUBLAS_STATUS_NOT_SUPPORTED;
+ return ::cublasLtMatmul(args...);
+}
+}
+namespace at {
+Tensor probe_cache_linear(const Tensor& x,const Tensor& weight) {
+ if(expected_live_bytes_at_fallback>=0)
+  TORCH_CHECK(c10::cuda::CUDACachingAllocator::getDeviceStats(x.get_device()).allocated_bytes[0].current==expected_live_bytes_at_fallback,
+    "Fallback entry must not retain a speculative result allocation");
+ return at::linear(x,weight);
+}
+}
+// Give the fault-injected copy private symbols; production cache calls remain
+// unchanged, including ATen's independent fallback implementation.
+#define CachedNoBiasLt DecoderCacheUnderTest
+#define cublasLtMatmul probe_cached_matmul
+#define linear probe_cache_linear
+#include "kernels/cached_decoder_linear.h"
+#undef linear
+#undef cublasLtMatmul
+#undef CachedNoBiasLt
+
 int main(int argc,char** argv) {
  c10::InferenceMode inference;at::manual_seed(43);
  auto options=at::TensorOptions().dtype(at::kBFloat16).device(c10::Device(argc>1?argv[1]:"cuda:0"));
@@ -58,6 +89,33 @@ int main(int argc,char** argv) {
   TORCH_CHECK(at::equal(tei::qwen2_packed_classifier_rows(hidden,ids,cu,3,pad),expected),"Packed readout reused stale ID selection");
   bool rejected=false;try{tei::qwen2_packed_classifier_rows(hidden.to(at::kHalf),ids,cu,3,pad);}catch(const c10::Error&){rejected=true;}
   TORCH_CHECK(rejected,"Unvalidated packed readout dtype must be rejected");
+ }
+ // Exercise recoverable execution failure and capacity fallback on the
+ // cache's qualified hardware, without changing the production operator.
+ if(at::cuda::getCurrentDeviceProperties()->major==9&&at::cuda::getCurrentDeviceProperties()->minor==0) {
+  const auto prior=at::globalContext().blasPreferredBackend();
+  at::globalContext().setBlasPreferredBackend(at::BlasBackend::Cublaslt);
+  tei::DecoderCacheUnderTest cache;
+  auto weight=at::randn({64,896},options)*.03, x=at::randn({8,896},options)*.03;
+  auto expected=at::linear(x,weight);
+  auto first=cache.forward(x,weight);
+  TORCH_CHECK(cached_matmul_calls>0&&at::allclose(first,expected,.015625,.001),"Fixture must execute a valid cached algorithm");
+  fail_cached_matmul=true;
+  auto recovered=cache.forward(x,weight);
+  TORCH_CHECK(!fail_cached_matmul&&at::equal(recovered,expected),"Rejected algorithm must recover through the independent ATen fallback");
+  const auto calls=cached_matmul_calls;
+  TORCH_CHECK(at::equal(cache.forward(x,weight),expected)&&cached_matmul_calls==calls,"Rejected cached plan must not be retried");
+  tei::DecoderCacheUnderTest full;
+  for(int64_t rows=1;rows<=64;++rows)full.forward(at::randn({rows,896},options),weight);
+  auto unseen=at::randn({65,896},options);
+  auto allocation=[&]{return c10::cuda::CUDACachingAllocator::getDeviceStats(unseen.get_device()).allocated_bytes[0];};
+  auto control=at::linear(unseen,weight);
+  expected_live_bytes_at_fallback=allocation().current;
+  const auto saturated_calls=cached_matmul_calls;
+  auto fallback=full.forward(unseen,weight);
+  expected_live_bytes_at_fallback=-1;
+  TORCH_CHECK(cached_matmul_calls==saturated_calls&&at::equal(fallback,control),"Full cache must preserve independent ATen fallback output");
+  at::globalContext().setBlasPreferredBackend(prior);
  }
  std::cout<<"Exact decoder RMS registered widths 896/1024/2048/3072/4096 tests passed\n";
 }

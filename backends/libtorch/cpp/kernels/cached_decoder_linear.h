@@ -112,12 +112,13 @@ class CachedNoBiasLt {
  static uint32_t alignment(const void* ptr){uint32_t a=256;while(reinterpret_cast<uintptr_t>(ptr)%a)a/=2;return a;}
  public:
  at::Tensor forward(const at::Tensor& x,const at::Tensor& weight) const {
-  auto fallback=[&]{return at::linear(x,weight);};
+  at::Tensor output;
+  auto fallback=[&]{output=at::Tensor();return at::linear(x,weight);};
   if(!x.is_cuda()||x.scalar_type()!=at::kBFloat16||weight.scalar_type()!=x.scalar_type()||weight.device()!=x.device()||x.dim()!=2||weight.dim()!=2||x.size(0)<=0||x.size(1)<=0||weight.size(0)<=0||weight.size(1)!=x.size(1)||!x.is_contiguous()||!weight.is_contiguous()||at::globalContext().blasPreferredBackend()!=at::BlasBackend::Cublaslt||at::globalContext()._SMCarveout_EXPERIMENTAL().has_value())return fallback();
   c10::cuda::CUDAGuard guard(x.device());
   auto property=at::cuda::getCurrentDeviceProperties();if(property->major!=9||property->minor!=0)return fallback();
   auto stream=at::cuda::getCurrentCUDAStream(x.get_device()).stream();cudaStreamCaptureStatus capturing;TORCH_CHECK(cudaStreamIsCapturing(stream,&capturing)==cudaSuccess,"Unable to query current stream");if(capturing!=cudaStreamCaptureStatusNone)return fallback();
-  auto output=at::empty({x.size(0),weight.size(0)},x.options());
+  output=at::empty({x.size(0),weight.size(0)},x.options());
   const auto m=x.size(0),n=weight.size(0),k=x.size(1);const auto limit=at::cuda::getCUDABlasLtWorkspaceSize();
   const auto policy=at::globalContext().allowBF16ReductionCuBLAS();
   const auto aa=alignment(weight.const_data_ptr()),ba=alignment(x.const_data_ptr()),ca=alignment(output.const_data_ptr());
@@ -156,7 +157,16 @@ class CachedNoBiasLt {
   auto workspace=at::cuda::getCUDABlasLtWorkspace();if(!workspace)return fallback();
   const float alpha=1.f,beta=0.f;
   auto result=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan->operation,&alpha,weight.const_data_ptr(),plan->a,x.const_data_ptr(),plan->b,&beta,output.const_data_ptr(),plan->c,output.mutable_data_ptr(),plan->c,&plan->algorithm,workspace,limit,stream);
-  TORCH_CHECK(result==CUBLAS_STATUS_SUCCESS,"Cached cuBLASLt learned projection failed: ",int(result));return output;
+  if(result!=CUBLAS_STATUS_SUCCESS) {
+   // Retire only this generation. Other callers may still own the immutable
+   // plan; a negative entry prevents repeatedly retrying a rejected algorithm.
+   {
+    std::lock_guard lock(mutex);auto found=plans.find(key);
+    if(found!=plans.end()&&found->second==plan)found->second=std::make_shared<Plan>();
+   }
+   return fallback();
+  }
+  return output;
  }
 };
 }
