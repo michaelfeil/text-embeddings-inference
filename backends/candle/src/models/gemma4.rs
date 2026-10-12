@@ -134,6 +134,10 @@ pub struct Gemma4TextConfig {
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct Gemma4Config {
+    #[serde(default)]
+    pub architectures: serde_json::Value,
+    #[serde(default)]
+    pub auto_map: serde_json::Value,
     pub text_config: Gemma4TextConfig,
     #[serde(default)]
     pub vision_config: Option<serde_json::Value>,
@@ -145,6 +149,20 @@ pub struct Gemma4Config {
     pub num_labels: Option<usize>,
     #[serde(default)]
     pub id2label: HashMap<String, String>,
+}
+
+impl Gemma4Config {
+    fn publisher_sequence_score(&self) -> bool {
+        self.architectures
+            .get(0)
+            .and_then(serde_json::Value::as_str)
+            == Some("Gemma4ForSequenceClassification")
+            && self
+                .auto_map
+                .get("AutoModelForSequenceClassification")
+                .and_then(serde_json::Value::as_str)
+                == Some("modeling_gemma4_sequence.Gemma4ForSequenceClassification")
+    }
 }
 
 #[derive(Debug)]
@@ -849,6 +867,7 @@ pub struct Gemma4Model {
     norm: Gemma4RmsNorm,
     output: Gemma4Output,
     final_logit_softcapping: Option<f64>,
+    publisher_sequence_score: bool,
     local_rope: (Tensor, Tensor),
     full_rope: (Tensor, Tensor),
     device: Device,
@@ -1089,6 +1108,7 @@ impl Gemma4Model {
             norm,
             output: score,
             final_logit_softcapping: text.final_logit_softcapping,
+            publisher_sequence_score: config.publisher_sequence_score(),
             local_rope,
             full_rope,
             device: vb.device().clone(),
@@ -1165,8 +1185,29 @@ impl Gemma4Model {
                 .map(|bounds| bounds[1] - 1)
                 .collect();
             let indices = Tensor::from_vec(indices, batch.len(), &self.device)?;
-            // final_logit_softcapping belongs to the LM head, not the classifier.
-            score.forward(&index_select(&states, &indices, 0)?)
+            if self.publisher_sequence_score {
+                // The declared custom sequence model scores every logical token
+                // before BF16 softcapping and selection. Selecting first changes
+                // GEMM rounding, including for an unfolded radix batch.
+                let mut logits = score.forward(&states)?;
+                if let Some(cap) = self.final_logit_softcapping {
+                    // Torch scalar operations use FP32 opmath for BF16/F16.
+                    // Candle affine otherwise rounds 1/cap before division.
+                    // Restore the score dtype after every publisher operation.
+                    let dtype = logits.dtype();
+                    let opmath = match dtype {
+                        DType::BF16 | DType::F16 => DType::F32,
+                        _ => dtype,
+                    };
+                    logits = (logits.to_dtype(opmath)? / cap)?.to_dtype(dtype)?;
+                    logits = logits.tanh()?;
+                    logits = (logits.to_dtype(opmath)? * cap)?.to_dtype(dtype)?;
+                }
+                index_select(&logits, &indices, 0)
+            } else {
+                // An LM softcap alone does not specify a sequence score contract.
+                score.forward(&index_select(&states, &indices, 0)?)
+            }
         }
         #[cfg(not(feature = "flash-attn"))]
         {
@@ -1284,6 +1325,40 @@ impl Model for Gemma4Model {
 #[cfg(test)]
 mod moe_tests {
     use super::*;
+    #[test]
+    fn custom_sequence_score_contract_requires_declared_publisher() -> anyhow::Result<()> {
+        let mut value = serde_json::json!({
+            "text_config": {
+                "hidden_activation": "gelu_pytorch_tanh", "hidden_size": 12,
+                "intermediate_size": 24, "layer_types": ["full_attention"],
+                "num_hidden_layers": 1, "num_attention_heads": 4,
+                "num_key_value_heads": 2, "max_position_embeddings": 32,
+                "pad_token_id": 0, "sliding_window": 8,
+                "final_logit_softcapping": 30.,
+                "rope_parameters": {"full_attention": {"rope_theta": 10000.0},
+                                    "sliding_attention": {"rope_theta": 10000.0}}
+            }
+        });
+        let config: Gemma4Config = serde_json::from_value(value.clone())?;
+        assert!(!config.publisher_sequence_score());
+        value["architectures"] = serde_json::json!(["Gemma4ForSequenceClassification"]);
+        let config: Gemma4Config = serde_json::from_value(value.clone())?;
+        assert!(!config.publisher_sequence_score());
+        value["auto_map"] = serde_json::json!({"AutoModelForSequenceClassification":
+            "modeling_gemma4_sequence.Gemma4ForSequenceClassification"});
+        let config: Gemma4Config = serde_json::from_value(value.clone())?;
+        assert!(config.publisher_sequence_score());
+        value["architectures"] = serde_json::Value::Null;
+        let config: Gemma4Config = serde_json::from_value(value.clone())?;
+        assert!(!config.publisher_sequence_score());
+        value["architectures"] = serde_json::json!(["Gemma4ForSequenceClassification"]);
+        value["auto_map"]["AutoModelForSequenceClassification"] =
+            "other.Gemma4ForSequenceClassification".into();
+        let config: Gemma4Config = serde_json::from_value(value)?;
+        assert!(!config.publisher_sequence_score());
+        Ok(())
+    }
+
     #[test]
     fn compact_queries_require_contiguous_owned_suffixes() {
         let mut batch = Batch {

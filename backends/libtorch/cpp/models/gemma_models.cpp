@@ -22,6 +22,7 @@
 #include <map>
 #include <memory>
 #ifdef TEI_TORCH_CUDA_KERNELS
+#include "kernels/gemma_score.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAStream.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -39,6 +40,7 @@ class Gemma final : public Model {
   int64_t hidden, heads, layers, ple_width;
   double epsilon;
   bool legacy, embedding2, causal;
+  bool publisher_sequence=false;
   bool embedding2_reference_cuda = false;
   struct Layer {
     std::string p;
@@ -458,6 +460,9 @@ class Gemma final : public Model {
   }
   at::Tensor residual_norm(const at::Tensor& residual,const at::Tensor& x,const std::string& name) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(publisher_sequence && ple_width==0 && device.is_cuda() && dtype==at::kBFloat16
+       &&x.dim()==2 &&x.size(1)>0 &&x.size(1)<=8192 &&x.is_contiguous() &&residual.is_contiguous())
+      return gemma4_bf16_norm_residual(residual,x,weight(norm_scales,prefix+name+".weight"),epsilon,{});
     if(embedding2_reference_cuda)
       return gemma2_residual_norm_cuda(residual,x,weight(norm_scales,prefix+name+".weight"),epsilon);
 #endif
@@ -668,6 +673,11 @@ class Gemma final : public Model {
     family = cfg.string("model_type", "");
     legacy = family == "gemma3" || family == "gemma3_text";
     embedding2 = family == "embedding_gemma2";
+    publisher_sequence = !legacy && !embedding2 &&
+       cfg.string("architectures").starts_with("[") &&
+       cfg.string("architectures.0")=="Gemma4ForSequenceClassification" &&
+       cfg.string("auto_map.AutoModelForSequenceClassification")==
+         "modeling_gemma4_sequence.Gemma4ForSequenceClassification";
     hidden = integer("hidden_size", 0); heads = integer("num_attention_heads", 0);
     layers = integer("num_hidden_layers", 0); epsilon = real("rms_norm_eps", 1e-6);
     ple_width = integer("hidden_size_per_layer_input", 0);
@@ -792,10 +802,30 @@ class Gemma final : public Model {
     TORCH_CHECK(classification_width()>0,"Gemma classifier score head is missing");
     TORCH_CHECK(!tokens,"Gemma4 classifier supports sequence logits only");
     auto states=forward_impl(input,true);
-    // Read current packed ends on the producing device, including graph replay.
-    // A host-backed index upload cannot run inside CUDA graph capture.
+    if(publisher_sequence) {
+      // The declared publisher scores every logical token before readout.
+      // Selecting hidden states first changes the BF16 GEMM rounding, including
+      // after radix unfolding. Pointwise cap operations commute with gathering
+      // the resulting score rows, preserving each intermediate BF16 rounding.
+      auto logits=at::linear(states,weight(weights,"score.weight"));
+      const double cap=real("final_logit_softcapping",0.);
+      const bool capped=cfg.values.count(key("final_logit_softcapping"));
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(logits.is_cuda()&&logits.scalar_type()==at::kBFloat16&&logits.is_contiguous()
+         &&input.cumulative.scalar_type()==at::kInt&&input.cumulative.is_contiguous())
+        return gemma4_bf16_sequence_score_readout(logits,input.cumulative,input.batch,cap,capped);
+#endif
+      if(capped) {
+        logits=logits/cap;
+        logits=at::tanh(logits);
+        logits=logits*cap;
+      }
+      // Read current packed ends on the producing device, including graph replay.
+      auto ids=input.cumulative.narrow(0,1,input.batch).to(at::kLong)-1;
+      return logits.index_select(0,ids);
+    }
+    // An LM softcap alone does not specify a sequence score contract.
     auto ids=input.cumulative.narrow(0,1,input.batch).to(at::kLong)-1;
-    // LM-head softcapping does not apply to sequence classifier logits.
     return at::linear(states.index_select(0,ids),weight(weights,"score.weight"));
   }
   at::Tensor forward_impl(const PackedInput& input,bool is_causal) const {
@@ -911,6 +941,25 @@ class Gemma final : public Model {
       mlp=linear(mlp,p+"mlp.down_proj");
 
       if(boolean("enable_moe_block",false))mlp=moe(states,mlp,p,input);
+#ifdef TEI_TORCH_CUDA_KERNELS
+      const auto* layer_scale=publisher_sequence && ple_width==0 ? &w(p+"layer_scalar") : nullptr;
+      if(layer_scale && device.is_cuda() && dtype==at::kBFloat16 && states.is_contiguous()
+         &&layer_scale->device()==device && layer_scale->scalar_type()==at::kBFloat16
+         &&layer_scale->is_contiguous() && layer_scale->dim()==1 && layer_scale->numel()==1) {
+        // Both original pointwise stages round to BF16. The fresh output cannot
+        // overwrite residual/normalized inputs or a previous request's state.
+        if(mlp.dim()==2 &&mlp.size(1)>0 &&mlp.size(1)<=8192 &&mlp.is_contiguous()) {
+          states=gemma4_bf16_norm_residual(states,mlp,
+            weight(norm_scales,prefix+p+"post_feedforward_layernorm.weight"),epsilon,*layer_scale);
+          continue;
+        }
+        auto normalized_mlp=norm(mlp,p+"post_feedforward_layernorm");
+        if(normalized_mlp.is_contiguous()) {
+          states=gemma4_bf16_residual_scale(states,normalized_mlp,*layer_scale);
+          continue;
+        }
+      }
+#endif
       states = residual_norm(states,mlp,p+"post_feedforward_layernorm");
 
       if (ple.defined()) {
