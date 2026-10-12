@@ -40,6 +40,7 @@ class Decoder final : public Model {
   bool causal, renormalize;
   bool cudnn_varlen = false;
   bool fp8_dynamic = false;
+  bool qwen3_half_exact = false;
   int64_t left_window = -1, right_window = -1, top_k;
   at::Tensor embedding, final_norm, projection, projection_bias, score, score_bias, cos_cache, sin_cache, query_scale;
   std::vector<DecoderLayer> layers;
@@ -77,7 +78,9 @@ class Decoder final : public Model {
     // and fused softmax contract.
     // Qwen3 width1024 uses its registered 4x1 RMS layout and fused
     // attention arithmetic; both are needed for trained BF16 score parity.
-    return exact_mistral_math()||(dtype==at::kBFloat16
+    // FP16 Qwen3 needs the same registered RMS and fused softmax boundaries.
+    return qwen3_half_exact
+      ||exact_mistral_math()||(dtype==at::kBFloat16
       &&((hidden==2048&&family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
         ||(family=="llama"&&(hidden==2048||hidden==4096))
         ||(family=="qwen3"&&hidden==1024&&head_dim==128)));
@@ -314,7 +317,11 @@ public:
     TORCH_CHECK(!options.boolean("use_sliding_window", false) || family == "mistral", "Qwen sliding-window configuration is unsupported by Candle and this backend");
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(device.is_cuda()) {
-      auto major=at::cuda::getDeviceProperties(device.index())->major;
+      const auto* properties=at::cuda::getDeviceProperties(device.index());
+      auto major=properties->major;
+      // Other architectures retain installed Torch arithmetic until qualified.
+      qwen3_half_exact=!fp8_dynamic&&dtype==at::kHalf&&family=="qwen3"&&hidden==1024
+        &&head_dim==128&&major==9&&properties->minor==0;
       cudnn_varlen=options.boolean("_cudnn_varlen",false)&&(major==9||major==10)
         &&at::detail::getCUDAHooks().versionRuntimeCuDNN()>=91800;
     }

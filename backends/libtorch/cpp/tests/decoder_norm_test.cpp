@@ -25,7 +25,21 @@ int main(int argc,char** argv) {
  auto rounded=(x+r).to(at::kFloat);auto wrong=(rounded*at::rsqrt(rounded.square().mean(-1,true)+1e-6)*w.to(at::kFloat)).to(at::kBFloat16);
  TORCH_CHECK(at::equal(result.first,expected),"Known residual-rounding regression must match independent FP32 oracle exactly");
  TORCH_CHECK((result.first-wrong).abs().max().item<float>()>=.125,"Fixture must distinguish pre-rounded residual statistics");
- bool rejected=false;try{tei::decoder_exact_rms_norm(x.to(at::kHalf),r.to(at::kHalf),w.to(at::kHalf),1e-6);}catch(const c10::Error&){rejected=true;}TORCH_CHECK(rejected,"Unvalidated dtype must be rejected");
+ bool rejected=false;try{tei::decoder_exact_rms_norm(x.to(at::kHalf),r.to(at::kHalf),w.to(at::kHalf),1e-6);}catch(const c10::Error&){rejected=true;}TORCH_CHECK(rejected==(width!=1024),"FP16 RMS must accept only registered width 1024");
+ }
+ // FP16 uses its original registered 1024-wide geometry and preserves
+ // FP32 residual statistics before the output store.
+ auto half_options=options.dtype(at::kHalf);
+ for(int64_t rows:{1,7,257})for(bool residual:{false,true}) {
+  auto x=at::rand({rows,1024},half_options)-.5,r=at::rand_like(x)-.5;
+  auto w=at::ones({1024},half_options);
+  auto result=tei::decoder_exact_rms_norm(x,residual?r:at::Tensor(),w,1e-6);
+  auto full=residual?x.to(at::kFloat)+r.to(at::kFloat):x.to(at::kFloat);
+  auto expected=(full*at::rsqrt(full.square().mean(-1,true)+1e-6)).to(at::kHalf);
+  TORCH_CHECK((result.first-expected).abs().max().item<float>()<=.001953125,
+    "FP16 RMS must preserve independent FP32 residual statistics");
+  TORCH_CHECK(at::equal(result.second,residual?x+r:x),"FP16 residual must round at its output store");
+  if(!residual)TORCH_CHECK(result.second.is_alias_of(x),"Plain FP16 RMS must retain the input residual");
  }
  bool rejected_width=false;try{auto x=at::ones({1,512},options);tei::decoder_exact_rms_norm(x,{},at::ones({512},options),1e-6);}catch(const c10::Error&){rejected_width=true;}TORCH_CHECK(rejected_width,"Unregistered width must be rejected");
  std::cout<<"Exact decoder RMS registered widths 1024/2048/3072/4096 tests passed\n";
