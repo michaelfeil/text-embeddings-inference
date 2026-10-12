@@ -26,6 +26,8 @@ Once you have confirmed that you have access to the model:
 
 If you're the CLI, set the `HF_TOKEN` environment variable. For example:
 
+Build the local `infinity_v3:latest` image first; see [custom containers](custom_container).
+
 ```shell
 export HF_TOKEN=<YOUR READ TOKEN>
 ```
@@ -37,5 +39,5 @@ model=<your private model>
 volume=$PWD/data
 token=<your cli Hugging Face Hub token>
 
-docker run --gpus all -e HF_TOKEN=$token -p 8080:80 -v $volume:/data --pull always ghcr.io/huggingface/text-embeddings-inference:1.8 --model-id $model
+docker run --gpus all -e HF_TOKEN=$token -p 8080:80 -v $volume:/data infinity_v3:latest --model-id $model
 ```

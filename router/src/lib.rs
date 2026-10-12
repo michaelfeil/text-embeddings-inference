@@ -14,6 +14,12 @@ mod shutdown;
 use anyhow::{anyhow, Context, Result};
 use hf_hub::api::tokio::ApiBuilder;
 use hf_hub::{Repo, RepoType};
+use infinity_v3_backend::{DType, Pool};
+use infinity_v3_core::download::{download_artifacts, ST_CONFIG_NAMES};
+use infinity_v3_core::infer::Infer;
+use infinity_v3_core::queue_actor::Queue;
+use infinity_v3_core::tokenization::{Tokenization, MAX_TOKENIZATION_WORKERS};
+use infinity_v3_core::TextEmbeddingsError;
 use serde::Deserialize;
 use serde::Serialize;
 use std::collections::HashMap;
@@ -21,12 +27,6 @@ use std::fs;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::time::{Duration, Instant};
-use text_embeddings_backend::{DType, Pool};
-use text_embeddings_core::download::{download_artifacts, ST_CONFIG_NAMES};
-use text_embeddings_core::infer::Infer;
-use text_embeddings_core::queue_actor::Queue;
-use text_embeddings_core::tokenization::{Tokenization, MAX_TOKENIZATION_WORKERS};
-use text_embeddings_core::TextEmbeddingsError;
 use tokenizers::processors::sequence::Sequence;
 use tokenizers::processors::template::TemplateProcessing;
 use tokenizers::{PostProcessorWrapper, Tokenizer};
@@ -52,7 +52,7 @@ pub async fn run(
     tokenization_workers: Option<usize>,
     tokenization_queue_capacity: std::num::NonZeroUsize,
     dtype: Option<DType>,
-    pooling: Option<text_embeddings_backend::Pool>,
+    pooling: Option<infinity_v3_backend::Pool>,
     decision_protocol: Option<DecisionProtocol>,
     max_concurrent_requests: usize,
     max_batch_tokens: usize,
@@ -75,9 +75,9 @@ pub async fn run(
     cors_allow_origin: Option<Vec<String>>,
     device_id: Option<usize>,
     backend_device_ids: Option<String>,
-    backend_kind: text_embeddings_backend::BackendKind,
-    torch_device: text_embeddings_backend::TorchDevice,
-    multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
+    backend_kind: infinity_v3_backend::BackendKind,
+    torch_device: infinity_v3_backend::TorchDevice,
+    multimodal_config: infinity_v3_core::multimodal::MultimodalConfig,
 ) -> Result<()> {
     let (model_id, decision_protocol) =
         model_aliases::resolve(model_id, decision_protocol, pooling.as_ref())?;
@@ -187,21 +187,21 @@ pub async fn run(
             pooling.is_none(),
             "Typed decisions do not use embedding pooling"
         );
-        text_embeddings_backend::ModelType::Decision
+        infinity_v3_backend::ModelType::Decision
     } else if config.model_type == "qwen3_vl" {
         anyhow::ensure!(
-            pooling.is_none() || pooling == Some(text_embeddings_backend::Pool::LastToken),
+            pooling.is_none() || pooling == Some(infinity_v3_backend::Pool::LastToken),
             "Qwen3-VL requires last-token pooling"
         );
-        text_embeddings_backend::ModelType::Embedding(text_embeddings_backend::Pool::LastToken)
+        infinity_v3_backend::ModelType::Embedding(infinity_v3_backend::Pool::LastToken)
     } else {
         get_backend_model_type(&config, &model_root, pooling)?
     };
 
     // Info model type
     let model_type = match &backend_model_type {
-        text_embeddings_backend::ModelType::Decision => ModelType::Decision,
-        text_embeddings_backend::ModelType::Classifier => {
+        infinity_v3_backend::ModelType::Decision => ModelType::Decision,
+        infinity_v3_backend::ModelType::Classifier => {
             let id2label = config
                 .id2label
                 .context("`config.json` does not contain `id2label`")?;
@@ -218,11 +218,9 @@ pub async fn run(
                 ModelType::Reranker(classifier_model)
             }
         }
-        text_embeddings_backend::ModelType::Embedding(pool) => {
-            ModelType::Embedding(EmbeddingModel {
-                pooling: pool.to_string(),
-            })
-        }
+        infinity_v3_backend::ModelType::Embedding(pool) => ModelType::Embedding(EmbeddingModel {
+            pooling: pool.to_string(),
+        }),
     };
 
     // Load tokenizer
@@ -231,9 +229,8 @@ pub async fn run(
     } else {
         "tokenizer.json"
     });
-    let mut tokenizer = Tokenizer::from_file(tokenizer_path).expect(
-        "tokenizer.json not found. text-embeddings-inference only supports fast tokenizers",
-    );
+    let mut tokenizer = Tokenizer::from_file(tokenizer_path)
+        .expect("tokenizer.json not found. infinity_v3 only supports fast tokenizers");
     tokenizer.with_padding(None);
     // Old Qwen2  repos updates the post processor manually instead of into the tokenizer.json.
     // Newer ones (https://huggingface.co/jinaai/jina-code-embeddings-0.5b/tree/main) have it in the tokenizer.json. This is to support both cases.
@@ -386,10 +383,9 @@ pub async fn run(
     // Tokenization logic
     let chat = if matches!(
         &backend_model_type,
-        text_embeddings_backend::ModelType::Embedding(_)
-            | text_embeddings_backend::ModelType::Classifier
+        infinity_v3_backend::ModelType::Embedding(_) | infinity_v3_backend::ModelType::Classifier
     ) {
-        text_embeddings_core::chat::ChatProcessor::load(&model_root).unwrap_or_else(|error| {
+        infinity_v3_core::chat::ChatProcessor::load(&model_root).unwrap_or_else(|error| {
             tracing::warn!("Native conversations disabled: {error}");
             None
         })
@@ -398,7 +394,7 @@ pub async fn run(
     };
     let multimodal = if config.model_type == "qwen3_vl" {
         Some(
-            text_embeddings_core::multimodal::Qwen3VlProcessor::load(
+            infinity_v3_core::multimodal::Qwen3VlProcessor::load(
                 &model_root,
                 tokenizer.clone(),
                 max_input_length,
@@ -411,7 +407,7 @@ pub async fn run(
     };
     let embedding_gemma2 = if config.model_type == "embedding_gemma2" {
         Some(
-            text_embeddings_core::multimodal::EmbeddingGemma2Processor::load(
+            infinity_v3_core::multimodal::EmbeddingGemma2Processor::load(
                 &model_root,
                 tokenizer.clone(),
                 max_input_length,
@@ -455,13 +451,13 @@ pub async fn run(
     let torch_device = backend_kind.resolve_device(torch_device)?;
     let model_dtype = config.dtype.as_deref().or(config.torch_dtype.as_deref());
     let dtype = match backend_kind {
-        text_embeddings_backend::BackendKind::Libtorch => resolve_libtorch_dtype(
+        infinity_v3_backend::BackendKind::Libtorch => resolve_libtorch_dtype(
             dtype,
             model_dtype,
             &config.model_type,
-            torch_device == text_embeddings_backend::TorchDevice::Cpu,
+            torch_device == infinity_v3_backend::TorchDevice::Cpu,
         ),
-        text_embeddings_backend::BackendKind::Candle => {
+        infinity_v3_backend::BackendKind::Candle => {
             resolve_dtype(dtype, model_dtype, &config.model_type)
         }
     };
@@ -488,7 +484,7 @@ pub async fn run(
                 replica,
                 "Initializing backend replica"
             );
-            let backend = text_embeddings_backend::Backend::new_selected(
+            let backend = infinity_v3_backend::Backend::new_selected(
                 model_root,
                 api_repo,
                 dtype,
@@ -522,7 +518,7 @@ pub async fn run(
         }
     }))
     .await?;
-    let backend = text_embeddings_core::backend_pool::BackendPool::new(backends)?;
+    let backend = infinity_v3_core::backend_pool::BackendPool::new(backends)?;
     let max_batch_requests = match (max_batch_requests, backend.max_batch_size) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -542,7 +538,7 @@ pub async fn run(
             "gemma4" | "gemma4_unified" | "embedding_gemma2"
         ) && matches!(
             &backend.model_type,
-            text_embeddings_backend::ModelType::Embedding(_)
+            infinity_v3_backend::ModelType::Embedding(_)
         ))
         || !backend.radix_mlp_supported
     {
@@ -640,8 +636,8 @@ pub async fn run(
 fn get_backend_model_type(
     config: &ModelConfig,
     model_root: &Path,
-    pooling: Option<text_embeddings_backend::Pool>,
-) -> Result<text_embeddings_backend::ModelType> {
+    pooling: Option<infinity_v3_backend::Pool>,
+) -> Result<infinity_v3_backend::ModelType> {
     for arch in &config.architectures {
         // Edge case affecting `Alibaba-NLP/gte-multilingual-base` and possibly other fine-tunes of
         // the same base model. More context at https://huggingface.co/Alibaba-NLP/gte-multilingual-base/discussions/7
@@ -652,9 +648,9 @@ fn get_backend_model_type(
             continue;
         }
 
-        if Some(text_embeddings_backend::Pool::Splade) == pooling && arch.ends_with("MaskedLM") {
-            return Ok(text_embeddings_backend::ModelType::Embedding(
-                text_embeddings_backend::Pool::Splade,
+        if Some(infinity_v3_backend::Pool::Splade) == pooling && arch.ends_with("MaskedLM") {
+            return Ok(infinity_v3_backend::ModelType::Embedding(
+                infinity_v3_backend::Pool::Splade,
             ));
         } else if arch.ends_with("Classification") {
             if pooling.is_some() {
@@ -662,11 +658,11 @@ fn get_backend_model_type(
                     "`--pooling` arg is set but model is a classifier. Ignoring `--pooling` arg."
                 );
             }
-            return Ok(text_embeddings_backend::ModelType::Classifier);
+            return Ok(infinity_v3_backend::ModelType::Classifier);
         }
     }
 
-    if Some(text_embeddings_backend::Pool::Splade) == pooling {
+    if Some(infinity_v3_backend::Pool::Splade) == pooling {
         return Err(anyhow!(
             "Splade pooling is not supported: model is not a ForMaskedLM model"
         ));
@@ -690,13 +686,13 @@ fn get_backend_model_type(
                         return Err(err).context("The `--pooling` arg is not set and we could not find a pooling configuration (`1_Pooling/config.json`) for this model.");
                     }
                     tracing::warn!("The `--pooling` arg is not set and we could not find a pooling configuration (`1_Pooling/config.json`) for this model but the model is a BERT variant. Defaulting to `CLS` pooling.");
-                    text_embeddings_backend::Pool::Cls
+                    infinity_v3_backend::Pool::Cls
                 }
             }
         }
     };
 
-    Ok(text_embeddings_backend::ModelType::Embedding(pool))
+    Ok(infinity_v3_backend::ModelType::Embedding(pool))
 }
 
 // Resolve Auto before passing a concrete dtype to the backend or reporting /info.
@@ -1206,7 +1202,7 @@ mod auto_dtype_tests {
             config.resolve_decoder_classifier_labels().unwrap();
             assert!(matches!(
                 get_backend_model_type(&config, Path::new("."), None).unwrap(),
-                text_embeddings_backend::ModelType::Classifier
+                infinity_v3_backend::ModelType::Classifier
             ));
             assert_eq!(config.id2label.as_ref().unwrap()["1"], "LABEL_1");
             assert_eq!(config.label2id.as_ref().unwrap()["LABEL_1"], 1);

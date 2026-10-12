@@ -3,8 +3,8 @@
 use crate::layers::{LayerNorm, Linear};
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
+use infinity_v3_backend_core::ClefField;
 use serde::Deserialize;
-use text_embeddings_backend_core::ClefField;
 
 #[derive(Deserialize)]
 struct Config {

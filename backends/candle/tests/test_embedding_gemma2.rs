@@ -1,12 +1,12 @@
 #![cfg(feature = "flash-attn")]
 use anyhow::{Context, Result};
 use candle::{DType, Device, IndexOp};
-use serde::Deserialize;
-use std::{path::PathBuf, sync::Arc};
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{
     AudioFeatures, Backend, Batch, ImagePatches, ModelType, MultimodalEncoding, Pool,
 };
+use serde::Deserialize;
+use std::{path::PathBuf, sync::Arc};
 
 #[derive(Deserialize)]
 struct Case {
@@ -165,7 +165,7 @@ fn released_checkpoint_matches_transformers_for_every_modality() -> Result<()> {
         for row in 0..case.sequences.len() {
             let expected = expected["pooled"].i(row)?.to_vec1::<f32>()?;
             let actual = match &actual[&row] {
-                text_embeddings_backend_core::Embedding::Pooled(values) => values,
+                infinity_v3_backend_core::Embedding::Pooled(values) => values,
                 _ => anyhow::bail!("expected pooled embeddings"),
             };
             let text = matches!(case.name.as_str(), "text" | "text_batch" | "text_window");
@@ -186,7 +186,7 @@ fn released_checkpoint_matches_transformers_for_every_modality() -> Result<()> {
                 .to_vec2::<f32>()?;
             offset += sequence.len();
             let actual = match &actual[&row] {
-                text_embeddings_backend_core::Embedding::All(tokens) => tokens,
+                infinity_v3_backend_core::Embedding::All(tokens) => tokens,
                 _ => anyhow::bail!("expected raw token embeddings"),
             };
             assert_eq!(actual.len(), expected.len());

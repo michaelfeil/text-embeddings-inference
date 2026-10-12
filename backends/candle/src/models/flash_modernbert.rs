@@ -10,7 +10,7 @@ use crate::models::modernbert::{
 use crate::models::Model;
 use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 
 struct ModernBertAttention {
     wqkv: Linear,

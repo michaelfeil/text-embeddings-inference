@@ -2,7 +2,7 @@
 //! published convaiinnovations/laya-typed-decisions checkpoint.
 use anyhow::Result;
 use candle::{DType, Device};
-use text_embeddings_backend_candle::LayaModel;
+use infinity_v3_backend_candle::LayaModel;
 use tokenizers::Tokenizer;
 
 #[test]
@@ -64,8 +64,8 @@ fn laya_checkpoint_scores_all_markers() -> Result<()> {
 
 #[test]
 fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
-    use text_embeddings_backend_candle::CandleBackend;
-    use text_embeddings_backend_core::{Backend, Batch, DecisionInput, ModelType};
+    use infinity_v3_backend_candle::CandleBackend;
+    use infinity_v3_backend_core::{Backend, Batch, DecisionInput, ModelType};
     let Ok(path) = std::env::var("LAYA_CHECKPOINT_DIR") else {
         return Ok(());
     };
@@ -149,8 +149,8 @@ fn laya_batch_preserves_question_types_and_marker_positions() -> Result<()> {
 #[test]
 #[ignore = "requires CUDA and LAYA_CHECKPOINT_DIR"]
 fn laya_fp8_without_flash_attention_fails_at_startup() -> Result<()> {
-    use text_embeddings_backend_candle::CandleBackend;
-    use text_embeddings_backend_core::ModelType;
+    use infinity_v3_backend_candle::CandleBackend;
+    use infinity_v3_backend_core::ModelType;
     let path = std::env::var("LAYA_CHECKPOINT_DIR")?;
     let error = CandleBackend::new_with_fp8(
         std::path::Path::new(&path),

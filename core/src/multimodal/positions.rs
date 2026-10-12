@@ -1,4 +1,4 @@
-use text_embeddings_backend::ImagePatches;
+use infinity_v3_backend::ImagePatches;
 
 /// Each span is (first image placeholder token, image). Positions are per sequence,
 /// before queue packing. Identical placeholder IDs do not establish image equality.

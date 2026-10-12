@@ -8,8 +8,8 @@ use std::path::Path;
 
 use candle::{DType, Device, IndexOp, Module, Result, Tensor};
 use candle_nn::{Embedding, VarBuilder};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 use serde::Deserialize;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 use crate::layers::{LayerNorm, Linear};
 use crate::models::{FlashModernBertModel, ModernBertConfig};
@@ -44,7 +44,7 @@ impl LayaConfig {
             encoder["model_type"] == "modernbert",
             "Laya encoder must be ModernBERT"
         );
-        // Transformers 5 stores the two RoPE bases in rope_parameters; TEI's
+        // Transformers 5 stores the two RoPE bases in rope_parameters; infinity_v3's
         // ModernBERT config still consumes the legacy flat names.
         for (kind, field) in [
             ("full_attention", "global_rope_theta"),
@@ -338,19 +338,19 @@ impl super::Model for LayaModel {
     fn decide(
         &self,
         mut batch: Batch,
-        inputs: Vec<text_embeddings_backend_core::DecisionInput>,
-    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>> {
+        inputs: Vec<infinity_v3_backend_core::DecisionInput>,
+    ) -> Result<Vec<infinity_v3_backend_core::DecisionOutput>> {
         if inputs.len() != batch.len() {
             candle::bail!("Laya metadata count does not match batch")
         }
         let inputs = inputs
             .into_iter()
             .map(|input| match input {
-                text_embeddings_backend_core::DecisionInput::Laya {
+                infinity_v3_backend_core::DecisionInput::Laya {
                     question_type,
                     markers,
                 } => Ok((question_type, markers)),
-                text_embeddings_backend_core::DecisionInput::Warmup => Ok((0, vec![0])),
+                infinity_v3_backend_core::DecisionInput::Warmup => Ok((0, vec![0])),
                 _ => candle::bail!("Laya requires marker decision metadata"),
             })
             .collect::<Result<Vec<_>>>()?;
@@ -379,7 +379,7 @@ impl super::Model for LayaModel {
                     self.hidden,
                 ))?;
                 let output = self.forward_head(hidden, &input.1, input.0)?;
-                Ok(text_embeddings_backend_core::DecisionOutput {
+                Ok(infinity_v3_backend_core::DecisionOutput {
                     logits: output.logits,
                     action_probability: output.action_probability,
                 })

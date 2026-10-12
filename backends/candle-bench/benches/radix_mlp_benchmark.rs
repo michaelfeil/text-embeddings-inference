@@ -1,8 +1,8 @@
 use anyhow::Result;
 use criterion::{criterion_group, criterion_main, Criterion};
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{Backend, ModelType, Pool};
 use radix_mlp::compute_fold_and_scatter;
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, ModelType, Pool};
 
 use hf_hub::api::sync::{ApiBuilder, ApiError, ApiRepo};
 use hf_hub::{Repo, RepoType};
@@ -105,9 +105,9 @@ struct Batch {
     fold_gather: Option<Vec<u32>>,
 }
 
-impl From<Batch> for text_embeddings_backend_core::Batch {
+impl From<Batch> for infinity_v3_backend_core::Batch {
     fn from(b: Batch) -> Self {
-        text_embeddings_backend_core::Batch {
+        infinity_v3_backend_core::Batch {
             multimodal: vec![],
             input_ids: b.input_ids,
             token_type_ids: b.token_type_ids,
@@ -304,20 +304,20 @@ fn bench_radix_mlp(c: &mut Criterion) {
 
         let radix_vecs: Vec<Vec<f32>> = (0..batch_size)
             .map(|i| match radix_result.get(&i).unwrap() {
-                text_embeddings_backend_core::Embedding::Pooled(v) => v.clone(),
-                text_embeddings_backend_core::Embedding::All(vecs) => vecs.last().unwrap().clone(),
+                infinity_v3_backend_core::Embedding::Pooled(v) => v.clone(),
+                infinity_v3_backend_core::Embedding::All(vecs) => vecs.last().unwrap().clone(),
             })
             .collect();
         let regular_vecs: Vec<Vec<f32>> = (0..batch_size)
             .map(|i| match regular_result.get(&i).unwrap() {
-                text_embeddings_backend_core::Embedding::Pooled(v) => v.clone(),
-                text_embeddings_backend_core::Embedding::All(vecs) => vecs.last().unwrap().clone(),
+                infinity_v3_backend_core::Embedding::Pooled(v) => v.clone(),
+                infinity_v3_backend_core::Embedding::All(vecs) => vecs.last().unwrap().clone(),
             })
             .collect();
         let radix_vanilla_vecs: Vec<Vec<f32>> = (0..batch_size)
             .map(|i| match radix_vanilla_result.get(&i).unwrap() {
-                text_embeddings_backend_core::Embedding::Pooled(v) => v.clone(),
-                text_embeddings_backend_core::Embedding::All(vecs) => vecs.last().unwrap().clone(),
+                infinity_v3_backend_core::Embedding::Pooled(v) => v.clone(),
+                infinity_v3_backend_core::Embedding::All(vecs) => vecs.last().unwrap().clone(),
             })
             .collect();
 

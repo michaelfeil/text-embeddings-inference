@@ -1,7 +1,7 @@
 #![cfg(feature = "experimental-deberta")]
 use candle::{DType, Device, Tensor};
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 
 #[test]
 #[ignore = "requires H100, FA4 DeBERTa AOT bundle, and generated Transformers fixtures"]

@@ -1,10 +1,10 @@
 #![cfg(feature = "flash-attn")]
 
 use anyhow::Result;
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 use serde::Deserialize;
 use std::path::PathBuf;
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 
 #[derive(Deserialize)]
 struct Reference {

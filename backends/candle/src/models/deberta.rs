@@ -4,8 +4,8 @@ use crate::models::Model;
 use candle::{DType, Device, Module, Result, Tensor};
 use candle_flash_attn_v4::{deberta_attn_varlen, RelativeBuckets, Seqlens};
 use candle_nn::{Activation, Embedding, VarBuilder};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 use serde::Deserialize;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(default)]
@@ -218,7 +218,7 @@ impl Layer {
         )?
         .flatten_from(1)?;
         // DeBERTa rounds the residual addition before LayerNorm, unlike the
-        // optional fused residual APIs used by some other TEI architectures.
+        // optional fused residual APIs used by some other infinity_v3 architectures.
         let x = self
             .att_norm
             .forward(&self.out.forward(&att)?.add(x)?, None)?;

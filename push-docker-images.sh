@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Docker Push Script for Text Embeddings Inference
+# Docker Push Script for infinity_v3
 # Builds and pushes Docker images for multiple CUDA compute capabilities
 # Following GitHub Actions naming conventions
 
@@ -9,9 +9,7 @@ set -euo pipefail
 # Configuration
 VERSION="1.8.18rc0"
 REGISTRIES=(
-    # "registry.internal.huggingface.tech/api-inference/text-embeddings-inference"
-    # "ghcr.io/huggingface/text-embeddings-inference"
-    "baseten/bei_bert"
+    "${IMAGE_REPOSITORY:-baseten/infinity_v3}"
 )
 
 # Matrix configurations: prefix:compute_cap:dockerfile:sccache:extra_args
@@ -62,15 +60,6 @@ check_prerequisites() {
         log_error "Docker daemon is not running"
         exit 1
     fi
-
-    # Check if user is logged in to registries
-    for registry in "${REGISTRIES[@]}"; do
-        if [[ "$registry" == *"ghcr.io"* ]]; then
-            if ! docker pull ghcr.io/huggingface/text-embeddings-inference:latest &> /dev/null; then
-                log_warning "Not logged in to $registry. Please run 'docker login ghcr.io'"
-            fi
-        fi
-    done
 
     log_success "Prerequisites check completed"
 }
@@ -257,7 +246,7 @@ main() {
     # Set environment variables for better performance
     export DOCKER_BUILDKIT=1
 
-    log_info "Text Embeddings Inference Docker Build Script"
+    log_info "infinity_v3 Docker Build Script"
     log_info "Version: $VERSION"
     log_info "Git SHA: $(git rev-parse --short HEAD)"
 

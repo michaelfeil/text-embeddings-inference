@@ -7,7 +7,7 @@ links = "tei_torch"
 autoexamples = false
 
 [dependencies]
-text-embeddings-backend-core = { path = "../core" }
+text-embeddings-backend-core = { package = "infinity_v3-backend-core", path = "../core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 safetensors = "0.8"
@@ -20,7 +20,7 @@ cmake = "0.1"
 
 [dev-dependencies]
 zip = { version = "8.6.0", default-features = false }
-text-embeddings-backend-candle = { path = "../candle" }
+text-embeddings-backend-candle = { package = "infinity_v3-backend-candle", path = "../candle" }
 
 [features]
 benchmark-cuda = ["text-embeddings-backend-candle/cuda", "text-embeddings-backend-candle/flash-attn", "text-embeddings-backend-candle/cuda-dynamic-linking"]

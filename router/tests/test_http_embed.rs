@@ -2,9 +2,9 @@ mod common;
 
 use crate::common::{start_server, Score};
 use anyhow::Result;
+use infinity_v3_backend::DType;
 use insta::internals::YamlMatcher;
 use serde_json::json;
-use text_embeddings_backend::DType;
 
 #[tokio::test]
 #[cfg(feature = "http")]

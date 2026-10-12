@@ -5,10 +5,10 @@ edition = "2021"
 publish = false
 
 [dependencies]
-text-embeddings-backend-candle = { path = "../candle" }
-text-embeddings-backend = { path = ".." }
-text-embeddings-backend-core = { path = "../core" }
-text-embeddings-core = { path = "../../core" }
+infinity_v3-backend-candle = { path = "../candle" }
+infinity_v3-backend = { path = ".." }
+infinity_v3-backend-core = { path = "../core" }
+infinity_v3-core = { path = "../../core" }
 anyhow = { workspace = true }
 cudarc = { workspace = true, optional = true }
 hf-hub = { workspace = true , features = ["ureq"] }
@@ -24,6 +24,6 @@ name = "radix_mlp_benchmark"
 harness = false
 
 [features]
-metal = ["text-embeddings-backend-candle/metal"]
-cuda = ["text-embeddings-backend-candle/cuda", "text-embeddings-backend-candle/flash-attn", "dep:cudarc","cudarc?/dynamic-linking"]
-candle = ["text-embeddings-backend/candle"]
+metal = ["infinity_v3-backend-candle/metal"]
+cuda = ["infinity_v3-backend-candle/cuda", "infinity_v3-backend-candle/flash-attn", "dep:cudarc","cudarc?/dynamic-linking"]
+candle = ["infinity_v3-backend/candle"]

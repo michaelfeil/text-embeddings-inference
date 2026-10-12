@@ -12,14 +12,14 @@ pub use models::{LayaConfig, LayaModel, LayaOutput};
 use anyhow::Context;
 use candle::{DType, Device};
 use candle_nn::VarBuilder;
+use infinity_v3_backend_core::{
+    Backend, BackendError, Batch, Embedding, Embeddings, ModelType, Pool, Predictions,
+    TokenPredictions,
+};
 use nohash_hasher::BuildNoHashHasher;
 use serde::{de::Deserializer, Deserialize};
 use std::collections::HashMap;
 use std::path::Path;
-use text_embeddings_backend_core::{
-    Backend, BackendError, Batch, Embedding, Embeddings, ModelType, Pool, Predictions,
-    TokenPredictions,
-};
 
 #[cfg(feature = "cuda")]
 use crate::compute_cap::{
@@ -636,8 +636,8 @@ impl Backend for CandleBackend {
     fn decide(
         &self,
         batch: Batch,
-        inputs: Vec<text_embeddings_backend_core::DecisionInput>,
-    ) -> Result<Vec<text_embeddings_backend_core::DecisionOutput>, BackendError> {
+        inputs: Vec<infinity_v3_backend_core::DecisionInput>,
+    ) -> Result<Vec<infinity_v3_backend_core::DecisionOutput>, BackendError> {
         self.model.decide(batch, inputs).e()
     }
 

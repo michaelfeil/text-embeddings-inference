@@ -1,7 +1,7 @@
 //! Prefix trees partitioned by prepared image context, with original row mappings.
+use infinity_v3_backend::{ImagePatches, MultimodalEncoding};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, sync::Arc};
-use text_embeddings_backend::{ImagePatches, MultimodalEncoding};
 
 type Fold = (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>);
 

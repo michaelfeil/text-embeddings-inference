@@ -1,5 +1,5 @@
 [package]
-name = "text-embeddings-core"
+name = "infinity_v3-core"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -18,7 +18,7 @@ async-channel = "^2.3"
 hf-hub = { workspace = true }
 metrics = { workspace = true }
 serde_json = { workspace = true }
-text-embeddings-backend = { path = "../backends" }
+infinity_v3-backend = { path = "../backends" }
 thiserror = { workspace = true }
 tokenizers = { workspace = true }
 basetenkenizer = { version = "=0.2.9", default-features = false }

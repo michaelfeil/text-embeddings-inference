@@ -5,7 +5,7 @@ use crate::models::nomic::{NomicBertEmbeddings, NomicMLP};
 use crate::models::{Model, NomicConfig};
 use candle::{Device, IndexOp, Result, Tensor, D};
 use candle_nn::VarBuilder;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 
 struct NomicAttention {
     qkv_linear: Linear,

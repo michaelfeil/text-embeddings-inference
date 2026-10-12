@@ -6,7 +6,7 @@ use crate::models::jina::{ClassificationHead, JinaBertClassificationHead, JinaEm
 use crate::models::{BertConfig, Model};
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::VarBuilder;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 
 struct JinaAttention {
     qkv_linear: Linear,

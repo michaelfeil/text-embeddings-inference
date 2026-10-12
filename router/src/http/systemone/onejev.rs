@@ -1,6 +1,6 @@
 //! OneJev's qev-labels-v2 text/image protocol, using the shared decision queue.
 use super::*;
-use text_embeddings_core::{
+use infinity_v3_core::{
     chat::ChatProcessor,
     input::{ContentPart, ImageDetail, MessageContent, MessageRole},
     multimodal::{image_positions, PreparedQwenImages, Qwen3VlProcessor},
@@ -88,7 +88,7 @@ impl Onejev {
     pub(super) fn with_images(
         mut self,
         path: &Path,
-        config: text_embeddings_core::multimodal::MultimodalConfig,
+        config: infinity_v3_core::multimodal::MultimodalConfig,
     ) -> anyhow::Result<Self> {
         let model: Value = serde_json::from_slice(&std::fs::read(path.join("config.json"))?)?;
         if model["vision_config"].is_object()
@@ -153,11 +153,11 @@ impl Onejev {
     pub(super) async fn prepare_images(
         &self,
         sources: Vec<String>,
-    ) -> Result<PreparedQwenImages, text_embeddings_core::TextEmbeddingsError> {
+    ) -> Result<PreparedQwenImages, infinity_v3_core::TextEmbeddingsError> {
         self.images
             .as_ref()
             .ok_or_else(|| {
-                text_embeddings_core::TextEmbeddingsError::Validation(
+                infinity_v3_core::TextEmbeddingsError::Validation(
                     "OneJev image processor unavailable".into(),
                 )
             })?
@@ -211,7 +211,7 @@ impl Onejev {
             encoding.token_type_ids = vec![0; ids.len()];
             encoding.position_ids = positions[0].clone();
             encoding.input_ids = ids;
-            encoding.multimodal = Some(Arc::new(text_embeddings_backend::MultimodalEncoding {
+            encoding.multimodal = Some(Arc::new(infinity_v3_backend::MultimodalEncoding {
                 audios: vec![],
                 images: spans,
                 position_ids: positions,

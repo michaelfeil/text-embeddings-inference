@@ -1,8 +1,8 @@
 use anyhow::Result;
+use infinity_v3_backend::DType;
+use infinity_v3_router::run;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
-use text_embeddings_backend::DType;
-use text_embeddings_router::run;
 use tokio::time::Instant;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -74,8 +74,8 @@ pub async fn start_server(model_id: String, revision: Option<String>, dtype: DTy
             None,
             Some(0), // device_id
             None,    // backend device IDs
-            text_embeddings_backend::BackendKind::Candle,
-            text_embeddings_backend::TorchDevice::Auto,
+            infinity_v3_backend::BackendKind::Candle,
+            infinity_v3_backend::TorchDevice::Auto,
             Default::default(), // multimodal configuration
         )
     });

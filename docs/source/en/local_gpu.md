@@ -14,9 +14,9 @@ rendered properly in your Markdown viewer.
 
 -->
 
-# Using TEI locally with GPU
+# Using infinity_v3 locally with GPU
 
-You can install `text-embeddings-inference` locally to run it on your own machine with a GPU.
+You can install `infinity_v3` locally to run it on your own machine with a GPU.
 To make sure that your hardware is supported, check out the [Supported models and hardware](supported_models) page.
 
 ## Step 1: CUDA and NVIDIA drivers
@@ -53,12 +53,12 @@ cargo install --path router -F candle-cuda-turing
 cargo install --path router -F candle-cuda
 ```
 
-## Step 4: Launch Text Embeddings Inference
+## Step 4: Launch infinity_v3
 
-You can now launch Text Embeddings Inference on GPU with:
+You can now launch infinity_v3 on GPU with:
 
 ```shell
 model=Qwen/Qwen3-Embedding-0.6B
 
-text-embeddings-router --model-id $model --dtype float16 --port 8080
+infinity_v3 --model-id $model --dtype float16 --port 8080
 ```

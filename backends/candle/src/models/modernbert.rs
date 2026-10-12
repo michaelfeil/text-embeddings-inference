@@ -3,8 +3,8 @@ use std::collections::HashMap;
 use crate::layers::{HiddenAct, LayerNormNoBias, Linear, MlpLinear};
 use candle::{Module, Result, Tensor, D};
 use candle_nn::{Embedding, VarBuilder};
+use infinity_v3_backend_core::Pool;
 use serde::Deserialize;
-use text_embeddings_backend_core::Pool;
 
 // Preserve the configuration vocabulary. ModernBERT intentionally uses the
 // tanh approximation for `gelu`, as well as its explicit approximation aliases.

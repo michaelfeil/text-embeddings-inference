@@ -1,7 +1,7 @@
 """Generate small independent Transformers fixtures for packed DeBERTa CUDA tests.
 
 python integration_tests/deberta_reference.py /tmp/deberta-fixtures
-TEI_DEBERTA_FIXTURES=/tmp/deberta-fixtures cargo test -p text-embeddings-backend-candle \
+TEI_DEBERTA_FIXTURES=/tmp/deberta-fixtures cargo test -p infinity_v3-backend-candle \
   --features experimental-deberta --test test_deberta -- --ignored --nocapture
 No model downloads are required. Tested with transformers 5.17.0 / torch 2.13.
 """

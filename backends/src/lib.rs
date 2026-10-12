@@ -1,12 +1,12 @@
 mod dtype;
 
 use hf_hub::api::tokio::{ApiError, ApiRepo};
+use infinity_v3_backend_core::{Backend as CoreBackend, Inference};
 use std::cmp::{max, min};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-use text_embeddings_backend_core::{Backend as CoreBackend, Inference};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::{instrument, Span};
 
@@ -14,7 +14,7 @@ use tracing::{instrument, Span};
 use serde::Deserialize;
 
 pub use crate::dtype::DType;
-pub use text_embeddings_backend_core::{
+pub use infinity_v3_backend_core::{
     AudioFeatures, BackendError, Batch, ClefField, DecisionInput, DecisionOutput, Embedding,
     Embeddings, ImagePatches, ModelType, MultimodalEncoding, Pool, Predictions, TokenPredictions,
 };
@@ -37,7 +37,7 @@ impl<T> Submission<T> {
 }
 
 #[cfg(feature = "candle")]
-use text_embeddings_backend_candle::CandleBackend;
+use infinity_v3_backend_candle::CandleBackend;
 
 /// Select an inference runtime explicitly when more than one is compiled.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1015,7 +1015,7 @@ pub fn visible_cuda_device_count() -> Result<usize, BackendError> {
         any(feature = "cuda", feature = "flash-attn", feature = "flash-attn-v1")
     ))]
     {
-        text_embeddings_backend_candle::visible_cuda_device_count()
+        infinity_v3_backend_candle::visible_cuda_device_count()
     }
     #[cfg(not(all(
         feature = "candle",

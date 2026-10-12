@@ -1,5 +1,5 @@
 [package]
-name = "text-embeddings-backend-candle"
+name = "infinity_v3-backend-candle"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -21,7 +21,7 @@ candle-index-select-cu = { workspace = true, optional = true}
 candle-layer-norm = { workspace = true, optional = true }
 candle-rotary = { workspace = true, optional = true }
 nohash-hasher = { workspace = true }
-text-embeddings-backend-core = { path = "../core" }
+infinity_v3-backend-core = { path = "../core" }
 tracing = { workspace = true }
 safetensors = "0.8"
 thiserror = { workspace = true }

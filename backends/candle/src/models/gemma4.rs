@@ -7,9 +7,9 @@ use crate::models::Model;
 
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
+use infinity_v3_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
 use serde::Deserialize;
 use std::collections::HashMap;
-use text_embeddings_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
 
 fn packed_rotary(x: &Tensor, cos: &Tensor, sin: &Tensor, width: usize) -> Result<Tensor> {
     #[cfg(feature = "cuda")]
@@ -878,7 +878,7 @@ impl Gemma4Model {
                 .as_ref()
                 .zip(batch.fold_gather.as_ref())
                 .is_some_and(|(scatter, fold)| {
-                    text_embeddings_backend_core::MultimodalEncoding::allows_radix_fold(
+                    infinity_v3_backend_core::MultimodalEncoding::allows_radix_fold(
                         &batch.multimodal,
                         &batch.input_ids,
                         &batch.cumulative_seq_lengths,

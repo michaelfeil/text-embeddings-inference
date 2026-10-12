@@ -1,8 +1,8 @@
 #![cfg(not(feature = "cuda"))]
 use anyhow::Result;
+use infinity_v3_backend_candle::CandleBackend;
+use infinity_v3_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 use std::{path::PathBuf, time::Instant};
-use text_embeddings_backend_candle::CandleBackend;
-use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 
 #[test]
 #[ignore = "requires CPU_RAGGED_MODEL_DIR checkpoint; writes a parity/benchmark artifact"]

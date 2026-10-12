@@ -32,7 +32,7 @@ mod packed {
     use crate::models::Model;
     use candle::{DType, Device, Result, Tensor};
     use candle_nn::{Embedding, Module, VarBuilder};
-    use text_embeddings_backend_core::{Batch, ModelType, Pool};
+    use infinity_v3_backend_core::{Batch, ModelType, Pool};
     #[derive(Debug)]
     pub struct Gemma3RMSNorm {
         scale: Tensor,

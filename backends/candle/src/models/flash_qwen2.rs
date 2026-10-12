@@ -7,7 +7,7 @@ use crate::layers::{
 use crate::models::{Model, Qwen2Config};
 use candle::{Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 
 struct Qwen2Attention {
     qkv_linear: Linear,

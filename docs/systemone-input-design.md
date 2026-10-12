@@ -2,7 +2,7 @@
 
 Status: typed wire schema implemented; native message inference awaits a model adapter.
 
-Keep `POST /v1/systemone` in the existing TEI HTTP server, with the existing
+Keep `POST /v1/systemone` in the existing infinity_v3 HTTP server, with the existing
 question types and batching infrastructure. The canonical input forms are:
 
 ## Plain text
@@ -42,7 +42,7 @@ This uses the explicit native-chat state envelope from
 only plain text or this envelope; bare arrays and arbitrary objects are rejected.
 There is no second top-level messages field or separate media collection.
 
-The shared Rust contract in `text_embeddings_core::input` is
+The shared Rust contract in `infinity_v3_core::input` is
 `ModelInput::Text(String)` or `ModelInput::Messages(MessageInput)`.
 `SystemOneInput` remains a compatibility alias. Message content is either a string or
 ordered `ContentPart` values: Text, ImageUrl, InputAudio, VideoUrl. Initial roles
@@ -108,7 +108,7 @@ behavior. This change performs no image inference or remote media downloads.
 - The HTTP contract uses familiar chat content blocks: text, image_url,
   input_audio, and (as an explicit extension) video_url. Actual support is
   capability-dependent, not implied by accepting the request schema.
-- Resolve messages and media before queueing model-ready inputs. Reuse the TEI
+- Resolve messages and media before queueing model-ready inputs. Reuse the infinity_v3
   queue, admission, cancellation, and replicas. Carry media alignment and resource
   costs with prepared inputs; token-only accounting is insufficient for media.
 - Decode shared media once per request where possible. Do not promise shared

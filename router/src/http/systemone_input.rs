@@ -1,8 +1,8 @@
 //! Compatibility names for the shared model input types.
 //!
-//! New adapters should import `text_embeddings_core::input` directly.
+//! New adapters should import `infinity_v3_core::input` directly.
 #[allow(unused_imports)] // Compatibility exports may be unused by this binary.
-pub use text_embeddings_core::input::{
+pub use infinity_v3_core::input::{
     AudioFormat, AudioSource, ContentPart, ImageDetail, ImageSource, Message as DecisionMessage,
     MessageContent, MessageInput, MessageRole, ModelInput as SystemOneInput, VideoSource,
 };

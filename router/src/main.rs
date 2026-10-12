@@ -1,7 +1,7 @@
 use anyhow::Result;
 use clap::Parser;
+use infinity_v3_backend::DType;
 use opentelemetry::global;
-use text_embeddings_backend::DType;
 use veil::Redact;
 
 #[cfg(not(target_os = "linux"))]
@@ -21,7 +21,7 @@ fn pct_parser(s: &str) -> Result<f32, String> {
 
 /// App Configuration
 #[derive(Parser, Redact)]
-#[clap(author, version, about, long_about = None)]
+#[clap(name = "infinity_v3", author, version, about, long_about = None)]
 struct Args {
     /// The Hugging Face model ID, can be any model listed on <https://huggingface.co/models> with
     /// the `text-embeddings-inference` tag (meaning it's compatible with Text Embeddings
@@ -57,11 +57,11 @@ struct Args {
 
     /// Inference runtime (requires the matching Cargo feature).
     #[clap(long, env, value_enum, default_value = "candle")]
-    backend: text_embeddings_backend::BackendKind,
+    backend: infinity_v3_backend::BackendKind,
 
     /// LibTorch accelerator family. Auto selects CUDA when available, otherwise CPU.
     #[clap(long, env, value_enum, default_value = "auto")]
-    torch_device: text_embeddings_backend::TorchDevice,
+    torch_device: infinity_v3_backend::TorchDevice,
 
     /// Optionally control the pooling method for embedding models.
     ///
@@ -70,11 +70,11 @@ struct Args {
     ///
     /// If `pooling` is set, it will override the model pooling configuration
     #[clap(long, env, value_enum)]
-    pooling: Option<text_embeddings_backend::Pool>,
+    pooling: Option<infinity_v3_backend::Pool>,
 
     /// Serve a decision model with its trained prompt on /v1/systemone.
     #[clap(long, env, conflicts_with = "pooling")]
-    decision_protocol: Option<text_embeddings_router::DecisionProtocol>,
+    decision_protocol: Option<infinity_v3_router::DecisionProtocol>,
 
     /// Exact HTTPS hostnames allowed for image downloads. Empty permits inline data URLs only.
     #[clap(long, env, value_delimiter = ',')]
@@ -100,7 +100,7 @@ struct Args {
     ///
     /// Overall this number should be the largest possible until the model is compute bound.
     /// Since the actual memory overhead depends on the model implementation,
-    /// text-embeddings-inference cannot infer this number automatically.
+    /// infinity_v3 cannot infer this number automatically.
     #[clap(default_value = "16384", long, env)]
     max_batch_tokens: usize,
 
@@ -233,8 +233,8 @@ struct Args {
     otlp_endpoint: Option<String>,
 
     /// The service name for opentelemetry.
-    /// e.g. `text-embeddings-inference.server`
-    #[clap(default_value = "text-embeddings-inference.server", long, env)]
+    /// e.g. `infinity_v3.server`
+    #[clap(default_value = "infinity_v3.server", long, env)]
     otlp_service_name: String,
 
     /// The Prometheus port to listen on.
@@ -251,7 +251,7 @@ async fn main() -> Result<()> {
     let args: Args = Args::parse();
 
     // Initialize logging and telemetry
-    let global_tracer = text_embeddings_router::init_logging(
+    let global_tracer = infinity_v3_router::init_logging(
         args.otlp_endpoint.as_ref(),
         args.otlp_service_name.clone(),
         args.json_output,
@@ -281,7 +281,7 @@ async fn main() -> Result<()> {
     }
     let token = args.hf_token.or(args.hf_api_token);
 
-    text_embeddings_router::run(
+    infinity_v3_router::run(
         args.model_id,
         args.revision,
         args.tokenization_workers,
@@ -312,7 +312,7 @@ async fn main() -> Result<()> {
         args.backend_device_ids,
         args.backend,
         args.torch_device,
-        text_embeddings_core::multimodal::MultimodalConfig {
+        infinity_v3_core::multimodal::MultimodalConfig {
             allowed_image_hosts: args.image_allowed_hosts,
             memory_budget_bytes: args
                 .image_memory_budget_mib

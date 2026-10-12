@@ -16,5 +16,7 @@ rendered properly in your Markdown viewer.
 
 # Example uses
 
+These upstream TEI examples may need adaptation for infinity_v3.
+
 - [Set up an Inference Endpoint with TEI](https://huggingface.co/learn/cookbook/automatic_embedding_tei_inference_endpoints)
 - [RAG containers with TEI](https://github.com/plaggy/rag-containers)

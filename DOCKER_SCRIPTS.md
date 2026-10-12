@@ -1,6 +1,6 @@
 # Docker Build Script
 
-This directory contains a comprehensive script for building and pushing Docker images for Text Embeddings Inference with multiple CUDA compute capabilities.
+This directory contains a comprehensive script for building and pushing Docker images for infinity_v3 with multiple CUDA compute capabilities.
 
 ## Script Overview
 
@@ -8,7 +8,7 @@ This directory contains a comprehensive script for building and pushing Docker i
 Full-featured script with error handling, parallel builds, and verification.
 
 **Features:**
-- Multi-registry support (GHCR + Internal HF)
+- Configurable image repository (`IMAGE_REPOSITORY`)
 - Parallel builds for faster execution
 - Image verification after pushing
 - Comprehensive logging and error handling
@@ -55,18 +55,22 @@ Images are tagged following the GitHub Actions conventions:
 - `{prefix}1.8` - Major.minor version
 
 **Examples:**
-- `ghcr.io/huggingface/text-embeddings-inference:latest` (sm80)
-- `ghcr.io/huggingface/text-embeddings-inference:turing-1.8.4` (sm75)
-- `ghcr.io/huggingface/text-embeddings-inference:blackwell-1.8.4` (sm100)
-- `ghcr.io/huggingface/text-embeddings-inference:sm120-1.8.4` (sm120)
+- `baseten/infinity_v3:latest` (sm80)
+- `baseten/infinity_v3:turing-latest` (sm75)
+- `baseten/infinity_v3:blackwell-latest` (sm100)
+- `baseten/infinity_v3:sm120-latest` (sm120)
 
 ## Registries
 
-**Primary Registry:**
-- `ghcr.io/huggingface/text-embeddings-inference`
+The script defaults to `baseten/infinity_v3`. Override the destination with
+`IMAGE_REPOSITORY`, for example:
 
-**Internal Registry (if available):**
-- `registry.internal.huggingface.tech/api-inference/text-embeddings-inference`
+```bash
+IMAGE_REPOSITORY=ghcr.io/my-org/infinity_v3 ./push-docker-images.sh --dry-run
+```
+
+GitHub Actions uses `ghcr.io/${{ github.repository_owner }}/infinity_v3`.
+These are configured destinations; publishing requires registry credentials.
 
 ## Prerequisites
 
@@ -79,8 +83,8 @@ Images are tagged following the GitHub Actions conventions:
 2. **Registry Access:**
    ```bash
    docker login ghcr.io
-   # For internal registry:
-   docker login registry.internal.huggingface.tech
+   # For the default Docker Hub destination:
+   docker login # Docker Hub, for the default baseten/infinity_v3 destination
    ```
 
 3. **Git Repository:**

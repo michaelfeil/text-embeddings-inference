@@ -14,9 +14,9 @@ rendered properly in your Markdown viewer.
 
 -->
 
-# Using TEI locally with CPU
+# Using infinity_v3 locally with CPU
 
-You can install `text-embeddings-inference` locally to run it on your own machine. Here are the step-by-step instructions for installation:
+You can install `infinity_v3` locally to run it on your own machine. Here are the step-by-step instructions for installation:
 
 ## Step 1: Install Rust
 
@@ -42,14 +42,14 @@ cargo install --path router -F mkl
 cargo install --path router -F metal
 ```
 
-## Step 3: Launch Text Embeddings Inference
+## Step 3: Launch infinity_v3
 
-Once the installation is successfully complete, you can launch Text Embeddings Inference on CPU with the following command:
+Once the installation is successfully complete, you can launch infinity_v3 on CPU with the following command:
 
 ```shell
 model=Qwen/Qwen3-Embedding-0.6B
 
-text-embeddings-router --model-id $model --port 8080
+infinity_v3 --model-id $model --port 8080
 ```
 
 <Tip>
@@ -62,5 +62,5 @@ sudo apt-get install libssl-dev gcc -y
 
 </Tip>
 
-Now you are ready to use `text-embeddings-inference` locally on your machine.
-If you want to run TEI locally with a GPU, check out the [Using TEI locally with GPU](local_gpu) page.
+Now you are ready to use `infinity_v3` locally on your machine.
+If you want to run infinity_v3 locally with a GPU, check out the [Using infinity_v3 locally with GPU](local_gpu) page.

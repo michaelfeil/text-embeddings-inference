@@ -4,7 +4,7 @@ use crate::layers::{get_cos_sin, get_inv_freqs, index_select, CompactUnfoldTenso
 use crate::models::{Model, Qwen3Config};
 use candle::{DType, Device, IndexOp, Result, Tensor, D};
 use candle_nn::{Embedding, Module, VarBuilder};
-use text_embeddings_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
+use infinity_v3_backend_core::{Batch, DecisionInput, DecisionOutput, ModelType, Pool};
 
 struct Norm {
     weight: Tensor,
@@ -472,7 +472,7 @@ impl Qwen35Model {
                     .as_ref()
                     .zip(batch.fold_gather.as_ref())
                     .is_some_and(|(scatter, fold)| {
-                        text_embeddings_backend_core::MultimodalEncoding::allows_radix_fold(
+                        infinity_v3_backend_core::MultimodalEncoding::allows_radix_fold(
                             &batch.multimodal,
                             &batch.input_ids,
                             &batch.cumulative_seq_lengths,
@@ -692,7 +692,7 @@ impl Model for Qwen35Model {
                     let end = batch.cumulative_seq_lengths[i + 1] as usize;
                     let fields = match input {
                         DecisionInput::Clef { fields } => fields,
-                        DecisionInput::Warmup => vec![text_embeddings_backend_core::ClefField {
+                        DecisionInput::Warmup => vec![infinity_v3_backend_core::ClefField {
                             kind: 0,
                             question: (0, 1),
                             options: vec![(0, 1)],

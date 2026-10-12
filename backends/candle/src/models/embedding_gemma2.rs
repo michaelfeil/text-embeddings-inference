@@ -4,9 +4,9 @@ use super::Model;
 use crate::layers::{get_cos_sin, get_inv_freqs, CompactUnfoldTensors, Linear};
 use candle::{DType, Device, IndexOp, Result, Tensor};
 use candle_nn::{Embedding, Module, VarBuilder};
+use infinity_v3_backend_core::{Batch, ModelType, Pool};
 use serde::Deserialize;
 use std::collections::HashMap;
-use text_embeddings_backend_core::{Batch, ModelType, Pool};
 
 #[derive(Debug, Deserialize)]
 pub struct EmbeddingGemma2Config {

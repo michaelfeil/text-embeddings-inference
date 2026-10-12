@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Fused Q/K RMSNorm and NeoX RoPE, retaining TEI's intermediate rounding.
+// Fused Q/K RMSNorm and NeoX RoPE, retaining infinity_v3's intermediate rounding.
 // Reuse the existing aligned vector type and preserve the layer-norm reduction order.
 #include <functional>
 #include "ln_utils.cuh"

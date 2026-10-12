@@ -3,9 +3,9 @@ use super::Model;
 use crate::layers::{index_select, Linear};
 use candle::{Result, Tensor};
 use candle_nn::VarBuilder;
+use infinity_v3_backend_core::Batch;
 use serde::Deserialize;
 use std::collections::HashMap;
-use text_embeddings_backend_core::Batch;
 
 #[derive(Deserialize)]
 struct Config {

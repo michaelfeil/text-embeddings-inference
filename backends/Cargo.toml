@@ -1,5 +1,5 @@
 [package]
-name = "text-embeddings-backend"
+name = "infinity_v3-backend"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true
@@ -11,26 +11,26 @@ clap = { workspace = true, optional = true }
 hf-hub = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-text-embeddings-backend-core = { path = "core" }
-text-embeddings-backend-candle = { path = "candle", optional = true }
+infinity_v3-backend-core = { path = "core" }
+infinity_v3-backend-candle = { path = "candle", optional = true }
 text-embeddings-backend-libtorch = { path = "libtorch", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
 [features]
-experimental-fp8 = ["candle", "text-embeddings-backend-candle/experimental-fp8"]
+experimental-fp8 = ["candle", "infinity_v3-backend-candle/experimental-fp8"]
 experimental-fa4 = ["fa4"]
-fa4 = ["text-embeddings-backend-candle?/fa4"]
-clap = ["dep:clap", "text-embeddings-backend-core/clap"]
-candle = ["dep:text-embeddings-backend-candle"]
+fa4 = ["infinity_v3-backend-candle?/fa4"]
+clap = ["dep:clap", "infinity_v3-backend-core/clap"]
+candle = ["dep:infinity_v3-backend-candle"]
 libtorch = ["dep:text-embeddings-backend-libtorch"]
-cuda = ["text-embeddings-backend-candle?/cuda"]
-cuda-static-linking = ["text-embeddings-backend-candle?/cuda-static-linking"]
-cuda-dynamic-linking = ["text-embeddings-backend-candle?/cuda-dynamic-linking"]
-metal = ["text-embeddings-backend-candle?/metal"]
-mkl = ["text-embeddings-backend-candle?/mkl"]
-accelerate = ["text-embeddings-backend-candle?/accelerate"]
-flash-attn = ["text-embeddings-backend-candle?/flash-attn"]
-flash-attn-v1 = ["text-embeddings-backend-candle?/flash-attn-v1"]
+cuda = ["infinity_v3-backend-candle?/cuda"]
+cuda-static-linking = ["infinity_v3-backend-candle?/cuda-static-linking"]
+cuda-dynamic-linking = ["infinity_v3-backend-candle?/cuda-dynamic-linking"]
+metal = ["infinity_v3-backend-candle?/metal"]
+mkl = ["infinity_v3-backend-candle?/mkl"]
+accelerate = ["infinity_v3-backend-candle?/accelerate"]
+flash-attn = ["infinity_v3-backend-candle?/flash-attn"]
+flash-attn-v1 = ["infinity_v3-backend-candle?/flash-attn-v1"]
 
-experimental-deberta = ["text-embeddings-backend-candle?/experimental-deberta"]
+experimental-deberta = ["infinity_v3-backend-candle?/experimental-deberta"]

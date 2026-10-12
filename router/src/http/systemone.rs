@@ -1,9 +1,12 @@
-//! Jev typed decisions, submitted to TEI's shared queue and replica pool.
+//! Jev typed decisions, submitted to infinity_v3's shared queue and replica pool.
 use super::response_format::Json;
 use axum::{
     extract::Extension,
     http::{HeaderMap, StatusCode},
 };
+use infinity_v3_backend::{DecisionInput, DecisionOutput};
+use infinity_v3_core::input::ModelInput;
+use infinity_v3_core::{infer::Infer, tokenization::ValidEncoding};
 use serde::Deserialize;
 use serde_json::{json, Map, Value};
 use std::{
@@ -12,9 +15,6 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use text_embeddings_backend::{DecisionInput, DecisionOutput};
-use text_embeddings_core::input::ModelInput;
-use text_embeddings_core::{infer::Infer, tokenization::ValidEncoding};
 use tokenizers::Tokenizer;
 
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
@@ -55,7 +55,7 @@ impl SystemOne {
         path: &Path,
         tokenizer: Tokenizer,
         max_input_length: usize,
-        multimodal_config: text_embeddings_core::multimodal::MultimodalConfig,
+        multimodal_config: infinity_v3_core::multimodal::MultimodalConfig,
         protocol: Option<crate::DecisionProtocol>,
     ) -> anyhow::Result<Self> {
         if path.join("rl_agent_config.json").exists() {
@@ -186,7 +186,7 @@ impl Laya {
                 );
             }
         };
-        // Jev model aliases are accepted; a TEI deployment serves its configured checkpoint.
+        // Jev model aliases are accepted; a infinity_v3 deployment serves its configured checkpoint.
         let _model_alias = request.model;
         let max_len = request
             .max_len
@@ -345,7 +345,7 @@ impl Laya {
                     return Err("At most 512 total options are allowed".into());
                 }
                 let head_text = format!("{kind} question: {instructions}");
-                // Like TEI's other endpoints, count input text before truncation,
+                // Like infinity_v3's other endpoints, count input text before truncation,
                 // excluding inserted special tokens. Each question repeats the state.
                 let compute_chars = state_chars
                     + head_text.replace("[MASK]", " ").chars().count()
@@ -585,7 +585,7 @@ pub async fn systemone(
             ),
         ));
     }
-    // Hold one TEI admission permit for the entire HTTP request, including tokenization.
+    // Hold one infinity_v3 admission permit for the entire HTTP request, including tokenization.
     let _permit = infer
         .try_acquire_permit()
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
@@ -606,8 +606,8 @@ pub async fn systemone(
     .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
     .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     if !sources.is_empty() {
-        let media_error = |e: text_embeddings_core::TextEmbeddingsError| {
-            let status = if matches!(e, text_embeddings_core::TextEmbeddingsError::Overloaded(_)) {
+        let media_error = |e: infinity_v3_core::TextEmbeddingsError| {
+            let status = if matches!(e, infinity_v3_core::TextEmbeddingsError::Overloaded(_)) {
                 StatusCode::TOO_MANY_REQUESTS
             } else {
                 StatusCode::UNPROCESSABLE_ENTITY

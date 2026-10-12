@@ -6,8 +6,8 @@ use super::{
 };
 use crate::TextEmbeddingsError;
 use image::ImageDecoder;
+use infinity_v3_backend::ImagePatches;
 use std::{path::Path, sync::Arc};
-use text_embeddings_backend::ImagePatches;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 type Result<T> = std::result::Result<T, TextEmbeddingsError>;
