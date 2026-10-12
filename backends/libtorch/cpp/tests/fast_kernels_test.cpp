@@ -3,6 +3,8 @@
 #include "kernels/nomic_moe.h"
 #include "kernels/encoder_activation.h"
 #include <ATen/ops/_fused_rms_norm.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <cublasLt.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <cmath>
@@ -207,7 +209,18 @@ int main(){c10::InferenceMode guard;
  }
  {
   auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kBFloat16);
+  auto& context=at::globalContext();
+  const auto preferred=context.blasPreferredBackend();
+  for(auto fallback:{at::BlasBackend::Default,at::BlasBackend::Cublas}) {
+   context.setBlasPreferredBackend(fallback);
+   TORCH_CHECK(!tei::nomic_moe_split_policy(c10::Device(at::kCUDA,0),at::kBFloat16,768,3072,8,2).defined(),
+               "Default/cuBLAS must retain reference Nomic dispatch");
+  }
+  context.setBlasPreferredBackend(preferred);
   auto policy=tei::nomic_moe_split_policy(c10::Device(at::kCUDA,0),at::kBFloat16,768,3072,8,2);
+  auto* properties=at::cuda::getCurrentDeviceProperties();
+  if(properties->major==9 && properties->minor==0 && cublasLtGetVersion()==130200)
+   TORCH_CHECK(policy.defined(),"Qualified Nomic grouped assertions require cuBLASLt preference");
   TORCH_CHECK(!tei::nomic_moe_split_policy(c10::Device(at::kCPU),at::kBFloat16,768,3072,8,2).defined(),
               "CPU must retain the Nomic reference dispatch");
   if(policy.defined()) {
