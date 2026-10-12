@@ -9,6 +9,7 @@
 #include "kernels/encoder_norm.h"
 #include "kernels/encoder_activation.h"
 #include "kernels/torch_flash_fma.h"
+#include "kernels/torch_flash_exact32.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/detail/CUDAHooksInterface.h>
 #include <cublasLt.h>
@@ -35,6 +36,7 @@ struct Bert : tei::Model {
   bool cudnn_varlen = false;
   bool private_flash_embedding = false;
   bool private_flash_roberta_embedding = false;
+  bool private_flash_exact_classifier = false;
   bool exact_biased_norm = false;
 #ifdef TEI_TORCH_CUDA_KERNELS
   bool cached_classifier_gemm = false;
@@ -69,7 +71,8 @@ struct Bert : tei::Model {
         && matrix.dim()==2 && matrix.is_contiguous() && bias.defined() && bias.is_contiguous()
         && (x.scalar_type()==at::kHalf || x.scalar_type()==at::kBFloat16)
         && matrix.scalar_type()==x.scalar_type() && bias.scalar_type()==x.scalar_type()
-        && matrix.size(1)==x.size(1) && matrix.size(0)%16==0 && x.size(1)%16==0
+        && matrix.size(1)==x.size(1)
+        && (matrix.size(0)%16==0 || (!gelu && matrix.size(0)==1)) && x.size(1)%16==0
         && bias.dim()==1 && bias.numel()==matrix.size(0)
         && at::cuda::getCUDABlasLtWorkspaceSize()<=static_cast<size_t>(classifier_workspace.numel())
         && reinterpret_cast<uintptr_t>(x.const_data_ptr())%256==0
@@ -183,15 +186,17 @@ struct Bert : tei::Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
     // Qualified H100 FP16 BERT embedding geometry. Dynamic FP8 also needs
     // the original Flash rounding before quantization, including trained heads.
-    // Keep ordinary classifier/SPLADE and RoBERTa selectors unchanged.
+    // BERT classifier backbones share this geometry; keep SPLADE and RoBERTa selectors unchanged.
     private_flash_embedding = device.is_cuda() && dtype == at::kHalf && !roberta
       && config.hidden == 768 && config.heads == 12 && (config.activation == 0 || config.activation == 1)
       && at::cuda::getDeviceProperties(device.index())->major == 9
-      && ((classification_width() == 0 && options.string("_pooling") != "splade") || options.boolean("_fp8_dynamic", false));
-    // RoBERTa classifier projections retain the original attention selector.
-    cached_classifier_gemm = options.string("model_type") == "roberta"
+      && (options.string("_pooling") != "splade" || options.boolean("_fp8_dynamic", false));
+    // RoBERTa classifier projections use the same biased/GELU GEMM contract;
+    // retain its existing attention selector while reusing projection plans.
+    // BF16 RoBERTa retains its storage type throughout the same epilogue.
+    cached_classifier_gemm = (private_flash_embedding || roberta || (!roberta && dtype == at::kBFloat16))
       && device.is_cuda() && (dtype == at::kHalf || dtype == at::kBFloat16)
-      && config.hidden == 768 && config.heads == 12
+      && (config.hidden == 768 || config.hidden == 384) && config.heads == 12
       && (config.activation == 0 || config.activation == 1)
       && at::cuda::getDeviceProperties(device.index())->major == 9
       && classification_width()>0
@@ -206,8 +211,17 @@ struct Bert : tei::Model {
     // statistics use the unrounded FP32 sum. Kernel eligibility is independent
     // of model alias, pooling and head architecture; CPU/other CUDA scopes stay unchanged.
     exact_biased_norm = device.is_cuda() &&
-      (dtype == at::kHalf || (roberta && dtype == at::kBFloat16)) && config.hidden == 768
+      (dtype == at::kHalf || dtype == at::kBFloat16) && (config.hidden == 768 || config.hidden == 384)
       && at::cuda::getDeviceProperties(device.index())->major == 9;
+    // These trained profiles use Candle's packed attention arithmetic, including
+    // long ragged inputs. Dynamic FP8 retains its existing selector.
+    private_flash_exact_classifier = device.is_cuda()
+      && (dtype == at::kHalf || dtype == at::kBFloat16)
+      && classification_width() > 0 && config.heads == 12
+      && ((roberta && config.hidden == 384) || (!roberta && dtype == at::kBFloat16 && config.hidden == 768))
+      && (config.activation == 0 || config.activation == 1)
+      && at::cuda::getDeviceProperties(device.index())->major == 9
+      && !options.boolean("_fp8_dynamic", false);
     // Initial measured RoBERTa eager scope: H100 FP16 hidden768/head64 mean
     // embeddings. Keep dynamic FP8, trained heads and other pools unchanged.
     private_flash_roberta_embedding = device.is_cuda() && dtype == at::kHalf
@@ -319,7 +333,10 @@ struct Bert : tei::Model {
     auto token_type = at::embedding(w("embeddings.token_type_embeddings.weight"), types);
     auto position = at::embedding(w("embeddings.position_embeddings.weight"), positions);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (word.is_cuda() && (exact_biased_norm || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
+    if (word.is_cuda() && exact_biased_norm && config.hidden == 768 && word.scalar_type() == at::kHalf)
+      h = tei::encoder_embedding_layer_norm(word, token_type, position,
+        w("embeddings.LayerNorm.weight"), config.epsilon, w("embeddings.LayerNorm.bias"));
+    else if (word.is_cuda() && (exact_biased_norm || (private_flash_embedding && options.boolean("_fp8_dynamic", false))))
       h = tei::encoder_layer_norm_only(word + token_type,
         w("embeddings.LayerNorm.weight"), config.epsilon, position, w("embeddings.LayerNorm.bias"), false);
     else if (word.is_cuda() && config.hidden == 384)
@@ -348,8 +365,12 @@ struct Bert : tei::Model {
         // token totals. FP8 needs the fused Torch arithmetic at every total
         // to preserve quantization inputs; normal FP16 larger totals retain
         // the measured cuDNN advantage.
-        if ((private_flash_embedding || private_flash_roberta_embedding)
-            && (tokens <= 4096 || (private_flash_embedding && options.boolean("_fp8_dynamic", false)))
+        if (private_flash_exact_classifier && head == 32) {
+          attended = tei::torch_flash_exact32(q, k, v, cumulative, max_sequence,
+            1.0 / std::sqrt(static_cast<double>(head)));
+        } else if ((private_flash_exact_classifier ||
+             ((private_flash_embedding || private_flash_roberta_embedding)
+              && (tokens <= 4096 || (private_flash_embedding && options.boolean("_fp8_dynamic", false)))))
             && tei::torch_flash_fma_supported(q, k, v)) {
           attended = tei::torch_flash_fma(q, k, v, cumulative, max_sequence,
             1.0 / std::sqrt(static_cast<double>(head)), false);

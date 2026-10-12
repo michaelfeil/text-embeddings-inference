@@ -38,6 +38,7 @@ OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <c10/cuda/CUDAException.h>
 #include <vector>
 #include "../../../candle/extensions/candle-layer-norm/kernels/ln_fwd_kernels.cuh"
+#include "kernels/encoder_embedding_norm.cuh"
 
 namespace tei {
 namespace {
@@ -112,5 +113,32 @@ std::pair<at::Tensor,at::Tensor> encoder_layer_norm(const at::Tensor& x,const at
 }
 at::Tensor encoder_layer_norm_only(const at::Tensor& x,const at::Tensor& weight,double epsilon,const at::Tensor& residual,const at::Tensor& bias,bool round_residual) {
   return encoder_layer_norm_impl(x,weight,epsilon,residual,bias,round_residual,false).first;
+}
+at::Tensor encoder_embedding_layer_norm(const at::Tensor& word,const at::Tensor& token_type,const at::Tensor& position,const at::Tensor& weight,double epsilon,const at::Tensor& bias) {
+  TORCH_CHECK(word.is_cuda()&&word.scalar_type()==at::kHalf&&word.is_contiguous()&&word.dim()>=2&&word.size(-1)==768,"Embedding norm requires contiguous CUDA Half width-768 rows");
+  for(const auto* input:{&token_type,&position})
+    TORCH_CHECK(input->device()==word.device()&&input->scalar_type()==at::kHalf&&input->is_contiguous()&&input->sizes()==word.sizes(),"Embedding norm input mismatch");
+  for(const auto* affine:{&weight,&bias})
+    TORCH_CHECK(affine->device()==word.device()&&affine->scalar_type()==at::kHalf&&affine->is_contiguous()&&affine->numel()==768,"Embedding norm affine mismatch");
+  c10::cuda::CUDAGuard guard(word.device());
+  auto normalized=at::empty_like(word);
+  layer_norm::FwdParams p;
+  p.rows=word.numel()/768;p.cols=768;
+  p.x0=const_cast<void*>(word.const_data_ptr());p.x1=const_cast<void*>(token_type.const_data_ptr());
+  p.residual=const_cast<void*>(position.const_data_ptr());p.z=normalized.mutable_data_ptr();
+  p.dmask=nullptr;p.dmask1=nullptr;p.x0_subset=nullptr;p.z_subset=nullptr;
+  p.gamma=const_cast<void*>(weight.const_data_ptr());p.beta=const_cast<void*>(bias.const_data_ptr());
+  p.epsilon=epsilon;p.inverse_cols=1.f/768;p.dropout_keep_p=1.f;p.dropout_scale=1.f;p.rowscale_const=1.f;p.round_residual=false;
+  using Traits=layer_norm::Kernel_traits<half,half,half,half,float,int,768,1,4,1,16>;
+  auto kernel=layer_norm::embedding_ln_fwd_kernel<Traits,false,false,false,true>;
+  static thread_local std::vector<int> occupancy;
+  const int device=word.device().index();
+  if(occupancy.size()<=static_cast<size_t>(device))occupancy.resize(device+1,-1);
+  int& blocks=occupancy[device];
+  if(blocks<0)C10_CUDA_CHECK(cudaOccupancyMaxActiveBlocksPerMultiprocessor(&blocks,kernel,Traits::THREADS_PER_CTA,Traits::SMEM_BYTES_FWD));
+  p.ctas_per_col=at::cuda::getCurrentDeviceProperties()->multiProcessorCount*blocks;
+  auto stream=at::cuda::getCurrentCUDAStream(device);
+  kernel<<<p.ctas_per_col,Traits::THREADS_PER_CTA,Traits::SMEM_BYTES_FWD,stream>>>(p);
+  C10_CUDA_KERNEL_LAUNCH_CHECK();return normalized;
 }
 }

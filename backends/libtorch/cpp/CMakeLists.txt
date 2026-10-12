@@ -30,6 +30,10 @@ if(TARGET torch_cuda)
   install(FILES vendor/qwen35_vision/LICENSE-APACHE vendor/qwen35_vision/LICENSE-MIT
     vendor/qwen35_vision/PROVENANCE.md DESTINATION share/licenses/tei_torch/qwen35_vision)
   set_source_files_properties(kernels/qwen35_reference.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--expt-relaxed-constexpr")
+  target_sources(tei_torch PRIVATE kernels/torch_flash_exact32.cpp kernels/torch_flash_exact32.cu)
+  set_source_files_properties(kernels/torch_flash_exact32.cu PROPERTIES
+    COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr;--expt-extended-lambda"
+    COMPILE_DEFINITIONS "FLASHATTENTION_DISABLE_DROPOUT;FLASHATTENTION_DISABLE_BACKWARD;FLASHATTENTION_DISABLE_ALIBI;FLASHATTENTION_DISABLE_SOFTCAP;FLASHATTENTION_DISABLE_UNEVEN_K")
   set_source_files_properties(kernels/encoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
   set_source_files_properties(kernels/encoder_activation.cu PROPERTIES COMPILE_OPTIONS "--expt-relaxed-constexpr")
   set_source_files_properties(kernels/decoder_norm.cu PROPERTIES COMPILE_OPTIONS "--use_fast_math;--expt-relaxed-constexpr")
