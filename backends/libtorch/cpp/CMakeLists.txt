@@ -22,7 +22,7 @@ install(FILES ../../../LICENSE ../../../NOTICE DESTINATION share/licenses/tei_to
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
-  target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_vision.cu kernels/qwen35_reference.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
+  target_sources(tei_torch PRIVATE kernels/radix_qkv.cu kernels/qwen35_vision.cu kernels/qwen35_reference.cu kernels/qwen35_recurrent.cu kernels/qwen35_kernels.cu kernels/fast_kernels.cu kernels/fp8_quant.cu kernels/encoder_activation.cu kernels/encoder_bias.cu kernels/encoder_norm.cu kernels/decoder_norm.cu kernels/packed_pool.cu
     kernels/torch_flash_fma.cpp kernels/torch_flash_fma_32.cu kernels/torch_flash_fma_64.cu kernels/torch_flash_fma_72.cu kernels/torch_flash_fma_128.cu kernels/torch_flash_fma_256.cu kernels/torch_flash_fma_512.cu)
   # Match independently verified core LayerNorm/softmax: default FMA and
   # precise exp/division, without --use_fast_math.

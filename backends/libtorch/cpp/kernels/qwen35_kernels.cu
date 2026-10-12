@@ -3,6 +3,7 @@
 // those native packed kernels on LibTorch's current stream, without Python.
 #include "kernels/qwen35_kernels.h"
 #include "kernels/gemma2_norm.h"
+#include "kernels/qwen35_recurrent.h"
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
@@ -442,8 +443,12 @@ at::Tensor qwen35_delta_cuda(const at::Tensor& qkv, const at::Tensor& z,
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   qwen35_gdn_prepare<<<tokens*key_heads,128,0,stream>>>(bf(convolution),bf(ab),a_log.const_data_ptr<float>(),dt_bias.const_data_ptr<float>(),qk.mutable_data_ptr<float>(),decay.mutable_data_ptr<float>(),tokens,key_heads,value_heads);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
-  qwen35_gdn_recurrent<<<dim3(input.batch,value_heads,16),256,0,stream>>>(bf(convolution),qk.const_data_ptr<float>(),decay.const_data_ptr<float>(),cu,mut(recurrence),key_heads,value_heads);
-  C10_CUDA_KERNEL_LAUNCH_CHECK();
+  if(qwen35_recurrent_supported(qkv.device(),key_heads,value_heads))
+    qwen35_recurrent_cuda(convolution,qk,decay,input,recurrence,key_heads,value_heads,true);
+  else {
+    qwen35_gdn_recurrent<<<dim3(input.batch,value_heads,16),256,0,stream>>>(bf(convolution),qk.const_data_ptr<float>(),decay.const_data_ptr<float>(),cu,mut(recurrence),key_heads,value_heads);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+  }
   qwen35_gdn_norm<<<tokens*value_heads,128,0,stream>>>(bf(recurrence),bf(z),bf(norm),mut(output),epsilon);
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output.view({tokens,value_heads*128});
