@@ -1,6 +1,10 @@
 #include "kernels/fast_kernels.h"
 #include "kernels/qwen35_vision.h"
+#include "kernels/nomic_moe.h"
+#include "kernels/encoder_activation.h"
 #include <ATen/ops/_fused_rms_norm.h>
+#include <ATen/cuda/CUDAContext.h>
+#include <cublasLt.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <cmath>
@@ -202,5 +206,48 @@ int main(){c10::InferenceMode guard;
   auto wrong=std::get<0>(at::_fused_rms_norm(rounded,{256},weight,1e-5));
   TORCH_CHECK((wrong-reference).abs().max().item<float>()>=.125,"Residual rounding fixture must distinguish semantics");
   close(tei::fused_add_rms_norm(x,residual,weight,1e-5).first,reference,0,"RMS statistics retain FP32 residual sum");
+ }
+ {
+  auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kBFloat16);
+  auto& context=at::globalContext();
+  const auto preferred=context.blasPreferredBackend();
+  for(auto fallback:{at::BlasBackend::Default,at::BlasBackend::Cublas}) {
+   context.setBlasPreferredBackend(fallback);
+   TORCH_CHECK(!tei::nomic_moe_split_policy(c10::Device(at::kCUDA,0),at::kBFloat16,768,3072,8,2).defined(),
+               "Default/cuBLAS must retain reference Nomic dispatch");
+  }
+  context.setBlasPreferredBackend(preferred);
+  auto policy=tei::nomic_moe_split_policy(c10::Device(at::kCUDA,0),at::kBFloat16,768,3072,8,2);
+  auto* properties=at::cuda::getCurrentDeviceProperties();
+  if(properties->major==9 && properties->minor==0 && cublasLtGetVersion()==130200)
+   TORCH_CHECK(policy.defined(),"Qualified Nomic grouped assertions require cuBLASLt preference");
+  TORCH_CHECK(!tei::nomic_moe_split_policy(c10::Device(at::kCPU),at::kBFloat16,768,3072,8,2).defined(),
+              "CPU must retain the Nomic reference dispatch");
+  if(policy.defined()) {
+   // A single regression for packed uneven/empty experts, reversed slots and
+   // the small-M split-K rounding boundary that unsplit grouped GEMM loses.
+   at::manual_seed(7);
+   auto first=at::randn({8,3072,768},opts)*.02,second=at::randn_like(first)*.02;
+   for(int rows:{2,32,137,1024}) {
+    auto x=at::randn({rows,768},opts),scores=at::rand({rows,2},opts)*.5;
+    std::vector<int64_t> routes;
+    for(int row=0;row<rows;++row){routes.push_back(row%3==0?7:0);routes.push_back(row%3==0?0:2);}
+    auto ids=at::tensor(routes,opts.dtype(at::kLong)).view({rows,2});
+    auto reference=at::zeros_like(x);
+    for(int expert=0;expert<8;++expert) {
+     auto matches=at::nonzero(ids==expert);
+     if(!matches.size(0))continue;
+     auto tokens=matches.select(1,0),slots=matches.select(1,1);
+     auto contribution=at::matmul(tei::encoder_gelu(at::linear(x.index_select(0,tokens),first[expert])),second[expert]);
+     reference.index_add_(0,tokens,contribution*scores.index_select(0,tokens).gather(1,slots.unsqueeze(1)));
+    }
+    auto actual=tei::nomic_grouped_experts(x,first,second,ids,scores,policy);
+    close(actual,reference,0,"Grouped Nomic preserves original GEMM split-K and BF16 weighting");
+    auto saved=actual.clone();
+    auto changed=tei::nomic_grouped_experts(x*2,first,second,ids,scores,policy);
+    TORCH_CHECK(!at::equal(actual,changed),"Grouped experts ignored changed tokens");
+    close(actual,saved,0,"Grouped requests retain earlier owned outputs");
+   }
+  }
  }
 }
