@@ -3,7 +3,12 @@
 #include "batching/radix.h"
 #include "helpers/image_feature_cache.h"
 #include <iostream>
+#include <cstring>
 #ifdef TEI_TORCH_CUDA_KERNELS
+#include "kernels/gemma_score.h"
+#include "kernels/qwen35_kernels.h"
+#include <ATen/cuda/CUDAContext.h>
+#include <ATen/cuda/CUDAGraph.h>
 #include <c10/cuda/CUDAGuard.h>
 #endif
 
@@ -32,6 +37,111 @@ void feature_cache_bounds() {
   TORCH_CHECK(entry_bound.usage()==std::make_pair(size_t(32),size_t(32)),"Default image cache32entry bound failed");
 }
 #ifdef TEI_TORCH_CUDA_KERNELS
+void publisher_bf16_score_readout(const c10::Device& device) {
+  c10::cuda::CUDAGuard guard(device);
+  auto exact=[](const at::Tensor& a,const at::Tensor& b) {
+    auto x=a.cpu().contiguous(),y=b.cpu().contiguous();
+    return x.sizes()==y.sizes()&&std::memcmp(x.data_ptr(),y.data_ptr(),x.numel()*sizeof(c10::BFloat16))==0;
+  };
+  // Cover every BF16 value, including signed zeros, infinities and NaN payloads.
+  std::vector<uint16_t> bits(65536);for(int i=0;i<65536;++i)bits[i]=i;
+  auto values=at::from_blob(bits.data(),{65536,1},at::kBFloat16).clone().to(device);
+  auto ends=at::arange(65537,at::TensorOptions().device(device).dtype(at::kInt));
+  TORCH_CHECK(exact(values,gemma4_bf16_sequence_score_readout(values,ends,65536,0.,false)),"Uncapped publisher gather changed BF16 bits");
+  for(double cap:{.01,1.,30.,50.,-30.}) {
+    auto reference=values/cap;reference=at::tanh(reference);reference=reference*cap;
+    TORCH_CHECK(exact(reference,gemma4_bf16_sequence_score_readout(values,ends,65536,cap,true)),"Publisher readout changed Torch BF16 scalar arithmetic");
+  }
+  // All BF16 operands, original learned layer scalars, zeros, infinities and
+  // NaNs. Compare bytewise to the original two ATen operations, including both
+  // intermediate rounding and non-destructive output ownership.
+  std::vector<uint16_t> scalar_bits={0,15760,15918,15944,15952,16132,16142,16143,16155,16158,16163,16167,16173,16177,16180,16182,16184,16186,16187,16188,16189,16192,16193,16195,16197,16206,16209,16256,32640,32705,32768,49024,65408};
+  for(int shift:{0,1,32768,12345}) {
+    auto other=at::roll(values,{shift},{0}).contiguous();
+    auto before=values.clone(),other_before=other.clone();
+    for(auto raw:scalar_bits) {
+      auto scale=at::from_blob(&raw,{1},at::kBFloat16).clone().to(device);
+      auto reference=(values+other)*scale;
+      auto observed=gemma4_bf16_residual_scale(values,other,scale);
+      TORCH_CHECK(exact(reference,observed),"Gemma4 fused add/multiply changed BF16 bits");
+      TORCH_CHECK(observed.const_data_ptr()!=values.const_data_ptr()&&observed.const_data_ptr()!=other.const_data_ptr()
+        &&exact(values,before)&&exact(other,other_before),"Gemma4 residual scale overwrote retained input storage");
+    }
+  }
+  // Compare the fused norm/add/scalar path to the actual deployed original
+  // norm kernel plus ATen operations. Include true hidden width2816, original
+  // learned scalar bits, finite data and every BF16 bit pattern across rows.
+  for(int64_t width:{8,256,512,2816,8192}) {
+    auto norm_scale=(at::randn({width},values.options())*.1+1.).to(at::kFloat);
+    for(int pattern=0;pattern<3;++pattern) {
+      auto input=at::randn({32,width},values.options());
+      auto residual=at::randn_like(input);
+      if(pattern==1) {
+        std::vector<uint16_t> words(input.numel());for(size_t i=0;i<words.size();++i)words[i]=i%65536;
+        input=at::from_blob(words.data(),input.sizes(),at::kBFloat16).clone().to(device);
+      }
+      if(pattern==2){input.zero_();residual.zero_();}
+      auto normalized=gemma_norm_cuda(input,norm_scale,1e-6,true);
+      auto added=residual+normalized;
+      TORCH_CHECK(exact(added,gemma4_bf16_norm_residual(residual,input,norm_scale,1e-6,{})),
+        "Gemma4 fused norm/add changed original reference tree or BF16 stages");
+      for(auto raw:scalar_bits) {
+        auto scale=at::from_blob(&raw,{1},at::kBFloat16).clone().to(device);
+        TORCH_CHECK(exact(added*scale,gemma4_bf16_norm_residual(residual,input,norm_scale,1e-6,scale)),
+          "Gemma4 fused norm/add/scalar changed original stages");
+      }
+    }
+  }
+  auto stream=at::cuda::getStreamFromPool(false,device.index());
+  c10::cuda::CUDAStreamGuard stream_guard(stream);
+  auto options=at::TensorOptions().device(device).dtype(at::kFloat);
+  auto scores=(at::arange(42,options).view({21,2})-23.).to(at::kBFloat16);
+  auto original=scores.clone();
+  auto first_ends=at::tensor(std::vector<int32_t>{0,7,21},at::kInt).to(device);
+  auto changed_ends=at::tensor(std::vector<int32_t>{0,9,21},at::kInt).to(device);
+  auto current_ends=first_ends.clone();
+  auto reference=[&]() {
+    auto all=scores/30.;all=at::tanh(all);all=all*30.;
+    return all.index_select(0,current_ends.narrow(0,1,2).to(at::kLong)-1);
+  };
+  for(int i=0;i<20;++i)gemma4_bf16_sequence_score_readout(scores,current_ends,2,30.,true);
+  stream.synchronize();
+  at::cuda::CUDAGraph graph;graph.capture_begin();
+  auto observed=gemma4_bf16_sequence_score_readout(scores,current_ends,2,30.,true);
+  graph.capture_end();graph.replay();
+  TORCH_CHECK(exact(observed,reference()),"Publisher graph changed original score bits");
+  auto first=observed.clone();current_ends.copy_(changed_ends);graph.replay();
+  TORCH_CHECK(exact(observed,reference())&&!exact(first,observed),"Publisher graph used stale packed ends");
+  scores.copy_(original+1.);graph.replay();
+  TORCH_CHECK(exact(observed,reference()),"Publisher graph used stale full-GEMM scores");
+  scores.copy_(original);current_ends.copy_(first_ends);graph.replay();
+  TORCH_CHECK(exact(first,observed),"Publisher graph restore changed score bits");
+  auto residual=at::randn({3,2816},options).to(at::kBFloat16);
+  auto normalized=at::randn({3,2816},options).to(at::kBFloat16);
+  auto scalar=at::full({1},.125,options).to(at::kBFloat16);
+  auto saved=residual.clone();
+  for(int i=0;i<20;++i)gemma4_bf16_residual_scale(residual,normalized,scalar);
+  stream.synchronize();at::cuda::CUDAGraph residual_graph;residual_graph.capture_begin();
+  auto scaled=gemma4_bf16_residual_scale(residual,normalized,scalar);
+  residual_graph.capture_end();residual_graph.replay();
+  TORCH_CHECK(exact(scaled,(residual+normalized)*scalar),"Residual-scale graph changed original stages");
+  auto owned=scaled.clone();residual.copy_(saved+1.);scalar.fill_(.5);residual_graph.replay();
+  TORCH_CHECK(exact(scaled,(residual+normalized)*scalar),"Residual-scale graph reused stale operands");
+  residual.copy_(saved);scalar.fill_(.125);residual_graph.replay();
+  TORCH_CHECK(exact(scaled,owned)&&exact(residual,saved),"Residual-scale graph restore changed retained states");
+  auto norm_scale=at::ones({2816},options);
+  for(int i=0;i<20;++i)gemma4_bf16_norm_residual(residual,normalized,norm_scale,1e-6,scalar);
+  stream.synchronize();at::cuda::CUDAGraph norm_graph;norm_graph.capture_begin();
+  auto norm_scaled=gemma4_bf16_norm_residual(residual,normalized,norm_scale,1e-6,scalar);
+  norm_graph.capture_end();norm_graph.replay();
+  auto norm_reference=[&]{return (residual+gemma_norm_cuda(normalized,norm_scale,1e-6,true))*scalar;};
+  TORCH_CHECK(exact(norm_scaled,norm_reference()),"Norm/residual/scalar graph changed original output");
+  auto norm_owned=norm_scaled.clone();residual.copy_(saved+1.);scalar.fill_(.5);norm_graph.replay();
+  TORCH_CHECK(exact(norm_scaled,norm_reference()),"Norm/residual/scalar graph reused stale operands");
+  residual.copy_(saved);scalar.fill_(.125);norm_graph.replay();
+  TORCH_CHECK(exact(norm_owned,norm_scaled)&&exact(residual,saved),"Norm/residual/scalar graph changed retained states");
+  std::cout<<"Gemma4 publisher BF16 scalar arithmetic and current graph score/end readout passed\n";
+}
 void feature_cache_stream_lifetime(const c10::Device& device) {
   c10::cuda::CUDAGuard device_guard(device);
   auto producer=at::cuda::getStreamFromPool(false,device.index());
@@ -230,7 +340,7 @@ int main(int argc,char** argv) {
   embedding_layer_key_aliases();
   feature_cache_bounds();
 #ifdef TEI_TORCH_CUDA_KERNELS
-  if(argc>1)feature_cache_stream_lifetime(c10::Device(argv[1]));
+  if(argc>1){feature_cache_stream_lifetime(c10::Device(argv[1]));publisher_bf16_score_readout(c10::Device(argv[1]));}
 #endif
   at::manual_seed(418);
   audio_operations(c10::Device("cpu"));
@@ -287,6 +397,28 @@ int main(int argc,char** argv) {
       TORCH_CHECK(at::equal(full_score,capped->predict(logical,false)),"LM softcapping changed raw classifier logits");
       TORCH_CHECK(at::allclose(full_score,capped->predict(compact,false),1e-5,1e-6),"LM softcapping changed folded classifier logits");
       TORCH_CHECK(at::allclose(full_score,scored->predict(compact,false),1e-5,1e-6),"Gemma folded classifier changed sequence-end readout");
+      auto publisher_cfg=capped_cfg;
+      publisher_cfg.values["architectures"]="[\"Gemma4ForSequenceClassification\"]";
+      publisher_cfg.values["architectures.0"]="Gemma4ForSequenceClassification";
+      publisher_cfg.values["auto_map.AutoModelForSequenceClassification"]=
+        "modeling_gemma4_sequence.Gemma4ForSequenceClassification";
+      auto publisher=create_gemma(publisher_cfg,scored_weights,c10::Device("cpu"),at::kFloat);publisher->ready();
+      auto publisher_hidden=decision->forward(logical);
+      auto publisher_logits=at::linear(publisher_hidden,scored_weights.at("score.weight"));
+      publisher_logits=publisher_logits/.01;
+      publisher_logits=at::tanh(publisher_logits);
+      publisher_logits=publisher_logits*.01;
+      auto ends=logical.cumulative.narrow(0,1,logical.batch).to(at::kLong)-1;
+      auto publisher_expected=publisher_logits.index_select(0,ends);
+      TORCH_CHECK(at::equal(publisher_expected,publisher->predict(logical,false)),"Declared Gemma4 sequence contract changed all-token readout");
+      TORCH_CHECK(at::allclose(publisher_expected,publisher->predict(compact,false),1e-5,1e-6),"Publisher sequence cap changed radix reconstruction");
+      TORCH_CHECK(!at::allclose(full_score,publisher_expected,1e-5,1e-6),"Publisher fixture must distinguish capped logits");
+      auto unknown_cfg=publisher_cfg;unknown_cfg.values["auto_map.AutoModelForSequenceClassification"]="other.Gemma4ForSequenceClassification";
+      auto unknown=create_gemma(unknown_cfg,scored_weights,c10::Device("cpu"),at::kFloat);unknown->ready();
+      TORCH_CHECK(at::equal(full_score,unknown->predict(logical,false)),"Unrecognized sequence contract applied publisher cap");
+      auto null_metadata_cfg=publisher_cfg;null_metadata_cfg.values["architectures"]="null";
+      auto null_metadata=create_gemma(null_metadata_cfg,scored_weights,c10::Device("cpu"),at::kFloat);null_metadata->ready();
+      TORCH_CHECK(at::equal(full_score,null_metadata->predict(logical,false)),"Nullable architecture metadata changed generic sequence logits");
       bool embedding_fold_rejected=false;
       try { scored->forward(compact); } catch(const c10::Error&) { embedding_fold_rejected=true; }
       TORCH_CHECK(embedding_fold_rejected,"Loaded score head must not enable bidirectional embedding folding");
