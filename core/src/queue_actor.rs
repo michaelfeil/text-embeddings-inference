@@ -3,7 +3,7 @@ use crate::log_response_dropped_after;
 use crate::tokenization::ValidEncoding;
 use infinity_v3_backend::{BackendError, Batch};
 use std::cmp::max;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
     Arc,
@@ -275,8 +275,22 @@ fn queue_blocking_task(
                 let mut pooled_count = 0;
                 let mut token_count = 0;
                 let mut offset_count = 0;
+                // Build lookahead only for a soft cut, then update it on removal.
+                // Consecutive inputs from the same HTTP request avoid this map.
+                // Canceled tails stay counted until popped; only soft cuts can change.
+                let mut pending_clients: Option<HashMap<usize, usize>> = None;
 
                 while let Some(entry) = entries.pop_front() {
+                    if let (Some(clients), Some(client)) =
+                        (&mut pending_clients, &entry.metadata.client_batch)
+                    {
+                        let id = Arc::as_ptr(client) as usize;
+                        let count = clients.get_mut(&id).expect("queued client counted");
+                        *count -= 1;
+                        if *count == 0 {
+                            clients.remove(&id);
+                        }
+                    }
                     // Filter entries where the response receiver was dropped (== entries where the request
                     // was dropped by the client)
                     if entry.metadata.response_tx.is_closed() {
@@ -288,7 +302,7 @@ fn queue_blocking_task(
                     let entry_tokens = entry.encoding.input_ids.len();
 
                     // Soft limit: always allow one input, even if it exceeds the target.
-                    let unfinished_client = || {
+                    let mut unfinished_client = || {
                         selected.iter().any(|selected| {
                             selected
                                 .metadata
@@ -301,14 +315,21 @@ fn queue_blocking_task(
                                             .client_batch
                                             .as_ref()
                                             .is_some_and(|next| Arc::ptr_eq(client, next))
-                                        || entries.iter().any(|pending| {
-                                            !pending.metadata.response_tx.is_closed()
-                                                && pending
-                                                    .metadata
-                                                    .client_batch
-                                                    .as_ref()
-                                                    .is_some_and(|other| Arc::ptr_eq(client, other))
-                                        })
+                                        || pending_clients
+                                            .get_or_insert_with(|| {
+                                                let mut clients = HashMap::new();
+                                                for pending in &entries {
+                                                    if let Some(client) =
+                                                        &pending.metadata.client_batch
+                                                    {
+                                                        *clients
+                                                            .entry(Arc::as_ptr(client) as usize)
+                                                            .or_default() += 1;
+                                                    }
+                                                }
+                                                clients
+                                            })
+                                            .contains_key(&(Arc::as_ptr(client) as usize))
                                 })
                         })
                     };
@@ -682,6 +703,101 @@ mod tests {
         assert_eq!(queue.next_batch().await.unwrap().0.len(), 1);
         assert!(queue.next_batch().await.is_none());
         queue.close();
+    }
+
+    #[tokio::test]
+    async fn lookahead_preserves_interleaved_clients_and_cancellation() {
+        for cancel_grouped_tail in [false, true] {
+            let queue = test_queue_with_limits(32, None, Some(3));
+            let client = Arc::new(AtomicUsize::new(0));
+            let mut responses = Vec::new();
+            for value in 1..5 {
+                let (mut entry, response) = test_entry(vec![value; 3], true);
+                entry.metadata.client_batch = (value == 1 || value == 3).then(|| client.clone());
+                if cancel_grouped_tail && value == 3 {
+                    drop(response);
+                } else {
+                    responses.push(response);
+                }
+                queue.append(entry).await;
+            }
+            let (metadata, batch) = queue.next_batch().await.unwrap();
+            assert_eq!(metadata.len(), if cancel_grouped_tail { 2 } else { 3 });
+            assert_eq!(&batch.input_ids[..6], &[1, 1, 1, 2, 2, 2]);
+            // Removing the tail also removes its lookahead charge; the final
+            // unrelated input starts a new selection in both cases.
+            let (metadata, batch) = queue.next_batch().await.unwrap();
+            assert_eq!(metadata.len(), 1);
+            assert_eq!(batch.input_ids, [4, 4, 4]);
+            assert!(queue.next_batch().await.is_none());
+            queue.close();
+        }
+    }
+
+    #[tokio::test]
+    async fn lookahead_matches_fifo_reference_across_client_patterns() {
+        for scenario in 0..256usize {
+            let clients: Vec<_> = (0..4)
+                .map(|i| Arc::new(AtomicUsize::new(usize::from((scenario + i) % 7 == 0))))
+                .collect();
+            let max_tokens = 32 + scenario % 64;
+            let max_requests = (scenario % 3 == 0).then_some(1 + scenario % 7);
+            let target = (scenario % 4 != 0).then_some(8 + scenario % 24);
+            let queue = test_queue_with_limits(max_tokens, max_requests, target);
+            let mut reference = VecDeque::new();
+            let mut responses = Vec::new();
+            let mut seed = scenario as u64 + 1;
+            for id in 0..32 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let tokens = 1 + ((seed >> 32) % 16) as usize;
+                let group = ((seed >> 40) % 5) as usize;
+                let (mut entry, response) = test_entry(vec![id; tokens], true);
+                entry.metadata.client_batch = clients.get(group).cloned();
+                queue.append(entry).await;
+                responses.push(response);
+                reference.push_back((id, tokens, group));
+            }
+            while !reference.is_empty() {
+                let mut expected: Vec<(u32, usize, usize)> = Vec::new();
+                let mut tokens = 0;
+                while let Some(&(id, count, group)) = reference.front() {
+                    let unfinished = expected.iter().any(|&(_, _, selected_group)| {
+                        clients.get(selected_group).is_some_and(|client| {
+                            client.load(Ordering::SeqCst) != 0
+                                || selected_group == group
+                                || reference
+                                    .iter()
+                                    .any(|&(_, _, pending_group)| pending_group == selected_group)
+                        })
+                    });
+                    if should_cut(tokens, count, target) && !unfinished {
+                        break;
+                    }
+                    if tokens + count > max_tokens {
+                        break;
+                    }
+                    reference.pop_front();
+                    expected.push((id, count, group));
+                    tokens += count;
+                    if Some(expected.len()) == max_requests {
+                        break;
+                    }
+                }
+                let (metadata, batch) = queue.next_batch().await.unwrap();
+                assert_eq!(metadata.len(), expected.len(), "scenario {scenario}");
+                assert_eq!(batch.input_ids.len(), tokens, "scenario {scenario}");
+                assert_eq!(
+                    batch.cumulative_seq_lengths[..metadata.len()]
+                        .iter()
+                        .map(|&offset| batch.input_ids[offset as usize])
+                        .collect::<Vec<_>>(),
+                    expected.iter().map(|&(id, _, _)| id).collect::<Vec<_>>(),
+                    "scenario {scenario}"
+                );
+            }
+            assert!(queue.next_batch().await.is_none());
+            queue.close();
+        }
     }
 
     #[tokio::test]
