@@ -393,7 +393,7 @@ struct Encoder final : Model {
     // stream/context and backend policy. Keep the snapshot request-local.
     auto ordinary_session=ordinary_executor?ordinary_executor->prepare(w("embeddings.tok_embeddings.weight")):
       OrdinaryLinearExecutor::Session{};
-    at::Tensor h, modern_residual;
+    at::Tensor h, modern_residual, modern_normalized;
     if (family == Family::Modern) h = norm(at::embedding(w("embeddings.tok_embeddings.weight"), input.ids), "embeddings.norm");
 #ifdef TEI_TORCH_CUDA_KERNELS
     else if(exact_distil_flash && !has("embeddings.token_type_embeddings.weight")) h=distil_embedding_norm(w("embeddings.word_embeddings.weight"),
@@ -464,9 +464,13 @@ struct Encoder final : Model {
       auto source = h;
 #ifdef TEI_TORCH_CUDA_KERNELS
       if(exact_norm&&family==Family::Modern&&h.is_cuda()) {
-        if(i==0)modern_residual=h;
+        if(i==0) {
+          modern_residual=h;
+          // One private allocation per request; never model-owned or returned.
+          if(h.size(-1)<=1536)modern_normalized=at::empty_like(h);
+        }
         else {
-          auto normalized=encoder_layer_norm_update_residual(h,w(p+"attn_norm.weight"),eps,modern_residual);
+          auto normalized=encoder_layer_norm_update_residual_scratch(h,w(p+"attn_norm.weight"),eps,modern_residual,modern_normalized);
           source=normalized.first;modern_residual=normalized.second;
         }
       } else
@@ -512,7 +516,7 @@ struct Encoder final : Model {
       if (family == Family::Modern) {
 #ifdef TEI_TORCH_CUDA_KERNELS
         if(exact_norm&&h.is_cuda()) {
-          auto normalized=encoder_layer_norm_update_residual(projected,w(p+"mlp_norm.weight"),eps,modern_residual);
+          auto normalized=encoder_layer_norm_update_residual_scratch(projected,w(p+"mlp_norm.weight"),eps,modern_residual,modern_normalized);
           modern_residual=normalized.second;
           h=linear(gated(linear(normalized.first,p+"mlp.Wi",&ordinary_session)),p+"mlp.Wo",&ordinary_session);
         } else

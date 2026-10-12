@@ -74,6 +74,27 @@ int main(int argc,char** argv) {
           auto next=tei::encoder_layer_norm_update_residual(x,weight,1e-5,updated.second);
           TORCH_CHECK(at::equal(next.first,next_expected.first)&&at::equal(next.second,next_expected.second),
             "Repeated residual updates changed rounded normalization bytes");
+          if(width==768) {
+            auto model_stream=c10::cuda::getStreamFromPool(false,options.device().index());
+            c10::cuda::CUDAStreamGuard model_guard(model_stream);
+            auto scratch=at::empty_like(x),private_sum=residual.clone();
+            auto reused=tei::encoder_layer_norm_update_residual_scratch(x,weight,1e-5,private_sum,scratch);
+            TORCH_CHECK(reused.first.is_alias_of(scratch)&&at::equal(reused.first,result.first),"Private norm scratch changed original bytes");
+            auto matrix=at::randn({width,32},options),read=at::matmul(reused.first,matrix);
+            auto expected_read=at::matmul(result.first,matrix);
+            auto final=tei::encoder_layer_norm_only(x,weight,1e-5,private_sum),saved_final=final.clone();
+            auto next_expected=tei::encoder_layer_norm(x,weight,1e-5,private_sum);
+            auto overwritten=tei::encoder_layer_norm_update_residual_scratch(x,weight,1e-5,private_sum,scratch);
+            TORCH_CHECK(at::equal(read,expected_read)&&at::equal(overwritten.first,next_expected.first),"Scratch overwrite raced an earlier consuming GEMM");
+            TORCH_CHECK(!final.is_alias_of(scratch)&&at::equal(final,saved_final),"Returned final norm aliases overwritten request scratch");
+            for(const auto& invalid:{x,residual,weight.unsqueeze(0).expand_as(x),at::empty({width,7},options).t(),at::empty(x.sizes(),options.device(at::kCPU))}) {
+              auto before=residual.clone(),saved=invalid.clone();
+              auto fallback=tei::encoder_layer_norm_update_residual_scratch(x,weight,1e-5,residual,invalid);
+              TORCH_CHECK(!fallback.first.is_alias_of(invalid)&&at::equal(fallback.first,result.first)&&at::equal(fallback.second,result.second),"Invalid scratch changed allocating fallback");
+              TORCH_CHECK(at::equal(residual,before)&&at::equal(invalid.contiguous().view(at::kByte),saved.contiguous().view(at::kByte)),"Invalid scratch fallback mutated supplied storage bytes");
+              if(!at::equal(invalid,saved))std::cout<<"Invalid scratch preserved bytes including NaNs on "<<invalid.device()<<"\n";
+            }
+          }
         } else {
           TORCH_CHECK(!result.second.defined(),"Plain normalization must not allocate residual output");
         }
