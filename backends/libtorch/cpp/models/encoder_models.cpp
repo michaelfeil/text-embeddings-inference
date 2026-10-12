@@ -10,6 +10,7 @@
 #include "kernels/nomic_moe.h"
 #include "kernels/torch_flash_fma.h"
 #include "kernels/torch_flash_alibi64.h"
+#include <ATen/cuda/CUDAContext.h>
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_addmm_activation.h>
@@ -55,6 +56,18 @@ struct Encoder final : Model {
   bool exact_norm = false;
   bool exact_moe = false;
   at::Tensor nomic_split_policy;
+  size_t nomic_policy_workspace = 0;
+  bool device_routing_ready() const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    return family == Family::Nomic && exact_moe && nomic_split_policy.defined()
+      && !o.boolean("_fp8_dynamic", false)
+      && at::globalContext().blasPreferredBackend() == at::BlasBackend::Cublaslt
+      && at::globalContext().allowBF16ReductionCuBLAS() == at::CuBLASReductionOption::AllowReducedPrecisionWithSplitK
+      && at::cuda::getCUDABlasLtWorkspaceSize() == nomic_policy_workspace;
+#else
+    return false;
+#endif
+  }
   bool exact_alibi32 = false;
   bool exact_alibi64 = false;
   struct Layer {
@@ -229,6 +242,7 @@ struct Encoder final : Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
         if (activation == "gelu") nomic_split_policy = nomic_moe_split_policy(device, dtype,
             hidden, o.integer("n_inner",0), o.integer("num_experts",0), o.integer("moe_top_k",0));
+        if (nomic_split_policy.defined()) nomic_policy_workspace = at::cuda::getCUDABlasLtWorkspaceSize();
 #endif
       }
       rotary_cache(o.real("rotary_emb_base", 1000), global_cos, global_sin);
@@ -308,7 +322,7 @@ struct Encoder final : Model {
     auto first = w(p + "mlp.experts.mlp.w1").view({count, width, hidden});
     auto second = w(p + "mlp.experts.mlp.w2").view({count, width, hidden});
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if (nomic_split_policy.defined() && h.size(0) > 0 && h.size(0) <= kNomicGroupedMaxTokens) {
+    if (device_routing_ready() && h.size(0) > 0 && h.size(0) <= kNomicGroupedMaxTokens) {
       return nomic_grouped_experts(h, first, second, experts, scores, nomic_split_policy)
           + w(p + "mlp.experts.bias");
     }
@@ -832,6 +846,11 @@ struct Deberta final : Model {
     return at::linear(h,weight(weights,"classifier.weight"),weight(weights,"classifier.bias"));
   }
 };
+}
+
+bool encoder_nomic_device_routing_ready(const Model& model) {
+  const auto* encoder = dynamic_cast<const Encoder*>(&model);
+  return encoder && encoder->device_routing_ready();
 }
 
 std::unique_ptr<Model> create_encoder(const Options& options, Weights& weights, c10::Device device, at::ScalarType dtype) {
