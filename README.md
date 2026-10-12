@@ -174,7 +174,7 @@ To see all options to serve your models:
 
 ```console
 $ infinity_v3 --help
-Text Embedding Webserver
+infinity_v3 inference server
 
 Usage: infinity_v3 [OPTIONS]
 

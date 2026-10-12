@@ -93,7 +93,7 @@ architectures and are not selected by this model-type alias.
 Example for the unquantized checkpoint (one full model per visible GPU):
 
 ```sh
-text-embeddings-router --model-id Qwen/Qwen3-30B-A3B \
+infinity_v3 --model-id Qwen/Qwen3-30B-A3B \
   --dtype bfloat16 --pooling last-token --max-batch-tokens 8192
 ```
 
@@ -124,7 +124,7 @@ walks tokens recurrently, so it does not yet provide a chunk-parallel prefill
 implementation. Full attention uses the configured FlashAttention backend.
 
 ```sh
-text-embeddings-router --model-id Qwen/Qwen3.5-35B-A3B \
+infinity_v3 --model-id Qwen/Qwen3.5-35B-A3B \
   --dtype bfloat16 --pooling last-token --max-batch-tokens 4096
 ```
 
