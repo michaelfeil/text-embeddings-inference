@@ -307,9 +307,10 @@ template<class T> __global__ void paired_rotary_kernel(const T* q,const T* k,con
     output[row*dim+lane+half]=T(float(T(b*c))+float(T(a*s)));
   }
 }
-template<class T> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const T* cosine,const T* sine,
- int64_t qheads,int64_t kheads,int64_t qstride,int64_t kstride,int64_t tokens,int64_t dim,int64_t half) {
-  const int64_t index=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;
+template<class T,class Index,bool Indexed> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const T* cosine,const T* sine,
+ Index qheads,Index kheads,Index qstride,Index kstride,Index tokens,Index dim,Index half,
+ const int64_t* positions,Index table_rows) {
+  const Index index=Index(blockIdx.x)*blockDim.x+threadIdx.x;
   if(index>=tokens*(qheads+kheads)*half)return;
   const auto row=index/half,lane=index%half;
   const bool isq=row<tokens*qheads;
@@ -317,7 +318,13 @@ template<class T> __global__ void encoder_rotary_inplace_kernel(T* q,T* k,const 
   const auto token=r/heads,head=r%heads;
   T* x=isq?q:k;
   const auto offset=token*(isq?qstride:kstride)+head*dim+lane;
-  const T a=x[offset],b=x[offset+half],c=cosine[token*half+lane],s=sine[token*half+lane];
+  Index frequency=token;
+  if constexpr(Indexed) {
+    const int64_t position=positions[token];
+    CUDA_KERNEL_ASSERT(position>=0 && uint64_t(position)<uint64_t(table_rows));
+    frequency=Index(position);
+  }
+  const T a=x[offset],b=x[offset+half],c=cosine[frequency*half+lane],s=sine[frequency*half+lane];
   // Load both original lanes before either write; every pair has one owner.
   x[offset]=encoder_rotary_fma(a,c,T(-float(T(b*s))));
   x[offset+half]=encoder_rotary_fma(b,c,T(a*s));
@@ -436,20 +443,34 @@ std::pair<at::Tensor,at::Tensor> fused_rotary(const at::Tensor& q,const at::Tens
   }
   return {output.narrow(0,0,qr).view({q.size(0),q.size(1),dim}),output.narrow(0,qr,kr).view({k.size(0),k.size(1),dim})};
 }
-void encoder_rotary_inplace(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine) {
+static void encoder_rotary_dispatch(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine,const at::Tensor& positions) {
+  const bool indexed=positions.defined();
   TORCH_CHECK(q.is_cuda()&&q.dim()==3&&k.dim()==3&&q.size(0)==k.size(0)&&q.size(2)==k.size(2),"Invalid packed encoder Q/K");
   TORCH_CHECK(q.device()==k.device()&&q.scalar_type()==k.scalar_type(),"Encoder Q/K dtype/device mismatch");
   for(const auto& t:{q,k})TORCH_CHECK(t.stride(2)==1&&t.stride(1)==t.size(2)&&t.stride(0)>=t.size(1)*t.size(2),"Encoder rotary requires nonoverlapping packed head views");
-  TORCH_CHECK(cosine.dim()>0&&cosine.size(-1)>0&&2*cosine.size(-1)<=q.size(-1)&&cosine.numel()==q.size(0)*cosine.size(-1)&&sine.sizes()==cosine.sizes(),"Invalid encoder rotary frequencies");
+  TORCH_CHECK(cosine.dim()>0&&cosine.size(-1)>0&&2*cosine.size(-1)<=q.size(-1)&&(indexed?(cosine.dim()==2&&cosine.size(0)>0):cosine.numel()==q.size(0)*cosine.size(-1))&&sine.sizes()==cosine.sizes(),"Invalid encoder rotary frequencies");
   for(const auto& t:{cosine,sine})TORCH_CHECK(t.device()==q.device()&&t.scalar_type()==q.scalar_type()&&t.is_contiguous(),"Encoder rotary frequencies must match Q/K");
+  if(indexed)TORCH_CHECK(positions.device()==q.device()&&positions.scalar_type()==at::kLong&&
+    positions.is_contiguous()&&positions.dim()==1&&positions.numel()==q.size(0),"Invalid encoder rotary position indices");
   c10::cuda::CUDAGuard guard(q.device());const auto count=q.size(0)*(q.size(1)+k.size(1))*cosine.size(-1);
   if(!count)return;
   auto stream=at::cuda::getCurrentCUDAStream(q.device().index());
-#define TEI_ENCODER_ROPE(T) encoder_rotary_inplace_kernel<T><<<(count+255)/256,256,0,stream>>>(reinterpret_cast<T*>(q.mutable_data_ptr()),reinterpret_cast<T*>(k.mutable_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),q.size(1),k.size(1),q.stride(0),k.stride(0),q.size(0),q.size(2),cosine.size(-1))
-  if(q.scalar_type()==at::kHalf){TEI_ENCODER_ROPE(__half);}else if(q.scalar_type()==at::kBFloat16){TEI_ENCODER_ROPE(__nv_bfloat16);}else if(q.scalar_type()==at::kFloat){TEI_ENCODER_ROPE(float);}else TORCH_CHECK(false,"Unsupported encoder rotary dtype");
+  const bool narrow=count<=UINT32_MAX && uint64_t(q.size(0))*q.stride(0)<=UINT32_MAX &&
+    uint64_t(k.size(0))*k.stride(0)<=UINT32_MAX && uint64_t(cosine.numel())<=UINT32_MAX;
+#define TEI_ENCODER_ROPE(T,I,P) encoder_rotary_inplace_kernel<T,I,P><<<(count+255)/256,256,0,stream>>>(reinterpret_cast<T*>(q.mutable_data_ptr()),reinterpret_cast<T*>(k.mutable_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),I(q.size(1)),I(k.size(1)),I(q.stride(0)),I(k.stride(0)),I(q.size(0)),I(q.size(2)),I(cosine.size(-1)),indexed?positions.const_data_ptr<int64_t>():nullptr,I(cosine.size(0)))
+#define TEI_ENCODER_ROPE_WIDTH(T) if(indexed){if(narrow){TEI_ENCODER_ROPE(T,uint32_t,true);}else{TEI_ENCODER_ROPE(T,uint64_t,true);}}else{if(narrow){TEI_ENCODER_ROPE(T,uint32_t,false);}else{TEI_ENCODER_ROPE(T,uint64_t,false);}}
+  if(q.scalar_type()==at::kHalf){TEI_ENCODER_ROPE_WIDTH(__half);}else if(q.scalar_type()==at::kBFloat16){TEI_ENCODER_ROPE_WIDTH(__nv_bfloat16);}else if(q.scalar_type()==at::kFloat){TEI_ENCODER_ROPE_WIDTH(float);}else TORCH_CHECK(false,"Unsupported encoder rotary dtype");
+#undef TEI_ENCODER_ROPE_WIDTH
 #undef TEI_ENCODER_ROPE
   C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
+void encoder_rotary_inplace(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine) {
+  encoder_rotary_dispatch(q,k,cosine,sine,{});
+}
+void encoder_rotary_indexed_inplace(const at::Tensor& q,const at::Tensor& k,const at::Tensor& cosine,const at::Tensor& sine,const at::Tensor& positions) {
+  encoder_rotary_dispatch(q,k,cosine,sine,positions);
+}
+
 at::Tensor fused_gelu(const at::Tensor& x,bool approximate){return fused_bias_gelu(x,at::Tensor(),approximate);}
 std::pair<at::Tensor,at::Tensor> fused_qk_norm_rope(const at::Tensor& q,const at::Tensor& k,const at::Tensor& qw,const at::Tensor& kw,const at::Tensor& cosine,const at::Tensor& sine,double epsilon) {
   TORCH_CHECK(q.is_cuda()&&k.is_cuda()&&q.dim()==3&&k.dim()==3&&q.size(0)==k.size(0)&&q.size(2)==k.size(2),"Invalid packed Q/K tensors");

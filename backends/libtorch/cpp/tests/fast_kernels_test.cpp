@@ -168,6 +168,14 @@ int main(){c10::InferenceMode guard;
    close(inplace_q,contracted.first,0,"Q inplace encoder rotary");
    close(inplace_k,contracted.second,0,"K inplace encoder rotary");
    close(inplace_qkv.narrow(1,6,2),qkv.narrow(1,6,2),0,"Inplace encoder rotary preserves V");
+   auto positions=at::tensor(std::vector<int64_t>{2,1,4,0,3,2,1},opts.dtype(at::kLong));
+   auto expected_indexed=qkv.clone(),actual_indexed=qkv.clone();
+   tei::encoder_rotary_inplace(expected_indexed.narrow(1,0,4),expected_indexed.narrow(1,4,2),
+     cosine.squeeze(1).index_select(0,positions).unsqueeze(1),sine.squeeze(1).index_select(0,positions).unsqueeze(1));
+   tei::encoder_rotary_indexed_inplace(actual_indexed.narrow(1,0,4),actual_indexed.narrow(1,4,2),
+     cosine.squeeze(1),sine.squeeze(1),positions);
+   TORCH_CHECK(at::equal(actual_indexed.view(at::kByte),expected_indexed.view(at::kByte)),
+     "Indexed rotary differs IEEE bits on repeated/irregular positions or overwrites V");
    // Pitched GQA heads, incomplete launch blocks and partial-rotary fallback.
    for(int dim:{64,128,256})for(bool partial:{false,true})for(bool contract:{false,true}) {
     auto packed=at::randn({17,16,dim},opts),original=packed.clone();

@@ -30,6 +30,11 @@ template<class T> void verify(at::ScalarType dtype) {
       }
     }
     TORCH_CHECK(at::equal(actual,expected),"Packed mean pooling differs from independent rounded reduction tree");
+    auto cumulative=at::tensor(offsets,at::TensorOptions().dtype(at::kInt)).to(at::kCUDA);
+    auto full=tei::packed_mean_pool_cumulative(input.to(at::kCUDA),cumulative).cpu();
+    for(size_t row=0;row<selected.size();++row)
+      TORCH_CHECK(at::equal(full[selected[row]],expected[row]),
+        "Cumulative packed mean differs from independent rounded reduction tree");
   }
 }
 int main() {

@@ -63,6 +63,17 @@ int main(int argc,char** argv) {
         TORCH_CHECK(error<=(dtype==at::kHalf?0.003:0.03125),"Encoder norm error ",error," at width ",width);
         if(add) {
           TORCH_CHECK(at::equal(result.second,sum),"Residual sum must round exactly to model dtype");
+          auto owned=residual.clone(),saved_x=x.clone();
+          auto updated=tei::encoder_layer_norm_update_residual(x,weight,1e-5,owned);
+          TORCH_CHECK(at::equal(updated.first,result.first)&&at::equal(updated.second,result.second),
+            "Private residual update changed original bytes at width ",width);
+          TORCH_CHECK(at::equal(x,saved_x),"Private residual update mutated projection input");
+          if(width<=1536)TORCH_CHECK(updated.second.const_data_ptr()==owned.const_data_ptr(),
+            "Supported private residual norm allocated replacement storage");
+          auto next_expected=tei::encoder_layer_norm(x,weight,1e-5,updated.second);
+          auto next=tei::encoder_layer_norm_update_residual(x,weight,1e-5,updated.second);
+          TORCH_CHECK(at::equal(next.first,next_expected.first)&&at::equal(next.second,next_expected.second),
+            "Repeated residual updates changed rounded normalization bytes");
         } else {
           TORCH_CHECK(!result.second.defined(),"Plain normalization must not allocate residual output");
         }

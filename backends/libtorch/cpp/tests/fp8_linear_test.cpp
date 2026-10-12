@@ -1,7 +1,13 @@
 #include "helpers/fp8_linear.h"
 #include <ATen/cuda/CUDAContext.h>
+#include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDAException.h>
+#include <c10/cuda/driver_api.h>
+#include <thread>
+#include <exception>
 #include "tests/fp8_reference_test.h"
 #include <cstdlib>
+#include <array>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 
@@ -13,6 +19,82 @@ int main() {
   at::globalContext().setAllowTF32CuBLAS(false);
   for(auto dtype:{at::kHalf,at::kBFloat16}) {
     auto options=at::TensorOptions().device(at::kCUDA,0).dtype(dtype);
+    if(at::globalContext().blasPreferredBackend()==at::BlasBackend::Cublaslt) {
+      tei::OrdinaryLinearExecutor ordinary;
+      auto x=at::randn({32,768},options)*.3;
+      auto w=at::randn({2304,768},options)*.05;
+      auto expected=at::linear(x,w);
+      c10::cuda::getCurrentCUDAStream().synchronize();
+      at::Tensor retained;
+      auto streams=std::array<c10::cuda::CUDAStream,2>{
+        c10::cuda::getStreamFromPool(),c10::cuda::getStreamFromPool()};
+      for(auto stream:streams) {
+        c10::cuda::CUDAStreamGuard stream_guard(stream);
+        auto session=ordinary.prepare(x);
+        auto first=ordinary.forward(x,w,session);
+        TORCH_CHECK(first.defined(),"Supported ordinary request session declined");
+        TORCH_CHECK(at::equal(first,expected),"Ordinary session changed original GEMM bytes");
+        auto saved=first.clone();
+        for(int i=0;i<4;++i) {
+          auto next=ordinary.forward(x,w,session);
+          TORCH_CHECK(next.defined()&&next.const_data_ptr()!=first.const_data_ptr(),
+            "Request session reused a live output allocation");
+          TORCH_CHECK(at::equal(next,expected)&&at::equal(first,saved),
+            "Ordinary session changed or invalidated owned output");
+        }
+        { c10::cuda::CUDAStreamGuard other_guard(stream==streams[0]?streams[1]:streams[0]);
+          TORCH_CHECK(!ordinary.forward(x,w,session).defined(),"Cross-stream session admitted"); }
+        if(c10::cuda::device_count()>1) {
+          c10::cuda::CUDAGuard other_device(at::Device(at::kCUDA,1));
+          TORCH_CHECK(!ordinary.forward(x,w,session).defined(),"Cross-device session admitted");
+          TORCH_CHECK(c10::cuda::current_device()==1,"Rejected session changed caller device");
+        }
+        TORCH_CHECK(at::equal(ordinary.forward(x,w,session),expected),
+          "Restored stream lost session dispatch");
+        retained=first;
+        stream.synchronize();
+      }
+      TORCH_CHECK(at::equal(retained,expected),"Session destruction invalidated owned output");
+      tei::OrdinaryLinearExecutor::Session retired;
+      at::Tensor lifetime_output;
+      { tei::OrdinaryLinearExecutor temporary;
+        retired=temporary.prepare(x);lifetime_output=temporary.forward(x,w,retired);
+        TORCH_CHECK(lifetime_output.defined(),"Lifetime fixture declined"); }
+      tei::OrdinaryLinearExecutor different;
+      TORCH_CHECK(!different.forward(x,w,retired).defined(),"Session admitted a different executor");
+      std::exception_ptr worker_failure;
+      std::thread worker([session=std::move(retired),&worker_failure]() mutable {
+        try {
+          c10::InferenceMode worker_inference;
+          const int device=c10::cuda::device_count()>1?1:0;
+          c10::cuda::CUDAGuard ambient(at::Device(at::kCUDA,device));
+          C10_CUDA_CHECK(cudaFree(nullptr));
+          CUcontext before{},after{};auto get=c10::cuda::DriverAPI::get()->cuCtxGetCurrent_;
+          TORCH_CHECK(get(&before)==CUDA_SUCCESS,"Missing worker context");
+          session=tei::OrdinaryLinearExecutor::Session{};
+          TORCH_CHECK(c10::cuda::current_device()==device&&get(&after)==CUDA_SUCCESS&&after==before,
+            "Foreign-thread last session destruction changed ambient CUDA device/context");
+        } catch(...) {worker_failure=std::current_exception();}
+      });worker.join();if(worker_failure)std::rethrow_exception(worker_failure);
+      TORCH_CHECK(at::equal(lifetime_output,expected),"Executor/session destruction invalidated owned output");
+      if(c10::cuda::device_count()>1) {
+        c10::cuda::CUDAGuard ambient(at::Device(at::kCUDA,1));
+        auto local=ordinary.prepare(x);
+        TORCH_CHECK(c10::cuda::current_device()==1,"Prepare failed to restore caller device");
+      }
+      at::globalContext().setDeterministicAlgorithms(true,false);
+      { auto unsupported=ordinary.prepare(x);
+        TORCH_CHECK(!ordinary.forward(x,w,unsupported).defined(),"Unsupported policy admitted"); }
+      at::globalContext().setDeterministicAlgorithms(false,false);
+      { c10::cuda::CUDAStreamGuard guard(streams[0]);
+        cudaGraph_t graph{};
+        C10_CUDA_CHECK(cudaStreamBeginCapture(streams[0],cudaStreamCaptureModeThreadLocal));
+        auto capturing=ordinary.prepare(x);
+        TORCH_CHECK(!ordinary.forward(x,w,capturing).defined(),"Capture admitted ordinary session");
+        C10_CUDA_CHECK(cudaStreamEndCapture(streams[0],&graph));
+        C10_CUDA_CHECK(cudaGraphDestroy(graph)); }
+      std::cout<<"Ordinary request-local stream/policy/capture and owned output: "<<dtype<<" passed\n";
+    }
     auto weight=at::randn({512,256},options)*.05;
     tei::Fp8Linear linear(weight);
     for(int64_t rows:{1,3,7,17,35,128}) {
