@@ -159,7 +159,12 @@ struct Engine {
         || family == "mpnet" || family == "deberta-v2" || family == "gte" || family == "nomic_bert" || family == "llama" || family == "mistral"
         || family == "qwen2" || family == "qwen3" || family == "gemma3" || family == "gemma3_text"
         || family == "gemma4" || family == "gemma4_text" || family == "embedding_gemma2"
-        || (media_graphs && (family == "qwen3_vl" || family == "qwen3_vl_text" || family == "qwen3_5" || family == "qwen3_5_text")))))) graphs = std::make_unique<tei::CudaGraphCache>(4, options.integer("_cuda_graph_max_tokens", 4096));
+        || (media_graphs && (family == "qwen3_vl" || family == "qwen3_vl_text" || family == "qwen3_5" || family == "qwen3_5_text")))))) {
+      auto entries=options.integer("_cuda_graph_entries",4), reuse=options.integer("_cuda_graph_reuse",3);
+      auto bytes=options.integer("_cuda_graph_max_bytes",512LL<<20), captures=options.integer("_cuda_graph_max_captures",8);
+      TORCH_CHECK(entries>=0 && reuse>0 && bytes>0 && captures>=0,"Invalid CUDA graph admission budgets");
+      graphs=std::make_unique<tei::CudaGraphCache>(entries,options.integer("_cuda_graph_max_tokens",4096),reuse,bytes,captures);
+    }
   }
 };
 tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* types,
@@ -333,6 +338,15 @@ int32_t tei_supports_radix(void* handle) {
 int64_t tei_graph_count(void* handle) {
   const auto& engine = *static_cast<Engine*>(handle);
   return engine.graphs ? engine.graphs->size() : 0;
+}
+int32_t tei_graph_stats(void* handle,uint64_t* counters,size_t count) {
+  return checked([&] {
+    TORCH_CHECK(counters && count>=7,"CUDA graph stats require seven counters");
+    const auto& engine=*static_cast<Engine*>(handle);
+    auto s=engine.graphs?engine.graphs->stats():tei::CudaGraphCache::Stats{};
+    counters[0]=s.hits;counters[1]=s.misses;counters[2]=s.captures;counters[3]=s.attempts;
+    counters[4]=s.evictions;counters[5]=s.live_bytes;counters[6]=s.admitted_bytes;
+  });
 }
 int64_t tei_classification_width(void* handle) {
   int64_t width = -1;

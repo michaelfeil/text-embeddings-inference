@@ -20,7 +20,7 @@ int main() {
     const at::Device device("cuda:0");
     c10::cuda::CUDAGuard guard(device);
     auto pool = std::make_shared<tei::OutputPool>();
-    tei::CudaGraphCache cache(2, 4096);
+    tei::CudaGraphCache cache(2, 4096,1);
     Model model;
     std::array<std::unique_ptr<tei::OutputLease>, 2> pending;
     std::array<int, 2> patterns{};

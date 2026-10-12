@@ -22,6 +22,7 @@ int main(int argc,char** argv) {
   void* engine=tei_create(&cfg,device,1);TORCH_CHECK(engine,tei_error());
   check(tei_option(engine,"model_type","bert"));check(tei_option(engine,"_pooling","embedding"));
   check(tei_option(engine,"_cuda_graphs","true"));check(tei_option(engine,"_cudnn_varlen","true"));
+  check(tei_option(engine,"_cuda_graph_reuse","1"));
   for(const auto& [name,t]:weights)check(tei_weight(engine,name.c_str(),reinterpret_cast<const uint8_t*>(t.const_data_ptr()),t.sizes().data(),t.dim(),1));
   check(tei_ready(engine));
   std::vector<int64_t> ids,types,positions;std::vector<int32_t> cu{0,5,134,143};

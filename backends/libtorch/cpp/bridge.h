@@ -55,6 +55,8 @@ int64_t tei_output_width(void*);
 int64_t tei_pooled_width(void*);
 int64_t tei_classification_width(void*);
 int64_t tei_graph_count(void*);
+// hits, misses, captures, attempts, evictions, live bytes, cumulative admitted bytes.
+int32_t tei_graph_stats(void*, uint64_t* counters, size_t count);
 int32_t tei_supports_radix(void*);
 int32_t tei_ready(void*);
 int32_t tei_decision_counts(void*,const TeiDecision*,size_t count,int64_t* counts);
