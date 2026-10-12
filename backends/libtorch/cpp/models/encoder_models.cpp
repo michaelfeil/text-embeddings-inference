@@ -3,6 +3,7 @@
 #include "helpers/fp8_linear.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "kernels/fast_kernels.h"
+#include "kernels/qwen35_vision.h"
 #include "kernels/encoder_norm.h"
 #include "kernels/encoder_bias.h"
 #include "kernels/encoder_activation.h"
@@ -243,7 +244,15 @@ struct Encoder final : Model {
     // Route packed tokens without expanding or padding any sequence. Only the
     // selected token rows are sent to each expert, matching Candle's dispatch.
     auto logits = linear(h, p + "mlp.router.layer").to(at::kFloat);
-    auto probabilities = at::softmax(logits, -1);
+    at::Tensor probabilities;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // Reuse Candle's precise FP32 softmax before selected Half weights round.
+    // A one-ulp probability difference can cross a Half midpoint.
+    if (exact_moe && dtype == at::kHalf && logits.is_cuda() && logits.size(-1) == 8)
+      probabilities = qwen35_vision_softmax(logits);
+    else
+#endif
+      probabilities = at::softmax(logits, -1);
     const auto top_k = o.integer("moe_top_k", 2);
     auto top = [&]() {
 #ifdef TEI_TORCH_CUDA_KERNELS

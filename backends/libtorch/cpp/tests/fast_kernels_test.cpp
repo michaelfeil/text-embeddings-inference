@@ -1,8 +1,10 @@
 #include "kernels/fast_kernels.h"
+#include "kernels/qwen35_vision.h"
 #include <ATen/ops/_fused_rms_norm.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <cmath>
+#include <bit>
 void close(const at::Tensor& x,const at::Tensor& expected,double tolerance,const char* label){
  auto error=(x.to(at::kFloat)-expected.to(at::kFloat)).abs().max().item<float>();
  TORCH_CHECK(error<=tolerance,label," max abs=",error," tolerance=",tolerance);
@@ -24,6 +26,26 @@ at::Tensor round_model_double(const at::Tensor& values,at::ScalarType dtype) {
  return output;
 }
 int main(){c10::InferenceMode guard;
+ {
+  // Actual learned layer7/token678 router values: the previous softmax lands
+  // exactly on a Half midpoint, which changes later MoE embedding outputs.
+  auto logits=at::tensor({.10430908203125f,.5166015625f,-.0386962890625f,
+    -1.689453125f,.90869140625f,.60693359375f,-2.291015625f,.122314453125f},
+    at::TensorOptions().device(at::kCUDA).dtype(at::kFloat)).view({1,8});
+  std::vector<float> reference;
+  for(uint32_t bits:{0x3defc892u,0x3e3511d2u,0x3dcfd50au,0x3c9f892bu,
+      0x3e85ff77u,0x3e462fffu,0x3c2ed63au,0x3df423d3u})
+    reference.push_back(std::bit_cast<float>(bits));
+  auto expected=at::tensor(reference,logits.options()).view({1,8});
+  auto probabilities=tei::qwen35_vision_softmax(logits);
+  close(probabilities,expected,0,"Candle router FP32 midpoint");
+  auto selected=tei::nomic_router_topk8(probabilities,2);
+  close(selected.first.to(at::kHalf),at::tensor({.26171875f,.1934814453125f},
+    logits.options()).to(at::kHalf).view({1,2}),0,"Original selected Half weights");
+  TORCH_CHECK(selected.second.equal(at::tensor({4,5},
+    logits.options().dtype(at::kLong)).view({1,2})),"Original router indices");
+ }
+
  {
   // Original router1 row250 and router11 row148 tied probabilities, plus
   // all-equal and strict-order cases: index policy and unchanged score dtype.
