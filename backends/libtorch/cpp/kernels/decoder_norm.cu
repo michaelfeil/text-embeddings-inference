@@ -67,11 +67,12 @@ std::pair<at::Tensor,at::Tensor> decoder_exact_rms_norm(const at::Tensor& x,
  const at::Tensor& residual,const at::Tensor& w,double epsilon) {
  TORCH_CHECK(x.is_cuda()&&x.dim()==2&&x.is_contiguous()
    &&((x.scalar_type()==at::kBFloat16&&(x.size(1)==896||x.size(1)==1024||x.size(1)==2048||x.size(1)==3072||x.size(1)==4096))
-     ||(x.scalar_type()==at::kHalf&&x.size(1)==1024)),
-   "Exact decoder RMS expects CUDA BF16 width 896, 1024, 2048, 3072 or 4096, or FP16 width 1024");
+     ||(x.scalar_type()==at::kHalf&&(x.size(1)==896||x.size(1)==1024))),
+   "Exact decoder RMS expects CUDA BF16 width 896, 1024, 2048, 3072 or 4096, or FP16 width 896 or 1024");
  TORCH_CHECK(w.device()==x.device()&&w.scalar_type()==x.scalar_type()&&w.dim()==1&&w.numel()==x.size(1)&&w.is_contiguous(),"Invalid exact decoder RMS weight");
  TORCH_CHECK(!residual.defined()||(residual.device()==x.device()&&residual.scalar_type()==x.scalar_type()&&residual.sizes()==x.sizes()&&residual.is_contiguous()),"Invalid exact decoder RMS residual");
  // Retain Candle's registered 4x1 warp geometry and FP16 rounding.
+ if(x.scalar_type()==at::kHalf&&x.size(1)==896)return exact_norm<1024,4,1,__half,false>(x,residual,w,epsilon);
  if(x.scalar_type()==at::kHalf)return exact_norm<1024,4,1,__half>(x,residual,w,epsilon);
  // Candle masks actual BF16 width896 within its original1024 registration.
  if(x.size(1)==896)return exact_norm<1024,4,1,nv_bfloat16,false>(x,residual,w,epsilon);

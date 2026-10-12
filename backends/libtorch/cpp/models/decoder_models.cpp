@@ -52,7 +52,7 @@ class Decoder final : public Model {
   bool causal, renormalize;
   bool cudnn_varlen = false;
   bool fp8_dynamic = false;
-  bool qwen3_half_exact = false;
+  bool qwen_half_exact = false;
   int64_t left_window = -1, right_window = -1, top_k;
   at::Tensor embedding, final_norm, projection, projection_bias, score, score_bias, cos_cache, sin_cache, query_scale;
   std::vector<DecoderLayer> layers;
@@ -91,7 +91,7 @@ class Decoder final : public Model {
     // Qwen3 width1024 uses its registered 4x1 RMS layout and fused
     // attention arithmetic; both are needed for trained BF16 score parity.
     // FP16 Qwen3 needs the same registered RMS and fused softmax boundaries.
-    return qwen3_half_exact
+    return qwen_half_exact
       ||exact_mistral_math()||(dtype==at::kBFloat16
       &&((hidden==2048&&family=="qwen3_moe"&&options.integer("num_experts",0)==128&&top_k==8)
         ||(family=="llama"&&(hidden==2048||hidden==4096))
@@ -333,8 +333,9 @@ public:
       const auto* properties=at::cuda::getDeviceProperties(device.index());
       auto major=properties->major;
       // Other architectures retain installed Torch arithmetic until qualified.
-      qwen3_half_exact=!fp8_dynamic&&dtype==at::kHalf&&family=="qwen3"&&hidden==1024
-        &&head_dim==128&&major==9&&properties->minor==0;
+      qwen_half_exact=!fp8_dynamic&&dtype==at::kHalf&&major==9&&properties->minor==0
+        &&((family=="qwen3"&&hidden==1024&&head_dim==128)
+          ||(family=="qwen2"&&hidden==896&&head_dim==64));
       cudnn_varlen=options.boolean("_cudnn_varlen",false)&&(major==9||major==10)
         &&at::detail::getCUDAHooks().versionRuntimeCuDNN()>=91800;
     }
@@ -463,7 +464,7 @@ public:
     for(int64_t row=0;row<input.batch;++row)TORCH_CHECK(input.offsets[row+1]>input.offsets[row],"Sequence classification requires nonempty inputs");
     auto hidden_states=forward(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if(dtype==at::kBFloat16&&family=="qwen2"&&hidden==896&&head_dim==64&&hidden_states.is_cuda()) {
+    if((dtype==at::kBFloat16||qwen_half_exact)&&family=="qwen2"&&hidden==896&&head_dim==64&&hidden_states.is_cuda()) {
       TORCH_CHECK(hidden_states.size(-1)==score.size(1),"Classifier backbone output projection has incompatible width");
       return at::linear(qwen2_packed_classifier_rows(hidden_states,input.ids,input.cumulative,
         input.batch,options.integer("pad_token_id",-1)),score,score_bias);
@@ -533,7 +534,7 @@ public:
         if(q.is_cuda()) {// Candle contracts one modeldtype product into HFMA.
         // Preserve Llama's path; learned causal BF16 Mistral operands prove
         // the same contract with the registered exact RMS geometry.
-        if(dtype==at::kBFloat16&&family=="qwen2"&&hidden==896&&head_dim==64) {
+        if((dtype==at::kBFloat16||qwen_half_exact)&&family=="qwen2"&&hidden==896&&head_dim==64) {
           // The fresh packed QKV projection gives disjoint Q/K/V views.
           // Preserve original model-dtype HFMA and leave V unchanged.
           encoder_rotary_inplace(q,k,cosine,sine);
