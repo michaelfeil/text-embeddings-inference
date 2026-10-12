@@ -33,6 +33,7 @@ at::Tensor nomic_moe_split_policy(const c10::Device& device, at::ScalarType dtyp
   c10::cuda::CUDAGuard guard(device);
   auto* properties = at::cuda::getCurrentDeviceProperties();
   if (properties->major != 9 || properties->minor != 0 || cublasLtGetVersion() != 130200 ||
+      at::globalContext().blasPreferredBackend() != at::BlasBackend::Cublaslt ||
       at::globalContext().allowBF16ReductionCuBLAS() != at::CuBLASReductionOption::AllowReducedPrecisionWithSplitK) return {};
   // cuBLASLt may choose split-K=2 for small, uneven expert batches. Matching
   // its per-count choice preserves the BF16 result of the down projection.
