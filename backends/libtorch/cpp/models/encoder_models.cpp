@@ -94,6 +94,9 @@ struct Encoder final : Model {
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,residual,bias(n),false).first;
+    if (family == Family::Nomic && x.is_cuda() &&
+        (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16))
+      return encoder_layer_norm_only(x, w(n + (has(n + ".weight") ? ".weight" : ".gamma")), eps, residual, bias(n), false);
     if (x.is_cuda()) return fused_add_layer_norm(x, residual,
       w(n + (has(n + ".weight") ? ".weight" : ".gamma")),
       family == Family::Modern ? at::Tensor() : bias(n), eps);
@@ -110,6 +113,10 @@ struct Encoder final : Model {
   }
   at::Tensor gated(const at::Tensor& x, bool gate_first=true) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    // Candle SwiGLU rounds intermediate values to model dtype.
+    if (family == Family::Nomic && !exact_moe && activation == "swiglu" &&
+        x.is_cuda() && (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16))
+      return fused_gated_activation(x,5,gate_first);
     if(x.is_cuda() && activation!="tanh") return fused_gated_activation(x,
       activation=="relu"?3:(activation=="silu"||activation=="swiglu")?0:4,gate_first);
 #endif
@@ -274,7 +281,7 @@ struct Encoder final : Model {
     if(exact_alibi32)
       return torch_flash_fma_alibi32(q,k,v,input.cumulative,*alibi,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))));
-    if((family==Family::Modern||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
+    if((family==Family::Modern||family==Family::Nomic||exact_moe) && !bias && torch_flash_fma_supported(q,k,v))
       return torch_flash_fma(q,k,v,input.cumulative,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))),false,window,window);
 #endif
@@ -291,9 +298,20 @@ struct Encoder final : Model {
         // Keep their sum unrounded until the embedding norm has completed.
         h = residual_norm(h, types, "emb_ln");
       } else {
-        if (types.defined()) h = h + types;
+        bool embedding_norm_done = false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if (family == Family::Nomic && !exact_moe && types.defined() && h.is_cuda() &&
+            (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)) {
+          // Candle keeps the residual sum in Float until normalization finishes.
+          h = encoder_layer_norm_only(h, w(std::string("emb_ln") +
+            (has("emb_ln.weight") ? ".weight" : ".gamma")), eps,
+            types, bias("emb_ln"), false);
+          embedding_norm_done = true;
+        } else
+#endif
+          if (types.defined()) h = h + types;
         if (family == Family::Distil || ((family == Family::Jina || family == Family::JinaCode) && !alibi)) h = h + at::embedding(w("embeddings.position_embeddings.weight"), input.positions);
-        h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
+        if (!embedding_norm_done) h = norm(h, family == Family::Nomic ? "emb_ln" : "embeddings.LayerNorm");
       }
     }
     // All Jina layers share slopes and local positions, so materialize their
