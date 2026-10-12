@@ -1,10 +1,21 @@
 #pragma once
 #include <ATen/ATen.h>
 #include <utility>
+#include <memory>
 
 namespace tei {
 // Real rows only: the first dimension is never aligned or padded.
 std::pair<at::Tensor, at::Tensor> fp8_quantize_rows(const at::Tensor& input);
+
+// Undefined output preserves the original ordinary ATen linear path.
+// Bounded model-owned ordinary plans; graph capture never admits a new plan.
+class OrdinaryLinearExecutor {
+  struct Impl;
+  std::shared_ptr<Impl> impl_;
+public:
+  OrdinaryLinearExecutor();
+  at::Tensor forward(const at::Tensor& input, const at::Tensor& weight) const;
+};
 
 // Checkpoint weights are quantized once, activations once per invocation.
 // Attention, normalization, bias and output heads retain their model dtype.
