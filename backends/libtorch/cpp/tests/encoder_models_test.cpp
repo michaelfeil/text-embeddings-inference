@@ -1,6 +1,8 @@
 // Packed batch invariants for native encoders. This fixture needs no Python or
 // downloaded checkpoint. Run with --cuda to exercise Torch varlen FlashAttention.
 #include "models/encoder_models.h"
+#include "helpers/modern_cpu_math.h"
+#include <ATen/Parallel.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 
@@ -83,6 +85,53 @@ tei::Weights weights(const std::string& type, c10::Device d, at::ScalarType dt) 
 }
 int main(int argc, char** argv) {
   c10::InferenceMode guard;
+  // The Modern Half profile must not select serial attention on multicore.
+  // Keep this in the existing encoder target; unsupported CPUs remain valid.
+  const int saved_threads = at::get_num_threads();
+  at::set_num_threads(1);
+  const bool single_thread_profile = tei::modern_cpu::supported_profile();
+  for (int threads : {2, 4}) {
+    at::set_num_threads(threads);
+    TORCH_CHECK(!tei::modern_cpu::supported_profile(), "Modern exact CPU Half profile must reject multicore intra-op threads");
+  }
+  at::set_num_threads(1);
+  TORCH_CHECK(tei::modern_cpu::supported_profile() == single_thread_profile,
+              "Restoring one intra-op thread changed Modern CPU hardware eligibility");
+  at::set_num_threads(saved_threads);
+  {
+    // Exercise the actual Modern override without running the large backbone.
+    // The Half reduction distinguishes [2048, 1, -2048] from the F32 default.
+    const int previous_threads = at::get_num_threads();
+    auto cpu_half = at::TensorOptions().device(at::kCPU).dtype(at::kHalf);
+    auto spans = at::tensor({2048.f, 1.f, -2048.f}, at::TensorOptions().dtype(at::kFloat))
+      .to(at::kHalf).view({3,1}).repeat({1,768});
+    auto half_mean = tei::modern_cpu::mean(spans);
+    auto float_mean = spans.mean(0, true, at::kFloat);
+    TORCH_CHECK((half_mean.to(at::kFloat)-float_mean).abs().max().item<float>()>.3,
+                "Mean pooling fixture must discriminate Half and F32 accumulation");
+    auto modern = config("modernbert");
+    modern.values["hidden_size"]="768";modern.values["num_attention_heads"]="12";
+    modern.values["intermediate_size"]="1152";modern.values["num_hidden_layers"]="1";
+    tei::Weights modern_weights;
+    modern_weights["embeddings.tok_embeddings.weight"]=at::zeros({64,768},cpu_half);
+    modern_weights["embeddings.norm.weight"]=at::ones({768},cpu_half);
+    modern_weights["final_norm.weight"]=at::ones({768},cpu_half);
+    modern_weights["layers.0.mlp_norm.weight"]=at::ones({768},cpu_half);
+    for (const auto& item : std::vector<std::pair<std::string,std::vector<int64_t>>>{
+      {"attn.Wqkv",{2304,768}}, {"attn.Wo",{768,768}},
+      {"mlp.Wi",{2304,768}}, {"mlp.Wo",{768,1152}}})
+      modern_weights["layers.0."+item.first+".weight"]=at::zeros(item.second,cpu_half);
+    for (int threads : {1,2}) {
+      at::set_num_threads(threads);
+      auto modern_model=tei::create_encoder(modern,modern_weights,c10::Device(at::kCPU),at::kHalf);
+      modern_model->ready();
+      auto pooled=modern_model->mean_pool(spans);
+      const bool eligible=tei::modern_cpu::supported_profile();
+      TORCH_CHECK(pooled.scalar_type()==(eligible?at::kHalf:at::kFloat),"Modern mean pooling dtype did not follow ready-established profile");
+      TORCH_CHECK(at::equal(pooled,eligible?half_mean:float_mean),"Modern mean pooling did not follow qualified profile arithmetic");
+    }
+    at::set_num_threads(previous_threads);
+  }
   at::manual_seed(13);
   c10::Device device(argc>1 ? "cuda:0" : "cpu");
   auto dtype = device.is_cuda() ? at::kHalf : at::kFloat;
@@ -125,6 +174,10 @@ int main(int argc, char** argv) {
   for(auto type:{"distilbert","modernbert","nomic_bert","new","jina","jina-code","mpnet"}) {
     auto o=config(type);auto w=weights(type,device,dtype);auto model=tei::create_encoder(o,w,device,dtype);model->ready();
     auto packed=model->forward({ids,types,positions,cu,offsets,2,5});
+    auto selected_mean=model->mean_pool(packed.narrow(0,3,5));
+    auto original_mean=packed.narrow(0,3,5).mean(0,true,at::kFloat);
+    TORCH_CHECK(selected_mean.scalar_type()==at::kFloat&&at::equal(selected_mean,original_mean),
+                "Unqualified encoder geometry changed default embedding mean pooling for ",type);
     if (std::string(type) == "nomic_bert") {
       auto alias = o;
       alias.values["activation_function"] = "gelu_pytorch_tanh";

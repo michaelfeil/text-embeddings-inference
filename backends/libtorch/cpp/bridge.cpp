@@ -473,7 +473,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
       if (pool == 4) outputs.push_back(h.narrow(0, row, 1));
       else if (pool == 3) outputs.push_back(std::get<0>(sparse_scores.narrow(0, sparse_starts[i], length).max(0, true)));
       else if (pool == 0) outputs.push_back(h.narrow(0, start, 1));
-      else if (pool == 1) outputs.push_back(h.narrow(0, start, length).mean(0, true, at::kFloat));
+      else if (pool == 1) outputs.push_back(model.model->mean_pool(h.narrow(0, start, length)));
       else outputs.push_back(h.narrow(0, start + length - 1, 1));
     }
     if (pool < 4 && !model.dense->empty() && !outputs.empty()) {
