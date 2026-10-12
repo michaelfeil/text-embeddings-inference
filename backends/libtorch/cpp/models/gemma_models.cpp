@@ -6,6 +6,7 @@
 #include "batching/radix.h"
 #include "models/decoder_models.h"
 #include "kernels/qwen35_kernels.h"
+#include "kernels/gemma2_norm.h"
 #include "kernels/moe_kernels.h"
 #include "kernels/fast_kernels.h"
 #include "kernels/torch_flash_fma.h"
@@ -38,6 +39,7 @@ class Gemma final : public Model {
   int64_t hidden, heads, layers, ple_width;
   double epsilon;
   bool legacy, embedding2, causal;
+  bool embedding2_reference_cuda = false;
   struct Layer {
     std::string p;
     at::Tensor qkv, gate_up;
@@ -442,6 +444,7 @@ class Gemma final : public Model {
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(device.is_cuda() && dtype==at::kBFloat16 && x.size(-1)<=8192) {
       const auto& scale=unit?norm_ones.at(x.size(-1)):weight(norm_scales,prefix+name+".weight");
+      if(embedding2_reference_cuda) return gemma2_norm_cuda(x,scale,epsilon);
       return gemma_norm_cuda(x,scale,epsilon,!legacy);
     }
 #endif
@@ -452,6 +455,13 @@ class Gemma final : public Model {
       f = f * weight(norm_scales,prefix + name + ".weight");
     }
     return f.to(x.scalar_type());
+  }
+  at::Tensor residual_norm(const at::Tensor& residual,const at::Tensor& x,const std::string& name) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(embedding2_reference_cuda)
+      return gemma2_residual_norm_cuda(residual,x,weight(norm_scales,prefix+name+".weight"),epsilon);
+#endif
+    return residual+norm(x,name);
   }
   at::Tensor activate(const at::Tensor& x) const {
     const auto act = string("hidden_activation", "gelu_pytorch_tanh");
@@ -468,7 +478,7 @@ class Gemma final : public Model {
   }
   at::Tensor rotate(const at::Tensor& x, const Layer& layer, const at::Tensor& positions) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if(!legacy && !embedding2 && x.is_cuda() && x.scalar_type()==at::kBFloat16)
+    if(!legacy && (!embedding2 || embedding2_reference_cuda) && x.is_cuda() && x.scalar_type()==at::kBFloat16)
       return gemma_rotary_cuda(x,layer.cos,layer.sin,positions);
 #endif
     auto cos = layer.cos.index_select(0, positions).unsqueeze(1);
@@ -671,6 +681,12 @@ class Gemma final : public Model {
     }
   }
   void ready() override {
+    // The trained Gemma2 profile retains Candle's original sqrt/div norm tree
+    // and BF16 intermediate rounding. Reset when preparing another model.
+    embedding2_reference_cuda = embedding2 && device.is_cuda() && dtype==at::kBFloat16 &&
+      hidden==512 && heads==4 && layers==24 && ple_width==512 &&
+      integer("intermediate_size",0)==2048 && integer("head_dim",0)==256 &&
+      integer("num_key_value_heads",0)==2 && epsilon==1e-6;
     TORCH_CHECK(hidden > 0 && heads > 0 && layers > 0, "Invalid Gemma architecture dimensions");
     if(boolean("enable_moe_block",false)) TORCH_CHECK(!legacy && !embedding2,"Gemma4 expert routing requires Gemma4 architecture");
     TORCH_CHECK(device.is_cpu() || device.is_cuda(), "Gemma packed attention supports CPU/CUDA only");
@@ -721,6 +737,9 @@ class Gemma final : public Model {
       layer.kv = override_int(i, "num_key_value_heads", layer.k_equals_v ?
         integer("num_global_key_value_heads", integer("num_key_value_heads", heads)) : integer("num_key_value_heads", heads));
       TORCH_CHECK(layer.dim > 0 && layer.dim % 2 == 0 && layer.kv > 0 && heads % layer.kv == 0, "Invalid Gemma attention geometry at layer ", i);
+      if(embedding2_reference_cuda && ((first_shared < layers) ||
+          (layer.sliding ? (layer.dim!=256 || layer.kv!=2) : (layer.dim!=512 || layer.kv!=1))))
+        embedding2_reference_cuda = false;
       if(!norm_ones.count(layer.dim))norm_ones[layer.dim]=at::ones({layer.dim},at::TensorOptions().dtype(at::kFloat).device(device));
       if (device.is_cuda()) TORCH_CHECK(layer.dim % 8 == 0,
         "Torch varlen FlashAttention requires head dimension divisible by 8; this Gemma layer requires ", layer.dim);
@@ -876,7 +895,7 @@ class Gemma final : public Model {
         .reshape({tokens, heads * layer.dim});
 
       output=radix_enabled(input)?linear_radix_projection(output,p+"self_attn.o_proj",input):linear(output,p+"self_attn.o_proj");
-      states = states + norm(output,p+"post_attention_layernorm");
+      states = residual_norm(states,output,p+"post_attention_layernorm");
 
       normalized = norm(states, p + "pre_feedforward_layernorm");
 
@@ -892,7 +911,7 @@ class Gemma final : public Model {
       mlp=linear(mlp,p+"mlp.down_proj");
 
       if(boolean("enable_moe_block",false))mlp=moe(states,mlp,p,input);
-      states = states + norm(mlp, p + "post_feedforward_layernorm");
+      states = residual_norm(states,mlp,p+"post_feedforward_layernorm");
 
       if (ple.defined()) {
         auto stem = p + (embedding2 ? "ple_block." : "");
