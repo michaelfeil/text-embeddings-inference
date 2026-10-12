@@ -8,6 +8,7 @@
 #include "kernels/encoder_bias.h"
 #include "kernels/encoder_activation.h"
 #include "kernels/torch_flash_fma.h"
+#include "kernels/torch_flash_alibi64.h"
 #endif
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_addmm_activation.h>
@@ -53,6 +54,7 @@ struct Encoder final : Model {
   bool exact_norm = false;
   bool exact_moe = false;
   bool exact_alibi32 = false;
+  bool exact_alibi64 = false;
   struct Layer {
     at::Tensor qkv_weight, qkv_bias;
     at::Tensor gate_weight, gate_bias;
@@ -109,6 +111,11 @@ struct Encoder final : Model {
   }
   at::Tensor norm(const at::Tensor& x, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(family==Family::JinaCode && alibi && x.is_cuda() &&
+       (x.scalar_type()==at::kHalf || x.scalar_type()==at::kBFloat16) &&
+       (n.ends_with(".layer_norm_q") || n.ends_with(".layer_norm_k")))
+      return encoder_layer_norm_only(x.contiguous(),
+        w(n+(has(n+".weight")?".weight":".gamma")),eps,at::Tensor(),bias(n),false);
     if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,at::Tensor(),bias(n),false).first;
     if(exact_norm&&family==Family::Modern&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps).first;
 #endif
@@ -116,6 +123,10 @@ struct Encoder final : Model {
   }
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& n) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(family==Family::JinaCode && alibi && x.is_cuda() &&
+       (x.scalar_type()==at::kHalf || x.scalar_type()==at::kBFloat16))
+      return encoder_layer_norm_only(x.contiguous(),
+        w(n+(has(n+".weight")?".weight":".gamma")),eps,residual,bias(n),false);
     if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,residual,bias(n),false).first;
     if ((family == Family::Nomic || family == Family::Gte) && x.is_cuda() &&
         (x.scalar_type() == at::kHalf || x.scalar_type() == at::kBFloat16))
@@ -205,6 +216,7 @@ struct Encoder final : Model {
         alibi = at::from_blob(slopes.data(), {heads}, at::TensorOptions().dtype(at::kFloat)).to(device).clone();
 #ifdef TEI_TORCH_CUDA_KERNELS
         exact_alibi32=family==Family::Jina && torch_flash_fma_alibi32_supported(device,dtype,hidden/heads);
+        exact_alibi64=family==Family::JinaCode && torch_flash_alibi64_supported(device,dtype,hidden/heads);
 #endif
       }
     }
@@ -309,6 +321,9 @@ struct Encoder final : Model {
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
 #ifdef TEI_TORCH_CUDA_KERNELS
+    if(exact_alibi64)
+      return torch_flash_alibi64(q,k,v,input.cumulative,*alibi,input.max_sequence,
+        1.0/std::sqrt(static_cast<double>(q.size(-1))));
     if(exact_alibi32)
       return torch_flash_fma_alibi32(q,k,v,input.cumulative,*alibi,input.max_sequence,
         1.0/std::sqrt(static_cast<double>(q.size(-1))));
@@ -343,6 +358,14 @@ struct Encoder final : Model {
           // Candle keeps the word/type sum in Float through normalization.
           h = residual_norm(h, types, "embeddings.LayerNorm");
           embedding_norm_done = true;
+        } else if ((family == Family::Jina || family == Family::JinaCode) && alibi && types.defined() &&
+            h.is_cuda() && (h.scalar_type() == at::kHalf || h.scalar_type() == at::kBFloat16)) {
+          // Candle keeps the word/type residual sum in Float until normalization.
+          h = encoder_layer_norm_only(h, w(std::string("embeddings.LayerNorm") +
+            (has("embeddings.LayerNorm.weight") ? ".weight" : ".gamma")), eps,
+            types, bias("embeddings.LayerNorm"), false);
+
+          embedding_norm_done = true;
         } else
 #endif
           if (types.defined()) h = h + types;
@@ -353,7 +376,7 @@ struct Encoder final : Model {
     // All Jina layers share slopes and local positions, so materialize their
     // packed bias once per request rather than once per layer.
     std::optional<at::Tensor> attention_bias;
-    if(alibi && h.is_cuda() && !exact_alibi32)attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
+    if(alibi && h.is_cuda() && !exact_alibi32 && !exact_alibi64)attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
     bool scaled = family == Family::Nomic && local_cos.defined() && input.max_sequence > o.integer("max_trained_positions", 2048);
     at::Tensor cos_global, sin_global, cos_local, sin_local;
     if (global_cos.defined()) {
@@ -400,6 +423,12 @@ struct Encoder final : Model {
         k = norm(k.reshape({h.size(0), hidden}), p + "attention.self.layer_norm_k").view_as(k);
       }
       auto a = attend(q, k, v, input, local ? o.integer("local_attention", 128) / 2 : -1, attention_bias).contiguous().view({h.size(0), hidden});
+      // Attention has consumed these views; release only JinaCode CUDA storage
+      // before the gated MLP needs its larger packed activation buffers.
+      if (family == Family::JinaCode && h.is_cuda() &&
+          (dtype == at::kHalf || dtype == at::kBFloat16)) {
+        qkv = at::Tensor(); q = at::Tensor(); k = at::Tensor(); v = at::Tensor();
+      }
       const auto output = p + (family == Family::Distil ? "attention.out_lin" : family == Family::Modern ? "attn.Wo" : family == Family::Nomic ? "attn.out_proj" : family == Family::Gte ? "attention.o_proj" : "attention.output.dense");
       auto residual = h;
       auto projected = linear(a, output);
