@@ -10,23 +10,26 @@ pub(crate) fn resolve(
     pooling: Option<&Pool>,
 ) -> Result<(String, Option<DecisionProtocol>)> {
     // Local directories take precedence over registered shorthands.
-    if Path::new(&model_id).is_dir() || model_id != "pplx-decider-v1.1-27b" {
+    if Path::new(&model_id).is_dir() {
         return Ok((model_id, protocol));
     }
+    let (target, expected) = match model_id.as_str() {
+        "pplx-decider-v1.1-27b" => (
+            "perplexity-ai/pplx-decider-v1.1-27b",
+            DecisionProtocol::Pplx,
+        ),
+        "d3" | "vllm-sr/d3" => ("vllm-sr/d3", DecisionProtocol::D3),
+        _ => return Ok((model_id, protocol)),
+    };
     anyhow::ensure!(
         pooling.is_none(),
-        "The Decider alias cannot be used with --pooling"
+        "Decision model aliases cannot be used with --pooling"
     );
     anyhow::ensure!(
-        protocol
-            .as_ref()
-            .is_none_or(|p| matches!(p, DecisionProtocol::Pplx)),
-        "The Decider alias requires --decision-protocol pplx"
+        protocol.as_ref().is_none_or(|p| p == &expected),
+        "Model alias requires its native decision protocol {expected:?}"
     );
-    Ok((
-        "perplexity-ai/pplx-decider-v1.1-27b".into(),
-        Some(DecisionProtocol::Pplx),
-    ))
+    Ok((target.into(), Some(expected)))
 }
 
 #[cfg(test)]
@@ -53,6 +56,18 @@ mod tests {
             assert!(resolve("pplx-decider-v1.1-27b".into(), Some(protocol), None).is_err());
         }
         assert!(resolve("pplx-decider-v1.1-27b".into(), None, Some(&Pool::Mean)).is_err());
+    }
+
+    #[test]
+    fn d3_aliases_select_the_native_protocol() -> Result<()> {
+        for id in ["d3", "vllm-sr/d3"] {
+            let (target, protocol) = resolve(id.into(), None, None)?;
+            assert_eq!(target, "vllm-sr/d3");
+            assert!(matches!(protocol, Some(DecisionProtocol::D3)));
+            assert!(resolve(id.into(), Some(DecisionProtocol::Pplx), None).is_err());
+            assert!(resolve(id.into(), None, Some(&Pool::Mean)).is_err());
+        }
+        Ok(())
     }
 
     #[test]

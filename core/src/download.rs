@@ -100,8 +100,15 @@ pub async fn download_artifacts(api: &ApiRepo, pool_config: bool) -> Result<Path
     if download_file(api, "joint_head_config.json").await.is_ok() {
         download_file(api, "joint_head.safetensors").await?;
     }
-    if download_file(api, "decision_config.json").await.is_ok() {
+    if let Ok(path) = download_file(api, "decision_config.json").await {
         download_file(api, "readout.safetensors").await?;
+        if std::fs::read(path).is_ok_and(|bytes| {
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .is_ok_and(|config| config["format_id"] == "d3-code-readout-v1")
+        }) {
+            // D3 saves the Qwen image processor here, rather than processor_config.json.
+            download_file(api, "preprocessor_config.json").await?;
+        }
     }
     let path = download_file(api, "tokenizer.json").await?;
     // Optional native conversation artifacts, using the same pinned repository revision.

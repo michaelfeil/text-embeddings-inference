@@ -30,7 +30,7 @@ struct Args {
     /// Alternatively, the specified ID can also be a path to a local directory containing the
     /// necessary model files saved by the `save_pretrained(...)` methods of either Transformers or
     /// Sentence Transformers.
-    /// The alias `pplx-decider-v1.1-27b` selects Perplexity Decider 1.1 and its decision protocol.
+    /// The aliases `pplx-decider-v1.1-27b` and `d3` select their native decision protocols.
     #[clap(long, env)]
     #[redact(partial)]
     model_id: String,

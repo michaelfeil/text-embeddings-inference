@@ -14,3 +14,6 @@ pub use positions::image_positions;
 
 mod embedding_gemma2;
 pub use embedding_gemma2::EmbeddingGemma2Processor;
+
+mod d3;
+pub use d3::{D3MediaProcessor, PreparedD3Media};

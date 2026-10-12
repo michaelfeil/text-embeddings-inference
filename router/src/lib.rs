@@ -36,12 +36,13 @@ pub use logging::init_logging;
 
 mod model_aliases;
 
-#[derive(Debug, Clone, clap::ValueEnum)]
+#[derive(Debug, Clone, PartialEq, Eq, clap::ValueEnum)]
 pub enum DecisionProtocol {
     Rune,
     Onejev,
     Clef,
     Pplx,
+    D3,
 }
 
 /// Create entrypoint
@@ -120,16 +121,25 @@ pub async fn run(
     let rune = matches!(decision_protocol, Some(DecisionProtocol::Rune));
     let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
     let pplx = matches!(decision_protocol, Some(DecisionProtocol::Pplx));
-    let decoder_decision = rune || onejev || clef || pplx;
+    let d3 = matches!(decision_protocol, Some(DecisionProtocol::D3));
+    let decoder_decision = rune || onejev || clef || pplx || d3;
     let readout = model_root.join("decision_config.json").exists();
     anyhow::ensure!(
-        !pplx || (readout && model_root.join("readout.safetensors").exists()),
-        "Pplx requires decision_config.json and readout.safetensors"
+        !(pplx || d3) || (readout && model_root.join("readout.safetensors").exists()),
+        "Pplx and D3 require decision_config.json and readout.safetensors"
     );
     anyhow::ensure!(
-        !readout || pplx,
-        "This checkpoint requires --decision-protocol pplx"
+        !readout || pplx || d3,
+        "This checkpoint requires --decision-protocol pplx or d3"
     );
+    if readout {
+        let metadata: serde_json::Value =
+            serde_json::from_slice(&fs::read(model_root.join("decision_config.json"))?)?;
+        anyhow::ensure!(
+            (metadata["format_id"].as_str() == Some("d3-code-readout-v1")) == d3,
+            "D3 checkpoints require --decision-protocol d3; Perplexity checkpoints require pplx"
+        );
+    }
     let joint_head = model_root.join("joint_head_config.json").exists();
     anyhow::ensure!(
         !clef || (joint_head && model_root.join("joint_head.safetensors").exists()),
@@ -172,8 +182,8 @@ pub async fn run(
     );
 
     anyhow::ensure!(
-        !(clef || pplx) || matches!(config.model_type.as_str(), "qwen3_5" | "qwen3_5_text"),
-        "Clef and Pplx require a dense Qwen3.5 model"
+        !(clef || pplx || d3) || matches!(config.model_type.as_str(), "qwen3_5" | "qwen3_5_text"),
+        "Clef, Pplx and D3 require a dense Qwen3.5 model"
     );
     anyhow::ensure!(
         config.model_type != "qwen3_vl"

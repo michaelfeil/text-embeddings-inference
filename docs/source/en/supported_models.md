@@ -200,3 +200,11 @@ Remote images require exact HTTPS hostnames configured with `--image-allowed-hos
 inline base64 PNG/JPEG/WebP is also accepted. See the repository README for a complete
 request and resource limits. JPEG decoding can differ from Pillow/libjpeg and is
 not pixel-identical. Qwen3-VL currently disables RadixMLP and rejects BF16.
+
+## D3 decision model
+
+`vllm-sr/d3` supports text/JSON, images, and video on the Candle CUDA BF16
+backend with the `d3` decision protocol. The `d3` model alias selects that
+protocol automatically. Its full-attention layers are noncausal; linear
+attention stays causal and the decision readout runs in FP32. See the README's
+D3 typed multimodal decisions section for request examples and media limits.

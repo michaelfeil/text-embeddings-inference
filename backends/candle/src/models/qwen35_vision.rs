@@ -19,6 +19,20 @@ impl Qwen35Vision {
         value: &serde_json::Value,
         text: &Qwen35TextConfig,
     ) -> Result<Self> {
+        let dtype = if vb.dtype() == DType::BF16 {
+            DType::F16
+        } else {
+            vb.dtype()
+        };
+        Self::load_dtype(vb, value, text, dtype)
+    }
+
+    pub(super) fn load_dtype(
+        vb: VarBuilder,
+        value: &serde_json::Value,
+        text: &Qwen35TextConfig,
+        vision_dtype: DType,
+    ) -> Result<Self> {
         let config: VisionConfig =
             serde_json::from_value(value.clone()).map_err(candle::Error::wrap)?;
         let sections = text
@@ -40,11 +54,6 @@ impl Qwen35Vision {
         {
             candle::bail!("Unsupported Qwen3.5 vision configuration");
         }
-        let vision_dtype = if vb.dtype() == DType::BF16 {
-            DType::F16
-        } else {
-            vb.dtype()
-        };
         let vision = if vb.contains_tensor("model.visual.patch_embed.proj.weight") {
             vb.pp("model.visual")
         } else if vb.contains_tensor("visual.patch_embed.proj.weight") {
@@ -84,9 +93,9 @@ impl Qwen35Vision {
                     || w == 0
                     || h % self.merge_size != 0
                     || w % self.merge_size != 0
-                    // The reused tower materializes FP32 attention scores. Keep
-                    // its per-image attention allocation below 1 GiB at 16 heads.
-                    || h * w > 4096
+                    // D3's 1.6 MP image budget is at most 6400 unmerged patches.
+                    // The reused tower materializes FP32 attention scores (about 2.5 GiB).
+                    || h * w > 6400
                     || image.merge_size != self.merge_size
                     || image.patch_dim != self.patch_dim
                     || image.pixels.len() != h * w * self.patch_dim

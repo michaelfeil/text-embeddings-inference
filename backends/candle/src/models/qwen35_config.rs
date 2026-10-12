@@ -18,13 +18,34 @@ pub(super) struct ReadoutConfig {
     pub attention_mode: DecisionAttentionMode,
     #[serde(default)]
     pooling: Option<String>,
+    #[serde(default)]
+    pub readout_dtype: ReadoutDType,
+    #[serde(default)]
+    pub format_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(super) enum ReadoutDType {
+    #[default]
+    Bfloat16,
+    Float32,
+}
+
+impl ReadoutDType {
+    pub fn dtype(self) -> candle::DType {
+        match self {
+            Self::Bfloat16 => candle::DType::BF16,
+            Self::Float32 => candle::DType::F32,
+        }
+    }
 }
 
 impl ReadoutConfig {
     pub fn from_slice(bytes: &[u8]) -> Result<Self> {
         let config: Self = serde_json::from_slice(bytes).map_err(candle::Error::wrap)?;
         if config.pooling.as_deref().is_some_and(|pool| pool != "last") {
-            candle::bail!("Pplx requires last-token pooling")
+            candle::bail!("Decision readouts require last-token pooling")
         }
         Ok(config)
     }
@@ -270,6 +291,22 @@ mod tests {
         }
         Ok(())
     }
+    #[test]
+    fn readout_precision_is_checkpoint_owned() -> Result<()> {
+        assert_eq!(
+            ReadoutConfig::from_slice(b"{}")?.readout_dtype.dtype(),
+            candle::DType::BF16
+        );
+        assert_eq!(
+            ReadoutConfig::from_slice(br#"{"readout_dtype":"float32"}"#)?
+                .readout_dtype
+                .dtype(),
+            candle::DType::F32
+        );
+        assert!(ReadoutConfig::from_slice(br#"{"readout_dtype":"float16"}"#).is_err());
+        Ok(())
+    }
+
     fn value() -> serde_json::Value {
         serde_json::json!({
             "hidden_size":2048,"vocab_size":248320,"num_hidden_layers":4,
