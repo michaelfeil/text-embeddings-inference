@@ -1,6 +1,7 @@
 #include "batching/prefix_cache.h"
 #include "batching/cuda_graph.h"
 #include "batching/prefix_lookup.h"
+#include "batching/tensor_copy.h"
 #include "batching/radix.h"
 #include "models/model.h"
 #include "helpers/prefix_linear.h"
@@ -11,6 +12,7 @@
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 #include <ATen/ops/_cudnn_attention_forward.h>
+#include <ATen/ops/_foreach_copy.h>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "kernels/torch_flash_fma.h"
 #include <ATen/cuda/CUDAEvent.h>
@@ -38,7 +40,13 @@ const PrefixLayer* PrefixContext::previous(int64_t row,int64_t layer) const {
   auto found=readers[row]->layers.find(layer);
   return found==readers[row]->layers.end()?nullptr:&found->second;
 }
-bool PrefixContext::store(int64_t row,int64_t layer,const PrefixLayer& source) {
+static at::Tensor snapshot_copy(const at::Tensor& source,std::vector<at::Tensor>* targets,std::vector<at::Tensor>* sources) {
+  if(!source.defined())return {};
+  if(!targets)return source.clone();
+  auto target=at::empty_like(source);targets->push_back(target);sources->push_back(source);return target;
+}
+bool PrefixContext::store(int64_t row,int64_t layer,const PrefixLayer& source,
+  std::vector<at::Tensor>* targets,std::vector<at::Tensor>* sources) {
   auto& entry=writers[row];if(!entry)return false;
   // Charge the map node as well as tensor payloads. Views are cloned below so
   // an admitted prefix cannot keep a larger batch allocation alive.
@@ -47,7 +55,7 @@ bool PrefixContext::store(int64_t row,int64_t layer,const PrefixLayer& source) {
     if(t.defined())needed+=t.numel()*t.element_size();
   if(needed>entry->reserved_bytes) { entry.reset();return false; }
   PrefixLayer owned;
-  auto clone=[](const at::Tensor& t){return t.defined()?t.clone():at::Tensor();};
+  auto clone=[&](const at::Tensor& t){return snapshot_copy(t,targets,sources);};
   owned.key=clone(source.key);owned.value=clone(source.value);
   owned.recurrent=clone(source.recurrent);owned.convolution=clone(source.convolution);
   TORCH_CHECK(!entry->layers.count(layer),"Prefix layer captured more than once");
@@ -66,6 +74,7 @@ PrefixContext::KV PrefixContext::attention(int64_t layer,const at::Tensor& key,c
       k=at::cat({old->key.narrow(0,0,hits[row]),k},0);
       v=at::cat({old->value.narrow(0,0,hits[row]),v},0);
     }
+    if(capture&&collect_graph)graph_layers[row][layer]=PrefixLayer{k,v,{}, {}};
     if(capture&&writers[row]) {
       auto saved=int64_t(writers[row]->identity.tokens.size());
       store(row,layer,PrefixLayer{k.narrow(0,0,saved),v.narrow(0,0,saved),{}, {}});
@@ -154,18 +163,56 @@ at::Tensor PrefixContext::restore(const at::Tensor& suffix) {
   for(int64_t row=0;row<original.batch;++row) {
     auto value=suffix.narrow(0,offsets[row],offsets[row+1]-offsets[row]);
     if(hits[row])value=at::cat({readers[row]->output.narrow(0,0,hits[row]),value},0);
-    auto& entry=writers[row];
-    if(entry) {
-      auto retained=value.narrow(0,0,entry->identity.tokens.size());
-      auto bytes=retained.numel()*retained.element_size();
-      if(bytes<=entry->reserved_bytes) {
-        entry->output=retained.clone();entry->bytes+=bytes;budget->live_bytes+=bytes;
-        entry->reserved_bytes-=bytes;budget->reserved_bytes-=bytes;
-      } else entry.reset();
-    }
+    if(collect_graph)graph_outputs[row]=value;
+    store_output(row,value);
     rows.push_back(value);
   }
   return rows.size()==1?rows[0]:at::cat(rows,0);
+}
+void PrefixContext::store_output(int64_t row,const at::Tensor& value,
+  std::vector<at::Tensor>* targets,std::vector<at::Tensor>* sources) {
+  auto& entry=writers[row];if(!entry)return;
+  auto retained=value.narrow(0,0,entry->identity.tokens.size());
+  const auto bytes=retained.numel()*retained.element_size();
+  if(bytes>entry->reserved_bytes){entry.reset();return;}
+  entry->output=snapshot_copy(retained,targets,sources);entry->bytes+=bytes;budget->live_bytes+=bytes;
+  entry->reserved_bytes-=bytes;budget->reserved_bytes-=bytes;
+}
+void PrefixContext::publish_graph(const PrefixContext& captured) {
+  std::vector<at::Tensor> targets,sources;
+  for(int64_t row=0;row<original.batch;++row)if(writers[row]) {
+    auto& entry=writers[row];const auto retained=int64_t(entry->identity.tokens.size());
+    std::vector<std::pair<int64_t,PrefixLayer>> states;uint64_t payload=0;
+    bool packed=true;
+    auto account=[&](const at::Tensor& tensor) {
+      packed=packed&&tensor.is_contiguous()&&payload%tensor.element_size()==0;
+      payload+=tensor.nbytes();
+    };
+    for(const auto& [layer,value]:captured.graph_layers[row]) {
+      PrefixLayer state{value.key.narrow(0,0,retained),value.value.narrow(0,0,retained),{}, {}};
+      account(state.key);account(state.value);states.emplace_back(layer,std::move(state));
+    }
+    auto output=captured.graph_outputs[row].narrow(0,0,retained);account(output);
+    if(!packed) {
+      for(const auto& [layer,state]:states)if(!store(row,layer,state,&targets,&sources))break;
+      store_output(row,captured.graph_outputs[row],&targets,&sources);continue;
+    }
+    const auto nodes=states.size()*(sizeof(std::pair<const int64_t,PrefixLayer>)+4*sizeof(void*));
+    const auto needed=prefix_storage_sum(payload,nodes);
+    if(needed>entry->reserved_bytes){entry.reset();continue;}
+    auto slab=at::empty({int64_t(payload)},output.options().dtype(at::kByte));int64_t offset=0;
+    auto view=[&](const at::Tensor& source) {
+      auto target=slab.narrow(0,offset,source.nbytes()).view(source.scalar_type()).view(source.sizes());
+      offset+=source.nbytes();targets.push_back(target);sources.push_back(source);return target;
+    };
+    for(const auto& [layer,state]:states) {
+      TORCH_CHECK(!entry->layers.count(layer),"Prefix layer captured more than once");
+      entry->layers.emplace(layer,PrefixLayer{view(state.key),view(state.value),{}, {}});
+    }
+    entry->output=view(output);entry->slab=std::move(slab);
+    entry->bytes+=needed;budget->live_bytes+=needed;entry->reserved_bytes-=needed;budget->reserved_bytes-=needed;
+  }
+  if(!targets.empty())tensor_copies(targets,sources);
 }
 PrefixRecurrent prefix_recurrent(const PackedInput& input,const at::Tensor& qkv,
   int64_t layer,int64_t heads,int64_t kernel) {
@@ -338,6 +385,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   }
   PrefixContext context{original,{}, {}, {}, {},limit,budget};context.offsets={0};
   context.linear=linear.get();
+  context.math_policy=policy;
   std::vector<at::Tensor> ids,positions,types,axes;std::vector<int64_t> original_rows;
   for(int64_t row=0;row<original.batch;++row) {
     auto key=std::move(identities[row]);
@@ -348,8 +396,11 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     if(source&&original.ids.is_cuda()) {
       auto stream=at::cuda::getCurrentCUDAStream(original.ids.get_device());
       auto retain=[&](const at::Tensor& tensor){if(tensor.defined())c10::cuda::CUDACachingAllocator::recordStream(tensor.storage().data_ptr(),stream);};
-      retain(source->output);
-      for(const auto& [id,state]:source->layers)for(const auto& tensor:{state.key,state.value,state.recurrent,state.convolution})retain(tensor);
+      if(source->slab.defined())retain(source->slab);
+      else {
+        retain(source->output);
+        for(const auto& [id,state]:source->layers)for(const auto& tensor:{state.key,state.value,state.recurrent,state.convolution})retain(tensor);
+      }
     }
 #endif
     context.hits.push_back(best);context.readers.push_back(source);
@@ -448,7 +499,8 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     }
   }
   input.prefix=&context;
-    auto result=run(input);
+    const bool has_hit=std::any_of(context.hits.begin(),context.hits.end(),[](auto hit){return hit!=0;});
+    auto result=graphs&&has_hit&&!model.prefix_checkpoint_only()?graphs->forward(model,input,operation):run(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
     std::shared_ptr<at::cuda::CUDAEvent> event;
     if(admitting&&input.ids.is_cuda()){event=std::make_shared<at::cuda::CUDAEvent>();event->record(at::cuda::getCurrentCUDAStream(input.ids.device().index()));}

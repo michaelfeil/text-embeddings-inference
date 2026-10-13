@@ -9,7 +9,7 @@ class CudaGraphCache {
   struct Impl;
   std::unique_ptr<Impl> impl;
 public:
-  struct Stats { uint64_t hits=0, misses=0, captures=0, attempts=0, evictions=0, live_bytes=0, admitted_bytes=0; };
+  struct Stats { uint64_t hits=0, misses=0, captures=0, attempts=0, evictions=0, live_bytes=0, admitted_bytes=0, prefix_hits=0, prefix_captures=0; };
   explicit CudaGraphCache(size_t entries = 4, int64_t max_tokens = 4096,
     size_t reuse = 3, uint64_t max_bytes = 512ULL << 20, size_t max_captures = 8);
   ~CudaGraphCache();

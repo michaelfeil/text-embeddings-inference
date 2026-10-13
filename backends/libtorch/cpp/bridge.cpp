@@ -465,6 +465,7 @@ int32_t tei_graph_stats(void* handle,uint64_t* counters,size_t count) {
     auto s=engine.graphs?engine.graphs->stats():tei::CudaGraphCache::Stats{};
     counters[0]=s.hits;counters[1]=s.misses;counters[2]=s.captures;counters[3]=s.attempts;
     counters[4]=s.evictions;counters[5]=s.live_bytes;counters[6]=s.admitted_bytes;
+    if(count>=9){counters[7]=s.prefix_hits;counters[8]=s.prefix_captures;}
   });
 }
 int64_t tei_classification_width(void* handle) {

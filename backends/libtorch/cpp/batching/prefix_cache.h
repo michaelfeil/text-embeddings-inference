@@ -45,6 +45,7 @@ struct PrefixEntry {
   int64_t batch_max_sequence=0, compact_tokens=0;
   std::map<int64_t,PrefixLayer> layers;
   at::Tensor output;
+  at::Tensor slab;
   std::shared_ptr<PrefixBudget> budget;
   uint64_t bytes=0, reserved_bytes=0, used=0;
   int operation=0;
@@ -66,8 +67,18 @@ struct PrefixContext {
   const PrefixLayer* previous(int64_t row,int64_t layer) const;
   void checkpoint(int64_t row,int64_t layer,const at::Tensor& state,const at::Tensor& history);
   at::Tensor restore(const at::Tensor& suffix);
-  bool store(int64_t row,int64_t layer,const PrefixLayer& value);
+  bool store(int64_t row,int64_t layer,const PrefixLayer& value,
+    std::vector<at::Tensor>* targets=nullptr,std::vector<at::Tensor>* sources=nullptr);
+  void store_output(int64_t row,const at::Tensor& full,
+    std::vector<at::Tensor>* targets=nullptr,std::vector<at::Tensor>* sources=nullptr);
+  void publish_graph(const PrefixContext&);
   PrefixLinearPlans* linear=nullptr;
+  std::array<int64_t,22+at::num_sdp_backends> math_policy{};
+  // Graphs own execution buffers. These references keep full K/V and hidden
+  // rows available for batched publication into independent resident snapshots.
+  bool collect_graph=false;
+  std::vector<std::map<int64_t,PrefixLayer>> graph_layers;
+  std::vector<at::Tensor> graph_outputs;
 };
 const PackedInput& prefix_logical_input(const PackedInput&);
 at::Tensor prefix_restore(const PackedInput&,const at::Tensor&);

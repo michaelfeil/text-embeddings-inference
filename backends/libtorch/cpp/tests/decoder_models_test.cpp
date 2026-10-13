@@ -471,6 +471,32 @@ void native_engine_stream_test(const c10::Device& device) {
  }
  std::cout<<"native stream ordering, pending engine retirement and independent deferred leases passed (cache off/on)\n";
 }
+void suffix_graph_test(Model& model,const PackedInput& original) {
+ PrefixCache cache(16<<20,64,8);CudaGraphCache graphs(4,64,1,64<<20,8);
+ auto a=original.ids.cpu().clone(),b=a.clone();b[0]=6;b[original.offsets[1]]=7;
+ auto input=original;
+ auto set=[&](const at::Tensor& ids){input.host_ids=ids;input.host_types=original.types.cpu();input.host_positions=original.positions.cpu();input.ids=ids.to(original.ids.device());};
+ set(a);cache.run(model,input,0,&graphs);set(b);cache.run(model,input,0,&graphs);
+ for(int step=0;step<6;++step) {
+  if(step==4) {
+   cache.clear();TORCH_CHECK(cache.bytes()==0,"Graph templates retained resident prefix owners after clear");
+   set(a);cache.run(model,input,0,&graphs);set(b);cache.run(model,input,0,&graphs);
+  }
+  auto ids=(step%2?b:a).clone();
+  for(int64_t row=0;row<input.batch;++row)ids[input.offsets[row+1]-1]=10+step;
+  set(ids);auto expected=model.forward(input),actual=cache.run(model,input,0,&graphs);
+  TORCH_CHECK(at::allclose(actual,expected,.01,.02),"Suffix graph retained another parent's KV or output values");
+  actual.zero_();
+ }
+ auto stats=graphs.stats();TORCH_CHECK(stats.prefix_captures==1&&stats.prefix_hits>=5,"Changing parents or cache clear invalidated a reusable suffix shader");
+ TORCH_CHECK(cache.bytes()<=16<<20,"Suffix graph publication exceeded the resident snapshot budget");
+ PrefixCache constrained(16<<20,64,8);CudaGraphCache undersized(4,64,1,1,8);
+ set(a);constrained.run(model,input,0,&undersized);
+ auto tail=a.clone();tail[input.offsets[1]-1]=18;set(tail);
+ TORCH_CHECK(at::allclose(constrained.run(model,input,0,&undersized),model.forward(input),.01,.02),"Known oversized suffix arena changed eager fallback results");
+ TORCH_CHECK(undersized.stats().attempts==0,"Known oversized suffix arena attempted GPU allocation/capture");
+ std::cout<<"suffix graph replay, parent rebinding, independent outputs and cache clear passed\n";
+}
 #endif
 void multimodal_test(){
  auto cfg=config("qwen3");auto w=weights(cfg);auto model=create_decoder(cfg,w,c10::Device("cpu"),at::kFloat);model->ready();
@@ -582,7 +608,7 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
     at::tensor({0,1,2,0,1,2,3},opts),at::tensor(ends,opts.dtype(at::kInt)),ends.data(),2,4};
    check_prefix_cache(*gpu,input,0,.01,.02);
 #ifdef TEI_TORCH_CUDA_KERNELS
-   if(std::string(family)=="qwen3")cache_stream_test(*gpu,input);
+   if(std::string(family)=="qwen3") {cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
    if(std::string(family)=="qwen2")cache_cold_maximum_test(c10::Device(argv[1]));
 #endif
   }
