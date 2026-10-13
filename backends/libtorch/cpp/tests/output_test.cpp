@@ -49,6 +49,7 @@ void native_allocator_error_test(const at::Device& device) {
     TORCH_CHECK(tei_last_error_kind()==0,"Valid result retained allocator error kind");
   };
   valid();C10_CUDA_CHECK(cudaDeviceSynchronize());
+  c10::cuda::CUDACachingAllocator::emptyCache();
   const double original=c10::cuda::CUDACachingAllocator::getMemoryFraction(device.index());
   size_t free=0,total=0;C10_CUDA_CHECK(cudaMemGetInfo(&free,&total));
   const auto reserved=c10::cuda::CUDACachingAllocator::getDeviceStats(device.index()).reserved_bytes[0].current;
@@ -58,6 +59,15 @@ void native_allocator_error_test(const at::Device& device) {
     std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),unread,unread,
       unread,huge,1,4000000,0,nullptr,0,&row,1,64000000,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
     TORCH_CHECK(!rejected&&tei_last_error_kind()==3,"Actual allocator OOM was not classified as recoverable memory pressure");
+    // Reuse the other slot's small output allocation. Real host input is
+    // required here: failure happens in forward_radix's upload, after the
+    // outer submit operation has created its lease and copied the input pin.
+    std::vector<int64_t> real_input(4000000,0);
+    std::unique_ptr<void,decltype(&tei_output_destroy)> upload_rejected(tei_forward_submit(engine.get(),
+      real_input.data(),real_input.data(),real_input.data(),huge,1,4000000,0,nullptr,0,nullptr,0,0,
+      nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(!upload_rejected&&tei_last_error_kind()==3,
+      "Nested forward allocation failure lost its recoverable classification");
   } catch (...) {c10::cuda::CUDACachingAllocator::setMemoryFraction(original,device.index());throw;}
   c10::cuda::CUDACachingAllocator::setMemoryFraction(original,device.index());valid();
 }
