@@ -268,3 +268,11 @@ error before allocating additional staging storage. Increase the limit for large
 raw outputs only when the deployment has sufficient host and device memory.
 This limit covers staging tensor storage, not model weights, activations or memory
 reserved by the host/CUDA caching allocators.
+
+`TEI_TORCH_ATTENTION_BIAS_MAX_BYTES` (default 512 MiB, positive) bounds each
+packed attention bias construction. ALiBi admission includes its backing storage
+and a conservative sum of construction temporaries. DeBERTa also checks bucket
+table construction against this limit. Requests that exceed the limit fail before
+these buffers are allocated; their token lengths and model math are unchanged.
+This is a limit for these attention buffers, not a total activation, workspace or
+CUDA allocator reservation budget.

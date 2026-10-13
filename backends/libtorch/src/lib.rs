@@ -580,6 +580,12 @@ impl LibtorchBackend {
                 1,
             ),
             ("TEI_TORCH_CUDA_GRAPH_ENTRIES", "_cuda_graph_entries", 4, 0),
+            (
+                "TEI_TORCH_ATTENTION_BIAS_MAX_BYTES",
+                "_attention_bias_max_bytes",
+                512 << 20,
+                1,
+            ),
             ("TEI_TORCH_CUDA_GRAPH_REUSE", "_cuda_graph_reuse", 3, 1),
             (
                 "TEI_TORCH_CUDA_GRAPH_MAX_BYTES",
