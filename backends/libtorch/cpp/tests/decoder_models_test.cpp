@@ -452,6 +452,29 @@ void native_engine_stream_test(const c10::Device& device) {
   }
   tei_output_destroy(first.value);first.value=nullptr;
   tei_output_destroy(second.value);second.value=nullptr;
+  // Stage replacement weights before blocking the producer. Ready must wait
+  // for an old-model submission, then publish initialization on its new stream.
+  for(const auto& [key,value]:tensors)TORCH_CHECK(tei_weight(handle,key.c_str(),
+   reinterpret_cast<const uint8_t*>(value.const_data_ptr()),value.sizes().data(),value.dim(),0)==0,tei_error());
+  TORCH_CHECK(tei_option(handle,"_cuda_graphs","false")==0&&tei_option(handle,"_prefix_cache_max_bytes","0")==0,tei_error());
+  gate.open.store(false);
+  C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
+  at::cuda::CUDAEvent reloading;reloading.record(producer);
+  std::jthread reload_watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return gate.open.load();});gate.release();});
+  OutputOwner previous;
+  {c10::cuda::CUDAStreamGuard guard(producer);previous.value=submit(a);}
+  const bool reload_pending=!reloading.query();
+  auto reload=std::async(std::launch::async,[handle]{return tei_ready(handle);});
+  const auto reload_status=reload.wait_for(std::chrono::milliseconds(10));
+  gate.release();reload_watchdog.join();
+  TORCH_CHECK(reload_pending&&reload_status==std::future_status::timeout&&reload.get()==0,"Ready did not drain pending old-model work");
+  const auto prior=tei_output_wait(previous.value);
+  TORCH_CHECK(prior&&std::equal(prior,prior+16,expected_a.begin()),"Ready invalidated a deferred result from the old model");
+  TORCH_CHECK(tei_graph_count(handle)==0,"Ready retained disabled CUDA graphs");
+  {c10::cuda::CUDAStreamGuard guard(consumer);OutputOwner fresh{submit(b)};auto data=tei_output_wait(fresh.value);
+   TORCH_CHECK(data&&std::equal(data,data+16,expected_b.begin()),"Ready did not order initialization before the next stream's inference");}
+  TORCH_CHECK(std::equal(prior,prior+16,expected_a.begin()),"New-model inference overwrote a retained old-model result");
+  tei_output_destroy(previous.value);previous.value=nullptr;
   // Destruction must drain a genuinely pending submission, and the lease still
   // owns its host result afterward. No engine calls start after destruction.
   gate.open.store(false);
@@ -517,6 +540,45 @@ void multimodal_test(){
  check_close(deep.narrow(0,3,2),model->forward(input).narrow(0,3,2));
  check_close(deep.narrow(0,0,1),injected.narrow(0,0,1));
  std::cout<<"Qwen3 external embeddings, multimodal RoPE and deepstack packed isolation passed\n";
+}
+void native_reconfigure_test(const c10::Device& device) {
+ auto cfg=config("qwen3");cfg.values["num_attention_heads"]="2";
+ cfg.values["num_key_value_heads"]="1";cfg.values["head_dim"]="8";
+ cfg.values["tie_word_embeddings"]="true";
+ auto tensors=weights(cfg);
+ for(auto& [name,value]:tensors)if(name.ends_with("q_norm.weight")||name.ends_with("k_norm.weight"))value=value.repeat({2});
+ TeiConfig shape{16,2,2,24,32,32,1,1e-6,3};
+ auto handle=tei_create(&shape,device.str().c_str(),device.is_cuda()?2:0);TORCH_CHECK(handle,tei_error());
+ struct Owner{void* value;~Owner(){tei_destroy(value);}} owner{handle};
+ for(const auto& [key,value]:cfg.values)TORCH_CHECK(tei_option(handle,key.c_str(),value.c_str())==0,tei_error());
+ auto upload=[&]{for(const auto& [name,value]:tensors)TORCH_CHECK(tei_weight(handle,name.c_str(),
+  reinterpret_cast<const uint8_t*>(value.const_data_ptr()),value.sizes().data(),value.dim(),0)==0,tei_error());};
+ TORCH_CHECK(tei_option(handle,"_prefix_cache_max_bytes","1048576")==0,tei_error());
+ TORCH_CHECK(tei_option(handle,"_cuda_graphs","true")==0,tei_error());
+ TORCH_CHECK(tei_option(handle,"_cuda_graph_reuse","1")==0,tei_error());
+ TORCH_CHECK(tei_option(handle,"_decision.kind","option_tokens")==0,tei_error());
+ upload();TORCH_CHECK(tei_ready(handle)==0,tei_error());
+ int64_t ids[]={3,4,5,6},types[]={0,0,0,0},positions[]={0,1,2,3},selected[]={0};int32_t ends[]={0,4};float output[16];
+ auto forward=[&]{TORCH_CHECK(tei_forward(handle,ids,types,positions,ends,1,4,2,selected,1,nullptr,0,
+  output,16,nullptr,nullptr,0,nullptr,0)==0,tei_error());};
+ forward();forward();forward();
+ std::array<float,16> expected;std::copy(std::begin(output),std::end(output),expected.begin());
+ uint64_t stats[7];TORCH_CHECK(tei_prefix_cache_stats(handle,stats,7)==0&&stats[3]>0&&stats[6]>0,"Reconfiguration fixture did not fill cache");
+ if(device.is_cuda())TORCH_CHECK(tei_graph_count(handle)>0,"Reconfiguration fixture did not capture a graph");
+ TeiDecision decision{};decision.kind=1;decision.token_ids=selected;decision.token_count=1;int64_t count;
+ TORCH_CHECK(tei_decision_counts(handle,&decision,1,&count)==0&&count==1,"Reconfiguration fixture did not load a decision head");
+ TORCH_CHECK(tei_option(handle,"_prefix_cache_max_bytes","0")==0,tei_error());
+ TORCH_CHECK(tei_option(handle,"_cuda_graphs","false")==0,tei_error());
+ TORCH_CHECK(tei_option(handle,"_decision.kind","")==0,tei_error());
+ upload();TORCH_CHECK(tei_ready(handle)==0,tei_error());
+ TORCH_CHECK(tei_prefix_cache_stats(handle,stats,7)==0,tei_error());
+ const auto decision_status=tei_decision_counts(handle,&decision,1,&count);
+ const auto graphs=tei_graph_count(handle);
+ std::cout<<"reinitialized feature state: cache_bytes="<<stats[6]<<" graphs="<<graphs<<" decision_status="<<decision_status<<std::endl;
+ TORCH_CHECK(std::all_of(std::begin(stats),std::end(stats),[](auto value){return value==0;})&&graphs==0&&decision_status==-1,
+  "Native reinitialization retained disabled prefix cache, graphs or decision head");
+ forward();forward();TORCH_CHECK(tei_prefix_cache_stats(handle,stats,7)==0&&stats[3]==0&&tei_graph_count(handle)==0,"Disabled features reappeared after inference");
+ TORCH_CHECK(std::equal(std::begin(output),std::end(output),expected.begin()),"Disabling optional features changed native inference results");
 }
 void probe_cache_test() {
  auto cfg=config("qwen3");auto source=weights(cfg);
@@ -635,7 +697,8 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
  }
  multimodal_test();
  probe_cache_test();
+ native_reconfigure_test(c10::Device("cpu"));
 #ifdef TEI_TORCH_CUDA_KERNELS
- if(argc>1) {linear_workspace_test(c10::Device(argv[1]));native_engine_stream_test(c10::Device(argv[1]));}
+ if(argc>1) {linear_workspace_test(c10::Device(argv[1]));native_engine_stream_test(c10::Device(argv[1]));native_reconfigure_test(c10::Device(argv[1]));}
 #endif
 }

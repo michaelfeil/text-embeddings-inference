@@ -106,6 +106,10 @@ struct Engine {
   Engine(TeiConfig cfg, c10::Device dev, at::ScalarType type) : config(cfg), device(dev), dtype(type) {}
   void ready() {
     drain();
+    // A reload can disable features as well as enable them. Retire old graph
+    // buffers while their planner/model still exist, after submitted work ends.
+    graphs.reset();prefix.reset();decision.reset();
+    media_graphs=false;nomic_moe_graphs=false;
     dense = std::make_unique<tei::DenseChain>(options, weights);
     auto family = options.string("model_type", "bert");
     if(options.boolean("_fp8_dynamic",false)) {

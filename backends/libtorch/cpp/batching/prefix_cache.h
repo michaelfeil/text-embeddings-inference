@@ -1,5 +1,6 @@
 #pragma once
 #include "batching/packed_input.h"
+#include "helpers/math_policy.h"
 #include <ATen/Context.h>
 #include <functional>
 #include <map>
@@ -73,7 +74,7 @@ struct PrefixContext {
     std::vector<at::Tensor>* targets=nullptr,std::vector<at::Tensor>* sources=nullptr);
   void publish_graph(const PrefixContext&);
   PrefixLinearPlans* linear=nullptr;
-  std::array<int64_t,22+at::num_sdp_backends> math_policy{};
+  MathPolicy math_policy{};
   // Graphs own execution buffers. These references keep full K/V and hidden
   // rows available for batched publication into independent resident snapshots.
   bool collect_graph=false;
@@ -114,7 +115,7 @@ private:
   std::vector<std::shared_ptr<PrefixEntry>> entries;
   Stats counters;
   uint64_t model_epoch=0;
-  std::array<int64_t,22+at::num_sdp_backends> math_policy{};
+  MathPolicy math_policy{};
   std::unique_ptr<PrefixLinearPlans> linear;
   struct Recent { PrefixFingerprint key; size_t uses=0; };
   std::array<Recent,64> recent{};

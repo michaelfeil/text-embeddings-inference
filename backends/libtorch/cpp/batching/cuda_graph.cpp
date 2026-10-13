@@ -104,6 +104,9 @@ size_t CudaGraphCache::size() const {
 #endif
 }
 at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original, int operation) {
+  return forward(model,original,operation,nullptr);
+}
+at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original,int operation,const MathPolicy* known_policy) {
   TORCH_CHECK(operation >= 0 && operation <= 2, "Invalid CUDA graph operation");
   auto run = [&](const PackedInput& input) {
     return operation == 0 ? model.forward(input) : model.predict(input, operation == 2);
@@ -121,6 +124,10 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   // Include offsets, max length, device and scalar types: no sequence metadata
   // from one batch can leak into another graph with the same total token count.
   std::ostringstream key;
+  const auto policy=known_policy?*known_policy:input.prefix?input.prefix->math_policy:execution_math_policy(input.ids.device());
+  // Keys are process-local strings; append the fixed policy bytes once instead
+  // of formatting every setting, including for full-request/miss graphs.
+  key.write(reinterpret_cast<const char*>(policy.data()),sizeof(policy));
   key<<operation<<':'<<model.prefix_namespace()<<':'<<input.ids.device()<<':'<<input.ids.scalar_type()<<':'<<input.positions.scalar_type()<<':'<<input.types.scalar_type()<<':'<<input.cumulative.scalar_type()<<':'<<input.max_sequence<<':';
   for(int64_t i=0;i<=input.batch;++i)key<<input.offsets[i]<<',';
   auto tensor_key=[&](const at::Tensor& tensor,int64_t rows=-1) {
@@ -161,7 +168,6 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     key<<':'<<prefix.original.max_sequence;
     for(int64_t row=0;row<=prefix.original.batch;++row)key<<':'<<prefix.original.offsets[row];
     for(auto hit:prefix.hits)key<<':'<<hit;
-    for(auto policy:prefix.math_policy)key<<':'<<policy;
     tensor_key(prefix.original.ids);tensor_key(prefix.original.multimodal_positions);
     tensor_key(prefix.original.compact_ids);tensor_key(prefix.original.scatter_unfold);
     describe_extras(prefix.original);

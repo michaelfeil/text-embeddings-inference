@@ -160,6 +160,32 @@ void radix_qkv_copy_graph_test() {
   TORCH_CHECK(cache.size()==1,"Same QKV/map shapes did not reuse the graph");
  }
 }
+void arithmetic_policy_test() {
+ struct PolicyModel final:Model {
+  void ready() override {}
+  at::Tensor forward(const PackedInput& input) const override {
+   auto& context=at::globalContext();
+   auto scale=(context.allowTF32CuBLAS()?3:2)+(context.deterministicCuDNN()?7:0);
+   return input.ids.to(at::kFloat).unsqueeze(1)*scale;
+  }
+ } model;
+ auto& global=at::globalContext();
+ struct Restore {
+  bool tf32,deterministic;
+  ~Restore(){at::globalContext().setAllowTF32CuBLAS(tf32);at::globalContext().setDeterministicCuDNN(deterministic);}
+ } restore{global.allowTF32CuBLAS(),global.deterministicCuDNN()};
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ int32_t offsets[]={0,3};auto ids=at::tensor({3,4,5},options);
+ PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,3},options.dtype(at::kInt)),offsets,1,3};
+ CudaGraphCache cache(4,8,1);
+ global.setAllowTF32CuBLAS(false);
+ TORCH_CHECK(at::equal(cache.forward(model,input),model.forward(input)),"Initial arithmetic policy capture failed");
+ global.setAllowTF32CuBLAS(true);
+ TORCH_CHECK(at::equal(cache.forward(model,input),model.forward(input)),"Full-request graph replay ignored changed BLAS policy");
+ global.setDeterministicCuDNN(!restore.deterministic);
+ TORCH_CHECK(at::equal(cache.forward(model,input),model.forward(input)),"Full-request graph replay ignored changed cuDNN policy");
+ TORCH_CHECK(cache.stats().captures==3,"Changed arithmetic settings reused an incompatible shader");
+}
 void admission_test() {
  Dense model;
  auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
@@ -186,7 +212,7 @@ void admission_test() {
   TORCH_CHECK(at::equal(tiny_budget.forward(model,input),model.forward(input)),"Budget fallback changed output");
  TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==1,"Oversized pools repeatedly captured");
 }
-int main(){c10::InferenceMode guard;admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
+int main(){c10::InferenceMode guard;arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);

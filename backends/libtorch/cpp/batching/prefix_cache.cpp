@@ -331,32 +331,13 @@ static PrefixIdentity identity(const PackedInput& input,int64_t row) {
 }
 at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int operation,CudaGraphCache* graphs) {
   std::lock_guard guard(mutex);
+  const MathPolicy* known_policy=nullptr;
   auto run=[&](const PackedInput& input){return operation?model.predict(input,operation==2):model.forward(input);};
-  auto fallback=[&]{return graphs?graphs->forward(model,original,operation):run(original);};
+  auto fallback=[&]{return graphs?graphs->forward(model,original,operation,known_policy):run(original);};
   if(!limit||!model.supports_prefix_cache(operation)||!original.audios.empty()) {++counters.bypasses;return fallback();}
   try {
-  const auto& global=at::globalContext();
-  decltype(math_policy) policy={int64_t(global.allowTF32CuBLAS()),int64_t(global.allowFP16ReductionCuBLAS()),
-    int64_t(global.allowBF16ReductionCuBLAS()),int64_t(global.allowFP16AccumulationCuBLAS()),
-    int64_t(global.float32MatmulPrecision()),int64_t(at::globalContext().blasPreferredBackend()),
-    int64_t(global.deterministicAlgorithms()),int64_t(global.allowTF32CuDNN()),int64_t(global.allowFP16ReductionCPU())};
-#ifdef TEI_TORCH_CUDA_KERNELS
-  if(original.ids.is_cuda()) {
-    policy[9]=global._SMCarveout_EXPERIMENTAL().value_or(-1);
-    policy[10]=at::cuda::getChosenWorkspaceSize();policy[11]=at::cuda::getCUDABlasLtWorkspaceSize();
-  }
-#endif
-  policy[12]=global.userEnabledFlashSDP();policy[13]=global.userEnabledFA3SDP();
-  policy[14]=global.userEnabledMemEfficientSDP();policy[15]=global.userEnabledMathSDP();
-  policy[16]=global.userEnabledCuDNNSDP();policy[17]=global.allowFP16BF16ReductionMathSDP();
-  policy[18]=global.userEnabledOverrideableSDP();
-  auto priority=at::globalContext().sDPPriorityOrder();
-  for(size_t i=0;i<priority.size();++i)policy[19+i]=int64_t(priority[i]);
-  // Global deterministicAlgorithms does not cover cuDNN's algorithm controls.
-  constexpr auto cudnn_policy=19+at::num_sdp_backends;
-  policy[cudnn_policy]=global.deterministicCuDNN();
-  policy[cudnn_policy+1]=global.benchmarkCuDNN();
-  policy[cudnn_policy+2]=global.benchmarkLimitCuDNN();
+  auto policy=execution_math_policy(original.ids.device());
+  known_policy=&policy;
   if(model_epoch!=model.prefix_namespace()||math_policy!=policy) {
     entries.clear();linear->clear();recent={};recent_next=0;model_epoch=model.prefix_namespace();math_policy=policy;
   }
