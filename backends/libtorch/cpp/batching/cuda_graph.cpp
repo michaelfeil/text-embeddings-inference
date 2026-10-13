@@ -202,13 +202,16 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   entry->capture_stream=capture_stream;
   at::cuda::CUDAEvent input_ready;input_ready.record(current);input_ready.block(capture_stream);
   bool capturing=false;
+  c10::MempoolId_t trial_pool{0,0};
   try {
     {
       c10::cuda::CUDAStreamGuard stream(capture_stream);
       // Initialize GEMM and attention handles before entering capture.
       for(int i=0;i<3;++i)entry->output=run(entry->input);
       entry->graph=std::make_unique<at::cuda::CUDAGraph>();
-      entry->graph->capture_begin({0,0},cudaStreamCaptureModeThreadLocal);capturing=true;
+      // Keep the ID even if capture_end fails, when graph->pool() is invalid.
+      trial_pool=at::cuda::graph_pool_handle();
+      entry->graph->capture_begin(trial_pool,cudaStreamCaptureModeThreadLocal);capturing=true;
       entry->output=run(entry->input);
       entry->graph->capture_end();capturing=false;
     }
@@ -226,6 +229,9 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     capture_stream.synchronize();
     entry.reset();
     cudaGetLastError();
+    if(trial_pool.first||trial_pool.second) {
+      impl->retired_pools.push_back(trial_pool);impl->reclaim_retired();
+    }
     // The lifetime attempt budget also bounds this negative cache.
     impl->failed.insert(id);
     return run(input);
@@ -242,7 +248,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   charge(entry->input.compact_types);charge(entry->input.scatter_unfold);charge(entry->input.fold_gather);
   if(entry->bytes>impl->max_bytes-impl->counters.admitted_bytes) {
     // Allow only one oversized trial; drain replay before pool destruction.
-    current.synchronize();impl->budget_exhausted=true;entry.reset();return run(input);
+    current.synchronize();impl->budget_exhausted=true;entry.reset();
+    impl->retired_pools.push_back(trial_pool);impl->reclaim_retired();return run(input);
   }
   if(impl->entries.size()>=impl->limit) {
     // Output copies/leases are ordered on the caller stream. Drain its work
