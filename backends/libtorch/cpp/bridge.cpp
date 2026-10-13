@@ -341,6 +341,7 @@ template<class F> int32_t checked(F&& f) {
   try { c10::InferenceMode guard; f(); return 0; }
   catch (const tei::MemoryAdmissionError& ex) { set_error(2,ex.what());return -1; }
   catch (const c10::OutOfMemoryError& ex) { set_error(3,ex.what());return -1; }
+  catch (const c10::AcceleratorError& ex) { set_error(tei::accelerator_error_kind(ex),ex.what());return -1; }
   catch (const std::bad_alloc& ex) { set_error(3,ex.what());return -1; }
   catch (const std::exception& ex) { set_error(1,ex.what()); return -1; }
   catch (...) { set_error(1,"Unknown native exception"); return -1; }

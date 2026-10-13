@@ -228,6 +228,14 @@ void multimodal_test(){
 }
 }
 int main(){c10::InferenceMode inference;at::set_num_threads(1);
+ {
+  c10::AcceleratorError allocation({__func__,__FILE__,__LINE__},2,"Resource allocation failed");
+  c10::AcceleratorError illegal({__func__,__FILE__,__LINE__},700,"Illegal device address");
+  c10::AcceleratorError unknown({__func__,__FILE__,__LINE__},999,"Unknown device failure");
+  TORCH_CHECK(accelerator_error_kind(allocation)==3,"CUDA allocation failure must remain recoverable");
+  TORCH_CHECK(accelerator_error_kind(illegal)==1&&accelerator_error_kind(unknown)==1,
+    "Fatal accelerator failures must not be classified as overload");
+ }
  output_capacity_bridge_test();
  input_descriptor_test();
  {
