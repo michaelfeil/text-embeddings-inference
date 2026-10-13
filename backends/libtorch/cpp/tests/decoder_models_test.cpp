@@ -235,6 +235,13 @@ int main(){c10::InferenceMode inference;at::set_num_threads(1);
   TORCH_CHECK(accelerator_error_kind(allocation)==3,"CUDA allocation failure must remain recoverable");
   TORCH_CHECK(accelerator_error_kind(illegal)==1&&accelerator_error_kind(unknown)==1,
     "Fatal accelerator failures must not be classified as overload");
+  for(int32_t kind:{1,2,3}) {
+    try { throw NativeCallError(kind,"Nested native failure"); }
+    catch(const NativeCallError& e) {
+      TORCH_CHECK(e.kind==kind&&std::string(e.what())=="Nested native failure",
+        "Nested native failure lost its structured classification");
+    }
+  }
  }
  output_capacity_bridge_test();
  input_descriptor_test();
