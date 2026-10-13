@@ -110,6 +110,14 @@ on Linux. No `libtorch_python` library is linked by the bridge.
 
 ## Validation and performance
 
+`TEI_TORCH_INPUT_UPLOAD_MAX_BYTES` limits each native request's estimated input
+upload and preprocessing storage, defaulting to 536870912 bytes (512 MiB).
+It includes actual packed token buffers, media position axes, media payloads and
+conversion temporaries, radix maps, and native descriptor copies. Repeated media
+descriptors are charged independently. Requests over this limit return a backend
+error before input transfers or deferred output allocation. This limit does not
+cover model activations, workspaces, output storage, or allocator-reserved memory.
+
 `TEI_TORCH_HOST_OUTPUT_MAX_BYTES` limits estimated Rust host output storage per
 submission, defaulting to 536870912 bytes (512 MiB). The estimate includes result
 payloads, token-row vector metadata, output map storage, and the temporary flat
