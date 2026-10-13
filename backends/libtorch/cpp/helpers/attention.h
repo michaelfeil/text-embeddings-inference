@@ -1,6 +1,7 @@
 #pragma once
 #include <ATen/ATen.h>
 #include "batching/packed_input.h"
+#include "helpers/checked_size.h"
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 
@@ -12,8 +13,12 @@ namespace tei {
 inline at::Tensor packed_sequence_bias(const at::Tensor& q,const PackedInput& input) {
   const int64_t total=q.size(0),heads=q.size(1),nmax=input.max_sequence;
   TORCH_CHECK(total>0 && heads>0 && input.batch>0 && nmax>0 && nmax<=total,"Invalid packed sequence bias dimensions");
-  const int64_t stride=((nmax+7)/8)*8,tile=nmax*stride,batch_stride=heads*tile;
-  const int64_t size=std::max(input.batch*batch_stride,(heads-1)*tile+(total-1)*stride+total);
+  const int64_t stride=checked_size_product(checked_size_sum(nmax,7)/8,8);
+  const int64_t tile=checked_size_product(nmax,stride),batch_stride=checked_size_product(heads,tile);
+  const int64_t size=std::max(checked_size_product(input.batch,batch_stride),
+    checked_size_sum(checked_size_sum(checked_size_product(heads-1,tile),checked_size_product(total-1,stride)),total));
+  checked_size_product(size,q.element_size());
+  checked_size_product(checked_size_product(heads,total),total);
   return at::empty({size},q.options()).as_strided({1,heads,total,total},{batch_stride,tile,stride,1});
 }
 
@@ -28,8 +33,11 @@ inline at::Tensor packed_alibi_bias(const at::Tensor& q, const PackedInput& inpu
                                     int64_t window_left = -1, int64_t window_right = -1) {
   const int64_t total=q.size(0), heads=q.size(1), length=input.max_sequence;
   TORCH_CHECK(total>0 && length>0 && length<=total && heads>0, "Invalid packed ALiBi dimensions");
-  const int64_t stride=((length+7)/8)*8, tile=length*stride;
-  const int64_t backing=(heads-1)*tile+(total-1)*stride+total;
+  const int64_t stride=checked_size_product(checked_size_sum(length,7)/8,8),tile=checked_size_product(length,stride);
+  const int64_t backing=checked_size_sum(checked_size_sum(checked_size_product(heads-1,tile),
+    checked_size_product(total-1,stride)),total);
+  checked_size_product(backing,q.element_size());
+  checked_size_product(checked_size_product(heads,total),total);
   auto storage=at::empty({backing},q.options());
   auto local=storage.as_strided({heads,length,length},{tile,stride,1});
   auto idx=at::arange(length,q.options().dtype(at::kLong));
