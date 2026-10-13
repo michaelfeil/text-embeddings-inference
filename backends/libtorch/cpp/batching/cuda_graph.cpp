@@ -185,6 +185,10 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     if(capturing) {
       try {c10::cuda::CUDAStreamGuard stream(capture_stream);entry->graph->capture_end();}catch(...){}
     }
+    // Warmup can enqueue work before throwing. These clones were allocated
+    // on the caller stream and used on the capture stream; join before freeing
+    // them or allowing eager fallback to reuse their storage.
+    capture_stream.synchronize();
     entry.reset();
     cudaGetLastError();
     // The lifetime attempt budget also bounds this negative cache.
