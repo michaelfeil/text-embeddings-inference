@@ -122,9 +122,10 @@ impl D3MediaProcessor {
         images: Vec<String>,
         videos: Vec<String>,
     ) -> Result<PreparedD3Media> {
+        // Locals drop in reverse order: buffers must be freed before their permits.
+        let mut held = Vec::new();
         let mut prepared_images = Vec::new();
         let mut prepared_videos = Vec::new();
-        let mut held = Vec::new();
         for source in images {
             let resolved = self.resolver.resolve(source).await?;
             let worker = self
@@ -171,8 +172,9 @@ impl D3MediaProcessor {
                 let _worker = worker;
                 // Keep all encoded spool reservations until the files are consumed.
                 let _spool_memory = spool_memory;
-                let mut groups = Vec::new();
+                // Preserve that order on worker errors as well as normal returns.
                 let mut held = Vec::new();
+                let mut groups = Vec::new();
                 for pair in indices.chunks(2) {
                     let mut patches = Vec::new();
                     for index in pair {
@@ -213,12 +215,12 @@ impl D3MediaProcessor {
             })
             .await
             .map_err(|_| invalid("D3 video worker failed"))??;
+            held.extend(memory);
             video_tokens += frames.iter().map(|(_, p)| p.token_count()).sum::<usize>();
             if video_tokens > 16_384 {
                 return Err(invalid("D3 videos exceed 16384 vision tokens"));
             }
             prepared_videos.push(frames);
-            held.extend(memory);
         }
         let bytes = prepared_images
             .iter()
@@ -229,7 +231,7 @@ impl D3MediaProcessor {
             .ok_or_else(|| invalid("D3 media allocation is too large"))?;
         // Every allocation was reserved before decoding. Consolidate the output reservation
         // so the shared queue can retain it until the final question completes.
-        let memory = Arc::new(retain_media_reservation(held, bytes, &self.budget)?);
+        let memory = Arc::new(retain_media_reservation(&mut held, bytes, &self.budget)?);
         Ok(PreparedD3Media {
             images: prepared_images,
             videos: prepared_videos,
@@ -406,20 +408,27 @@ impl D3MediaProcessor {
 // Merge permits without exposing live pixel allocations to a release/reacquire race.
 // Decoder/resize scratch is gone; only release units beyond output plus its upload copy.
 fn retain_media_reservation(
-    mut held: Vec<OwnedSemaphorePermit>,
+    held: &mut Vec<OwnedSemaphorePermit>,
     bytes: usize,
     budget: &MediaBudget,
 ) -> Result<OwnedSemaphorePermit> {
+    if held.is_empty() {
+        return Err(invalid("Missing D3 media reservation"));
+    }
+    let required = bytes.div_ceil(1024);
+    let reserved = held
+        .iter()
+        .map(OwnedSemaphorePermit::num_permits)
+        .sum::<usize>();
+    if required > reserved {
+        // Keep reservations with the caller's buffers if acquiring the deficit fails.
+        held.push(budget.reserve((required - reserved) * 1024)?);
+    }
     let mut memory = held
         .pop()
         .ok_or_else(|| invalid("Missing D3 media reservation"))?;
-    for permit in held {
+    for permit in held.drain(..) {
         memory.merge(permit);
-    }
-    let required = bytes.div_ceil(1024);
-    if required > memory.num_permits() {
-        // An extra output copy may need more units; retain existing allocations while acquiring them.
-        memory.merge(budget.reserve((required - memory.num_permits()) * 1024)?);
     }
     let excess = memory.num_permits() - required;
     if excess > 0 {
@@ -537,8 +546,8 @@ mod tests {
     #[test]
     fn media_transfer_retains_output_and_releases_only_scratch() {
         let budget = MediaBudget::new(4096).unwrap();
-        let held = vec![budget.reserve(2048).unwrap(), budget.reserve(2048).unwrap()];
-        let output = retain_media_reservation(held, 3072, &budget).unwrap();
+        let mut held = vec![budget.reserve(2048).unwrap(), budget.reserve(2048).unwrap()];
+        let output = retain_media_reservation(&mut held, 3072, &budget).unwrap();
         assert_eq!(output.num_permits(), 3);
         assert!(budget.reserve(2048).is_err());
         let competitor = budget.reserve(1024).unwrap();
@@ -546,8 +555,8 @@ mod tests {
         drop(output);
         assert!(budget.reserve(3072).is_ok());
         drop(competitor);
-        let held = vec![budget.reserve(2048).unwrap()];
-        let output = retain_media_reservation(held, 3072, &budget).unwrap();
+        let mut held = vec![budget.reserve(2048).unwrap()];
+        let output = retain_media_reservation(&mut held, 3072, &budget).unwrap();
         assert_eq!(output.num_permits(), 3);
         assert!(budget.reserve(2048).is_err());
         // A competing request cannot steal the three units that remain live during transfers.
@@ -564,10 +573,15 @@ mod tests {
         let mut output = output;
         for _ in 0..1000 {
             let scratch = budget.reserve(1024).unwrap();
-            output = retain_media_reservation(vec![output, scratch], 3072, &budget).unwrap();
+            output = retain_media_reservation(&mut vec![output, scratch], 3072, &budget).unwrap();
         }
         running.store(false, Ordering::Relaxed);
         competitor.join().unwrap();
+        drop(output);
+        let mut held = vec![budget.reserve(3072).unwrap()];
+        assert!(retain_media_reservation(&mut held, 5120, &budget).is_err());
+        assert_eq!(held[0].num_permits(), 3);
+        assert!(budget.reserve(2048).is_err());
     }
 
     #[tokio::test]
