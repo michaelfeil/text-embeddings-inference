@@ -229,8 +229,7 @@ impl D3MediaProcessor {
             .ok_or_else(|| invalid("D3 media allocation is too large"))?;
         // Every allocation was reserved before decoding. Consolidate the output reservation
         // so the shared queue can retain it until the final question completes.
-        drop(held);
-        let memory = Arc::new(self.budget.reserve(bytes)?);
+        let memory = Arc::new(retain_media_reservation(held, bytes, &self.budget)?);
         Ok(PreparedD3Media {
             images: prepared_images,
             videos: prepared_videos,
@@ -404,6 +403,35 @@ impl D3MediaProcessor {
     }
 }
 
+// Merge permits without exposing live pixel allocations to a release/reacquire race.
+// Decoder/resize scratch is gone; only release units beyond output plus its upload copy.
+fn retain_media_reservation(
+    mut held: Vec<OwnedSemaphorePermit>,
+    bytes: usize,
+    budget: &MediaBudget,
+) -> Result<OwnedSemaphorePermit> {
+    let mut memory = held
+        .pop()
+        .ok_or_else(|| invalid("Missing D3 media reservation"))?;
+    for permit in held {
+        memory.merge(permit);
+    }
+    let required = bytes.div_ceil(1024);
+    if required > memory.num_permits() {
+        // An extra output copy may need more units; retain existing allocations while acquiring them.
+        memory.merge(budget.reserve((required - memory.num_permits()) * 1024)?);
+    }
+    let excess = memory.num_permits() - required;
+    if excess > 0 {
+        drop(
+            memory
+                .split(excess)
+                .ok_or_else(|| invalid("Invalid D3 media reservation"))?,
+        );
+    }
+    Ok(memory)
+}
+
 /// PNG chunk lengths let us reject oversized output before reading or writing its payload.
 async fn copy_bounded_png<R: AsyncRead + Unpin, W: Write>(
     reader: &mut R,
@@ -506,6 +534,42 @@ fn pair_patches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn media_transfer_retains_output_and_releases_only_scratch() {
+        let budget = MediaBudget::new(4096).unwrap();
+        let held = vec![budget.reserve(2048).unwrap(), budget.reserve(2048).unwrap()];
+        let output = retain_media_reservation(held, 3072, &budget).unwrap();
+        assert_eq!(output.num_permits(), 3);
+        assert!(budget.reserve(2048).is_err());
+        let competitor = budget.reserve(1024).unwrap();
+        assert!(budget.reserve(1024).is_err());
+        drop(output);
+        assert!(budget.reserve(3072).is_ok());
+        drop(competitor);
+        let held = vec![budget.reserve(2048).unwrap()];
+        let output = retain_media_reservation(held, 3072, &budget).unwrap();
+        assert_eq!(output.num_permits(), 3);
+        assert!(budget.reserve(2048).is_err());
+        // A competing request cannot steal the three units that remain live during transfers.
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let running = Arc::new(AtomicBool::new(true));
+        let competing_budget = budget.clone();
+        let competing_running = running.clone();
+        let competitor = std::thread::spawn(move || {
+            while competing_running.load(Ordering::Relaxed) {
+                assert!(competing_budget.reserve(2048).is_err());
+                std::thread::yield_now();
+            }
+        });
+        let mut output = output;
+        for _ in 0..1000 {
+            let scratch = budget.reserve(1024).unwrap();
+            output = retain_media_reservation(vec![output, scratch], 3072, &budget).unwrap();
+        }
+        running.store(false, Ordering::Relaxed);
+        competitor.join().unwrap();
+    }
+
     #[tokio::test]
     async fn png_stream_preserves_full_pixels_and_bounds_each_frame() {
         let pixels = image::RgbImage::from_fn(31, 29, |x, y| {
