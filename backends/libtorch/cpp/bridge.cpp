@@ -519,7 +519,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
       if (pool == 4) outputs.push_back(h.narrow(0, row, 1));
       else if (pool == 3) outputs.push_back(std::get<0>(sparse_scores.narrow(0, sparse_starts[i], length).max(0, true)));
       else if (pool == 0) outputs.push_back(h.narrow(0, start, 1));
-      else if (pool == 1) outputs.push_back(h.narrow(0, start, length).mean(0, true, at::kFloat));
+      else if (pool == 1) outputs.push_back(model.model->mean_pool(h.narrow(0, start, length)));
       else outputs.push_back(h.narrow(0, start + length - 1, 1));
     }
     if (pool < 4 && !model.dense->empty() && !outputs.empty()) {
@@ -527,6 +527,13 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
       outputs.clear();
       outputs.push_back(pooled_output);
     }
+    // Identity raw selection already occupies one packed contiguous tensor.
+    // Preserve the completion path while avoiding a redundant device cat.
+    bool identity_raw = !pooled_count && raw_count == static_cast<size_t>(batch)
+      && pool < 4 && h.is_cuda() && h.is_contiguous()
+      && h.size(0) == cumulative[batch];
+    for (size_t i = 0; i < raw_count && identity_raw; ++i)
+      identity_raw = raw[i] == static_cast<int64_t>(i);
     for (size_t i = 0; i < raw_count; ++i)
       outputs.push_back(h.narrow(0, cumulative[raw[i]], cumulative[raw[i] + 1] - cumulative[raw[i]]));
     if (!outputs.empty()) {
@@ -534,7 +541,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
       std::vector<at::Tensor> group;
       auto flush = [&] {
         if (group.empty()) return;
-        auto joined = completion && group.size() == 1 ? group.front() : at::cat(group, 0);
+        auto joined = identity_raw ? h : (completion && group.size() == 1 ? group.front() : at::cat(group, 0));
         TORCH_CHECK(offset <= capacity && static_cast<size_t>(joined.numel()) <= capacity - offset,
                     "Native output exceeds provided capacity");
         if (completion) completion->copy(joined, offset);

@@ -10,7 +10,11 @@ if(TARGET torch_cuda AND TEI_REQUESTED_CUDA_ARCHITECTURES)
   string(REPLACE " ${TEI_TORCH_ARCH_FLAGS_JOINED}" "" CMAKE_CUDA_FLAGS "${CMAKE_CUDA_FLAGS}")
   set(CMAKE_CUDA_ARCHITECTURES "${TEI_REQUESTED_CUDA_ARCHITECTURES}")
 endif()
-add_library(tei_torch SHARED bridge.cpp batching/radix.cpp helpers/fp8_linear.cpp models/decoder_models.cpp models/decision_models.cpp models/dense_models.cpp models/encoder_models.cpp models/gemma_models.cpp models/qwen3_vl_models.cpp models/qwen35_models.cpp batching/cuda_graph.cpp kernels/moe_kernels.cpp)
+add_library(tei_torch SHARED bridge.cpp batching/radix.cpp helpers/fp8_linear.cpp helpers/modern_cpu_math.cpp models/decoder_models.cpp models/decision_models.cpp models/dense_models.cpp models/encoder_models.cpp models/gemma_models.cpp models/qwen3_vl_models.cpp models/qwen35_models.cpp batching/cuda_graph.cpp kernels/moe_kernels.cpp)
+# Keep separately rounded adapted CPU products and sums.
+if(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+  set_source_files_properties(helpers/modern_cpu_math.cpp PROPERTIES COMPILE_OPTIONS "-ffp-contract=off")
+endif()
 target_compile_features(tei_torch PRIVATE cxx_std_20)
 target_sources(tei_torch PRIVATE batching/prefix_cache.cpp)
 target_sources(tei_torch PRIVATE helpers/prefix_linear.cpp)
@@ -27,6 +31,10 @@ install(DIRECTORY ../../../LICENSES/ DESTINATION share/licenses/tei_torch/LICENS
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
+  # The exact router keeps F32 subnormals; RMS kernels retain their old flags.
+  target_sources(tei_torch PRIVATE kernels/decoder_half_moe.cu)
+  set_source_files_properties(kernels/decoder_half_moe.cu PROPERTIES
+    COMPILE_OPTIONS "--ftz=false;--prec-div=true;--prec-sqrt=true;--expt-relaxed-constexpr")
   target_sources(tei_torch PRIVATE kernels/gemma_score.cu)
   set_source_files_properties(kernels/gemma_score.cu PROPERTIES
     COMPILE_OPTIONS "--fmad=false;--prec-div=true;--prec-sqrt=true;--expt-relaxed-constexpr")

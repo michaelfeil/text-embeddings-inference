@@ -278,12 +278,25 @@ class Decoder final : public Model {
         layer.grouped_down.transpose(-2,-1),renormalize);
       if(native.defined())return native;
     }
-    auto probabilities = at::softmax(logits, -1);
+    at::Tensor probabilities;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(qwen_half_exact&&family=="qwen3_moe"&&logits.is_cuda())
+      probabilities=decoder_half_moe_probabilities(logits);
+    else
+#endif
+      probabilities=at::softmax(logits,-1);
     // Stable sorting gives Candle's lower-expert-index tie break. Routing remains on-device.
     auto ids = at::argsort(probabilities, true, -1, true).narrow(-1, 0, top_k);
     auto routing = probabilities.gather(-1, ids);
-    if (renormalize) routing = routing / routing.sum(-1, true);
-    routing = routing.to(dtype);
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(qwen_half_exact&&family=="qwen3_moe"&&routing.is_cuda())
+      routing=decoder_half_moe_route_weights(routing,renormalize);
+    else
+#endif
+    {
+      if(renormalize)routing=routing/routing.sum(-1,true);
+      routing=routing.to(dtype);
+    }
     auto result = at::zeros_like(x);
     if (x.is_cuda() && layer.grouped_down.defined()) {
       auto experts = layer.grouped_down.size(0);
@@ -307,14 +320,52 @@ class Decoder final : public Model {
       result.index_add_(0, tokens, outputs * route);
       return result;
     }
+    // The original Half reference visits experts in ascending order and keeps
+    // token order within each expert. Copy only the real top8 indices once,
+    // then upload their stable bucket order once, avoiding128 nonzero syncs.
+    at::Tensor bucket_order;
+    std::vector<int64_t> bucket_offsets;
+    if(qwen_half_exact&&family=="qwen3_moe"&&x.is_cuda()) {
+      const auto experts=static_cast<int64_t>(layer.expert_down.size());
+      auto host_ids=ids.contiguous().to(at::kCPU);
+      const auto* ids_ptr=host_ids.const_data_ptr<int64_t>();
+      std::vector<int64_t> counts(experts,0);
+      for(int64_t route=0;route<host_ids.numel();++route)++counts[ids_ptr[route]];
+      bucket_offsets.resize(experts+1,0);
+      for(int64_t expert=0;expert<experts;++expert)
+        bucket_offsets[expert+1]=bucket_offsets[expert]+counts[expert];
+      auto next=bucket_offsets;
+      auto host_order=at::empty({2,host_ids.numel()},host_ids.options());
+      auto* order_ptr=host_order.mutable_data_ptr<int64_t>();
+      for(int64_t route=0;route<host_ids.numel();++route) {
+        const auto position=next[ids_ptr[route]]++;
+        order_ptr[position]=route/top_k;
+        order_ptr[host_ids.numel()+position]=route%top_k;
+      }
+      bucket_order=host_order.to(x.device()).transpose(0,1);
+    }
     for (int64_t expert = 0; expert < static_cast<int64_t>(layer.expert_down.size()); ++expert) {
-      auto selected = at::nonzero(ids == expert);
+      at::Tensor selected;
+      if(bucket_order.defined()) {
+        auto count=bucket_offsets[expert+1]-bucket_offsets[expert];
+        if(!count)continue;
+        selected=bucket_order.narrow(0,bucket_offsets[expert],count);
+      } else selected=at::nonzero(ids==expert);
       auto tokens = selected.select(1, 0), slots = selected.select(1, 1);
-      // Zero-token experts are valid empty GEMMs; avoid a host-side routing copy.
+      // Other reference paths retain valid empty expert GEMMs.
       auto input = x.index_select(0, tokens);
       auto both = at::linear(input, layer.expert_gate_up[expert]);
       auto width = both.size(-1) / 2;
-      auto output = at::linear(at::silu(both.narrow(-1, 0, width)) * both.narrow(-1, width, width), layer.expert_down[expert]);
+      at::Tensor activated;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      // Original Candle Half MoE rounds exp, denominator, SiLU and product
+      // separately in model dtype, including Half exp overflow.
+      if(qwen_half_exact && family=="qwen3_moe" && both.is_cuda())
+        activated=fused_gated_activation(both,5);
+      else
+#endif
+        activated=at::silu(both.narrow(-1,0,width))*both.narrow(-1,width,width);
+      auto output = at::linear(activated, layer.expert_down[expert]);
       auto route = routing.index_select(0, tokens).gather(1, slots.unsqueeze(1));
       result.index_add_(0, tokens, output * route);
     }
@@ -365,7 +416,8 @@ public:
       // Other architectures retain installed Torch arithmetic until qualified.
       qwen_half_exact=!fp8_dynamic&&dtype==at::kHalf&&major==9&&properties->minor==0
         &&((family=="qwen3"&&hidden==1024&&head_dim==128)
-          ||(family=="qwen2"&&hidden==896&&head_dim==64));
+          ||(family=="qwen2"&&hidden==896&&head_dim==64)
+          ||(family=="qwen3_moe"&&hidden==2048&&head_dim==128&&options.integer("num_experts",0)==128&&top_k==8));
       cudnn_varlen=options.boolean("_cudnn_varlen",false)&&(major==9||major==10)
         &&at::detail::getCUDAHooks().versionRuntimeCuDNN()>=91800;
     }

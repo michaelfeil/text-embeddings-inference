@@ -353,6 +353,209 @@ at::Tensor gemma_norm_cuda(const at::Tensor& x,const at::Tensor& scale,double ep
   C10_CUDA_KERNEL_LAUNCH_CHECK();
   return output;
 }
+
+// SPDX-License-Identifier: MIT
+// Adapted from the included Candle gemma_rms_norm_bf16, retaining its
+// complete notices and exact reduction tree. BF16 scratch preserves the
+// original norm output cast before Candle's contracted BF16 rotary.
+namespace {
+__global__ void gemma3_qk_norm_rotary(const __nv_bfloat16* q,const __nv_bfloat16* k,
+ const float* qs,const float* ks,const __nv_bfloat16* cosine,const __nv_bfloat16* sine,
+ const int64_t* positions,__nv_bfloat16* qo,__nv_bfloat16* ko,
+ unsigned width,unsigned qheads,unsigned kheads,unsigned long long qstride,
+ unsigned long long kstride,unsigned long long qrows,float eps,int64_t table_rows) {
+ const bool query=blockIdx.x<qrows;
+ const auto row=query?static_cast<unsigned long long>(blockIdx.x):blockIdx.x-qrows;
+ const auto heads=query?qheads:kheads;
+ const auto token=row/heads;
+ const auto base=token*(query?qstride:kstride)+(row%heads)*width;
+ const auto* x=query?q:k;const auto* scale=query?qs:ks;
+ auto* out=query?qo:ko;
+ float sum=0.f;
+ for(unsigned col=threadIdx.x;col<width;col+=blockDim.x) {
+  float v=__bfloat162float(x[base+col]);sum+=v*v;
+ }
+ for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffff,sum,offset);
+ __shared__ float partial[8];
+ if((threadIdx.x&31)==0)partial[threadIdx.x/32]=sum;
+ __syncthreads();
+ if(threadIdx.x<32) {
+  sum=threadIdx.x<blockDim.x/32?partial[threadIdx.x]:0.f;
+  for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffff,sum,offset);
+  if(threadIdx.x==0)partial[0]=rsqrtf(sum/width+eps);
+ }
+ __syncthreads();
+ extern __shared__ __nv_bfloat16 normalized[];
+ const float inv=partial[0];
+ for(unsigned col=threadIdx.x;col<width;col+=blockDim.x) {
+  float value=__bfloat162float(x[base+col])*inv;
+  normalized[col]=__float2bfloat16_rn(value*scale[col]);
+ }
+ __syncthreads();
+ const auto position=positions[token];
+ CUDA_KERNEL_ASSERT(position>=0 && position<table_rows);
+ const unsigned half=width/2;
+ for(unsigned col=threadIdx.x;col<half;col+=blockDim.x) {
+  const auto a=normalized[col],b=normalized[col+half];
+  const auto c=cosine[position*half+col],s=sine[position*half+col];
+  out[row*width+col]=__hfma(a,c,__nv_bfloat16(-float(__nv_bfloat16(b*s))));
+  out[row*width+col+half]=__hfma(b,c,__nv_bfloat16(a*s));
+ }
+}
+}
+std::pair<at::Tensor,at::Tensor> gemma3_qk_norm_rotary_cuda(
+ const at::Tensor& q,const at::Tensor& k,const at::Tensor& qs,const at::Tensor& ks,
+ const at::Tensor& cosine,const at::Tensor& sine,const at::Tensor& positions,double eps) {
+ TORCH_CHECK(q.is_cuda()&&q.scalar_type()==at::kBFloat16&&q.dim()==3&&k.dim()==3&&
+  k.device()==q.device()&&k.scalar_type()==q.scalar_type()&&k.size(0)==q.size(0)&&
+  q.size(2)==k.size(2)&&q.size(2)>0&&q.size(2)<=8192&&q.size(2)%2==0&&
+  q.size(1)>0&&k.size(1)>0&&q.stride(2)==1&&k.stride(2)==1&&
+  q.stride(1)==q.size(2)&&k.stride(1)==k.size(2),"Invalid Gemma3 packed Q/K norm layout");
+ const auto width=q.size(2),rows=q.size(0)*(q.size(1)+k.size(1));
+ TORCH_CHECK(q.size(0)>0&&rows<=INT32_MAX,"Gemma3 Q/K norm row bounds");
+ for(const auto& scale:{qs,ks})TORCH_CHECK(scale.device()==q.device()&&
+  scale.scalar_type()==at::kFloat&&scale.is_contiguous()&&scale.numel()==width,
+  "Gemma3 Q/K norm requires contiguous FP32 scales");
+ TORCH_CHECK(cosine.dim()==2&&cosine.size(1)==width/2&&cosine.sizes()==sine.sizes()&&
+  cosine.device()==q.device()&&sine.device()==q.device()&&cosine.scalar_type()==q.scalar_type()&&
+  sine.scalar_type()==q.scalar_type()&&cosine.is_contiguous()&&sine.is_contiguous()&&
+  positions.device()==q.device()&&positions.scalar_type()==at::kLong&&positions.is_contiguous()&&
+  positions.numel()==q.size(0),"Invalid Gemma3 rotary tables/positions");
+ c10::cuda::CUDAGuard guard(q.device());
+ auto qo=at::empty(q.sizes(),q.options()),ko=at::empty(k.sizes(),k.options());
+ int threads=32;while(threads<width&&threads<256)threads*=2;
+ gemma3_qk_norm_rotary<<<rows,threads,width*sizeof(__nv_bfloat16),at::cuda::getCurrentCUDAStream()>>>(
+  reinterpret_cast<const __nv_bfloat16*>(q.const_data_ptr()),reinterpret_cast<const __nv_bfloat16*>(k.const_data_ptr()),
+  qs.const_data_ptr<float>(),ks.const_data_ptr<float>(),reinterpret_cast<const __nv_bfloat16*>(cosine.const_data_ptr()),
+  reinterpret_cast<const __nv_bfloat16*>(sine.const_data_ptr()),positions.const_data_ptr<int64_t>(),
+  reinterpret_cast<__nv_bfloat16*>(qo.mutable_data_ptr()),reinterpret_cast<__nv_bfloat16*>(ko.mutable_data_ptr()),
+  width,q.size(1),k.size(1),q.stride(0),k.stride(0),q.size(0)*q.size(1),eps,cosine.size(0));
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return {qo,ko};
+}
+
+// SPDX-License-Identifier: MIT
+// Adapted from the unchanged included Candle gemma_rms_norm_bf16 kernel.
+// Preserve its legacy Float reduction/rsqrt and BF16-rounded norm result,
+// then perform the original BF16 residual addition in this same launch.
+namespace {
+extern "C" __global__ void gemma3_legacy_residual_norm_bf16(
+    const __nv_bfloat16* x, const float* scale, const __nv_bfloat16* residual, __nv_bfloat16* out,
+    unsigned int width, unsigned int heads, unsigned long long token_stride, float eps) {
+    const size_t base = static_cast<size_t>(blockIdx.x / heads) * token_stride
+        + static_cast<size_t>(blockIdx.x % heads) * width;
+    const size_t out_base = static_cast<size_t>(blockIdx.x) * width;
+    float sum = 0.f;
+    for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+        float v = __bfloat162float(x[base + col]);
+        sum += v * v;
+    }
+    for (int offset = 16; offset; offset >>= 1)
+        sum += __shfl_down_sync(0xffffffff, sum, offset);
+    __shared__ float partial[8];
+    if ((threadIdx.x & 31) == 0) partial[threadIdx.x / 32] = sum;
+    __syncthreads();
+    if (threadIdx.x < 32) {
+        sum = threadIdx.x < blockDim.x / 32 ? partial[threadIdx.x] : 0.f;
+        for (int offset = 16; offset; offset >>= 1)
+            sum += __shfl_down_sync(0xffffffff, sum, offset);
+        if (threadIdx.x == 0) partial[0] = rsqrtf(sum / width + eps);
+    }
+    __syncthreads();
+    float inv = partial[0];
+    for (unsigned int col = threadIdx.x; col < width; col += blockDim.x) {
+        float normalized = __bfloat162float(x[base + col]) * inv;
+        const auto rounded = __float2bfloat16_rn(normalized * scale[col]);
+        out[out_base + col] = __hadd(residual[out_base + col], rounded);
+    }
+}
+
+}
+at::Tensor gemma3_legacy_residual_norm_cuda(const at::Tensor& residual,
+ const at::Tensor& x,const at::Tensor& scale,double epsilon) {
+ if(!x.is_cuda() || residual.device()!=x.device() || scale.device()!=x.device() ||
+    x.scalar_type()!=at::kBFloat16 || residual.scalar_type()!=at::kBFloat16 ||
+    scale.scalar_type()!=at::kFloat || x.dim()!=2 || x.size(1)!=768 ||
+    residual.sizes()!=x.sizes() || !x.is_contiguous() || !residual.is_contiguous() ||
+    !scale.is_contiguous() || scale.numel()!=768 ||
+    x.size(0)<=0 || x.size(0)>INT32_MAX)return {};
+ c10::cuda::CUDAGuard guard(x.device());
+ auto output=at::empty(x.sizes(),x.options());
+ gemma3_legacy_residual_norm_bf16<<<x.size(0),256,0,at::cuda::getCurrentCUDAStream()>>>(
+  reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),scale.const_data_ptr<float>(),
+  reinterpret_cast<const __nv_bfloat16*>(residual.const_data_ptr()),
+  reinterpret_cast<__nv_bfloat16*>(output.mutable_data_ptr()),768,1,x.stride(0),epsilon);
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return output;
+}
+
+// SPDX-License-Identifier: MIT
+// Adapted from the included Candle gemma_rms_norm_bf16 reduction and the
+// legacy residual wrapper above. Retain both BF16 intermediate casts and
+// the BF16 residual sum before reducing the following normalization.
+namespace {
+__device__ __forceinline__ float gemma3_legacy_inverse(float sum,unsigned width,
+ float epsilon,float* partial) {
+ for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffff,sum,offset);
+ if((threadIdx.x&31)==0)partial[threadIdx.x/32]=sum;
+ __syncthreads();
+ if(threadIdx.x<32) {
+  sum=threadIdx.x<blockDim.x/32?partial[threadIdx.x]:0.f;
+  for(int offset=16;offset;offset>>=1)sum+=__shfl_down_sync(0xffffffff,sum,offset);
+  if(threadIdx.x==0)partial[0]=rsqrtf(sum/width+epsilon);
+ }
+ __syncthreads();return partial[0];
+}
+__global__ void gemma3_residual_prenorm(const __nv_bfloat16* x,
+ const __nv_bfloat16* residual,const float* post_scale,const float* pre_scale,
+ __nv_bfloat16* states,__nv_bfloat16* normalized,unsigned width,
+ unsigned long long xstride,unsigned long long rstride,float epsilon) {
+ const auto base=static_cast<unsigned long long>(blockIdx.x)*xstride;
+ const auto residual_base=static_cast<unsigned long long>(blockIdx.x)*rstride;
+ const auto out_base=static_cast<unsigned long long>(blockIdx.x)*width;
+ __shared__ float partial[8];
+ __shared__ __nv_bfloat16 rounded_states[768];
+ float sum=0.f;
+ for(unsigned col=threadIdx.x;col<width;col+=blockDim.x) {
+  float v=__bfloat162float(x[base+col]);sum+=v*v;
+ }
+ const float inverse=gemma3_legacy_inverse(sum,width,epsilon,partial);
+ for(unsigned col=threadIdx.x;col<width;col+=blockDim.x) {
+  float value=__bfloat162float(x[base+col])*inverse;
+  const auto rounded=__float2bfloat16_rn(value*post_scale[col]);
+  const auto state=__hadd(residual[residual_base+col],rounded);
+  rounded_states[col]=state;states[out_base+col]=state;
+ }
+ __syncthreads();
+ sum=0.f;
+ for(unsigned col=threadIdx.x;col<width;col+=blockDim.x) {
+  float v=__bfloat162float(rounded_states[col]);sum+=v*v;
+ }
+ const float next_inverse=gemma3_legacy_inverse(sum,width,epsilon,partial);
+ for(unsigned col=threadIdx.x;col<width;col+=blockDim.x) {
+  float value=__bfloat162float(rounded_states[col])*next_inverse;
+  normalized[out_base+col]=__float2bfloat16_rn(value*pre_scale[col]);
+ }
+}
+}
+std::pair<at::Tensor,at::Tensor> gemma3_residual_prenorm_cuda(
+ const at::Tensor& residual,const at::Tensor& x,const at::Tensor& post_scale,
+ const at::Tensor& pre_scale,double epsilon) {
+ if(!x.is_cuda()||residual.device()!=x.device()||x.scalar_type()!=at::kBFloat16||
+  residual.scalar_type()!=at::kBFloat16||x.dim()!=2||x.size(1)!=768||
+  residual.sizes()!=x.sizes()||x.stride(1)!=1||residual.stride(1)!=1||
+  x.stride(0)<768||residual.stride(0)<768||x.size(0)<=0||x.size(0)>INT32_MAX)return {};
+ for(const auto& scale:{post_scale,pre_scale})if(scale.device()!=x.device()||
+  scale.scalar_type()!=at::kFloat||!scale.is_contiguous()||scale.numel()!=768)return {};
+ c10::cuda::CUDAGuard guard(x.device());
+ auto states=at::empty(x.sizes(),x.options()),normalized=at::empty(x.sizes(),x.options());
+ gemma3_residual_prenorm<<<x.size(0),256,0,at::cuda::getCurrentCUDAStream()>>>(
+  reinterpret_cast<const __nv_bfloat16*>(x.const_data_ptr()),
+  reinterpret_cast<const __nv_bfloat16*>(residual.const_data_ptr()),
+  post_scale.const_data_ptr<float>(),pre_scale.const_data_ptr<float>(),
+  reinterpret_cast<__nv_bfloat16*>(states.mutable_data_ptr()),
+  reinterpret_cast<__nv_bfloat16*>(normalized.mutable_data_ptr()),768,x.stride(0),residual.stride(0),epsilon);
+ C10_CUDA_KERNEL_LAUNCH_CHECK();return {states,normalized};
+}
+
 // Adapted from Candle rmsnorm_f32_math, fast_sum, upowf and scatter_add at revision
 // 036f39e44015e78ba18d716d73dfdc2e78730c44. Their complete MIT notice:
 // Permission is hereby granted, free of charge, to any

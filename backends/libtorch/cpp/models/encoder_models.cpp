@@ -1,4 +1,5 @@
 #include "helpers/attention.h"
+#include "helpers/modern_cpu_math.h"
 #include "models/encoder_models.h"
 #include "batching/packed_pool.h"
 #include "helpers/fp8_linear.h"
@@ -60,6 +61,7 @@ struct Encoder final : Model {
   double eps;
   std::string prefix, activation;
   bool exact_norm = false;
+  bool exact_cpu_half = false;
   bool exact_moe = false;
   at::Tensor nomic_split_policy;
   size_t nomic_policy_workspace = 0;
@@ -77,6 +79,7 @@ struct Encoder final : Model {
   bool exact_alibi32 = false;
   bool exact_alibi64 = false;
   bool exact_distil_flash = false;
+  std::unordered_map<std::string, modern_cpu::LinearWeights> cpu_linear_weights;
   struct Layer {
     at::Tensor qkv_weight, qkv_bias;
     at::Tensor gate_weight, gate_bias;
@@ -123,6 +126,11 @@ struct Encoder final : Model {
       const OrdinaryLinearExecutor::Session* session=nullptr) const {
     auto quantized=fp8_mlp.find(n);
     if(quantized!=fp8_mlp.end())return quantized->second.forward(x,bias(n));
+    if (exact_cpu_half) {
+      const auto cached = cpu_linear_weights.find(n);
+      if (cached != cpu_linear_weights.end()) return modern_cpu::linear(x, cached->second, bias(n));
+      return modern_cpu::linear(x, w(n + ".weight"), bias(n));
+    }
     if(ordinary_executor && !bias(n).defined()) {
       auto result=session?ordinary_executor->forward(x,w(n+".weight"),*session):
         ordinary_executor->forward(x,w(n+".weight"));
@@ -148,6 +156,7 @@ struct Encoder final : Model {
     if(exact_moe&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps,at::Tensor(),bias(n),false).first;
     if(exact_norm&&family==Family::Modern&&x.is_cuda())return encoder_layer_norm(x,w(n+".weight"),eps).first;
 #endif
+    if (exact_cpu_half) return modern_cpu::norm(x, w(n + ".weight"), static_cast<float>(eps));
     return at::layer_norm(x, {hidden}, w(n + (has(n + ".weight") ? ".weight" : ".gamma")), family == Family::Modern ? at::Tensor() : bias(n), eps);
   }
   at::Tensor residual_norm(const at::Tensor& x, const at::Tensor& residual, const std::string& n) const {
@@ -175,6 +184,7 @@ struct Encoder final : Model {
     return at::gelu(x, "tanh");
   }
   at::Tensor gated(const at::Tensor& x, bool gate_first=true) const {
+    if (exact_cpu_half && gate_first) return modern_cpu::gated_gelu(x);
 #ifdef TEI_TORCH_CUDA_KERNELS
     // Candle SwiGLU rounds intermediate values to model dtype.
     if (family == Family::Nomic && !exact_moe && activation == "swiglu" &&
@@ -220,10 +230,17 @@ struct Encoder final : Model {
       }
     }
     auto phase = at::arange(length, fp).unsqueeze(1) * inv.unsqueeze(0);
-    cosine = at::cos(phase).to(dtype);
-    sine = at::sin(phase).to(dtype);
+    if (exact_cpu_half) {
+      auto values = modern_cpu::trig(phase, dtype); cosine = values.first; sine = values.second;
+    } else {
+      cosine = at::cos(phase).to(dtype); sine = at::sin(phase).to(dtype);
+    }
   }
   void ready() override {
+    exact_cpu_half = family == Family::Modern && device.is_cpu() && dtype == at::kHalf
+      && hidden == 768 && heads == 12 && o.integer("intermediate_size", 0) == 1152
+      && (activation == "gelu" || activation == "gelu_approx" || activation == "gelu_new"
+          || activation == "gelu_pytorch_tanh") && modern_cpu::supported_profile();
     ordinary_executor.reset();
     if(family==Family::Modern && device.is_cuda() && (dtype==at::kHalf || dtype==at::kBFloat16) &&
       hidden==768 && heads==12 && o.integer("intermediate_size",1152)==1152 &&
@@ -287,9 +304,16 @@ struct Encoder final : Model {
       rotary_cache(o.real("rope_theta", 10000), global_cos, global_sin);
     }
     w(family == Family::Modern ? "embeddings.tok_embeddings.weight" : "embeddings.word_embeddings.weight");
+    cpu_linear_weights.clear();
     fused.resize(layers);
     for (int64_t i = 0; i < layers; ++i) {
       const auto p = layer_name(i);
+      if (exact_cpu_half) {
+        // Eligible 22-layer H768/I1152 profiles retain 420.75MiB of owned Float
+        // slices; original Half weights and uncached fallback remain intact.
+        for (const auto& name : {p + "attn.Wqkv", p + "attn.Wo", p + "mlp.Wi", p + "mlp.Wo"})
+          cpu_linear_weights.emplace(name, modern_cpu::prepare_linear(w(name + ".weight")));
+      }
       if (family == Family::Distil || family == Family::Jina || family == Family::JinaCode) {
         const auto a = p + (family == Family::Distil ? "attention." : "attention.self.");
         const std::string q = a + (family == Family::Distil ? "q_lin" : "query"), k = a + (family == Family::Distil ? "k_lin" : "key"), v = a + (family == Family::Distil ? "v_lin" : "value");
@@ -370,6 +394,8 @@ struct Encoder final : Model {
     return output + w(p + "mlp.experts.bias");
   }
   at::Tensor attend(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, const PackedInput& input, int64_t window = -1, const std::optional<at::Tensor>& bias = std::nullopt) const {
+    if (exact_cpu_half) return modern_cpu::attention(q, k, v, input.offsets, input.batch,
+      static_cast<float>(1.0 / std::sqrt(hidden / heads)), window);
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(exact_alibi64)
       return torch_flash_alibi64(q,k,v,input.cumulative,*alibi,input.max_sequence,
@@ -477,6 +503,7 @@ struct Encoder final : Model {
 #endif
       if(family==Family::Modern&&i>0)source=norm(h,p+"attn_norm");
       at::Tensor qkv;
+      if (exact_cpu_half) qkv = linear(source, p + "attn.Wqkv");
       if(ordinary_executor && !fused[i].qkv_bias.defined())
         qkv=ordinary_executor->forward(source,fused[i].qkv_weight,ordinary_session);
       if(!qkv.defined())qkv=at::linear(source,fused[i].qkv_weight,fused[i].qkv_bias);
@@ -560,8 +587,14 @@ struct Encoder final : Model {
     }
     return h;
   }
+  at::Tensor mean_pool(const at::Tensor& value) const override {
+    return exact_cpu_half ? modern_cpu::mean(value) : Model::mean_pool(value);
+  }
   at::Tensor root_linear(const at::Tensor& h, const std::string& n) const {
     auto b = weights.find(n + ".bias");
+    if (exact_cpu_half)
+      return modern_cpu::linear(h, weight(weights, n + ".weight"),
+        b == weights.end() ? at::Tensor() : b->second);
     return at::linear(h, weight(weights, n + ".weight"), b == weights.end() ? at::Tensor() : b->second);
   }
   at::Tensor token_scores(const at::Tensor& h) const override {
@@ -600,7 +633,8 @@ struct Encoder final : Model {
     {
       for (int64_t row = 0; row < input.batch; ++row) {
         const int64_t start = input.offsets[row], length = input.offsets[row + 1] - start;
-        if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
+        if (pool == "mean" && exact_cpu_half) rows.push_back(modern_cpu::mean(h.narrow(0, start, length)));
+        else if (pool == "mean") rows.push_back(h.narrow(0, start, length).mean(0, true).to(dtype));
         else if (pool == "last_token" || pool == "last-token") rows.push_back(h.narrow(0, start + length - 1, 1));
         else {
           TORCH_CHECK(pool == "cls", "Unsupported classifier pooling: ", pool);
