@@ -118,6 +118,33 @@ Weights weights(const Options& cfg, bool fused = false) {
   }
   return w;
 }
+void output_capacity_bridge_test() {
+ auto cfg=config("qwen3");auto w=weights(cfg);
+ TeiConfig native_cfg{16,4,2,24,32,32,1,1e-6,0};
+ auto handle=tei_create(&native_cfg,"cpu",0);TORCH_CHECK(handle,tei_error());
+ for(const auto& [key,value]:cfg.values)TORCH_CHECK(tei_option(handle,key.c_str(),value.c_str())==0,tei_error());
+ for(const auto& [key,value]:w)
+  TORCH_CHECK(tei_weight(handle,key.c_str(),reinterpret_cast<const uint8_t*>(value.const_data_ptr()),
+    value.sizes().data(),value.dim(),0)==0,tei_error());
+ TORCH_CHECK(tei_ready(handle)==0,tei_error());
+ int64_t ids[]={3,4,5,6},types[4]{},positions[]={0,1,0,1},pooled=0;int32_t cumulative[]={0,2,4};
+ for(const auto capacity:{size_t(17),std::numeric_limits<size_t>::max()}) {
+  auto pending=tei_forward_submit(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+    capacity,nullptr,nullptr,0,nullptr,0,nullptr);
+  TORCH_CHECK(!pending&&std::string(tei_error()).find("Deferred output capacity must exactly")!=std::string::npos,
+    "Deferred spare capacity reached CUDA/output allocation");
+ }
+ auto pending=tei_forward_submit(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   16,nullptr,nullptr,0,nullptr,0,nullptr);
+ TORCH_CHECK(!pending&&std::string(tei_error()).find("Deferred output requires CUDA")!=std::string::npos,
+   "Exact deferred capacity failed metadata validation");
+ float output[20];std::fill_n(output,20,std::numeric_limits<float>::quiet_NaN());
+ TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,nullptr,0,nullptr,0)==0,tei_error());
+ for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(output[i]),"Valid response failed after capacity rejection");
+ for(int i=16;i<20;++i)TORCH_CHECK(std::isnan(output[i]),"Synchronous spare capacity was overwritten");
+ tei_destroy(handle);
+}
 at::Tensor run(Model& model, std::vector<int64_t> ids, std::vector<int32_t> offsets) {
   std::vector<int64_t> positions;
   int64_t maximum=0;
@@ -164,6 +191,7 @@ void multimodal_test(){
 }
 }
 int main(){c10::InferenceMode inference;at::set_num_threads(1);
+ output_capacity_bridge_test();
  input_descriptor_test();
  {
   // Preselected, non-normalized FP32 routes preserve learned expert scales

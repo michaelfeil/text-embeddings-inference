@@ -179,7 +179,7 @@ struct Engine {
 void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,int32_t pool,
  const int64_t* pooled,size_t pooled_count,const int64_t* raw,size_t raw_count,size_t capacity,
- const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count) {
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,bool deferred=false) {
  const auto family=model.options.string("model_type");
  tei::validate_input_descriptors(ids,types,positions,cumulative,batch,max_sequence,
    media_positions,images,image_count,audios,audio_count,
@@ -190,8 +190,9 @@ void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t
  TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
  const auto raw_width=pool>=4?model.model->classification_width():model.model->output_width();
  const auto pooled_width=pool>=4?raw_width:model.dense->output_width(pool==3?model.config.vocab:raw_width);
- TORCH_CHECK(tei::expected_output_elements(pooled_count,raw_rows,pooled_width,raw_width)<=capacity,
-   "Native output exceeds provided capacity");
+ const auto expected=tei::expected_output_elements(pooled_count,raw_rows,pooled_width,raw_width);
+ TORCH_CHECK(expected<=capacity,"Native output exceeds provided capacity");
+ TORCH_CHECK(!deferred||expected==capacity,"Deferred output capacity must exactly match requested output");
 }
 tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
@@ -558,7 +559,7 @@ void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
   const auto status=checked([&] {
     auto& model=*static_cast<Engine*>(handle);
     validate_forward_descriptors(model,ids,types,positions,cumulative,batch,max_sequence,pool,
-      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count);
+      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count,true);
     TORCH_CHECK(model.device.is_cuda(), "Deferred output requires CUDA");
     lease=std::make_unique<tei::OutputLease>(model.outputs,model.device,capacity);
     lease->allocate();
