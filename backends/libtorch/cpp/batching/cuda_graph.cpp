@@ -124,6 +124,23 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   // shapes never pass consecutive-use admission.
   if(impl->budget_exhausted || impl->counters.attempts>=impl->max_captures
     || impl->consecutive<impl->reuse || impl->failed.count(id))return run(input);
+  // Reject known oversized static inputs before cloning or creating a private
+  // pool. The post-capture check still accounts for activation/workspace pools.
+  uint64_t remaining=impl->max_bytes-impl->counters.admitted_bytes;
+  auto fits=[&](const at::Tensor& tensor) {
+    if(!tensor.defined() || !tensor.is_cuda())return true;
+    const auto bytes=static_cast<uint64_t>(tensor.nbytes());
+    if(bytes>remaining)return false;
+    remaining-=bytes;return true;
+  };
+  bool inputs_fit=fits(input.ids)&&fits(input.types)&&fits(input.positions)&&fits(input.cumulative);
+  for(const auto& image:input.images)
+    inputs_fit=inputs_fit&&fits(image.prepared_features.defined()?image.prepared_features:image.pixels);
+  for(const auto& audio:input.audios)
+    inputs_fit=inputs_fit&&fits(audio.features)&&fits(audio.validity)&&fits(audio.selected_frames);
+  inputs_fit=inputs_fit&&fits(input.multimodal_positions)&&fits(input.compact_ids)
+    &&fits(input.compact_positions)&&fits(input.compact_types)&&fits(input.scatter_unfold)&&fits(input.fold_gather);
+  if(!inputs_fit)return run(input);
   ++impl->counters.attempts;
   auto entry=std::make_unique<Impl::Entry>();
   entry->offsets.assign(input.offsets,input.offsets+input.batch+1);
