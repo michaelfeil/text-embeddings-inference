@@ -25,6 +25,7 @@ void input_descriptor_test() {
  rejects([&]{validate(nullptr,1,nullptr,0);},"Null counted image array accepted");
  rejects([&]{validate(nullptr,0,nullptr,1);},"Null counted audio array accepted");
  rejects([&]{validate(nullptr,0,nullptr,0,31);},"Undersized max_sequence accepted");
+ rejects([&]{validate(nullptr,0,nullptr,0,65);},"Maximum sequence beyond packed token count accepted");
  int64_t selection[]={1,0,1};
  TORCH_CHECK(validate_output_indices(offsets,2,selection,3,selection,3)==96,
    "Repeated output selection rejected");

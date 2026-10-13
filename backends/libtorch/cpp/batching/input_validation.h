@@ -64,6 +64,7 @@ inline int64_t validate_input_descriptors(const int64_t* ids,const int64_t* type
       "Native packed sequences must be nonempty and fit max_sequence");
   }
   const int64_t tokens=cumulative[batch];
+  TORCH_CHECK(max_sequence<=tokens,"Native maximum sequence exceeds packed token count");
   input_bytes(tokens,sizeof(int64_t),"token buffer");
   TORCH_CHECK(ids&&types&&positions,"Missing native token buffer");
   if(media_positions)input_bytes(input_product(3,tokens,"media positions"),sizeof(int64_t),"media positions");
