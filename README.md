@@ -12,15 +12,19 @@ A blazing fast inference solution for text embeddings models.
 
 `infinity_v3` is a fork of [huggingface/text-embeddings-inference](https://github.com/huggingface/text-embeddings-inference).
 
-This fork adopts **INFOIL 1.0**, a source-available license with commercial
-inference-provider and infrastructure restrictions, including private
-single-customer endpoints and GPU-hour billing. Baseten deployments are
-expressly permitted under Section 4. See the [adoption notice and full terms](LICENSE)
-and [licensing examples](LICENSING.md).
+Covered fork contributions are offered under your choice of
+**[PolyForm Noncommercial License 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.txt)**
+or **[Infinity License 1.0 for Commercial Use](LICENSES/Infinity-License-1.0-for-Commercial-Use.txt)**.
+Researchers can use the unmodified standard PolyForm option on any platform
+for uses it permits, without Infinity-specific restrictions. The commercial
+alternative allows enterprise use on owned hardware or permitted providers
+and prohibits deployment on the listed platforms. These are source-available
+licenses with use restrictions. See the [adoption scope and full terms](LICENSE)
+and [licensing guide](LICENSING.md).
 
-Existing Apache-2.0 grants and third-party licenses remain in effect for the
-material they cover. Retained attribution is in [NOTICE](NOTICE) and
-[third-party notices](THIRD_PARTY_NOTICES.md).
+Earlier Apache-2.0 and INFOIL grants and third-party licenses remain in
+effect for the material and rights they cover. Retained attribution is in
+[NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
 The server command is `infinity_v3`; shared Rust packages use the `infinity_v3-`
 prefix. LibTorch keeps its existing package name, source imports, and native
