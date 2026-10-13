@@ -434,6 +434,27 @@ void probe_cache_test() {
  TORCH_CHECK(std::equal(std::begin(before),std::end(before),std::begin(after)),"Probe consumed or populated user cache state");
  TORCH_CHECK(tei_prefix_cache_set_probe(handle,0)==1,"Probe end did not restore prior flag");forward();
  TORCH_CHECK(tei_prefix_cache_stats(handle,after,7)==0&&after[0]==before[0]+1,"Probe bypass leaked into next user request");
+ std::barrier start(2);std::exception_ptr failure;std::mutex errors;
+ auto save_failure=[&]{std::lock_guard lock(errors);if(!failure)failure=std::current_exception();};
+ std::jthread inference([&] {
+  start.arrive_and_wait();
+  try {for(int i=0;i<100;++i) {
+   float owned[16];
+   TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,1,3,2,selection,1,nullptr,0,
+    owned,16,nullptr,nullptr,0,nullptr,0)==0,tei_error());
+   TORCH_CHECK(std::equal(std::begin(owned),std::end(owned),std::begin(result)),"Concurrent native probe changed user output");
+  }}catch(...){save_failure();}
+ });
+ std::jthread probes([&] {
+  start.arrive_and_wait();
+  try {for(int i=0;i<600;++i) {
+   TORCH_CHECK(tei_prefix_cache_set_probe(handle,i%2)>=0,tei_error());
+   uint64_t current[7];TORCH_CHECK(tei_prefix_cache_stats(handle,current,7)==0,tei_error());
+   if(i%7==0)TORCH_CHECK(tei_prefix_cache_clear(handle)==0,tei_error());
+  }}catch(...){save_failure();}
+ });
+ inference.join();probes.join();if(failure)std::rethrow_exception(failure);
+ TORCH_CHECK(tei_prefix_cache_set_probe(handle,0)>=0,tei_error());
 }
 }
 int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(1);

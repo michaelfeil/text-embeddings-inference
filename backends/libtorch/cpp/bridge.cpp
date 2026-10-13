@@ -31,6 +31,7 @@
 #include <c10/core/InferenceMode.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <cstring>
+#include <atomic>
 #include <cstdlib>
 #include <mutex>
 #include "batching/prefix_cache.h"
@@ -79,7 +80,7 @@ struct Engine {
   std::unique_ptr<tei::DecisionHead> decision;
   std::unique_ptr<tei::CudaGraphCache> graphs;
   std::unique_ptr<tei::PrefixCache> prefix;
-  bool prefix_probe=false;
+  std::atomic<bool> prefix_probe=false;
   bool media_graphs=false;
   bool nomic_moe_graphs=false;
   bool graph_policy_ready() const {
@@ -381,7 +382,7 @@ int32_t tei_prefix_cache_set_probe(void* handle,int32_t enabled) {
   checked([&] {
     TORCH_CHECK(handle&&(enabled==0||enabled==1),"Invalid prefix-cache probe flag");
     auto& engine=*static_cast<Engine*>(handle);
-    previous=engine.prefix_probe?1:0;engine.prefix_probe=enabled!=0;
+    previous=engine.prefix_probe.exchange(enabled!=0,std::memory_order_relaxed)?1:0;
   });
   return previous;
 }
@@ -434,7 +435,7 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
   auto packed=packed_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count);
   attach_radix(engine,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
-  const bool cached=!engine.prefix_probe&&engine.prefix&&engine.model->supports_prefix_cache(0)
+  const bool cached=!engine.prefix_probe.load(std::memory_order_relaxed)&&engine.prefix&&engine.model->supports_prefix_cache(0)
     &&std::none_of(converted.begin(),converted.end(),[](const auto& request){return request.kind==tei::DecisionRequest::Kind::Warmup;});
   const bool use_graph=engine.graphs&&engine.graph_policy_ready()&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
   if(cached||!use_graph)engine.model->prepare_input(packed);
@@ -478,7 +479,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
     auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
     attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix,completion);
     const int operation=pool>=4?(pool==5?2:1):0;
-    const bool cached=!model.prefix_probe&&model.prefix&&model.model->supports_prefix_cache(operation);
+    const bool cached=!model.prefix_probe.load(std::memory_order_relaxed)&&model.prefix&&model.model->supports_prefix_cache(operation);
     const bool graph_eligible = model.graphs && model.graph_policy_ready() && (model.media_graphs || (!image_count && !audio_count && !media_positions));
     if(cached||!graph_eligible)model.model->prepare_input(packed);
     auto h = cached ? model.prefix->run(*model.model,packed,operation,graph_eligible?model.graphs.get():nullptr) : graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
