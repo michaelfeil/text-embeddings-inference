@@ -204,7 +204,7 @@ impl io::Write for ReservedWriter {
         if required > self.bytes.capacity() {
             // Charge allocation capacity, including spare capacity, before allocation.
             let growth = required - self.bytes.capacity();
-            let reserve = growth.max(64 * 1024);
+            let reserve = growth.max(self.bytes.capacity()).max(64 * 1024);
             let target = self
                 .bytes
                 .capacity()
