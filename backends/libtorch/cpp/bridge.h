@@ -46,6 +46,9 @@ struct TeiDecision {
 // Every fallible entry point catches C++ exceptions; the error string is thread-local.
 extern "C" {
 const char* tei_error();
+// Thread-local status of the last fallible call: 0 success, 1 other error,
+// 2 request memory admission rejection. Read immediately on the calling thread.
+int32_t tei_last_error_kind();
 int64_t tei_device_count(const char* device);
 void* tei_create(const TeiConfig*, const char* device, int32_t dtype);
 int32_t tei_weight(void*, const char* name, const uint8_t* data,

@@ -104,7 +104,7 @@ int main() {
     held->allocate(); held->copy(at::ones({8}, at::TensorOptions().device(device)), 0); held->record();
     bool rejected = false;
     try { tei::OutputLease oversized(bounded, device, 32); oversized.allocate(); }
-    catch (const c10::Error&) { rejected = true; }
+    catch (const tei::MemoryAdmissionError&) { rejected = true; }
     TORCH_CHECK(rejected && bounded->retained_bytes() == 64,
                 "Admission allocated over budget or freed a pending result");
     TORCH_CHECK(held->wait()[7] == 1, "Budget rejection corrupted pending output");
@@ -115,7 +115,7 @@ int main() {
       TORCH_CHECK(bounded->retained_bytes() == 256, "Idle staging eviction did not respect the budget");
       rejected = false;
       try { larger.upload(at::ones({1}, at::TensorOptions().dtype(at::kFloat))); }
-      catch (const c10::Error&) { rejected = true; }
+      catch (const tei::MemoryAdmissionError&) { rejected = true; }
       TORCH_CHECK(rejected && bounded->retained_bytes() == 256, "Input staging exceeded the budget");
       larger.copy(at::full({32}, 9, at::TensorOptions().device(device)), 0); larger.record();
       TORCH_CHECK(larger.wait()[31] == 9, "Staging did not recover after admission rejection"); }

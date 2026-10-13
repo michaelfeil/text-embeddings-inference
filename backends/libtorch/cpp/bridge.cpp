@@ -41,6 +41,7 @@
 
 namespace {
 thread_local std::string error;
+thread_local int32_t error_kind=0;
 std::once_flag precision_initialized;
 void initialize_precision() {
   std::call_once(precision_initialized, [] {
@@ -331,13 +332,16 @@ std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,
  }return result;
 }
 template<class F> int32_t checked(F&& f) {
+  error_kind=0;error.clear();
   try { c10::InferenceMode guard; f(); return 0; }
-  catch (const std::exception& ex) { error = ex.what(); return -1; }
-  catch (...) { error = "Unknown native exception"; return -1; }
+  catch (const tei::MemoryAdmissionError& ex) { error_kind=2;error=ex.what();return -1; }
+  catch (const std::exception& ex) { error_kind=1;error = ex.what(); return -1; }
+  catch (...) { error_kind=1;error = "Unknown native exception"; return -1; }
 }
 }
 extern "C" {
 const char* tei_error() { return error.c_str(); }
+int32_t tei_last_error_kind() { return error_kind; }
 int64_t tei_device_count(const char* name) {
   int64_t count = -1;
   checked([&] {
