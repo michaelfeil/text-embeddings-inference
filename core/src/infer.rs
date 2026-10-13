@@ -15,6 +15,7 @@ use tracing::instrument;
 /// Inference struct
 #[derive(Debug, Clone)]
 pub struct Infer {
+    model_name: metrics::SharedString,
     tokenization: Tokenization,
     queue: Queue,
     /// Shared notify
@@ -87,25 +88,28 @@ impl Infer {
         let notify_batching_task = Arc::new(Notify::new());
         let (sender, receiver) = mpsc::channel(1);
         let receiver = Arc::new(Mutex::new(receiver));
-        tokio::spawn(batching_task(
+        let mut tasks = vec![tokio::spawn(batching_task(
             backend.clone(),
             queue.clone(),
             notify_batching_task.clone(),
             sender,
-        ));
+        ))];
         for replica in 0..backend.len() {
-            tokio::spawn(backend_task(
+            tasks.push(tokio::spawn(backend_task(
                 backend.clone(),
                 queue.clone(),
                 receiver.clone(),
                 replica,
-            ));
+            )));
         }
         let lifetime = Arc::new(PipelineLifetime {
             pool: backend.clone(),
             queue: queue.clone(),
+            tasks: Mutex::new(tasks),
+            shutdown: Mutex::new(()),
         });
         Self {
+            model_name: backend.model_label(),
             tokenization,
             queue,
             notify_batching_task,
@@ -126,7 +130,7 @@ impl Infer {
             .tokenize(inputs.into(), add_special_tokens, prompt_name)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -143,7 +147,7 @@ impl Infer {
             .decode(ids, skip_special_tokens)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -157,7 +161,7 @@ impl Infer {
             .limit_concurrent_requests
             .try_acquire_owned()
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "overloaded");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "overloaded");
                 counter.increment(1);
                 tracing::error!("{err}");
                 TextEmbeddingsError::from(err)
@@ -187,7 +191,7 @@ impl Infer {
         let start_time = Instant::now();
 
         if self.is_splade() {
-            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "`embed_all` is not available for SPLADE models".to_string();
             tracing::error!("{message}");
@@ -215,13 +219,14 @@ impl Infer {
 
         let total_time = start_time.elapsed();
 
-        metrics::counter!("te_embed_success").increment(1);
-        metrics::histogram!("te_embed_duration").record(total_time.as_secs_f64());
-        metrics::histogram!("te_embed_tokenization_duration")
+        metrics::counter!("te_embed_success", "model" => self.model_name.clone()).increment(1);
+        metrics::histogram!("te_embed_duration", "model" => self.model_name.clone())
+            .record(total_time.as_secs_f64());
+        metrics::histogram!("te_embed_tokenization_duration", "model" => self.model_name.clone())
             .record(response.metadata.tokenization.as_secs_f64());
-        metrics::histogram!("te_embed_queue_duration")
+        metrics::histogram!("te_embed_queue_duration", "model" => self.model_name.clone())
             .record(response.metadata.queue.as_secs_f64());
-        metrics::histogram!("te_embed_inference_duration")
+        metrics::histogram!("te_embed_inference_duration", "model" => self.model_name.clone())
             .record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -240,7 +245,7 @@ impl Infer {
         let start_time = Instant::now();
 
         if !self.is_splade() {
-            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not an embedding model with SPLADE pooling".to_string();
             tracing::error!("{message}");
@@ -270,15 +275,18 @@ impl Infer {
         let total_time = start_time.elapsed();
 
         // Metrics
-        let counter = metrics::counter!("te_embed_success");
+        let counter = metrics::counter!("te_embed_success", "model" => self.model_name.clone());
         counter.increment(1);
-        let histogram = metrics::histogram!("te_embed_duration");
+        let histogram =
+            metrics::histogram!("te_embed_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_tokenization_duration");
+        let histogram = metrics::histogram!("te_embed_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_queue_duration");
+        let histogram =
+            metrics::histogram!("te_embed_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_inference_duration");
+        let histogram =
+            metrics::histogram!("te_embed_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -300,7 +308,7 @@ impl Infer {
         let start_time = Instant::now();
 
         if self.is_splade() && normalize {
-            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
 
             let message = "`normalize` is not available for SPLADE models".to_string();
@@ -312,7 +320,7 @@ impl Infer {
 
         if let Some(dimensions) = dimensions {
             if dimensions == 0 {
-                metrics::counter!("te_request_failure", "err" => "validation").increment(1);
+                metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "validation").increment(1);
                 let message = "`dimensions` should be positive".to_string();
                 tracing::error!("{message}");
                 return Err(TextEmbeddingsError::Validation(message));
@@ -338,7 +346,7 @@ impl Infer {
 
         if let Some(mrl_dimensions) = dimensions {
             if mrl_dimensions > response.results.len() {
-                metrics::counter!("te_request_failure", "err" => "validation").increment(1);
+                metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "validation").increment(1);
 
                 let message =
                     "`dimensions` should be smaller than the maximum embedding dimension."
@@ -373,15 +381,18 @@ impl Infer {
         let total_time = start_time.elapsed();
 
         // Metrics
-        let counter = metrics::counter!("te_embed_success");
+        let counter = metrics::counter!("te_embed_success", "model" => self.model_name.clone());
         counter.increment(1);
-        let histogram = metrics::histogram!("te_embed_duration");
+        let histogram =
+            metrics::histogram!("te_embed_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_tokenization_duration");
+        let histogram = metrics::histogram!("te_embed_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_queue_duration");
+        let histogram =
+            metrics::histogram!("te_embed_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_inference_duration");
+        let histogram =
+            metrics::histogram!("te_embed_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -400,7 +411,7 @@ impl Infer {
         batch_counter: Option<Arc<AtomicUsize>>,
     ) -> Result<InferResult, TextEmbeddingsError> {
         if !matches!(self.backend.model_type, ModelType::Embedding(_)) {
-            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not an embedding model".to_string();
             tracing::error!("{message}");
@@ -409,7 +420,7 @@ impl Infer {
             )));
         }
 
-        let counter = metrics::counter!("te_embed_count");
+        let counter = metrics::counter!("te_embed_count", "model" => self.model_name.clone());
         counter.increment(1);
 
         // Tokenization
@@ -418,7 +429,7 @@ impl Infer {
             .encode_embedding(inputs.into(), truncate, truncation_direction, prompt_name)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 // Failed inputs must finish their part of client-batch preparation too.
@@ -465,7 +476,7 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "inference");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "inference");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -485,7 +496,7 @@ impl Infer {
         batch_counter: Option<Arc<AtomicUsize>>,
     ) -> Result<ClassificationInferResponse, TextEmbeddingsError> {
         if !self.is_classifier() {
-            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not a classifier model".to_string();
             return Err(TextEmbeddingsError::Backend(BackendError::Inference(
@@ -494,7 +505,7 @@ impl Infer {
         }
 
         let start_time = Instant::now();
-        let counter = metrics::counter!("te_predict_count");
+        let counter = metrics::counter!("te_predict_count", "model" => self.model_name.clone());
         counter.increment(1);
 
         // Tokenization
@@ -503,7 +514,7 @@ impl Infer {
             .encode(inputs.into(), truncate, truncation_direction, None)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -544,7 +555,7 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "inference");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "inference");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -583,15 +594,17 @@ impl Infer {
         let total_time = start_time.elapsed();
 
         // Metrics
-        let counter = metrics::counter!("te_predict_success");
+        let counter = metrics::counter!("te_predict_success", "model" => self.model_name.clone());
         counter.increment(1);
-        let histogram = metrics::histogram!("te_predict_duration");
+        let histogram =
+            metrics::histogram!("te_predict_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_tokenization_duration");
+        let histogram = metrics::histogram!("te_predict_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_queue_duration");
+        let histogram =
+            metrics::histogram!("te_predict_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_inference_duration");
+        let histogram = metrics::histogram!("te_predict_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -609,7 +622,7 @@ impl Infer {
     ) -> Result<(Vec<TokenPrediction>, usize, Duration, Duration, Duration), TextEmbeddingsError>
     {
         if !self.is_classifier() {
-            let counter = metrics::counter!("te_request_failure", "err" => "model_type");
+            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not a classifier model".to_string();
             return Err(TextEmbeddingsError::Backend(BackendError::Inference(
@@ -618,7 +631,7 @@ impl Infer {
         }
 
         let start_time = Instant::now();
-        let counter = metrics::counter!("te_predict_count");
+        let counter = metrics::counter!("te_predict_count", "model" => self.model_name.clone());
         counter.increment(1);
 
         let encoding = self
@@ -626,7 +639,7 @@ impl Infer {
             .encode(inputs.into(), truncate, truncation_direction, None)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "tokenization");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -665,7 +678,7 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "err" => "inference");
+                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "inference");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -700,15 +713,17 @@ impl Infer {
 
         let total_time = start_time.elapsed();
 
-        let counter = metrics::counter!("te_predict_success");
+        let counter = metrics::counter!("te_predict_success", "model" => self.model_name.clone());
         counter.increment(1);
-        let histogram = metrics::histogram!("te_predict_duration");
+        let histogram =
+            metrics::histogram!("te_predict_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_tokenization_duration");
+        let histogram = metrics::histogram!("te_predict_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_queue_duration");
+        let histogram =
+            metrics::histogram!("te_predict_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_inference_duration");
+        let histogram = metrics::histogram!("te_predict_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok((
@@ -721,6 +736,10 @@ impl Infer {
     }
 
     #[instrument(skip(self))]
+    pub fn is_available(&self) -> bool {
+        !self.queue.is_closed() && self.backend.is_available()
+    }
+
     pub fn is_classifier(&self) -> bool {
         matches!(self.backend.model_type, ModelType::Classifier)
     }
@@ -733,14 +752,31 @@ impl Infer {
         )
     }
 
+    /// Stop admission and await all batching, backend and tokenizer workers.
+    pub async fn shutdown(&self) {
+        let _guard = self._lifetime.shutdown.lock().await;
+        self.limit_concurrent_requests.close();
+        self.queue.close();
+        self.backend.close();
+        let tasks = std::mem::take(&mut *self._lifetime.tasks.lock().await);
+        for task in tasks {
+            let _ = task.await;
+        }
+        self.backend.shutdown().await;
+        self.queue.shutdown().await;
+        self.tokenization.shutdown().await;
+    }
+
     #[instrument(skip(self))]
     pub async fn health(&self) -> bool {
-        self.backend.health().await.is_ok()
+        !self.queue.is_closed() && self.backend.health().await.is_ok()
     }
 }
 
 #[derive(Debug)]
 struct PipelineLifetime {
+    shutdown: Mutex<()>,
+    tasks: Mutex<Vec<tokio::task::JoinHandle<()>>>,
     pool: BackendPool,
     queue: Queue,
 }

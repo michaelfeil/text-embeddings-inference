@@ -9,7 +9,7 @@
     "license": {
       "name": "Infinity License 1.0 for Commercial Use OR PolyForm Noncommercial 1.0.0 (see scope and retained licenses)"
     },
-    "version": "1.8.3"
+    "version": "1.8.18-rc.0"
   },
   "paths": {
     "/decode": {
@@ -528,8 +528,8 @@
               }
             }
           },
-          "503": {
-            "description": "Text embeddings Inference is down",
+          "500": {
+            "description": "One or more deployed models are unhealthy",
             "content": {
               "application/json": {
                 "schema": {
@@ -572,8 +572,35 @@
                 }
               }
             }
+          },
+          "400": {
+            "description": "Missing or unknown model",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "model",
+            "in": "query",
+            "description": "Served model name; required when multiple models are deployed",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "nullable": true
+            }
+          }
+        ]
       }
     },
     "/metrics": {
@@ -1335,6 +1362,68 @@
           }
         }
       }
+    },
+    "/v1/models": {
+      "get": {
+        "tags": [
+          "infinity_v3"
+        ],
+        "operationId": "models",
+        "responses": {
+          "200": {
+            "description": "Resident models and capabilities",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServedModels"
+                }
+              },
+              "application/msgpack": {
+                "schema": {
+                  "$ref": "#/components/schemas/ServedModels"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/systemone": {
+      "post": {
+        "tags": [
+          "super::systemone"
+        ],
+        "operationId": "systemone",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SystemOneRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Typed decisions",
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/msgpack": {
+                "schema": {}
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid question or token budget"
+          },
+          "429": {
+            "description": "Server overloaded"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -1380,6 +1469,11 @@
             "type": "boolean",
             "default": "true",
             "example": "true"
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
+            "nullable": true
           }
         }
       },
@@ -1421,6 +1515,11 @@
               }
             ],
             "default": "right"
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
+            "nullable": true
           }
         }
       },
@@ -1488,6 +1587,11 @@
               }
             ],
             "default": "right"
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
+            "nullable": true
           }
         }
       },
@@ -1537,6 +1641,11 @@
               }
             ],
             "default": "right"
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
+            "nullable": true
           }
         }
       },
@@ -1618,9 +1727,12 @@
           "max_input_length",
           "max_batch_tokens",
           "max_client_batch_size",
+          "max_decision_questions",
           "auto_truncate",
           "tokenization_workers",
           "tokenization_queue_capacity",
+          "radix_mlp_threshold",
+          "enable_fp8_dynamic",
           "version"
         ],
         "properties": {
@@ -1685,7 +1797,7 @@
           "tokenization_queue_capacity": {
             "type": "integer",
             "description": "Maximum waiting tokenizer jobs (individual inputs, not HTTP requests).",
-            "example": 1024,
+            "example": "1024",
             "minimum": 0
           },
           "tokenization_workers": {
@@ -1697,6 +1809,20 @@
             "type": "string",
             "description": "Router Info",
             "example": "0.5.0"
+          },
+          "enable_fp8_dynamic": {
+            "type": "boolean",
+            "description": "Experimental per-token activation and per-row weight FP8 MLP quantization."
+          },
+          "max_decision_questions": {
+            "type": "integer",
+            "description": "Maximum question fanout for /v1/systemone, independent of the client batch limit.",
+            "minimum": 0
+          },
+          "radix_mlp_threshold": {
+            "type": "number",
+            "format": "float",
+            "example": "0.5"
           }
         }
       },
@@ -1725,6 +1851,12 @@
       },
       "ModelType": {
         "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "decision"
+            ]
+          },
           {
             "type": "object",
             "required": [
@@ -2049,6 +2181,11 @@
               }
             ],
             "default": "right"
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
+            "nullable": true
           }
         }
       },
@@ -2157,6 +2294,11 @@
               }
             ],
             "default": "right"
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
+            "nullable": true
           }
         }
       },
@@ -2232,6 +2374,11 @@
               }
             ],
             "default": "null",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
             "nullable": true
           }
         }
@@ -2333,6 +2480,11 @@
             "description": "The name of the prompt that should be used by for encoding. If not set, no prompt\nwill be applied.\n\nMust be a key in the `sentence-transformers` configuration `prompts` dictionary.\n\nFor example if ``prompt_name`` is \"query\" and the ``prompts`` is {\"query\": \"query: \", ...},\nthen the sentence \"What is the capital of France?\" will be encoded as\n\"query: What is the capital of France?\" because the prompt text will be prepended before\nany text to encode.",
             "default": "null",
             "example": "null",
+            "nullable": true
+          },
+          "model": {
+            "type": "string",
+            "description": "Served model name; required for multi-model deployments.",
             "nullable": true
           }
         }
@@ -2482,11 +2634,30 @@
           {
             "type": "array",
             "items": {
+              "type": "integer",
+              "format": "int32",
+              "minimum": 0
+            }
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "array",
+              "items": {
+                "type": "integer",
+                "format": "int32",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "array",
+            "items": {
               "$ref": "#/components/schemas/Message"
             }
           }
         ],
-        "description": "Embedding request input: one text, independent texts, or one conversation.\nA message list always describes one input, regardless of the number of turns.\nAn empty array is parsed as an empty text batch and rejected by the request handler."
+        "description": "Embedding input: text, final token IDs, batches of either, or one conversation.\nA message list always describes one input, regardless of the number of turns.\nAn empty array is parsed as an empty text batch and rejected by the request handler."
       },
       "ImageDetail": {
         "type": "string",
@@ -2601,7 +2772,7 @@
               },
               "model": {
                 "type": "string",
-                "description": "Advisory model name; this server serves one deployed model.",
+                "description": "Served model name; required for multi-model deployments.",
                 "nullable": true
               },
               "priority": {
@@ -2781,6 +2952,96 @@
             "type": "string"
           }
         }
+      },
+      "ModelInput": {
+        "oneOf": [
+          {
+            "type": "string"
+          },
+          {
+            "$ref": "#/components/schemas/MessageInput"
+          }
+        ],
+        "description": "A plain text state or an explicitly structured native conversation.\nMessage objects are never interpreted as text or silently flattened."
+      },
+      "ServedModel": {
+        "type": "object",
+        "required": [
+          "id",
+          "object",
+          "checkpoint_id",
+          "backend",
+          "capabilities"
+        ],
+        "properties": {
+          "backend": {
+            "type": "string"
+          },
+          "capabilities": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "checkpoint_id": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "object": {
+            "type": "string"
+          }
+        }
+      },
+      "ServedModels": {
+        "type": "object",
+        "required": [
+          "object",
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ServedModel"
+            }
+          },
+          "object": {
+            "type": "string"
+          }
+        }
+      },
+      "SystemOneRequest": {
+        "type": "object",
+        "required": [
+          "state",
+          "questions"
+        ],
+        "properties": {
+          "head_max_len": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
+          "max_len": {
+            "type": "integer",
+            "nullable": true,
+            "minimum": 0
+          },
+          "model": {
+            "type": "string",
+            "nullable": true
+          },
+          "questions": {
+            "type": "object",
+            "additionalProperties": {}
+          },
+          "state": {
+            "$ref": "#/components/schemas/ModelInput"
+          }
+        },
+        "additionalProperties": false
       }
     }
   },

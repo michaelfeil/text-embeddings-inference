@@ -35,6 +35,7 @@ use tracing::Span;
 pub use logging::init_logging;
 
 mod model_aliases;
+pub mod model_registry;
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 pub enum DecisionProtocol {
@@ -42,6 +43,52 @@ pub enum DecisionProtocol {
     Onejev,
     Clef,
     Pplx,
+}
+
+/// Settings for one resident model. Server settings are shared across models.
+#[derive(Clone, Debug)]
+pub struct ModelSettings {
+    pub served_model_name: Option<String>,
+    pub model_id: String,
+    pub revision: Option<String>,
+    pub tokenization_workers: Option<usize>,
+    pub tokenization_queue_capacity: std::num::NonZeroUsize,
+    pub dtype: Option<DType>,
+    pub pooling: Option<infinity_v3_backend::Pool>,
+    pub decision_protocol: Option<DecisionProtocol>,
+    pub max_concurrent_requests: usize,
+    pub max_batch_tokens: usize,
+    pub max_batch_requests: Option<usize>,
+    pub radix_mlp_threshold: f32,
+    pub enable_fp8_dynamic: bool,
+    pub max_client_batch_size: usize,
+    pub max_decision_questions: usize,
+    pub auto_truncate: bool,
+    pub default_prompt: Option<String>,
+    pub default_prompt_name: Option<String>,
+    pub dense_path: Option<String>,
+    pub device_id: Option<usize>,
+    pub backend_device_ids: Option<String>,
+    pub backend_kind: infinity_v3_backend::BackendKind,
+    pub torch_device: infinity_v3_backend::TorchDevice,
+    pub multimodal_config: infinity_v3_core::multimodal::MultimodalConfig,
+}
+
+/// One loaded model, including its tokenizer, queue and replica pool.
+#[derive(Clone)]
+pub struct ModelRuntime {
+    pub infer: Infer,
+    pub info: Info,
+    pub checkpoint_id: String,
+    pub(crate) named: bool,
+    pub backend_kind: infinity_v3_backend::BackendKind,
+    pub(crate) systemone: Option<std::sync::Arc<http::systemone::SystemOne>>,
+}
+
+impl ModelRuntime {
+    pub async fn shutdown(&self) {
+        self.infer.shutdown().await;
+    }
 }
 
 /// Create entrypoint
@@ -79,8 +126,81 @@ pub async fn run(
     torch_device: infinity_v3_backend::TorchDevice,
     multimodal_config: infinity_v3_core::multimodal::MultimodalConfig,
 ) -> Result<()> {
+    run_models(
+        vec![ModelSettings {
+            served_model_name: None,
+            model_id,
+            revision,
+            tokenization_workers,
+            tokenization_queue_capacity,
+            dtype,
+            pooling,
+            decision_protocol,
+            max_concurrent_requests,
+            max_batch_tokens,
+            max_batch_requests,
+            radix_mlp_threshold,
+            enable_fp8_dynamic,
+            max_client_batch_size,
+            max_decision_questions,
+            auto_truncate,
+            default_prompt,
+            default_prompt_name,
+            dense_path,
+            device_id,
+            backend_device_ids,
+            backend_kind,
+            torch_device,
+            multimodal_config,
+        }],
+        hf_token,
+        hostname,
+        port,
+        huggingface_hub_cache,
+        payload_limit,
+        api_key,
+        prometheus_port,
+        cors_allow_origin,
+    )
+    .await
+}
+
+async fn initialize_model(
+    config: ModelSettings,
+    hf_token: Option<String>,
+    huggingface_hub_cache: Option<String>,
+) -> Result<ModelRuntime> {
+    let ModelSettings {
+        served_model_name,
+        model_id,
+        revision,
+        tokenization_workers,
+        tokenization_queue_capacity,
+        dtype,
+        pooling,
+        decision_protocol,
+        max_concurrent_requests,
+        max_batch_tokens,
+        max_batch_requests,
+        radix_mlp_threshold,
+        enable_fp8_dynamic,
+        max_client_batch_size,
+        max_decision_questions,
+        auto_truncate,
+        default_prompt,
+        default_prompt_name,
+        dense_path,
+        device_id,
+        backend_device_ids,
+        backend_kind,
+        torch_device,
+        multimodal_config,
+    } = config;
     let (model_id, decision_protocol) =
         model_aliases::resolve(model_id, decision_protocol, pooling.as_ref())?;
+    let metric_model_name = served_model_name
+        .clone()
+        .unwrap_or_else(|| model_id.clone());
     let model_id_path = Path::new(&model_id);
     let (model_root, api_repo) = if model_id_path.exists() && model_id_path.is_dir() {
         // Using a local model
@@ -518,7 +638,10 @@ pub async fn run(
         }
     }))
     .await?;
-    let backend = infinity_v3_core::backend_pool::BackendPool::new(backends)?;
+    let backend = infinity_v3_core::backend_pool::BackendPool::new_named(
+        backends,
+        metric_model_name.clone(),
+    )?;
     let max_batch_requests = match (max_batch_requests, backend.max_batch_size) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (a, b) => a.or(b),
@@ -558,12 +681,13 @@ pub async fn run(
         tracing::info!("RadixMLP disabled");
     }
 
-    let queue = Queue::with_replicas(
+    let queue = Queue::with_replicas_named(
         max_batch_tokens,
         max_batch_requests,
         radix_mlp_threshold,
         max_concurrent_requests,
         devices.len(),
+        metric_model_name,
     );
 
     // Create infer task
@@ -591,46 +715,106 @@ pub async fn run(
         docker_label: option_env!("DOCKER_LABEL"),
     };
 
-    // use AIP_HTTP_PORT if google feature is enabled
+    let checkpoint_id = info.model_id.clone();
+    let named = served_model_name.is_some();
+    let mut info = info;
+    if let Some(name) = served_model_name {
+        info.model_id = name;
+    }
+    Ok(ModelRuntime {
+        infer,
+        info,
+        checkpoint_id,
+        named,
+        backend_kind,
+        systemone,
+    })
+}
+
+/// Initialize all models before publishing one registry and starting one listener.
+#[allow(clippy::too_many_arguments)]
+pub async fn run_models(
+    configs: Vec<ModelSettings>,
+    hf_token: Option<String>,
+    hostname: Option<String>,
+    port: u16,
+    huggingface_hub_cache: Option<String>,
+    payload_limit: usize,
+    api_key: Option<String>,
+    prometheus_port: u16,
+    cors_allow_origin: Option<Vec<String>>,
+) -> Result<()> {
+    model_registry::validate_configs(&configs)?;
+    let mut models = Vec::with_capacity(configs.len());
+    let multiple = configs.len() > 1;
+    for mut config in configs {
+        if multiple && config.served_model_name.is_none() {
+            config.served_model_name = Some(
+                model_aliases::resolve(
+                    config.model_id.clone(),
+                    config.decision_protocol.clone(),
+                    config.pooling.as_ref(),
+                )?
+                .0,
+            );
+        }
+        let name = config
+            .served_model_name
+            .clone()
+            .unwrap_or_else(|| config.model_id.clone());
+        match initialize_model(config, hf_token.clone(), huggingface_hub_cache.clone()).await {
+            Ok(model) => models.push(std::sync::Arc::new(model)),
+            Err(error) => {
+                for model in &models {
+                    model.shutdown().await;
+                }
+                return Err(error.context(format!("Could not initialize model {name}")));
+            }
+        }
+    }
+    let registry = match model_registry::ModelRegistry::new(models.clone()) {
+        Ok(registry) => registry,
+        Err(error) => {
+            for model in models {
+                model.shutdown().await;
+            }
+            return Err(error);
+        }
+    };
     let port = if cfg!(feature = "google") {
         std::env::var("AIP_HTTP_PORT")
             .ok()
             .and_then(|p| p.parse().ok())
-            .inspect(|&p| {
-                tracing::info!("`AIP_HTTP_PORT` is set: overriding port {port} by port {p}");
-            })
             .unwrap_or(port)
     } else {
         port
     };
-
-    let addr = match hostname.unwrap_or("0.0.0.0".to_string()).parse() {
-        Ok(ip) => SocketAddr::new(ip, port),
-        Err(_) => {
-            tracing::warn!("Invalid hostname, defaulting to 0.0.0.0");
-            SocketAddr::new(IpAddr::V4(Ipv4Addr::new(0, 0, 0, 0)), port)
-        }
-    };
-
-    let prom_builder = prometheus::prometheus_builer(addr, prometheus_port, info.max_input_length)?;
-
-    #[cfg(not(feature = "http"))]
-    compile_error!("Feature `http` must be enabled.");
-
-    #[cfg(feature = "http")]
-    {
+    let ip = hostname
+        .unwrap_or_else(|| "0.0.0.0".into())
+        .parse()
+        .unwrap_or(IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+    let addr = SocketAddr::new(ip, port);
+    let max_input_length = registry
+        .models()
+        .iter()
+        .map(|m| m.info.max_input_length)
+        .max()
+        .unwrap();
+    let result = async {
+        let prom_builder = prometheus::prometheus_builer(addr, prometheus_port, max_input_length)?;
         http::server::run(
-            infer,
-            info,
+            registry.clone(),
             addr,
             prom_builder,
             payload_limit,
             api_key,
             cors_allow_origin,
-            systemone,
         )
         .await
     }
+    .await;
+    registry.shutdown().await;
+    result
 }
 
 fn get_backend_model_type(
@@ -1031,15 +1215,18 @@ impl ResponseMetadata {
         span.record("inference_time", format!("{:?}", self.inference_time));
     }
 
-    fn record_metrics(&self) {
+    fn record_metrics(&self, model_name: &str) {
         // Metrics
-        let histogram = metrics::histogram!("te_request_duration");
+        let histogram =
+            metrics::histogram!("te_request_duration", "model" => model_name.to_owned());
         histogram.record(self.start_time.elapsed().as_secs_f64());
-        let histogram = metrics::histogram!("te_request_tokenization_duration");
+        let histogram = metrics::histogram!("te_request_tokenization_duration", "model" => model_name.to_owned());
         histogram.record(self.tokenization_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_request_queue_duration");
+        let histogram =
+            metrics::histogram!("te_request_queue_duration", "model" => model_name.to_owned());
         histogram.record(self.queue_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_request_inference_duration");
+        let histogram =
+            metrics::histogram!("te_request_inference_duration", "model" => model_name.to_owned());
         histogram.record(self.inference_time.as_secs_f64());
     }
 }

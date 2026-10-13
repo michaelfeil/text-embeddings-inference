@@ -4,3 +4,5 @@ pub mod server;
 pub mod systemone;
 pub mod systemone_input;
 pub mod types;
+
+pub(crate) mod model_routing;

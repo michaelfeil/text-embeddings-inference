@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, FromArgMatches, Parser};
 use infinity_v3_backend::DType;
 use opentelemetry::global;
 use veil::Redact;
@@ -19,6 +19,71 @@ fn pct_parser(s: &str) -> Result<f32, String> {
     Ok(v)
 }
 
+#[derive(Clone, Debug)]
+struct Optional<T>(Option<T>);
+fn optional<T>(value: &str) -> Result<Optional<T>, String>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    if value.eq_ignore_ascii_case("none") {
+        Ok(Optional(None))
+    } else {
+        value
+            .parse()
+            .map(|v| Optional(Some(v)))
+            .map_err(|e: T::Err| e.to_string())
+    }
+}
+fn optional_string(value: &str) -> Result<Optional<String>, String> {
+    optional(value)
+}
+fn optional_usize(value: &str) -> Result<Optional<usize>, String> {
+    optional(value)
+}
+fn optional_pool(value: &str) -> Result<Optional<infinity_v3_backend::Pool>, String> {
+    if matches!(value, "none" | "auto") {
+        Ok(Optional(None))
+    } else {
+        clap::ValueEnum::from_str(value, false).map(|v| Optional(Some(v)))
+    }
+}
+fn optional_protocol(
+    value: &str,
+) -> Result<Optional<infinity_v3_router::DecisionProtocol>, String> {
+    if value == "none" {
+        Ok(Optional(None))
+    } else {
+        clap::ValueEnum::from_str(value, false).map(|v| Optional(Some(v)))
+    }
+}
+fn expand<T: Clone>(values: &[T], count: usize, name: &str) -> Result<Vec<T>> {
+    anyhow::ensure!(
+        values.is_empty() || values.len() == 1 || values.len() == count,
+        "--{name} expects one value or {count} values, got {}",
+        values.len()
+    );
+    Ok(if values.len() == 1 {
+        vec![values[0].clone(); count]
+    } else {
+        values.to_vec()
+    })
+}
+fn expand_optional<T: Clone>(
+    values: &[Optional<T>],
+    count: usize,
+    name: &str,
+) -> Result<Vec<Option<T>>> {
+    if values.is_empty() {
+        Ok(vec![None; count])
+    } else {
+        Ok(expand(values, count, name)?
+            .into_iter()
+            .map(|v| v.0)
+            .collect())
+    }
+}
+
 /// App Configuration
 #[derive(Parser, Redact)]
 #[clap(name = "infinity_v3", author, version, about, long_about = None)]
@@ -31,37 +96,69 @@ struct Args {
     /// necessary model files saved by the `save_pretrained(...)` methods of either Transformers or
     /// Sentence Transformers.
     /// The alias `pplx-decider-v1.1-27b` selects Perplexity Decider 1.1 and its decision protocol.
-    #[clap(long, env)]
+    #[clap(
+        long,
+        env = "INFINITY_MODEL_ID",
+        required = true,
+        value_delimiter = ';'
+    )]
     #[redact(partial)]
-    model_id: String,
+    model_id: Vec<String>,
+
+    /// Public model names. Repeat per model; defaults to the checkpoint ID.
+    #[clap(long, env = "INFINITY_SERVED_MODEL_NAME", value_delimiter = ';', value_parser = optional_string)]
+    served_model_name: Vec<Optional<String>>,
 
     /// The actual revision of the model if you're referring to a model
     /// on the hub. You can use a specific commit id or a branch like `refs/pr/2`.
-    #[clap(long, env)]
-    revision: Option<String>,
+    #[clap(long, env = "INFINITY_REVISION", value_parser = optional_string, value_delimiter = ';')]
+    revision: Vec<Optional<String>>,
 
     /// Optionally control the number of tokenizer workers used for payload tokenization, validation
     /// and truncation.
     /// Defaults to CPU cores minus one. Values are clamped to 1–16.
-    #[clap(long, env)]
-    tokenization_workers: Option<usize>,
+    #[clap(long, env = "INFINITY_TOKENIZATION_WORKERS", value_parser = optional_usize, value_delimiter = ';')]
+    tokenization_workers: Vec<Optional<usize>>,
 
     /// Maximum waiting tokenizer jobs, independent of worker count. Counts individual inputs,
     /// not HTTP requests. When full, producers wait for space.
-    #[clap(long, env, default_value = "1024")]
-    tokenization_queue_capacity: std::num::NonZeroUsize,
+    #[clap(
+        long,
+        env = "INFINITY_TOKENIZATION_QUEUE_CAPACITY",
+        default_value = "1024",
+        value_delimiter = ';'
+    )]
+    tokenization_queue_capacity: Vec<std::num::NonZeroUsize>,
 
     /// Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default.
-    #[clap(long, env, value_enum, default_value = "auto")]
-    dtype: Option<DType>,
+    #[clap(
+        long,
+        env = "INFINITY_DTYPE",
+        value_enum,
+        default_value = "auto",
+        value_delimiter = ';'
+    )]
+    dtype: Vec<DType>,
 
     /// Inference runtime (requires the matching Cargo feature).
-    #[clap(long, env, value_enum, default_value = "candle")]
-    backend: infinity_v3_backend::BackendKind,
+    #[clap(
+        long,
+        env = "INFINITY_BACKEND",
+        value_enum,
+        default_value = "candle",
+        value_delimiter = ';'
+    )]
+    backend: Vec<infinity_v3_backend::BackendKind>,
 
     /// LibTorch accelerator family. Auto selects CUDA when available, otherwise CPU.
-    #[clap(long, env, value_enum, default_value = "auto")]
-    torch_device: infinity_v3_backend::TorchDevice,
+    #[clap(
+        long,
+        env = "INFINITY_TORCH_DEVICE",
+        value_enum,
+        default_value = "auto",
+        value_delimiter = ';'
+    )]
+    torch_device: Vec<infinity_v3_backend::TorchDevice>,
 
     /// Optionally control the pooling method for embedding models.
     ///
@@ -69,26 +166,36 @@ struct Args {
     /// model `1_Pooling/config.json` configuration.
     ///
     /// If `pooling` is set, it will override the model pooling configuration
-    #[clap(long, env, value_enum)]
-    pooling: Option<infinity_v3_backend::Pool>,
+    #[clap(long, env = "INFINITY_POOLING", value_parser = optional_pool, value_delimiter = ';')]
+    pooling: Vec<Optional<infinity_v3_backend::Pool>>,
 
     /// Serve a decision model with its trained prompt on /v1/systemone.
-    #[clap(long, env, conflicts_with = "pooling")]
-    decision_protocol: Option<infinity_v3_router::DecisionProtocol>,
+    #[clap(long, env = "INFINITY_DECISION_PROTOCOL", value_parser = optional_protocol, value_delimiter = ';')]
+    decision_protocol: Vec<Optional<infinity_v3_router::DecisionProtocol>>,
 
     /// Exact HTTPS hostnames allowed for image downloads. Empty permits inline data URLs only.
-    #[clap(long, env, value_delimiter = ',')]
+    #[clap(long, env = "INFINITY_IMAGE_ALLOWED_HOSTS", value_delimiter = ',')]
     image_allowed_hosts: Vec<String>,
 
     /// Memory budget for encoded images, CPU processing and prepared image patches, in MiB.
-    #[clap(long, env, default_value = "512")]
-    image_memory_budget_mib: usize,
+    #[clap(
+        long,
+        env = "INFINITY_IMAGE_MEMORY_BUDGET_MIB",
+        default_value = "512",
+        value_delimiter = ';'
+    )]
+    image_memory_budget_mib: Vec<usize>,
 
     /// The maximum amount of concurrent requests for this particular deployment.
     /// Having a low limit will refuse clients requests instead of having them
     /// wait for too long and is usually good to handle backpressure correctly.
-    #[clap(default_value = "512", long, env)]
-    max_concurrent_requests: usize,
+    #[clap(
+        default_value = "512",
+        long,
+        env = "INFINITY_MAX_CONCURRENT_REQUESTS",
+        value_delimiter = ';'
+    )]
+    max_concurrent_requests: Vec<usize>,
 
     /// **IMPORTANT** This is one critical control to allow maximum usage
     /// of the available hardware.
@@ -101,39 +208,54 @@ struct Args {
     /// Overall this number should be the largest possible until the model is compute bound.
     /// Since the actual memory overhead depends on the model implementation,
     /// infinity_v3 cannot infer this number automatically.
-    #[clap(default_value = "16384", long, env)]
-    max_batch_tokens: usize,
+    #[clap(
+        default_value = "16384",
+        long,
+        env = "INFINITY_MAX_BATCH_TOKENS",
+        value_delimiter = ';'
+    )]
+    max_batch_tokens: Vec<usize>,
 
     /// Optionally control the maximum number of individual requests in a batch
-    #[clap(long, env)]
-    max_batch_requests: Option<usize>,
+    #[clap(long, env = "INFINITY_MAX_BATCH_REQUESTS", value_parser = optional_usize, value_delimiter = ';')]
+    max_batch_requests: Vec<Optional<usize>>,
 
     /// Experimental calibration-free FP8 MLPs (Ada/Hopper/Blackwell FP16/BF16 dense decoder and BERT/ModernBERT encoders).
     /// Bundled in official SM89/90/100/120 images; disabled by default. May change embedding, reranking, and decision accuracy.
-    #[clap(long, env)]
-    enable_fp8_dynamic: bool,
+    #[clap(long, env = "INFINITY_ENABLE_FP8_DYNAMIC", action = clap::ArgAction::Append, num_args = 0..=1, default_missing_value = "true", default_value = "false", value_delimiter = ';')]
+    enable_fp8_dynamic: Vec<bool>,
 
     /// RadixMLP threshold.
     ///
     /// Set the threshold for RadixMLP.
     /// If the compression ratio is lower than the threshold, RadixMLP will be used.
     /// The default is 0.92 for most models, and 0.0 (force disabled) for bidirectional models.
-    #[clap(long, env, default_value = "0.92", value_parser = pct_parser)]
-    radix_mlp_threshold: f32,
+    #[clap(long, env = "INFINITY_RADIX_MLP_THRESHOLD", default_value = "0.92", value_parser = pct_parser, value_delimiter = ';')]
+    radix_mlp_threshold: Vec<f32>,
 
     /// Control the maximum number of inputs that a client can send in a single request
-    #[clap(default_value = "32", long, env)]
-    max_client_batch_size: usize,
+    #[clap(
+        default_value = "32",
+        long,
+        env = "INFINITY_MAX_CLIENT_BATCH_SIZE",
+        value_delimiter = ';'
+    )]
+    max_client_batch_size: Vec<usize>,
 
     /// Maximum number of questions in one /v1/systemone request.
     /// Independent of max-client-batch-size; model option budgets still apply.
-    #[clap(default_value = "512", long, env)]
-    max_decision_questions: std::num::NonZeroUsize,
+    #[clap(
+        default_value = "512",
+        long,
+        env = "INFINITY_MAX_DECISION_QUESTIONS",
+        value_delimiter = ';'
+    )]
+    max_decision_questions: Vec<std::num::NonZeroUsize>,
 
     /// Automatically truncate inputs that are longer than the maximum supported size
     ///
-    #[clap(long, env)]
-    auto_truncate: bool,
+    #[clap(long, env = "INFINITY_AUTO_TRUNCATE", action = clap::ArgAction::Append, num_args = 0..=1, default_missing_value = "true", default_value = "false", value_delimiter = ';')]
+    auto_truncate: Vec<bool>,
 
     /// The name of the prompt that should be used by default for encoding. If not set, no prompt
     /// will be applied.
@@ -147,8 +269,8 @@ struct Args {
     ///
     /// The argument '--default-prompt-name <DEFAULT_PROMPT_NAME>' cannot be used with
     /// '--default-prompt <DEFAULT_PROMPT>`
-    #[clap(long, env, conflicts_with = "default_prompt")]
-    default_prompt_name: Option<String>,
+    #[clap(long, env = "INFINITY_DEFAULT_PROMPT_NAME", value_parser = optional_string, value_delimiter = ';')]
+    default_prompt_name: Vec<Optional<String>>,
 
     /// The prompt that should be used by default for encoding. If not set, no prompt
     /// will be applied.
@@ -159,8 +281,8 @@ struct Args {
     ///
     /// The argument '--default-prompt <DEFAULT_PROMPT>' cannot be used with
     /// '--default-prompt-name <DEFAULT_PROMPT_NAME>`
-    #[clap(long, env, conflicts_with = "default_prompt_name")]
-    default_prompt: Option<String>,
+    #[clap(long, env = "INFINITY_DEFAULT_PROMPT", value_parser = optional_string, value_delimiter = ';')]
+    default_prompt: Vec<Optional<String>>,
 
     /// Optionally, define the path to the Dense module required for some embedding models.
     ///
@@ -173,82 +295,197 @@ struct Args {
     /// Note that this argument is optional, only required to be set if there is no `modules.json`
     /// file or when you want to override a single Dense module path, only when running with the
     /// `candle` backend.
-    #[clap(long, env)]
-    dense_path: Option<String>,
+    #[clap(long, env = "INFINITY_DENSE_PATH", value_parser = optional_string, value_delimiter = ';')]
+    dense_path: Vec<Optional<String>>,
 
     /// Use one explicit accelerator device. CUDA otherwise uses all visible devices.
-    #[clap(long, env)]
-    device_id: Option<usize>,
+    #[clap(long, env = "INFINITY_DEVICE_ID", value_parser = optional_usize, value_delimiter = ';')]
+    device_id: Vec<Optional<usize>>,
 
     /// Visible CUDA ordinals for data-parallel replicas, e.g. 0,1, or auto.
-    #[clap(long, env, conflicts_with = "device_id")]
-    backend_device_ids: Option<String>,
+    #[clap(long, env = "INFINITY_BACKEND_DEVICE_IDS", value_parser = optional_string, value_delimiter = ';')]
+    backend_device_ids: Vec<Optional<String>>,
 
     /// [DEPRECATED IN FAVOR OF `--hf-token`] Your Hugging Face Hub token
-    #[clap(long, env, hide = true)]
+    #[clap(long, env = "INFINITY_HF_API_TOKEN", hide = true)]
     #[redact(partial)]
     hf_api_token: Option<String>,
 
     /// Your Hugging Face Hub token
-    #[clap(long, env, conflicts_with = "hf_api_token")]
+    #[clap(long, env = "INFINITY_HF_TOKEN", conflicts_with = "hf_api_token")]
     #[redact(partial)]
     hf_token: Option<String>,
 
     /// The IP address to listen on
-    #[clap(default_value = "0.0.0.0", long, env)]
+    #[clap(default_value = "0.0.0.0", long, env = "INFINITY_HOSTNAME")]
     hostname: String,
 
     /// The port to listen on.
-    #[clap(default_value = "3000", long, short, env)]
+    #[clap(default_value = "3000", long, short, env = "INFINITY_PORT")]
     port: u16,
 
     /// The location of the huggingface hub cache.
     /// Used to override the location if you want to provide a mounted disk for instance
-    #[clap(long, env)]
+    #[clap(long, env = "INFINITY_HUGGINGFACE_HUB_CACHE")]
     huggingface_hub_cache: Option<String>,
 
     /// Payload size limit in bytes
     ///
     /// Default is 2MB
-    #[clap(default_value = "2000000", long, env)]
+    #[clap(default_value = "2000000", long, env = "INFINITY_PAYLOAD_LIMIT")]
     payload_limit: usize,
 
     /// Set an api key for request authorization.
     ///
     /// By default the server responds to every request. With an api key set, the requests must have the Authorization header set with the api key as Bearer token.
-    #[clap(long, env)]
+    #[clap(long, env = "INFINITY_API_KEY")]
     api_key: Option<String>,
 
     /// Outputs the logs in JSON format (useful for telemetry)
-    #[clap(long, env)]
+    #[clap(long, env = "INFINITY_JSON_OUTPUT")]
     json_output: bool,
 
     // Whether or not to include the log trace through spans
-    #[clap(long, env)]
+    #[clap(long, env = "INFINITY_DISABLE_SPANS")]
     disable_spans: bool,
 
     /// The grpc endpoint for opentelemetry. Telemetry is sent to this endpoint as OTLP over gRPC.
     /// e.g. `http://localhost:4317`
-    #[clap(long, env)]
+    #[clap(long, env = "INFINITY_OTLP_ENDPOINT")]
     otlp_endpoint: Option<String>,
 
     /// The service name for opentelemetry.
     /// e.g. `infinity_v3.server`
-    #[clap(default_value = "infinity_v3.server", long, env)]
+    #[clap(
+        default_value = "infinity_v3.server",
+        long,
+        env = "INFINITY_OTLP_SERVICE_NAME"
+    )]
     otlp_service_name: String,
 
     /// The Prometheus port to listen on.
-    #[clap(default_value = "9000", long, env)]
+    #[clap(default_value = "9000", long, env = "INFINITY_PROMETHEUS_PORT")]
     prometheus_port: u16,
 
-    #[clap(long, env)]
+    #[clap(long, env = "INFINITY_CORS_ALLOW_ORIGIN")]
     cors_allow_origin: Option<Vec<String>>,
+}
+
+impl Args {
+    fn models(&self) -> Result<Vec<infinity_v3_router::ModelSettings>> {
+        let count = self.model_id.len();
+        anyhow::ensure!(count > 0, "At least one --model-id is required");
+        let served_model_name =
+            expand_optional(&self.served_model_name, count, "served-model-name")?;
+        let tokenization_queue_capacity = expand(
+            &self.tokenization_queue_capacity,
+            count,
+            "tokenization-queue-capacity",
+        )?;
+        let backend = expand(&self.backend, count, "backend")?;
+        let torch_device = expand(&self.torch_device, count, "torch-device")?;
+        let image_memory_budget_mib = expand(
+            &self.image_memory_budget_mib,
+            count,
+            "image-memory-budget-mib",
+        )?;
+        let max_concurrent_requests = expand(
+            &self.max_concurrent_requests,
+            count,
+            "max-concurrent-requests",
+        )?;
+        let max_batch_tokens = expand(&self.max_batch_tokens, count, "max-batch-tokens")?;
+        let radix_mlp_threshold = expand(&self.radix_mlp_threshold, count, "radix-mlp-threshold")?;
+        let max_client_batch_size =
+            expand(&self.max_client_batch_size, count, "max-client-batch-size")?;
+        let max_decision_questions = expand(
+            &self.max_decision_questions,
+            count,
+            "max-decision-questions",
+        )?;
+        let revision = expand_optional(&self.revision, count, "revision")?;
+        let tokenization_workers =
+            expand_optional(&self.tokenization_workers, count, "tokenization-workers")?;
+        let dtype = expand(&self.dtype, count, "dtype")?;
+        let pooling = expand_optional(&self.pooling, count, "pooling")?;
+        let decision_protocol =
+            expand_optional(&self.decision_protocol, count, "decision-protocol")?;
+        let max_batch_requests =
+            expand_optional(&self.max_batch_requests, count, "max-batch-requests")?;
+        let default_prompt_name =
+            expand_optional(&self.default_prompt_name, count, "default-prompt-name")?;
+        let default_prompt = expand_optional(&self.default_prompt, count, "default-prompt")?;
+        let dense_path = expand_optional(&self.dense_path, count, "dense-path")?;
+        let device_id = expand_optional(&self.device_id, count, "device-id")?;
+        let backend_device_ids =
+            expand_optional(&self.backend_device_ids, count, "backend-device-ids")?;
+        let enable_fp8_dynamic = expand(&self.enable_fp8_dynamic, count, "enable-fp8-dynamic")?;
+        let auto_truncate = expand(&self.auto_truncate, count, "auto-truncate")?;
+        (0..count)
+            .map(|i| {
+                Ok(infinity_v3_router::ModelSettings {
+                    model_id: self.model_id[i].clone(),
+                    served_model_name: served_model_name[i].clone(),
+                    revision: revision[i].clone(),
+                    tokenization_workers: tokenization_workers[i].clone(),
+                    tokenization_queue_capacity: tokenization_queue_capacity[i].clone(),
+                    dtype: Some(dtype[i].clone()),
+                    pooling: pooling[i].clone(),
+                    decision_protocol: decision_protocol[i].clone(),
+                    max_concurrent_requests: max_concurrent_requests[i].clone(),
+                    max_batch_tokens: max_batch_tokens[i].clone(),
+                    max_batch_requests: max_batch_requests[i].clone(),
+                    radix_mlp_threshold: radix_mlp_threshold[i].clone(),
+                    enable_fp8_dynamic: enable_fp8_dynamic[i].clone(),
+                    max_client_batch_size: max_client_batch_size[i].clone(),
+                    max_decision_questions: max_decision_questions[i].clone().get(),
+                    auto_truncate: auto_truncate[i].clone(),
+                    default_prompt: default_prompt[i].clone(),
+                    default_prompt_name: default_prompt_name[i].clone(),
+                    dense_path: dense_path[i].clone(),
+                    device_id: device_id[i].clone(),
+                    backend_device_ids: backend_device_ids[i].clone(),
+                    backend_kind: backend[i],
+                    torch_device: torch_device[i],
+                    multimodal_config: infinity_v3_core::multimodal::MultimodalConfig {
+                        allowed_image_hosts: self.image_allowed_hosts.clone(),
+                        memory_budget_bytes: image_memory_budget_mib[i]
+                            .checked_mul(1024 * 1024)
+                            .ok_or_else(|| anyhow::anyhow!("Image memory budget is too large"))?,
+                        ..Default::default()
+                    },
+                })
+            })
+            .collect()
+    }
+}
+
+fn command_with_environment() -> clap::Command {
+    let mut command = Args::command();
+    let fallbacks = command
+        .get_arguments()
+        .filter_map(|arg| {
+            let env = arg.get_env()?.to_str()?;
+            let legacy = env.strip_prefix("INFINITY_")?;
+            if std::env::var_os(env).is_none() && std::env::var_os(legacy).is_some() {
+                Some((arg.get_id().to_string(), legacy.to_owned()))
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+    for (id, env) in fallbacks {
+        command = command.mut_arg(id, |arg| {
+            arg.env(Box::leak(env.into_boxed_str()) as &'static str)
+        });
+    }
+    command
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     // Pattern match configuration
-    let args: Args = Args::parse();
+    let args = Args::from_arg_matches(&command_with_environment().get_matches())?;
 
     // Initialize logging and telemetry
     let global_tracer = infinity_v3_router::init_logging(
@@ -279,28 +516,10 @@ async fn main() -> Result<()> {
     if args.hf_api_token.is_some() {
         tracing::warn!("The `--hf-api-token` argument (and the `HF_API_TOKEN` env var) is deprecated and will be removed in a future version. Please use `--hf-token` (or the `HF_TOKEN` env var) instead.");
     }
-    let token = args.hf_token.or(args.hf_api_token);
-
-    infinity_v3_router::run(
-        args.model_id,
-        args.revision,
-        args.tokenization_workers,
-        args.tokenization_queue_capacity,
-        args.dtype,
-        args.pooling,
-        args.decision_protocol,
-        args.max_concurrent_requests,
-        args.max_batch_tokens,
-        args.max_batch_requests,
-        args.radix_mlp_threshold,
-        args.enable_fp8_dynamic,
-        args.max_client_batch_size,
-        args.max_decision_questions.get(),
-        args.auto_truncate,
-        args.default_prompt,
-        args.default_prompt_name,
-        args.dense_path,
-        token,
+    let configs = args.models()?;
+    infinity_v3_router::run_models(
+        configs,
+        args.hf_token.or(args.hf_api_token),
         Some(args.hostname),
         args.port,
         args.huggingface_hub_cache,
@@ -308,18 +527,6 @@ async fn main() -> Result<()> {
         args.api_key,
         args.prometheus_port,
         args.cors_allow_origin,
-        args.device_id,
-        args.backend_device_ids,
-        args.backend,
-        args.torch_device,
-        infinity_v3_core::multimodal::MultimodalConfig {
-            allowed_image_hosts: args.image_allowed_hosts,
-            memory_budget_bytes: args
-                .image_memory_budget_mib
-                .checked_mul(1024 * 1024)
-                .ok_or_else(|| anyhow::anyhow!("Image memory budget is too large"))?,
-            ..Default::default()
-        },
     )
     .await?;
 
@@ -328,4 +535,61 @@ async fn main() -> Result<()> {
         global::shutdown_tracer_provider();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn model_options_broadcast_align_and_preserve_single_model_flags() {
+        let args = Args::try_parse_from([
+            "infinity_v3",
+            "--model-id",
+            "a",
+            "--model-id",
+            "b",
+            "--served-model-name",
+            "embed;rerank",
+            "--backend",
+            "libtorch",
+            "--torch-device",
+            "cpu",
+            "--max-batch-tokens",
+            "100;200",
+            "--revision",
+            "none;main",
+            "--pooling",
+            "mean;none",
+            "--decision-protocol",
+            "none;pplx",
+            "--auto-truncate",
+            "true;false",
+        ])
+        .unwrap();
+        let models = args.models().unwrap();
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].served_model_name.as_deref(), Some("embed"));
+        assert_eq!(models[1].served_model_name.as_deref(), Some("rerank"));
+        assert_eq!(models[0].max_batch_tokens, 100);
+        assert_eq!(models[1].max_batch_tokens, 200);
+        assert_eq!(models[0].revision, None);
+        assert_eq!(models[1].revision.as_deref(), Some("main"));
+        assert!(models[0].auto_truncate && !models[1].auto_truncate);
+        assert_eq!(models[0].backend_kind, models[1].backend_kind);
+        let legacy = Args::try_parse_from([
+            "infinity_v3",
+            "--model-id",
+            "a",
+            "--auto-truncate",
+            "--enable-fp8-dynamic",
+        ])
+        .unwrap()
+        .models()
+        .unwrap();
+        assert!(legacy[0].auto_truncate && legacy[0].enable_fp8_dynamic);
+        let mismatch =
+            Args::try_parse_from(["infinity_v3", "--model-id", "a;b;c", "--device-id", "0;1"])
+                .unwrap();
+        assert!(mismatch.models().is_err());
+    }
 }

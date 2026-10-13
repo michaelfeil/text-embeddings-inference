@@ -68,6 +68,7 @@ pub struct Metadata {
 /// Request Queue
 #[derive(Debug, Clone)]
 pub struct Queue {
+    worker: Arc<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>>,
     /// Channel to communicate with the background queue task
     queue_sender: mpsc::Sender<QueueCommand>,
     closed: Arc<AtomicBool>,
@@ -96,6 +97,24 @@ impl Queue {
         max_concurrent_requests: usize,
         replicas: usize,
     ) -> Self {
+        Self::with_replicas_named(
+            max_batch_tokens,
+            max_batch_requests,
+            radix_mlp_threshold,
+            max_concurrent_requests,
+            replicas,
+            String::new(),
+        )
+    }
+
+    pub fn with_replicas_named(
+        max_batch_tokens: usize,
+        max_batch_requests: Option<usize>,
+        radix_mlp_threshold: f32,
+        max_concurrent_requests: usize,
+        replicas: usize,
+        model_name: String,
+    ) -> Self {
         // Validate on the caller's thread before spawning the detached worker.
         let configured_target = match std::env::var("TEI_EARLY_DISPATCH_TOKENS") {
             Ok(value) => Some(value),
@@ -114,7 +133,7 @@ impl Queue {
         let closed = Arc::new(AtomicBool::new(false));
         let worker_closed = closed.clone();
         // Launch background queue task
-        std::thread::spawn(move || {
+        let worker = std::thread::spawn(move || {
             queue_blocking_task(
                 max_batch_tokens,
                 max_batch_requests,
@@ -124,12 +143,26 @@ impl Queue {
                 early_dispatch_tokens,
                 replicas,
                 worker_closed,
+                model_name.into(),
             )
         });
 
         Self {
+            worker: Arc::new(std::sync::Mutex::new(Some(worker))),
             queue_sender,
             closed,
+        }
+    }
+
+    pub fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::SeqCst)
+    }
+
+    pub async fn shutdown(&self) {
+        self.close();
+        let handle = self.worker.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let _ = tokio::task::spawn_blocking(move || handle.join()).await;
         }
     }
 
@@ -169,20 +202,30 @@ impl Queue {
     pub async fn next_batch(&self) -> Option<NextBatch> {
         let (response_sender, response_receiver) = oneshot::channel();
 
-        // Send next batch command to the background task managing the state
-        // Unwrap is safe here
-        self.queue_sender
+        // Closing a model can race with a pending batch request. Treat a closed
+        // actor as an empty queue so the batching task can exit normally.
+        if self.closed.load(Ordering::SeqCst) {
+            return None;
+        }
+        if self
+            .queue_sender
             .send(QueueCommand::NextBatch {
                 response_sender,
                 span: Span::current(),
             })
             .await
-            .expect("Queue background task dropped the receiver or the receiver is too behind. This is a bug.");
-        // Await on response channel
-        // Unwrap is safe here
-        response_receiver.await.expect(
-            "Queue background task dropped the sender without sending a new batch. This is a bug.",
-        )
+            .is_err()
+        {
+            self.close();
+            return None;
+        }
+        match response_receiver.await {
+            Ok(batch) => batch,
+            Err(_) => {
+                self.close();
+                None
+            }
+        }
     }
 }
 
@@ -197,6 +240,7 @@ fn queue_blocking_task(
     early_dispatch_tokens: Option<usize>,
     replicas: usize,
     closed: Arc<AtomicBool>,
+    model_name: metrics::SharedString,
 ) {
     tracing::info!(
         ?early_dispatch_tokens,
@@ -229,6 +273,9 @@ fn queue_blocking_task(
 
     while let Some(cmd) = queue_receiver.blocking_recv() {
         if closed.load(Ordering::SeqCst) {
+            // Stop accepting commands, then settle those already buffered. The
+            // worker must exit even while runtime owners still hold senders.
+            queue_receiver.close();
             for entry in entries.drain(..) {
                 let _ = entry
                     .metadata
@@ -236,7 +283,7 @@ fn queue_blocking_task(
                     .send(Err(BackendError::Unhealthy));
             }
             queued_tokens = 0;
-            metrics::gauge!("te_queue_size").set(0.0);
+            metrics::gauge!("te_queue_size", "model" => model_name.clone()).set(0.0);
             match cmd {
                 QueueCommand::Append(entry, _) => {
                     let _ = entry
@@ -259,7 +306,7 @@ fn queue_blocking_task(
                 let _span = span.entered();
                 queued_tokens += entry.encoding.input_ids.len();
                 entries.push_back(*entry);
-                let gauge = metrics::gauge!("te_queue_size");
+                let gauge = metrics::gauge!("te_queue_size", "model" => model_name.clone());
                 gauge.increment(1.0);
             }
             QueueCommand::NextBatch {
@@ -433,7 +480,7 @@ fn queue_blocking_task(
                                 input_ids.len(),
                                 compact_ids.len()
                             );
-                            metrics::histogram!("te_radix_mlp_compression_ratio")
+                            metrics::histogram!("te_radix_mlp_compression_ratio", "model" => model_name.clone())
                                 .record(compression_ratio as f64);
                             if radix_mlp_threshold >= 1.0 || compression_ratio < radix_mlp_threshold
                             {
@@ -492,11 +539,13 @@ fn queue_blocking_task(
                     spare_token_buffers = allocate_token_buffers();
                 }
 
-                let histogram = metrics::histogram!("te_batch_next_size");
+                let histogram =
+                    metrics::histogram!("te_batch_next_size", "model" => model_name.clone());
                 histogram.record(batch_size as f64);
-                let histogram = metrics::histogram!("te_batch_next_tokens");
+                let histogram =
+                    metrics::histogram!("te_batch_next_tokens", "model" => model_name.clone());
                 histogram.record(current_tokens as f64);
-                let gauge = metrics::gauge!("te_queue_size");
+                let gauge = metrics::gauge!("te_queue_size", "model" => model_name.clone());
                 gauge.set(entries.len() as f64)
             }
         }
@@ -604,9 +653,11 @@ mod tests {
                 target,
                 1,
                 worker_closed,
+                "test".into(),
             );
         });
         Queue {
+            worker: Arc::new(std::sync::Mutex::new(None)),
             queue_sender,
             closed,
         }

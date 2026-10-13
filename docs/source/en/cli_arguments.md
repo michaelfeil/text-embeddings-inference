@@ -22,40 +22,57 @@ To see all options to serve your models, run the following:
 $ infinity_v3 --help
 infinity_v3 inference server
 
-Usage: infinity_v3 [OPTIONS]
+Usage: infinity_v3 [OPTIONS] --model-id <MODEL_ID>
 
 Options:
       --model-id <MODEL_ID>
-          The name of the model to load. Can be a MODEL_ID as listed on <https://hf.co/models> like `BAAI/bge-large-en-v1.5`. Or it can be a local directory containing the necessary files as saved by `save_pretrained(...)` methods of transformers
+          The Hugging Face model ID, can be any model listed on <https://huggingface.co/models> with the `text-embeddings-inference` tag (meaning it's compatible with Text Embeddings Inference)
 
-          [env: MODEL_ID=]
-          [default: BAAI/bge-large-en-v1.5]
+          Alternatively, the specified ID can also be a path to a local directory containing the necessary model files saved by the `save_pretrained(...)` methods of either Transformers or Sentence Transformers. The alias `pplx-decider-v1.1-27b` selects Perplexity Decider 1.1 and its decision protocol.
+
+          [env: INFINITY_MODEL_ID=]
+
+      --served-model-name <SERVED_MODEL_NAME>
+          Public model names. Repeat per model; defaults to the checkpoint ID
+
+          [env: INFINITY_SERVED_MODEL_NAME=]
 
       --revision <REVISION>
           The actual revision of the model if you're referring to a model on the hub. You can use a specific commit id or a branch like `refs/pr/2`
 
-          [env: REVISION=]
+          [env: INFINITY_REVISION=]
 
       --tokenization-workers <TOKENIZATION_WORKERS>
           Optionally control the number of tokenizer workers used for payload tokenization, validation and truncation. Defaults to CPU cores minus one. Values are clamped to 1–16
 
-          [env: TOKENIZATION_WORKERS=]
+          [env: INFINITY_TOKENIZATION_WORKERS=]
 
       --tokenization-queue-capacity <TOKENIZATION_QUEUE_CAPACITY>
           Maximum waiting tokenizer jobs, independent of worker count. Counts individual inputs, not HTTP requests. When full, producers wait for space
 
-          [env: TOKENIZATION_QUEUE_CAPACITY=] [default: 1024]
+          [env: INFINITY_TOKENIZATION_QUEUE_CAPACITY=]
+          [default: 1024]
 
       --dtype <DTYPE>
           Model dtype. Auto selects bfloat16 from model config when supported, otherwise the backend default
 
-          [env: DTYPE=]
+          [env: INFINITY_DTYPE=]
           [default: auto]
           [possible values: auto, float16, float32, bfloat16]
 
-          Auto prefers config.json's dtype over torch_dtype and selects bfloat16 when configured.
-          Otherwise it keeps the backend default (float16 for Candle CUDA). MKL, Accelerate,
-          and gemma3_text retain their float32 defaults. Explicit dtype values override auto.
+      --backend <BACKEND>
+          Inference runtime (requires the matching Cargo feature)
+
+          [env: INFINITY_BACKEND=]
+          [default: candle]
+          [possible values: candle, libtorch]
+
+      --torch-device <TORCH_DEVICE>
+          LibTorch accelerator family. Auto selects CUDA when available, otherwise CPU
+
+          [env: INFINITY_TORCH_DEVICE=]
+          [default: auto]
+          [possible values: auto, cpu, cuda]
 
       --pooling <POOLING>
           Optionally control the pooling method for embedding models.
@@ -64,18 +81,28 @@ Options:
 
           If `pooling` is set, it will override the model pooling configuration
 
-          [env: POOLING=]
+          [env: INFINITY_POOLING=]
 
-          Possible values:
-          - cls:        Select the CLS token as embedding
-          - mean:       Apply Mean pooling to the model embeddings
-          - splade:     Apply SPLADE (Sparse Lexical and Expansion) to the model embeddings. This option is only available if the loaded model is a `ForMaskedLM` Transformer model
-          - last-token: Select the last token as embedding
+      --decision-protocol <DECISION_PROTOCOL>
+          Serve a decision model with its trained prompt on /v1/systemone
+
+          [env: INFINITY_DECISION_PROTOCOL=]
+
+      --image-allowed-hosts <IMAGE_ALLOWED_HOSTS>
+          Exact HTTPS hostnames allowed for image downloads. Empty permits inline data URLs only
+
+          [env: INFINITY_IMAGE_ALLOWED_HOSTS=]
+
+      --image-memory-budget-mib <IMAGE_MEMORY_BUDGET_MIB>
+          Memory budget for encoded images, CPU processing and prepared image patches, in MiB
+
+          [env: INFINITY_IMAGE_MEMORY_BUDGET_MIB=]
+          [default: 512]
 
       --max-concurrent-requests <MAX_CONCURRENT_REQUESTS>
           The maximum amount of concurrent requests for this particular deployment. Having a low limit will refuse clients requests instead of having them wait for too long and is usually good to handle backpressure correctly
 
-          [env: MAX_CONCURRENT_REQUESTS=]
+          [env: INFINITY_MAX_CONCURRENT_REQUESTS=]
           [default: 512]
 
       --max-batch-tokens <MAX_BATCH_TOKENS>
@@ -87,24 +114,47 @@ Options:
 
           Overall this number should be the largest possible until the model is compute bound. Since the actual memory overhead depends on the model implementation, infinity_v3 cannot infer this number automatically.
 
-          [env: MAX_BATCH_TOKENS=]
+          [env: INFINITY_MAX_BATCH_TOKENS=]
           [default: 16384]
 
       --max-batch-requests <MAX_BATCH_REQUESTS>
           Optionally control the maximum number of individual requests in a batch
 
-          [env: MAX_BATCH_REQUESTS=]
+          [env: INFINITY_MAX_BATCH_REQUESTS=]
+
+      --enable-fp8-dynamic [<ENABLE_FP8_DYNAMIC>]
+          Experimental calibration-free FP8 MLPs (Ada/Hopper/Blackwell FP16/BF16 dense decoder and BERT/ModernBERT encoders). Bundled in official SM89/90/100/120 images; disabled by default. May change embedding, reranking, and decision accuracy
+
+          [env: INFINITY_ENABLE_FP8_DYNAMIC=]
+          [default: false]
+          [possible values: true, false]
+
+      --radix-mlp-threshold <RADIX_MLP_THRESHOLD>
+          RadixMLP threshold.
+
+          Set the threshold for RadixMLP. If the compression ratio is lower than the threshold, RadixMLP will be used. The default is 0.92 for most models, and 0.0 (force disabled) for bidirectional models.
+
+          [env: INFINITY_RADIX_MLP_THRESHOLD=]
+          [default: 0.92]
 
       --max-client-batch-size <MAX_CLIENT_BATCH_SIZE>
           Control the maximum number of inputs that a client can send in a single request
 
-          [env: MAX_CLIENT_BATCH_SIZE=]
+          [env: INFINITY_MAX_CLIENT_BATCH_SIZE=]
           [default: 32]
 
-      --auto-truncate
+      --max-decision-questions <MAX_DECISION_QUESTIONS>
+          Maximum number of questions in one /v1/systemone request. Independent of max-client-batch-size; model option budgets still apply
+
+          [env: INFINITY_MAX_DECISION_QUESTIONS=]
+          [default: 512]
+
+      --auto-truncate [<AUTO_TRUNCATE>]
           Automatically truncate inputs that are longer than the maximum supported size
 
-          [env: AUTO_TRUNCATE=]
+          [env: INFINITY_AUTO_TRUNCATE=]
+          [default: false]
+          [possible values: true, false]
 
       --default-prompt-name <DEFAULT_PROMPT_NAME>
           The name of the prompt that should be used by default for encoding. If not set, no prompt will be applied.
@@ -115,7 +165,7 @@ Options:
 
           The argument '--default-prompt-name <DEFAULT_PROMPT_NAME>' cannot be used with '--default-prompt <DEFAULT_PROMPT>`
 
-          [env: DEFAULT_PROMPT_NAME=]
+          [env: INFINITY_DEFAULT_PROMPT_NAME=]
 
       --default-prompt <DEFAULT_PROMPT>
           The prompt that should be used by default for encoding. If not set, no prompt will be applied.
@@ -124,46 +174,55 @@ Options:
 
           The argument '--default-prompt <DEFAULT_PROMPT>' cannot be used with '--default-prompt-name <DEFAULT_PROMPT_NAME>`
 
-          [env: DEFAULT_PROMPT=]
+          [env: INFINITY_DEFAULT_PROMPT=]
 
       --dense-path <DENSE_PATH>
           Optionally, define the path to the Dense module required for some embedding models.
 
           Some embedding models require an extra `Dense` module which contains a single Linear layer and an activation function. By default, those `Dense` modules are stored under the `2_Dense` directory, but there might be cases where different `Dense` modules are provided, to convert the pooled embeddings into different dimensions, available as `2_Dense_<dims>` e.g. https://huggingface.co/NovaSearch/stella_en_400M_v5.
 
-          Note that this argument is optional, only required to be set if the path to the `Dense` module is other than `2_Dense`. And it also applies when leveraging the `candle` backend.
+          Note that this argument is optional, only required to be set if there is no `modules.json` file or when you want to override a single Dense module path, only when running with the `candle` backend.
 
-          [env: DENSE_PATH=]
-          [default: 2_Dense]
+          [env: INFINITY_DENSE_PATH=]
+
+      --device-id <DEVICE_ID>
+          Use one explicit accelerator device. CUDA otherwise uses all visible devices
+
+          [env: INFINITY_DEVICE_ID=]
+
+      --backend-device-ids <BACKEND_DEVICE_IDS>
+          Visible CUDA ordinals for data-parallel replicas, e.g. 0,1, or auto
+
+          [env: INFINITY_BACKEND_DEVICE_IDS=]
 
       --hf-token <HF_TOKEN>
           Your Hugging Face Hub token
 
-          [env: HF_TOKEN=]
+          [env: INFINITY_HF_TOKEN=]
 
       --hostname <HOSTNAME>
           The IP address to listen on
 
-          [env: HOSTNAME=]
+          [env: HOSTNAME=michaelfeil-dev-pod-h100-0]
           [default: 0.0.0.0]
 
-      -p, --port <PORT>
+  -p, --port <PORT>
           The port to listen on
 
-          [env: PORT=]
+          [env: INFINITY_PORT=]
           [default: 3000]
 
       --huggingface-hub-cache <HUGGINGFACE_HUB_CACHE>
           The location of the huggingface hub cache. Used to override the location if you want to provide a mounted disk for instance
 
-          [env: HUGGINGFACE_HUB_CACHE=]
+          [env: INFINITY_HUGGINGFACE_HUB_CACHE=]
 
       --payload-limit <PAYLOAD_LIMIT>
           Payload size limit in bytes
 
           Default is 2MB
 
-          [env: PAYLOAD_LIMIT=]
+          [env: INFINITY_PAYLOAD_LIMIT=]
           [default: 2000000]
 
       --api-key <API_KEY>
@@ -171,35 +230,35 @@ Options:
 
           By default the server responds to every request. With an api key set, the requests must have the Authorization header set with the api key as Bearer token.
 
-          [env: API_KEY=]
+          [env: INFINITY_API_KEY=]
 
       --json-output
           Outputs the logs in JSON format (useful for telemetry)
 
-          [env: JSON_OUTPUT=]
+          [env: INFINITY_JSON_OUTPUT=]
 
       --disable-spans
-          [env: DISABLE_SPANS=]
+          [env: INFINITY_DISABLE_SPANS=]
 
       --otlp-endpoint <OTLP_ENDPOINT>
           The grpc endpoint for opentelemetry. Telemetry is sent to this endpoint as OTLP over gRPC. e.g. `http://localhost:4317`
 
-          [env: OTLP_ENDPOINT=]
+          [env: INFINITY_OTLP_ENDPOINT=]
 
       --otlp-service-name <OTLP_SERVICE_NAME>
           The service name for opentelemetry. e.g. `infinity_v3.server`
 
-          [env: OTLP_SERVICE_NAME=]
+          [env: INFINITY_OTLP_SERVICE_NAME=]
           [default: infinity_v3.server]
 
       --prometheus-port <PROMETHEUS_PORT>
           The Prometheus port to listen on
 
-          [env: PROMETHEUS_PORT=]
+          [env: INFINITY_PROMETHEUS_PORT=]
           [default: 9000]
 
       --cors-allow-origin <CORS_ALLOW_ORIGIN>
-          [env: CORS_ALLOW_ORIGIN=]
+          [env: INFINITY_CORS_ALLOW_ORIGIN=]
 
   -h, --help
           Print help (see a summary with '-h')
