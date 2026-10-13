@@ -23,6 +23,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <map>
+#include <limits>
 
 namespace tei {
 namespace {
@@ -84,6 +85,7 @@ struct Encoder final : Model {
   std::vector<Layer> fused;
   std::unordered_map<std::string,Fp8Linear> fp8_mlp;
   std::shared_ptr<OrdinaryLinearExecutor> ordinary_executor;
+  std::shared_ptr<Fp8RowwiseExecutor> fp8_executor;
   at::Tensor global_cos, global_sin, local_cos, local_sin;
   std::optional<at::Tensor> alibi;
 
@@ -187,6 +189,22 @@ struct Encoder final : Model {
     auto first=x.narrow(-1,0,width),second=x.narrow(-1,width,width);
     return gate_first?act(first)*second:first*act(second);
   }
+  at::Tensor modern_mlp_output(const at::Tensor& middle,const std::string& p,
+      const OrdinaryLinearExecutor::Session* session=nullptr) const {
+    const auto name=p+"mlp.Wo";
+#ifdef TEI_TORCH_CUDA_KERNELS
+    const bool gelu=activation!="relu" && activation!="silu" && activation!="swiglu" && activation!="tanh";
+    if(family==Family::Modern && gelu && middle.is_cuda() &&
+      (middle.scalar_type()==at::kHalf || middle.scalar_type()==at::kBFloat16) && !fp8_mlp.empty()) {
+      auto projection=fp8_mlp.find(name);
+      if(projection!=fp8_mlp.end() && projection->second.can_fuse_gated_quantization()) {
+        auto quantized=fp8_quantize_gated_rows(middle);
+        return projection->second.forward_quantized(quantized.first,quantized.second,bias(name));
+      }
+    }
+#endif
+    return linear(gated(middle),name,session);
+  }
   std::string layer_name(int64_t i) const {
     if (family == Family::Distil) return (has("transformer.layer.0.attention.q_lin.weight") ? "transformer.layer." : "encoder.layer.") + std::to_string(i) + ".";
     if (family == Family::Modern) return "layers." + std::to_string(i) + ".";
@@ -287,6 +305,8 @@ struct Encoder final : Model {
       rotary_cache(o.real("rope_theta", 10000), global_cos, global_sin);
     }
     w(family == Family::Modern ? "embeddings.tok_embeddings.weight" : "embeddings.word_embeddings.weight");
+    if(family==Family::Modern && o.boolean("_fp8_dynamic",false))
+      fp8_executor=std::make_shared<Fp8RowwiseExecutor>();
     fused.resize(layers);
     for (int64_t i = 0; i < layers; ++i) {
       const auto p = layer_name(i);
@@ -307,7 +327,7 @@ struct Encoder final : Model {
       }
       if(o.boolean("_fp8_dynamic",false)) {
         for(const auto& name:{p+"mlp.Wi",p+"mlp.Wo"}) {
-          fp8_mlp.try_emplace(name,w(name+".weight"));
+          fp8_mlp.try_emplace(name,w(name+".weight"),family==Family::Modern,fp8_executor,name==p+"mlp.Wo");
           weights.erase(prefix+name+".weight");
         }
       }
@@ -518,13 +538,13 @@ struct Encoder final : Model {
         if(exact_norm&&h.is_cuda()) {
           auto normalized=encoder_layer_norm_update_residual_scratch(projected,w(p+"mlp_norm.weight"),eps,modern_residual,modern_normalized);
           modern_residual=normalized.second;
-          h=linear(gated(linear(normalized.first,p+"mlp.Wi",&ordinary_session)),p+"mlp.Wo",&ordinary_session);
+          h=modern_mlp_output(linear(normalized.first,p+"mlp.Wi",&ordinary_session),p,&ordinary_session);
         } else
 #endif
         {
         h = h + projected;
         auto middle = linear(norm(h, p + "mlp_norm"), p + "mlp.Wi");
-        h = h + linear(gated(middle), p + "mlp.Wo");
+        h = h + modern_mlp_output(middle,p);
         }
       } else if (family == Family::Distil) {
         h = residual_norm(projected, h, p + "sa_layer_norm");

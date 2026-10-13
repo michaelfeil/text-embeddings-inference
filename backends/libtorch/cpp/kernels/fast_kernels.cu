@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // The included Q/K normalization kernel retains its original MIT notice.
 #include "kernels/fast_kernels.h"
+#include "kernels/gated_value.cuh"
 #include <ATen/cuda/CUDAContext.h>
 #include <ATen/ops/_fused_rms_norm.h>
 #include <c10/cuda/CUDAGuard.h>
@@ -249,31 +250,7 @@ template<class T> __global__ void gelu_kernel(const T* x,const T* bias,T* out,in
     :0.5f*value*(1.f+erff(value*0.7071067811865475f));
   out[index]=T(y);
 }
-template<class T> __device__ __forceinline__ T candle_model_exp(T value){return T(expf(float(value)));}
-template<> __device__ __forceinline__ __half candle_model_exp(__half value){return hexp(value);}
-template<> __device__ __forceinline__ __nv_bfloat16 candle_model_exp(__nv_bfloat16 value){return hexp(value);}
-template<class T> __device__ __forceinline__ T gated_value(float gate,float up,int activation) {
-  float activated;
-  if(activation==0)activated=gate/(1.f+expf(-gate));
-  else if(activation==5) {
-    T value=T(gate),exponential=candle_model_exp(T(-value));
-    T denominator=T(T(1)+exponential);
-    activated=float(T(value/denominator));
-  }
-  else if(activation==1)activated=.5f*gate*(1.f+erff(gate*.7071067811865475f));
-  else if(activation==2)activated=.5f*gate*(1.f+tanhf(.7978845608028654f*(gate+.044715f*gate*gate*gate)));
-  else if(activation==4) {
-    // Match MIT-licensed Candle kernels/gated_activation.cu: each GELU
-    // intermediate rounds to model dtype, including the tanh input/value.
-    T x=T(gate),square=T(x*x),cube=T(square*x);
-    T alpha=T(x+T(.044715)*cube);
-    T argument=T(T(.7978845608028654)*alpha);
-    T tangent=T(tanhf(float(argument)));
-    activated=float(T(T(T(.5)*x)*T(T(1)+tangent)));
-  }
-  else activated=fmaxf(gate,0.f);
-  return T(float(T(activated))*up);
-}
+using detail::gated_value;
 template<class T> __global__ void gated_kernel(const T* x,T* out,int64_t count,int64_t width,int activation,bool gate_first) {
   int64_t i=int64_t(blockIdx.x)*blockDim.x+threadIdx.x;if(i>=count)return;
   auto row=i/width,col=i%width;
