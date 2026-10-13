@@ -552,7 +552,9 @@ public:
     TORCH_CHECK(!tokenwise,"Decoder sequence classifier does not implement token classification");
     TORCH_CHECK(score.defined(),"Decoder checkpoint has no supported sequence classification score head");
     for(int64_t row=0;row<input.batch;++row)TORCH_CHECK(input.offsets[row+1]>input.offsets[row],"Sequence classification requires nonempty inputs");
-    auto hidden_states=forward(input);
+    return classify_hidden(input,forward(input));
+  }
+  at::Tensor classify_hidden(const PackedInput& input,const at::Tensor& hidden_states) const override {
     const auto& logical=prefix_logical_input(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
     if((dtype==at::kBFloat16||qwen_half_exact)&&family=="qwen2"&&hidden==896&&head_dim==64&&hidden_states.is_cuda()) {

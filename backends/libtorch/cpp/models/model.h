@@ -43,6 +43,10 @@ public:
   virtual at::Tensor predict(const PackedInput&, bool) const {
     TORCH_CHECK(false, "This model does not implement classification");
   }
+  // Optional sequence readout from complete, already restored logical rows.
+  // Defined results must own writable storage independent of the source rows.
+  // Undefined means that this model has not qualified backbone-free readout.
+  virtual at::Tensor classify_hidden(const PackedInput&,const at::Tensor&) const {return {};}
   virtual bool supports_radix() const { return false; }
   virtual bool supports_prefix_cache(int) const { return false; }
   virtual int64_t prefix_layers() const { return 0; }

@@ -394,6 +394,7 @@ int main(int argc,char** argv) {
       TORCH_CHECK(scored->supports_radix(),"Loaded Gemma sequence score head must support causal folding");
       auto full_score=scored->predict(logical,false);
       check_prefix_cache(*scored,logical,1);
+      check_complete_classifier_cache(*scored,logical);
       check_prefix_cache(*scored_embedding,logical);
       check_prefix_cache(*decision,logical);
       auto capped_cfg=scored_cfg;capped_cfg.values["final_logit_softcapping"]="0.01";
@@ -408,6 +409,7 @@ int main(int argc,char** argv) {
       publisher_cfg.values["auto_map.AutoModelForSequenceClassification"]=
         "modeling_gemma4_sequence.Gemma4ForSequenceClassification";
       auto publisher=create_gemma(publisher_cfg,scored_weights,c10::Device("cpu"),at::kFloat);publisher->ready();
+      check_complete_classifier_cache(*publisher,logical);
       auto publisher_hidden=decision->forward(logical);
       auto publisher_logits=at::linear(publisher_hidden,scored_weights.at("score.weight"));
       publisher_logits=publisher_logits/.01;

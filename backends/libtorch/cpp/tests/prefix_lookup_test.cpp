@@ -90,6 +90,28 @@ int main() {
   check(result.collision_fallback&&result.entry==good&&result.length==128,"Collision did not fall back to the exact longest prefix");
   result=prefix_lookup(query,{good,bad},0,191,true);
   check(result.entry==good&&result.length==128,"Collision changed recurrent checkpoint eligibility");
+  // A colliding reader or complete-block shortcut must never bypass the
+  // geometry that produced the saved rows. Invalid readers need no GPU query.
+  std::vector<int32_t> ends={0,192};PackedInput layout;
+  layout.offsets=ends.data();layout.batch=1;layout.max_sequence=192;
+  good->batch_offsets=ends;good->batch_max_sequence=192;
+  bad->batch_offsets=ends;bad->batch_max_sequence=193;
+  int incompatible_probes=0;bad->ready=[&]{++incompatible_probes;return true;};
+  result=prefix_lookup(query,{good,bad},0,191,false,&layout);
+  check(result.entry==good&&result.length==128&&incompatible_probes==0,
+    "Colliding incompatible geometry remained eligible");
+  auto incompatible=entry(identity(192));incompatible->batch_offsets=ends;
+  incompatible->batch_max_sequence=193;incompatible->ready=bad->ready;
+  auto partial=identity(192);partial.tokens[190].values[0]^=1;
+  auto compatible=entry(partial);compatible->batch_offsets=ends;compatible->batch_max_sequence=192;
+  auto layout_key=identity(192);
+  result=prefix_lookup(layout_key,{good,incompatible,compatible},0,191,false,&layout);
+  check(result.entry==compatible&&result.length==190&&incompatible_probes==0,
+    "Complete-block shortcut ignored original geometry");
+  bad->batch_max_sequence=192;
+  result=prefix_lookup(query,{good,bad},0,191,false,&layout);
+  check(result.collision_fallback&&result.entry==good&&result.length==128,
+    "Geometry-aware collision fallback changed exact selection");
   check(!prefix_same(query,bad->identity),"Collision treated distinct snapshots as identical");
   auto tied=identity(192);tied.tokens.back().values[0]^=1;
   auto first_tied=entry(tied),later=entry(identity(192));auto tie_key=identity(192);

@@ -354,14 +354,15 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     ?original.host_multimodal_positions:original.multimodal_positions.cpu();
   std::vector<PrefixIdentity> identities;identities.reserve(original.batch);
   for(int64_t row=0;row<original.batch;++row)identities.push_back(identity(host,row));
-  if(operation==0&&!model.prefix_checkpoint_only()) {
+  // CUDA recipes can depend on the complete packed geometry. Old prefix rows
+  // cannot be repaired by selecting the current recipe only for suffix rows.
+  // Require the same geometry until cross-shape providers are qualified.
+  const auto* reuse_layout=original.ids.is_cuda()?&original:nullptr;
+  if((operation==0||operation==1)&&!model.prefix_checkpoint_only()) {
     std::vector<std::shared_ptr<PrefixEntry>> complete;complete.reserve(original.batch);
-    const auto compact=original.compact_ids.defined()?original.compact_ids.numel():0;
     for(const auto& key:identities) {
       auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& entry) {
-        return entry->operation==operation&&entry->batch_max_sequence==original.max_sequence
-          &&entry->compact_tokens==compact&&entry->batch_offsets.size()==size_t(original.batch+1)
-          &&std::equal(entry->batch_offsets.begin(),entry->batch_offsets.end(),original.offsets)
+        return entry->operation==operation&&prefix_batch_compatible(*entry,original)
           &&prefix_same(key,entry->identity)&&entry->ready();
       });
       if(found==entries.end())break;
@@ -370,16 +371,28 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     if(complete.size()==size_t(original.batch)) {
       std::vector<at::Tensor> outputs;outputs.reserve(complete.size());
       for(auto& entry:complete) {
-        ++counters.hits;counters.reused_tokens+=entry->identity.tokens.size();entry->used=++clock;
 #ifdef TEI_TORCH_CUDA_KERNELS
         if(original.ids.is_cuda())c10::cuda::CUDACachingAllocator::recordStream(entry->output.storage().data_ptr(),
           at::cuda::getCurrentCUDAStream(original.ids.get_device()));
 #endif
         outputs.push_back(entry->output);
       }
-      // Return fresh storage: a caller may mutate its result, and another stream
-      // may clear/evict the immutable source as soon as this submission returns.
-      return outputs.size()==1?outputs[0].clone():at::cat(outputs,0);
+      at::Tensor result;
+      if(operation==1) {
+        // Run the original trained head on complete logical rows, preserving
+        // padding selection and providers that score every token before readout.
+        result=model.classify_hidden(original,outputs.size()==1?outputs[0]:at::cat(outputs,0));
+      } else {
+        // Return fresh storage: a caller may mutate its result, and another stream
+        // may clear/evict the immutable source as soon as this submission returns.
+        result=outputs.size()==1?outputs[0].clone():at::cat(outputs,0);
+      }
+      if(result.defined()) {
+        for(auto& entry:complete) {
+          ++counters.hits;counters.reused_tokens+=entry->identity.tokens.size();entry->used=++clock;
+        }
+        return result;
+      }
     }
   }
   PrefixContext context{original,{}, {}, {}, {},limit,budget};context.offsets={0};
@@ -388,7 +401,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   std::vector<at::Tensor> ids,positions,types,axes;std::vector<int64_t> original_rows;
   for(int64_t row=0;row<original.batch;++row) {
     auto key=std::move(identities[row]);
-    auto found=prefix_lookup(key,entries,operation,std::min<int64_t>(maximum,key.tokens.size()-1),model.prefix_checkpoint_only());
+    auto found=prefix_lookup(key,entries,operation,std::min<int64_t>(maximum,key.tokens.size()-1),model.prefix_checkpoint_only(),reuse_layout);
     auto best=found.length;auto source=std::move(found.entry);
     if(best){++counters.hits;counters.reused_tokens+=best;source->used=++clock;}else ++counters.misses;
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -420,7 +433,8 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     key.media.erase(std::remove_if(key.media.begin(),key.media.end(),[&](const auto& media){return media.start>=retained;}),key.media.end());
     key.media.shrink_to_fit();
     key.fingerprints.resize(std::min(key.fingerprints.size(),key.tokens.size()/prefix_block_tokens));
-    bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation&&prefix_same(key,entry->identity);});
+    bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
+      &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout))&&prefix_same(key,entry->identity);});
     if(retained>best&&!resident_exact&&admit(key,operation)) {
       prefix_fingerprints(key,retained);key.fingerprints.shrink_to_fit();
       uint64_t metadata=sizeof(PrefixEntry)+key.tokens.capacity()*sizeof(PrefixToken)+key.media.capacity()*sizeof(PrefixMedia)
@@ -517,7 +531,8 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         entry->ready=[event,producer]{return at::cuda::getCurrentCUDAStream(producer.device_index())==producer||event->query();};
       }
 #endif
-      entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& old){return old->operation==operation&&prefix_same(old->identity,entry->identity);}),entries.end());
+      entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& old){return old->operation==operation
+        &&(!reuse_layout||prefix_batch_compatible(*old,*reuse_layout))&&prefix_same(old->identity,entry->identity);}),entries.end());
       if(entries.size()<capacity){entries.push_back(entry);++counters.admissions;}
     }
     return result;

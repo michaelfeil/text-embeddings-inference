@@ -91,13 +91,20 @@ static int64_t estimate(const PrefixIdentity& a,const PrefixIdentity& b,int64_t 
   auto start=low*prefix_block_tokens;
   return media_common(a,b,token_common(a,b,start,std::min(end,start+prefix_block_tokens)));
 }
+bool prefix_batch_compatible(const PrefixEntry& entry,const PackedInput& input) {
+  return entry.batch_max_sequence==input.max_sequence
+    &&entry.compact_tokens==(input.compact_ids.defined()?input.compact_ids.numel():0)
+    &&entry.batch_offsets.size()==size_t(input.batch+1)
+    &&std::equal(entry.batch_offsets.begin(),entry.batch_offsets.end(),input.offsets);
+}
 PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr<PrefixEntry>>& entries,
-  int operation,int64_t limit,bool checkpoint_only) {
+  int operation,int64_t limit,bool checkpoint_only,const PackedInput* layout) {
   limit=std::min<int64_t>(limit,key.tokens.size());PrefixLookup best;
   bool hashed=false,advisory=false;
   for(const auto& entry:entries) {
     auto end=std::min<int64_t>(limit,entry->identity.tokens.size());
-    if(entry->operation!=operation||entry->identity.image_context!=key.image_context
+    if((layout&&!prefix_batch_compatible(*entry,*layout))
+      ||entry->operation!=operation||entry->identity.image_context!=key.image_context
       ||end<=best.length||key.tokens[best.length]!=entry->identity.tokens[best.length])continue;
     end=media_bound(key,entry->identity,end);
     if(end<=best.length)continue;
@@ -113,7 +120,8 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
       auto probe=(limit+prefix_block_tokens-1)/prefix_block_tokens;
       if(probe&&int64_t(key.fingerprints.size())>=probe)for(const auto& candidate:entries) {
         const auto& identity=candidate->identity;
-        if(candidate->operation!=operation||identity.image_context!=key.image_context
+        if((layout&&!prefix_batch_compatible(*candidate,*layout))
+          ||candidate->operation!=operation||identity.image_context!=key.image_context
           ||int64_t(identity.tokens.size())<limit||int64_t(identity.fingerprints.size())<probe
           ||(checkpoint_only&&int64_t(identity.tokens.size())!=limit)
           ||identity.fingerprints[probe-1]!=key.fingerprints[probe-1]
@@ -125,7 +133,8 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
           for(const auto& earlier:entries) {
             if(earlier==candidate)break;
             const auto& prior=earlier->identity;
-            if(earlier->operation!=operation||prior.image_context!=key.image_context
+            if((layout&&!prefix_batch_compatible(*earlier,*layout))
+              ||earlier->operation!=operation||prior.image_context!=key.image_context
               ||int64_t(prior.tokens.size())<limit||(checkpoint_only&&int64_t(prior.tokens.size())!=limit))continue;
             if(estimate(key,prior,limit)==limit&&earlier->ready()
               &&prefix_common(key,prior,limit)==limit)return {earlier,limit,false};
@@ -144,7 +153,8 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
   // Do not let a colliding overestimate hide another valid candidate, including
   // a shorter recurrent checkpoint or a prefix with matching media.
   best={nullptr,0,true};
-  for(const auto& entry:entries)if(entry->operation==operation&&entry->ready()) {
+  for(const auto& entry:entries)if((!layout||prefix_batch_compatible(*entry,*layout))
+    &&entry->operation==operation&&entry->ready()) {
     auto n=prefix_common(key,entry->identity,limit);
     if(n>best.length&&(!checkpoint_only||n==int64_t(entry->identity.tokens.size()))) {
       best.entry=entry;best.length=n;

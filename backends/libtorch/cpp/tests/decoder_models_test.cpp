@@ -678,6 +678,23 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
   PackedInput input{at::tensor({3,4,0,3,6,7,0},options),at::zeros({7},options),
    at::tensor({0,1,2,0,1,2,3},options),at::tensor(offsets,options.dtype(at::kInt)),offsets.data(),2,4};
   check_prefix_cache(*model,input,1);
+  check_complete_classifier_cache(*model,input);
+  auto all_pad=input;all_pad.ids=input.ids.clone();all_pad.ids.narrow(0,0,3).zero_();
+  check_complete_classifier_cache(*model,all_pad);
+  if(argc>1) {
+    auto gpu_cfg=cfg;gpu_cfg.values["num_attention_heads"]="2";
+    gpu_cfg.values["num_key_value_heads"]="1";gpu_cfg.values["head_dim"]="8";
+    auto gpu_tensors=weights(gpu_cfg);
+    gpu_tensors["score.weight"]=at::arange(48,at::kFloat).view({3,16})*.013;
+    gpu_tensors["score.bias"]=at::tensor({.1f,-.2f,.3f});
+    for(auto& [name,value]:gpu_tensors)value=value.to(c10::Device(argv[1]),at::kBFloat16);
+    auto gpu=create_decoder(gpu_cfg,gpu_tensors,c10::Device(argv[1]),at::kBFloat16);gpu->ready();
+    auto device_input=input;
+    device_input.ids=input.ids.to(c10::Device(argv[1]));device_input.types=input.types.to(c10::Device(argv[1]));
+    device_input.positions=input.positions.to(c10::Device(argv[1]));device_input.cumulative=input.cumulative.to(c10::Device(argv[1]));
+    check_complete_classifier_cache(*gpu,device_input);
+    device_input.ids=all_pad.ids.to(c10::Device(argv[1]));check_complete_classifier_cache(*gpu,device_input);
+  }
  }
  for(auto family:{"llama","mistral","qwen2","qwen3","qwen3_moe"}){
   auto cfg=config(family,std::string(family)=="qwen3_moe");auto w=weights(cfg);auto initial=w;auto model=create_decoder(cfg,initial,c10::Device("cpu"),at::kFloat);model->ready();

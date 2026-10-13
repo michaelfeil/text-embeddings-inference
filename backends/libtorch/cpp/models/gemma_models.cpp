@@ -885,7 +885,9 @@ class Gemma final : public Model {
   at::Tensor predict(const PackedInput& input,bool tokens) const override {
     TORCH_CHECK(classification_width()>0,"Gemma classifier score head is missing");
     TORCH_CHECK(!tokens,"Gemma4 classifier supports sequence logits only");
-    auto states=forward_impl(input,true);
+    return classify_hidden(input,forward_impl(input,true));
+  }
+  at::Tensor classify_hidden(const PackedInput& input,const at::Tensor& states) const override {
     const auto& logical=prefix_logical_input(input);
     if(publisher_sequence) {
       // The declared publisher scores every logical token before readout.
