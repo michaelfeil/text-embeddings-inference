@@ -1,0 +1,79 @@
+Infinity License 1.0 for Noncommercial Use
+License author: Michael Feil
+Licensors: Infinity Core Contributors, each for rights they own or control.
+
+This is a custom source-available license. The applicable Adoption Notice
+identifies the covered rights and effective version. It is offered as an
+alternative to Infinity License 1.0 for Commercial Use.
+
+1. PERMISSION
+
+By accepting these terms, you may use, copy, modify, and distribute the
+covered code and documentation, including modifications and binaries,
+for noncommercial purposes only, worldwide and without royalties for the
+duration of the contributors' rights. Each contributor grants only rights
+they control. Existing Apache, INFOIL, and third-party grants remain intact.
+No ownership, trademarks, or rights over model weights or outputs are
+transferred.
+
+2. NONCOMMERCIAL USE TERMS
+
+Noncommercial use, including research, education, and personal
+experimentation, is allowed on every platform, including those listed in
+the commercial license's Appendix A. Employment by a listed provider alone
+does not restrict independent personal projects.
+
+Business operations and product or service development are commercial,
+even before revenue. Research salaries, academic grants, or paying for
+generic compute alone do not make research commercial. Developing a
+business or preparing a commercial deployment is not noncommercial use.
+A research customer does not exempt a provider's paid software-based
+inference service.
+
+3. REWRITES AND COMMERCIAL USE
+
+Using covered source, documentation, or design obtained from them to create,
+commission, or assist a replacement for commercial use is commercial
+development, even before deployment. This includes manual rewrites, coding
+agents, contractors, subprocessors, intermediate design specifications, and
+ports to C, Go, or any language. Noncommercial rewrites remain permitted.
+
+Commercial development or deployment requires permission under Infinity
+License 1.0 for Commercial Use or another applicable independent grant;
+this license does not authorize it. General ideas, algorithms, independent
+development without these materials, independently licensed rights, and
+nonwaivable legal rights remain unaffected.
+
+4. SHARING AND CONTRIBUTIONS
+
+Distributions must retain both Infinity License 1.0 alternatives, the
+commercial license's Appendix A, the adoption notice, and third-party
+notices; identify changes; and offer covered modifications under both
+alternatives so recipients retain the same choice. Supply editable source
+and build/install instructions with the distribution, or through a free
+download available for at least three years after the last corresponding
+distribution. Credentials, customer data, separately licensed weights,
+independent applications, and standard tools are excluded from that source
+obligation.
+
+Private modifications and network access alone do not require publication.
+API clients may retain their own licenses. Contributions intentionally
+submitted for inclusion are offered under both alternatives unless otherwise
+agreed; ownership stays with contributors. Relicensing or exceptions require
+the applicable rights holders' authorization, including for existing
+INFOIL-only contributions.
+
+5. PATENTS, TERMINATION, AND LIABILITY
+
+Contributors license controlled patent claims necessarily practiced by
+their contributions, alone or in their submitted combination, to make, use,
+sell, offer for sale, and import the software for permitted uses. This
+patent grant ends if you bring a patent claim alleging the software
+infringes.
+
+Copyright permissions terminate on breach. A first breach cured within 30
+days of learning of it restores them; later reinstatement requires the
+affected rights holders' permission. Compliant recipients retain rights. To
+the extent law permits, the software is provided as is, without warranty,
+and contributors are not liable for resulting losses. Unenforceable terms
+do not invalidate the rest. Later versions do not change existing grants.

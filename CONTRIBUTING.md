@@ -18,12 +18,16 @@ limitations under the License.
 # Contribute to infinity_v3
 
 New original fork contributions and covered modifications are offered under
-[INFOIL 1.0](LICENSES/INFOIL-1.0.txt), subject to the [adoption scope](LICENSE).
-Contributors retain ownership; this does not assign copyright or grant a
-blanket right to issue commercial exceptions for their work. Identify any
-separately licensed material and obtain agreement on different inbound terms
-before inclusion. Preserve inherited notices and prominently identify modified
-files and the applicable fork license scope. See [LICENSING.md](LICENSING.md).
+both [Infinity License 1.0 for Commercial Use](LICENSES/Infinity-License-1.0-for-Commercial-Use.txt)
+and [Infinity License 1.0 for Noncommercial Use](LICENSES/Infinity-License-1.0-for-Noncommercial-Use.txt),
+so recipients may choose either alternative, subject to the
+[adoption scope](LICENSE). Contributors retain ownership; this does not
+assign copyright or grant blanket authority to issue exceptions for their
+work. Identify separately licensed material and obtain agreement on different
+inbound terms before inclusion. Earlier INFOIL-only contributions require
+the applicable rights holders' authorization for the new alternatives.
+Preserve inherited notices and prominently identify modified files and the
+applicable fork license scope. See [LICENSING.md](LICENSING.md).
 
 Everyone is welcome to contribute, and we value everybody's contribution. Code
 contributions are not the only way to help the community. Answering questions, helping

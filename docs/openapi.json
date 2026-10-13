@@ -7,8 +7,8 @@
       "name": "Olivier Dehaene"
     },
     "license": {
-      "name": "INFOIL 1.0 (see scope and retained third-party licenses)",
-      "url": "https://github.com/michaelfeil/text-embeddings-inference/blob/infinity_v3-infoil-1.0/LICENSE"
+      "name": "Infinity License 1.0: Commercial Use OR Noncommercial Use (see scope and retained licenses)",
+      "url": "https://github.com/michaelfeil/text-embeddings-inference/blob/mf/faster-tei/LICENSE"
     },
     "version": "1.8.3"
   },

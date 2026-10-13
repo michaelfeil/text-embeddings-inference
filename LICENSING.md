@@ -1,148 +1,124 @@
 # infinity_v3 licensing
 
-This fork adopts [INFOIL 1.0](LICENSES/INFOIL-1.0.txt). The authoritative
-[Adoption Notice and complete license bundle](LICENSE) identify the scope,
-licensors, effective date, and retained independent licenses. INFOIL is a
-custom source-available license with use restrictions; it is not an
-unrestricted open-source license.
+Covered fork contributions are offered under a choice of:
 
-## Proposed successor: Infinity License 1.0 for Commercial Use (not adopted)
+- [Infinity License 1.0 for Commercial Use](LICENSES/Infinity-License-1.0-for-Commercial-Use.txt).
+- [Infinity License 1.0 for Noncommercial Use](LICENSES/Infinity-License-1.0-for-Noncommercial-Use.txt).
 
-The [Infinity License 1.0 for Commercial Use draft](docs/licensing/Infinity-License-1.0-for-Commercial-Use-DRAFT.txt),
-written by **Michael Feil**, is a custom source-available license.
-The proposed licensors remain **Infinity Core Contributors**.
-INFOIL 1.0 remains the adopted license; this draft grants no new permissions.
+The [Adoption Notice and complete license bundle](LICENSE) define the covered
+rights, exclusions, and effective version. Adoption takes effect at the merge
+that first introduces that notice into `mf/faster-tei`; that merge commit and
+date identify the first covered source version and effective date. The
+pre-adoption integration base is `ec11d07f4a0c354279366c616ac9184cc0c84850`.
 
-Its **Commercial Use Terms** expressly allow **commercial enterprise use on
-your own hardware or capacity supplied by an unlisted provider**, subject
-to the platform restrictions. **You may not deploy Infinity commercially
-on the listed platforms**, whether you are the platform operator or its
-customer.
+These are custom source-available licenses. **Michael Feil** is the author of
+the license texts. **Infinity Core Contributors** describes each rights
+holder or authorized licensor for their own contributions; it does not
+assign ownership or permit one contributor to relicense another's work.
 
-| Use | Proposed rule |
+## Choose the alternative that permits your use
+
+Commercial enterprise use is allowed on your own hardware or capacity
+supplied by an unlisted provider, subject to the commercial platform
+restrictions. Noncommercial use, including research, education, and personal
+experimentation, is allowed on every platform. Business operations and
+product or service development are commercial even before revenue.
+
+This is a choice between the two alternatives, not a requirement to satisfy
+both sets of use restrictions. Each use must comply with the applicable
+alternative; a noncommercial deployment does not authorize a later
+commercial deployment. Distributions must preserve both alternatives so
+recipients and users of covered modifications retain the same choice.
+
+| Use | License treatment for covered rights |
 | --- | --- |
-| Commercial deployment on a listed platform, including an enterprise customer's private endpoints or rented GPUs | Prohibited. |
-| Ordinary AWS infrastructure such as EC2 | Allowed; **Amazon Bedrock is separately prohibited** for commercial deployment. |
-| Traditional enterprise on its own hardware or capacity supplied by an unlisted provider | Commercial use allowed, subject to the platform restrictions below. |
-| Noncommercial research, education, and personal experimentation | Allowed on every platform. |
-| Employee or contractor preparing a listed platform's prohibited deployment | Prohibited; employment alone does not restrict personal projects. |
-| Manual, agent, or subprocessor rewrite using covered code, documentation, or derived design for a prohibited deployment | Prohibited, including C/Go ports before deployment. |
+| Enterprise application on its own hardware or an unlisted provider's capacity | Allowed under the commercial license, subject to its platform restrictions. |
+| Commercial deployment on a listed platform, including private endpoints, rented GPUs, or one customer's endpoint | Prohibited for operators and customers regardless of billing unit. |
+| Ordinary AWS infrastructure such as EC2 | Allowed under the commercial license; Amazon Bedrock is separately prohibited. |
+| Azure, Baseten, Google Cloud / AI Studio, or Oracle Cloud | Expressly permitted by the commercial license. |
+| Noncommercial research, education, or personal use on Modal, Together, Fireworks, or another listed platform | Allowed under the noncommercial license. |
+| Academic research paid for by grants, researcher salaries, or generic compute rental | Those payments alone do not make the research commercial. |
+| A provider sells an Infinity-based inference service to one research customer | Commercial; the customer's research purpose does not exempt the provider. |
+| Employee's independent noncommercial personal project | Allowed; employment alone does not restrict it. |
+| Employee or contractor prepares a listed platform's prohibited deployment | Prohibited, including development before deployment. |
+| Manual, agent, or subprocessor rewrite using covered source, documentation, or derived design for a prohibited commercial deployment | Prohibited, including C/Go ports and intermediate specifications. |
+| Noncommercial rewrite with no commercial development or deployment purpose | Allowed under the noncommercial license. |
 
-The [fixed OpenRouter snapshot](docs/licensing/openrouter-providers-2026-10-13.json)
-accounts for all 93 directory entries retrieved on 2026-10-13: 89 listed and
-four excluded (Azure, Baseten, Google Vertex, Google AI Studio). Oracle
-Cloud is also permitted. The snapshot explains the API-only entries and
-each inclusion or exclusion; future OpenRouter changes do not alter the list.
+## Commercial Use Terms
 
-Named permitted providers may run their own deployments on leased hardware
-when they actually manage serving, including Baseten deployments. Routing
-through them does not permit deployment inside a listed platform's service.
-Buying NVIDIA hardware, downloading models, or using DNS alone is not
-platform deployment.
+The commercial license's Appendix A is the fixed platform blacklist. It
+contains 89 entries from the [recorded OpenRouter directory snapshot](docs/licensing/openrouter-providers-2026-10-13.json),
+retrieved on 2026-10-13 UTC. Four of the directory's 93 entries were excluded:
+Azure, Baseten, Google Vertex, and Google AI Studio. Oracle Cloud is also
+expressly permitted. The snapshot records provider identifiers and API-only
+entries excluded from the list. Future OpenRouter changes do not alter the
+license, and no revenue test applies.
 
-Redistributions retain the same license and corresponding source. Existing
-grants and third-party rights remain intact; adoption needs authorization
-from the applicable rights holders and an adoption notice. The rewrite
-condition concerns licensed materials; it does not claim ownership of
-[general ideas or algorithms](https://www.copyright.gov/register/tx-programs.html).
+The named permitted providers may operate their own deployments on hardware
+leased from listed operators if they actually manage serving. This does not
+permit deployment inside a listed service, including Bedrock. Routing,
+reselling, or relabeling cannot bypass the restriction. Buying NVIDIA
+hardware, downloading models, storage, DNS, transit, or unrelated API calls
+alone is not platform deployment.
 
-## Adoption and existing rights
+The rewrite condition concerns use of licensed source, documentation, and
+design obtained from them. General ideas, algorithms, independent development
+without those materials, independently licensed rights, and nonwaivable legal
+rights remain unaffected.
 
-- **Licensor:** Infinity Core Contributors, meaning each copyright holder or
-  authorized licensor for their own contributions, identified by source
-  notices and contribution records. This collective label does not assign
-  copyright, create a legal entity, or authorize relicensing others' work.
-- **Effective date:** 2026-10-12.
-- **First covered source release:** `infinity_v3-infoil-1.0`, identified by
-  the Git tag of the same name. This marks the license transition, not a
-  public Docker release.
-- **Pre-adoption base:** `9486dd9ee89575442fda1a491c381046b37e116e`.
+## Existing rights and third-party material
 
-INFOIL covers the original fork contributions and copyrightable modifications
-first offered under this adoption, and subsequent contributions accepted on
-that basis, within the scope in `LICENSE`. It also governs the contributors'
-covered rights in the derivative distribution as a whole. It does not
-revoke rights already granted for inherited or previously published code.
-Earlier Apache-covered source can still be used and redistributed under its
-existing grant, including by people who obtain a copy after this transition.
+The adoption adds the two alternatives only for rights whose holders
+authorize them. Michael Feil adopts them for fork rights he owns or is
+authorized to license. Another holder's existing INFOIL-only contributions
+remain under INFOIL until that holder separately authorizes the alternatives.
+Git authorship or maintainer access alone does not establish ownership or
+relicensing authority.
 
-Hugging Face Text Embeddings Inference retains Apache-2.0. The complete prior
-root license and upstream attribution remain in the root `LICENSE` bundle;
-[LICENSES/Apache-2.0.txt](LICENSES/Apache-2.0.txt) remains unchanged.
-Bundled components keep their own terms and source notices, indexed in
-[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). Naming a permitted operator
-or a maintainer does not establish ownership of those components.
+Earlier Apache-2.0 and INFOIL grants remain available for the exact material
+and rights they cover, including to later recipients. They do not license
+new contributions first offered solely under this dual-license adoption.
+INFOIL is not a third choice for those new contributions.
 
-## Provider restrictions and the Baseten exception
+The [historical INFOIL adoption notice](LICENSES/INFOIL-1.0-Adoption-Notice.txt),
+[INFOIL 1.0 text](LICENSES/INFOIL-1.0.txt), and
+[Apache-2.0 text](LICENSES/Apache-2.0.txt) are preserved. The original INFOIL
+transition was effective on 2026-10-12, at `infinity_v3-infoil-1.0`, with
+pre-adoption base `9486dd9ee89575442fda1a491c381046b37e116e`.
 
-Commercial inference providers and deployments on their capacity are
-restricted, including Fireworks AI, Modal, Together AI, CoreWeave, and Nebius.
-The general definition is broader than those names: helping even one paying
-customer stand up an inference endpoint on supplied capacity qualifies,
-including when billing is for GPU hours rather than tokens. Internal,
-research, testing, and free deployments on restricted capacity are also
-covered. Routing through OpenRouter or another intermediary does not avoid
-the restrictions. See INFOIL Sections 1 and 3 for the full definitions.
+Inherited Hugging Face Text Embeddings Inference, previously Apache-covered
+fork contributions, bundled components, and external dependencies retain
+their independent grants and notices. Model weights and outputs do not become
+covered by either alternative merely through use. See [NOTICE](NOTICE),
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and component notices.
 
-Section 4 expressly permits Baseten-operated deployments, including capacity
-Baseten leases from other providers while actually operating the serving
-deployment. A customer that is itself an inference provider may use that
-exception within a Baseten deployment. An independently operated endpoint
-elsewhere does not qualify merely because traffic or billing passes through
-Baseten. This exception does not name Baseten as the owner or Licensor of
-other contributors' work.
+## Contributions, redistribution, and packaging
 
-| Scenario | INFOIL treatment |
-| --- | --- |
-| Internal application on company-owned hardware, where the company is not an inference provider | Permitted. |
-| Commercial application on unrestricted capacity that does not expose a general-purpose inference or model-deployment service | Permitted. |
-| One private customer endpoint set up by a provider on its rented GPUs, billed by GPU-hour | Restricted; public access and per-token billing are unnecessary. |
-| Free research deployment on Modal, CoreWeave, or another restricted provider | Restricted. |
-| A restricted provider's internal benchmark on its own machines | Restricted. |
-| A customer-operated deployment on another cloud that itself qualifies as a commercial inference provider | Restricted, even if the customer rents only generic capacity. |
-| Baseten-operated endpoint, including one using capacity leased from a restricted provider | Permitted under the Baseten exception. |
-| An inference provider reselling results served entirely by a Baseten deployment | Permitted within that deployment under the Baseten exception. |
-| A customer operates an endpoint elsewhere and routes requests through Baseten | No Baseten exception. |
-| An allowed application calls an unrelated external inference API | That call alone does not make its execution infrastructure restricted. |
-| A recipient uses or redistributes an earlier Apache-licensed version | Governed by the earlier grant, which INFOIL does not revoke. |
+New covered contributions intentionally submitted for inclusion are offered
+under both alternatives unless different terms are expressly agreed before
+inclusion. Contributors retain ownership. Neither the collective licensor
+name nor either license gives anyone blanket authority to issue exceptions
+or relicense another holder's work.
 
-## Contributions and redistribution
+Redistributions retain both alternatives, Appendix A, the adoption notice,
+and third-party notices, identify changes, and provide covered modifications
+under both alternatives. Include corresponding editable source and
+build/install instructions, or a free download available for at least three
+years after the last corresponding distribution. Private modifications and
+network use alone do not require publication. Independent API clients may
+retain their own licenses.
 
-New covered contributions are offered under INFOIL 1.0 unless different terms
-are expressly agreed before inclusion. Contributors retain ownership.
-There is no blanket grant to relicense their work or issue commercial
-exceptions on their behalf; a separate agreement must come from parties
-holding the needed rights. The Baseten exception is part of INFOIL itself.
+The root `LICENSE` bundles both complete alternatives and the unchanged
+historical INFOIL/Apache bundle. First-party Cargo packages use this bundle
+through `license-file`; independently licensed extension crates retain their
+own declarations. Docker builds install the license bundle and component
+notices at `/usr/share/licenses/infinity_v3/`; native LibTorch installations
+retain their existing `share/licenses/tei_torch/` location.
 
-Redistributed covered modifications must retain this version of INFOIL and
-include corresponding source, as specified in Section 5. Private
-modifications and network use alone do not require publication. Preserve
-all inherited notices, prominently identify modified files, and distinguish
-new INFOIL-covered modifications from independently licensed material.
+This is not a complete audit of transitive dependencies, model weights,
+CUDA libraries, or base images. Distributors must retain any additional
+notices those artifacts require.
 
-The root `LICENSE` contains the Adoption Notice and full INFOIL and retained
-Apache texts so packages and native library installations carry the actual
-terms rather than only links. First-party workspace packages reference this
-bundle through `license-file`; independently licensed extension crates keep
-their own declarations.
-
-Docker builds install that bundle, the licensing notes, and bundled license
-files at `/usr/share/licenses/infinity_v3/`. The collection is not a complete
-audit of transitive dependencies, model weights, CUDA libraries, or base
-images; distributors must retain the additional notices their artifacts
-require. LibTorch's existing native notices remain installed with its library.
-
-## License files
-
-| File | Purpose |
-| --- | --- |
-| `LICENSE` | Adoption Notice, scope and exclusions, complete INFOIL terms, and retained original Apache license. |
-| `LICENSES/INFOIL-1.0.txt` | INFOIL 1.0 terms. |
-| `LICENSES/Apache-2.0.txt` | Retained upstream license copy. |
-| `NOTICE` | Upstream and fork attribution; does not amend license grants. |
-| `THIRD_PARTY_NOTICES.md` | Bundled component notice index and dependency-audit scope. |
-
-References: [historical HFOIL 1.0](https://github.com/huggingface/text-generation-inference/blob/v1.0.0/LICENSE),
-[Apache-2.0 sections 2 and 4](https://www.apache.org/licenses/LICENSE-2.0), and
-[Baseten's published legal name](https://www.baseten.co/terms-and-conditions/).
-INFOIL is a distinct license; these references do not imply endorsement.
+References: [SPDX's OR license-choice convention](https://spdx.github.io/spdx-spec/v2.3.1/SPDX-license-expressions/#d42-disjunctive-or-operator),
+[Apache-2.0](https://www.apache.org/licenses/LICENSE-2.0), and
+[Copyright Office guidance on computer programs](https://www.copyright.gov/register/tx-programs.html).
