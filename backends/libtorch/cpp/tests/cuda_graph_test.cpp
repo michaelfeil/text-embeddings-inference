@@ -8,6 +8,9 @@
 #include <iostream>
 #include <cuda_runtime_api.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <ATen/cuda/CUDAEvent.h>
+#include <thread>
+#include <chrono>
 using namespace tei;
 class Dense final:public Model {
 public:
@@ -27,6 +30,25 @@ public:
   auto h=forward(input);
   if(!tokenwise)h=h.index_select(0,input.cumulative.narrow(0,0,input.batch).to(at::kLong));
   return h+(tokenwise?13:7);
+ }
+};
+class FailedWarmup final:public Model {
+ mutable bool injected=false;
+ mutable at::cuda::CUDAEvent queued;
+public:
+ void ready() override{}
+ at::Tensor forward(const PackedInput& input) const override {
+  if(!injected) {
+   injected=true;
+   const auto stream=c10::cuda::getCurrentCUDAStream(input.ids.get_device());
+   TORCH_CHECK(cudaLaunchHostFunc(stream.stream(),[](void*) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(250));
+   },nullptr)==cudaSuccess,"Unable to enqueue warmup work");
+   queued.record(stream);
+   TORCH_CHECK(false,"Injected warmup allocation failure");
+  }
+  TORCH_CHECK(queued.query(),"Fallback began before failed warmup work drained");
+  return input.ids.to(at::kFloat).unsqueeze(1);
  }
 };
 class Uncapturable final:public Model {
@@ -243,6 +265,13 @@ int main(){c10::InferenceMode guard;admission_test();radix_qkv_copy_graph_test()
  }
  TORCH_CHECK(heads_cache.size()==3,"Hidden, sequence and token head graph keys collided");
  input.ids.sub_(3);
+ FailedWarmup failed_warmup;CudaGraphCache failed_cache(1,4096,1);
+ for(int i=0;i<2;++i) {
+  TORCH_CHECK(at::equal(failed_cache.forward(failed_warmup,input),input.ids.to(at::kFloat).unsqueeze(1)),
+    "Failed warmup recovery changed output");
+ }
+ TORCH_CHECK(failed_cache.size()==0 && failed_cache.stats().attempts==1,
+   "Failed warmup was retained or repeatedly captured");
  Uncapturable unsupported;CudaGraphCache fallback(4,4096,1);
  for(int i=0;i<2;++i){auto actual=fallback.forward(unsupported,input);TORCH_CHECK(actual[0][0].item<float>()==12,"Graph fallback changed result");}
  TORCH_CHECK(fallback.size()==0,"Unsupported model unexpectedly captured");
