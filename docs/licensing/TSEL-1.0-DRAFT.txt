@@ -18,6 +18,10 @@ rights over model weights or outputs are transferred.
 
 2. COMMERCIAL PLATFORM BLACKLIST
 
+Commercial use, including ordinary enterprise use, is allowed on your own
+hardware or capacity supplied by an unlisted provider, subject to the
+restrictions below.
+
 You must not deploy or run the software commercially on the platforms
 listed in Appendix A, their rented capacity, or as part of their services.
 This applies to operators and customers, including private endpoints,

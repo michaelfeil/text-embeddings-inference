@@ -9,17 +9,19 @@ unrestricted open-source license.
 ## Proposed successor: platform blacklist for commercial use (not adopted)
 
 The [Token Service Elastic License draft](docs/licensing/TSEL-1.0-DRAFT.txt),
-written by **Michael Feil**, has one central rule: **you may not deploy
-Infinity commercially on the listed platforms**, whether you are the
-platform operator or its customer. It is a custom license, not Elastic
-License 2.0. The proposed licensors remain **Infinity Core Contributors**.
+written by **Michael Feil**, expressly allows **commercial enterprise use on
+your own hardware or capacity supplied by an unlisted provider**, subject
+to its platform restrictions. **You may not deploy Infinity commercially
+on the listed platforms**, whether you are the platform operator or its
+customer. It is a custom license, not Elastic License 2.0. The proposed
+licensors remain **Infinity Core Contributors**.
 INFOIL 1.0 remains the adopted license; this draft grants no new permissions.
 
 | Use | Proposed rule |
 | --- | --- |
-| Commercial deployment on a listed platform, including private endpoints and rented GPUs | Prohibited. |
+| Commercial deployment on a listed platform, including an enterprise customer's private endpoints or rented GPUs | Prohibited. |
 | Ordinary AWS infrastructure such as EC2 | Allowed; **Amazon Bedrock is separately prohibited** for commercial deployment. |
-| Private hardware or unlisted platforms | Allowed. |
+| Traditional enterprise on its own hardware or capacity supplied by an unlisted provider | Commercial use allowed, subject to the platform restrictions below. |
 | Noncommercial research, education, and personal experimentation | Allowed on every platform. |
 | Employee or contractor preparing a listed platform's prohibited deployment | Prohibited; employment alone does not restrict personal projects. |
 | Manual, agent, or subprocessor rewrite using covered code, documentation, or derived design for a prohibited deployment | Prohibited, including C/Go ports before deployment. |
