@@ -1,4 +1,5 @@
 #include "batching/prefix_cache.h"
+#include "batching/prefix_lookup.h"
 #include "batching/radix.h"
 #include "models/model.h"
 #include "helpers/prefix_linear.h"
@@ -252,16 +253,6 @@ static PrefixIdentity identity(const PackedInput& input,int64_t row) {
   }
   return key;
 }
-static int64_t common(const PrefixIdentity& a,const PrefixIdentity& b,int64_t limit) {
-  if(a.image_context!=b.image_context)return 0;
-  int64_t n=0;while(n<limit&&n<int64_t(a.tokens.size())&&n<int64_t(b.tokens.size())&&a.tokens[n]==b.tokens[n])++n;
-  for(const auto* key:{&a,&b})for(const auto& media:key->media)if(media.start<n) {
-    auto& other=key==&a?b:a;
-    auto match=std::find(other.media.begin(),other.media.end(),media);
-    if(match==other.media.end()||media.start+media.count>n)n=std::min(n,media.start);
-  }
-  return n;
-}
 at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int operation) {
   std::lock_guard guard(mutex);
   auto run=[&](const PackedInput& input){return operation?model.predict(input,operation==2):model.forward(input);};
@@ -302,12 +293,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   context.linear=linear.get();
   std::vector<at::Tensor> ids,positions,types,axes;std::vector<int64_t> original_rows;
   for(int64_t row=0;row<original.batch;++row) {
-    auto key=identity(host,row);int64_t best=0;std::shared_ptr<PrefixEntry> source;
-    for(const auto& entry:entries)if(entry->operation==operation&&entry->ready()) {
-      auto n=common(key,entry->identity,std::min<int64_t>(maximum,key.tokens.size()-1));
-      if(model.prefix_checkpoint_only()&&n!=int64_t(entry->identity.tokens.size()))continue;
-      if(n>best){best=n;source=entry;}
-    }
+    auto key=identity(host,row);
+    auto found=prefix_lookup(key,entries,operation,std::min<int64_t>(maximum,key.tokens.size()-1),model.prefix_checkpoint_only());
+    auto best=found.length;auto source=std::move(found.entry);
     if(best){++counters.hits;counters.reused_tokens+=best;source->used=++clock;}else ++counters.misses;
 #ifdef TEI_TORCH_CUDA_KERNELS
     if(source&&original.ids.is_cuda()) {
@@ -334,10 +322,13 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     key.tokens.shrink_to_fit();
     key.media.erase(std::remove_if(key.media.begin(),key.media.end(),[&](const auto& media){return media.start>=retained;}),key.media.end());
     key.media.shrink_to_fit();
-    bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation&&entry->identity.tokens.size()==key.tokens.size()&&common(key,entry->identity,key.tokens.size())==int64_t(key.tokens.size());});
-    uint64_t metadata=sizeof(PrefixEntry)+key.tokens.capacity()*sizeof(PrefixToken)+key.media.capacity()*sizeof(PrefixMedia);
-    for(const auto& media:key.media)metadata+=media.layout.capacity()*sizeof(int64_t)+media.content.capacity();
+    key.fingerprints.resize(std::min(key.fingerprints.size(),key.tokens.size()/prefix_block_tokens));
+    bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation&&prefix_same(key,entry->identity);});
     if(retained>best&&!resident_exact) {
+      prefix_fingerprints(key,retained);key.fingerprints.shrink_to_fit();
+      uint64_t metadata=sizeof(PrefixEntry)+key.tokens.capacity()*sizeof(PrefixToken)+key.media.capacity()*sizeof(PrefixMedia)
+        +key.fingerprints.capacity()*sizeof(PrefixFingerprint);
+      for(const auto& media:key.media)metadata+=media.layout.capacity()*sizeof(int64_t)+media.content.capacity();
       writer=std::make_shared<PrefixEntry>();writer->identity=std::move(key);writer->operation=operation;writer->used=++clock;
       writer->bytes=metadata;
     }
@@ -422,7 +413,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         entry->ready=[event,producer]{return at::cuda::getCurrentCUDAStream(producer.device_index())==producer||event->query();};
       }
 #endif
-      entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& old){return old->operation==operation&&common(old->identity,entry->identity,entry->identity.tokens.size())==int64_t(entry->identity.tokens.size())&&old->identity.tokens.size()==entry->identity.tokens.size();}),entries.end());
+      entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& old){return old->operation==operation&&prefix_same(old->identity,entry->identity);}),entries.end());
       if(entries.size()<capacity){entries.push_back(entry);++counters.admissions;}
     }
     return result;

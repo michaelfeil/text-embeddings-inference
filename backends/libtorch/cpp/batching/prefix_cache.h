@@ -23,10 +23,15 @@ struct PrefixMedia {
   bool hashed=false;
   bool operator==(const PrefixMedia&) const = default;
 };
+struct PrefixFingerprint {
+  uint64_t low=0, high=0;
+  bool operator==(const PrefixFingerprint&) const = default;
+};
 struct PrefixIdentity {
   std::vector<PrefixToken> tokens;
   std::vector<PrefixMedia> media;
   bool image_context=false;
+  std::vector<PrefixFingerprint> fingerprints;
 };
 struct PrefixLayer {
   at::Tensor key, value, recurrent, convolution;
