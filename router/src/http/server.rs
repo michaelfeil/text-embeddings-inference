@@ -445,7 +445,9 @@ fn classify_error(
     )
 }
 
-fn classify_inference_error(error: ErrorResponse) -> (StatusCode, Json<ClassifyErrorResponse>) {
+pub(crate) fn classify_inference_error(
+    error: ErrorResponse,
+) -> (StatusCode, Json<ClassifyErrorResponse>) {
     let (status, Json(error)): (StatusCode, Json<ErrorResponse>) = error.into();
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => "overloaded_error",
@@ -2294,6 +2296,30 @@ pub async fn run(
         };
     }
 
+    super::response_format::initialize_memory_errors();
+    let http_output_limit = std::env::var("TEI_HTTP_OUTPUT_MAX_BYTES")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("Invalid TEI_HTTP_OUTPUT_MAX_BYTES")?
+        .unwrap_or(512 * 1024 * 1024);
+    let http_input_limit = std::env::var("TEI_HTTP_INPUT_MAX_BYTES")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("Invalid TEI_HTTP_INPUT_MAX_BYTES")?
+        .unwrap_or(512 * 1024 * 1024);
+    let admission = super::memory::MemoryAdmission::new(
+        info.max_concurrent_requests,
+        payload_limit,
+        http_input_limit,
+        http_output_limit,
+    )?;
+    routes = routes.layer(axum::middleware::from_fn_with_state(
+        admission.clone(),
+        super::memory::admit,
+    ));
+
     if let Some(api_key) = api_key {
         let prefix = format!("Bearer {}", api_key);
 
@@ -2329,6 +2355,10 @@ pub async fn run(
         ))
         .layer(DefaultBodyLimit::max(payload_limit))
         .layer(axum::middleware::from_fn(super::response_format::negotiate))
+        .layer(axum::middleware::from_fn_with_state(
+            admission,
+            super::memory::response_budget,
+        ))
         .layer(cors_layer);
 
     // Run server

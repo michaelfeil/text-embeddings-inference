@@ -120,6 +120,19 @@ returns an error; subsequent requests can still run. This output limit does not
 cover model activations, native staging buffers, upstream request buffers or
 allocator-reserved memory.
 
+HTTP POST requests also reserve a request slot before reading or parsing the body.
+`TEI_HTTP_INPUT_MAX_BYTES` limits aggregate reserved request-body capacity and
+`TEI_HTTP_OUTPUT_MAX_BYTES` limits aggregate encoded-response allocation capacity;
+each defaults to 536870912 bytes (512 MiB). Each admitted request reserves the
+full configured `--payload-limit`, and remains admitted until its response bytes
+are consumed or dropped. Output capacity is reserved before JSON or MessagePack
+serialization allocates its buffer, including both old and new allocations during
+buffer growth, and follows cloned response bytes through
+transport handoff. Exhausted capacity returns 429 without waiting; the existing
+per-body size limit still returns 413. These HTTP budgets do not include parsed
+object overhead, Core result vectors, model memory or socket buffers. Untyped
+framework/document format conversion is limited to 2 MiB.
+
 ```bash
 cargo test -p text-embeddings-backend-libtorch --lib
 
