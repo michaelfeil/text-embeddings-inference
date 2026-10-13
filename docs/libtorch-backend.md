@@ -110,6 +110,16 @@ on Linux. No `libtorch_python` library is linked by the bridge.
 
 ## Validation and performance
 
+`TEI_TORCH_HOST_OUTPUT_MAX_BYTES` limits estimated Rust host output storage per
+submission, defaulting to 536870912 bytes (512 MiB). The estimate includes result
+payloads, token-row vector metadata, output map storage, and the temporary flat
+buffer used by CPU inference. Typed decisions include both flat logits and copied
+result logits. Requests that exceed the limit return a backend error before model
+inference. Large serving buffers use fallible reservations so reservation failure
+returns an error; subsequent requests can still run. This output limit does not
+cover model activations, native staging buffers, upstream request buffers or
+allocator-reserved memory.
+
 ```bash
 cargo test -p text-embeddings-backend-libtorch --lib
 

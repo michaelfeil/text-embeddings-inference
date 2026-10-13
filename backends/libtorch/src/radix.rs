@@ -1,4 +1,4 @@
-use crate::inference;
+use crate::{filled_vec, inference, reserved_vec};
 use text_embeddings_backend_core::{BackendError, Batch};
 
 #[repr(C)]
@@ -45,7 +45,7 @@ impl OwnedRadix {
         {
             return Err(inference("Invalid radix dimensions"));
         }
-        let mut used = vec![false; ids.len()];
+        let mut used = filled_vec(ids.len(), false)?;
         for &index in scatter {
             let Some(row) = used.get_mut(index as usize) else {
                 return Err(inference("Radix scatter index out of bounds"));
@@ -54,13 +54,14 @@ impl OwnedRadix {
         }
         // The core may append unused alignment rows. Remove them before inference:
         // the native compact allocation contains only rows referenced by real tokens.
-        let mut remap = vec![0i64; ids.len()];
+        let mut remap = filled_vec(ids.len(), 0i64)?;
+        let compact_rows = used.iter().filter(|&&used| used).count();
         let mut result = Self {
-            ids: vec![],
-            types: vec![],
-            positions: vec![],
-            scatter: Vec::with_capacity(n),
-            fold: vec![],
+            ids: reserved_vec(compact_rows)?,
+            types: reserved_vec(compact_rows)?,
+            positions: reserved_vec(compact_rows)?,
+            scatter: reserved_vec(n)?,
+            fold: reserved_vec(compact_rows)?,
         };
         for (old, &is_used) in used.iter().enumerate() {
             if !is_used {
