@@ -1,9 +1,9 @@
-TOKEN SERVICE ELASTIC LICENSE
-TSEL 1.0 -- DRAFT, NOT ADOPTED
+INFINITY SOURCE-AVAILABLE LICENSE
+ISAL 1.0 -- DRAFT, NOT ADOPTED
 License author: Michael Feil
 Licensors: Infinity Core Contributors, each for rights they own or control.
 
-This custom license is not Elastic License 2.0 or endorsed by Elastic.
+This is a custom source-available license.
 INFOIL 1.0 remains effective. Adoption requires an authorized notice naming
 the covered code, licensors, effective date, and first release or commit.
 
@@ -16,7 +16,7 @@ rights. Each contributor grants only rights they control. Existing Apache,
 INFOIL, and third-party grants remain intact. No ownership, trademarks, or
 rights over model weights or outputs are transferred.
 
-2. COMMERCIAL PLATFORM BLACKLIST
+2. COMMERCIAL USE TERMS
 
 Commercial use, including ordinary enterprise use, is allowed on your own
 hardware or capacity supplied by an unlisted provider, subject to the
