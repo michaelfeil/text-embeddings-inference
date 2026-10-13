@@ -14,6 +14,7 @@ use tracing::{instrument, Span};
 use serde::Deserialize;
 
 pub use crate::dtype::DType;
+pub use infinity_v3_backend_core::result_memory;
 pub use infinity_v3_backend_core::{
     AudioFeatures, BackendError, Batch, ClefField, DecisionInput, DecisionOutput, Embedding,
     Embeddings, ImagePatches, ModelType, MultimodalEncoding, Pool, Predictions, TokenPredictions,
@@ -654,7 +655,12 @@ fn deliver<T: Send + 'static>(
                 // Complete even after receiver cancellation: retain pins/slots until
                 // the GPU finishes, and never free native work on a Tokio worker.
                 let result = complete().map(|value| (value, start.elapsed()));
-                let _ = health.send(result.is_ok());
+                let _ = health.send(
+                    result.is_ok()
+                        || result
+                            .as_ref()
+                            .is_err_and(|e| matches!(e, BackendError::Overloaded(_))),
+                );
                 let _ = response.send(result);
             });
             completion
@@ -672,7 +678,12 @@ fn deliver<T: Send + 'static>(
             let result = result
                 .and_then(Inference::complete)
                 .map(|value| Submission::Ready(value, start.elapsed()));
-            let _ = health.send(result.is_ok());
+            let _ = health.send(
+                result.is_ok()
+                    || result
+                        .as_ref()
+                        .is_err_and(|e| matches!(e, BackendError::Overloaded(_))),
+            );
             let _ = sender.send(result);
         }
     }

@@ -475,6 +475,7 @@ mod tests {
             },
         };
         let output = DecisionOutput {
+            memory: None,
             logits: vec![0., 0.],
             action_probability: 1.,
         };
@@ -497,6 +498,7 @@ mod tests {
         let singleton = answer(
             &question,
             DecisionOutput {
+                memory: None,
                 logits: vec![7.],
                 action_probability: 1.,
             },

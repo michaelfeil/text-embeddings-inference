@@ -1169,14 +1169,15 @@ async fn embed_sparse(
 
     let start_time = Instant::now();
 
-    let sparsify = |values: Vec<f32>| {
+    let sparsify = |values: Vec<f32>| -> Result<Vec<SparseValue>, TextEmbeddingsError> {
+        reserve_result_allocation::<SparseValue>(values.len())?;
         let mut sparse_values = Vec::with_capacity(values.len());
         for (index, value) in values.into_iter().enumerate() {
             if value != 0.0 {
                 sparse_values.push(SparseValue { index, value });
             }
         }
-        sparse_values
+        Ok(sparse_values)
     };
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
@@ -1202,7 +1203,9 @@ async fn embed_sparse(
             metrics::counter!("te_request_success", "method" => "single").increment(1);
 
             (
-                EmbedSparseResponse(vec![sparsify(response.results)]),
+                EmbedSparseResponse(vec![
+                    sparsify(response.results).map_err(ErrorResponse::from)?
+                ]),
                 ResponseMetadata::new(
                     compute_chars,
                     response.metadata.prompt_tokens,
@@ -1271,7 +1274,7 @@ async fn embed_sparse(
                             local_batch_counter,
                         )
                         .await?;
-                    Ok((sparsify(response.results), response.metadata))
+                    Ok((sparsify(response.results)?, response.metadata))
                 })
             }
             let results = join_all(futures)
@@ -1534,9 +1537,9 @@ async fn openai_embed(
     Json(req): Json<OpenAICompatRequest>,
 ) -> Result<(HeaderMap, Json<OpenAICompatResponse>), (StatusCode, Json<OpenAICompatErrorResponse>)>
 {
-    let encode_embedding = |array: Vec<f32>| {
+    let encode_embedding = |array: Vec<f32>| -> Result<Embedding, ErrorResponse> {
         match req.encoding_format {
-            EncodingFormat::Float => Embedding::Float(array),
+            EncodingFormat::Float => Ok(Embedding::Float(array)),
             EncodingFormat::Base64 => {
                 // Unsafe is fine here since we do not violate memory ownership: bytes
                 // is only used in this scope and we return an owned string
@@ -1544,7 +1547,13 @@ async fn openai_embed(
                     std::slice::from_raw_parts(array.as_ptr() as *const u8, array.len() * 4)
                 };
 
-                Embedding::Base64(BASE64_STANDARD.encode(bytes))
+                let encoded_size = base64::encoded_len(bytes.len(), true).ok_or_else(|| {
+                    ErrorResponse::from(TextEmbeddingsError::Backend(BackendError::Inference(
+                        "Base64 output size overflow".into(),
+                    )))
+                })?;
+                reserve_result_allocation::<u8>(encoded_size).map_err(ErrorResponse::from)?;
+                Ok(Embedding::Base64(BASE64_STANDARD.encode(bytes)))
             }
         }
     };
@@ -1581,7 +1590,7 @@ async fn openai_embed(
 
             metrics::counter!("te_request_success", "method" => "single").increment(1);
 
-            let embedding = encode_embedding(response.results);
+            let embedding = encode_embedding(response.results)?;
             (
                 vec![OpenAICompatEmbedding {
                     object: "embedding",
@@ -1676,7 +1685,7 @@ async fn openai_embed(
                 total_queue_time += r.metadata.queue.as_nanos() as u64;
                 total_inference_time += r.metadata.inference.as_nanos() as u64;
                 total_compute_tokens += r.metadata.prompt_tokens;
-                let embedding = encode_embedding(r.results);
+                let embedding = encode_embedding(r.results)?;
                 embeddings.push(OpenAICompatEmbedding {
                     object: "embedding",
                     embedding,
@@ -2359,6 +2368,9 @@ pub async fn run(
             admission,
             super::memory::response_budget,
         ))
+        .layer(axum::middleware::from_fn(
+            super::response_format::retain_results,
+        ))
         .layer(cors_layer);
 
     // Run server
@@ -2559,4 +2571,12 @@ mod classify_tests {
             "#/components/schemas/ClassifyResponse"
         );
     }
+}
+
+fn reserve_result_allocation<T>(count: usize) -> Result<(), TextEmbeddingsError> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| BackendError::Inference("HTTP result size overflow".into()))?;
+    infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
+    Ok(())
 }

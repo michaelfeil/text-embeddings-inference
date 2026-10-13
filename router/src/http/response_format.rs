@@ -560,3 +560,34 @@ mod tests {
             .is_empty());
     }
 }
+
+/// Preserve native host-result ownership across serialization and body handoff.
+pub(crate) async fn retain_results(request: Request, next: Next) -> Response {
+    use axum::body::Bytes;
+    use futures::StreamExt;
+    use infinity_v3_backend::result_memory::{RequestResults, REQUEST_RESULTS};
+    use std::sync::Arc;
+    struct Chunk {
+        bytes: Bytes,
+        _results: Arc<RequestResults>,
+    }
+    impl AsRef<[u8]> for Chunk {
+        fn as_ref(&self) -> &[u8] {
+            &self.bytes
+        }
+    }
+    let owner = Arc::new(RequestResults::default());
+    let response = REQUEST_RESULTS
+        .scope(owner.clone(), next.run(request))
+        .await;
+    let (parts, body) = response.into_parts();
+    let stream = body.into_data_stream().map(move |chunk| {
+        chunk.map(|bytes| {
+            Bytes::from_owner(Chunk {
+                bytes,
+                _results: owner.clone(),
+            })
+        })
+    });
+    Response::from_parts(parts, Body::from_stream(stream))
+}

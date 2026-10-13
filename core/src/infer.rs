@@ -2,6 +2,7 @@ use crate::backend_pool::BackendPool;
 use crate::queue_actor::{prune_canceled_batch, Entry, Metadata, NextBatch, Queue};
 use crate::tokenization::{EncodingInput, RawEncoding, Tokenization};
 use crate::TextEmbeddingsError;
+use infinity_v3_backend::result_memory::{retain_for_request, HasResultMemory, ResultLease};
 use infinity_v3_backend::{Backend, BackendError, Embedding, ModelType};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -58,7 +59,10 @@ impl Infer {
             self.notify_batching_task.notify_one();
         }
         match response_rx.await.map_err(|_| BackendError::Unhealthy)?? {
-            InferResult::Decision(output) => Ok(output),
+            InferResult::Decision(output) => {
+                retain_for_request(output.metadata.memory.clone());
+                Ok(output)
+            }
             _ => Err(BackendError::Inference("Unexpected decision response".into()).into()),
         }
     }
@@ -471,6 +475,7 @@ impl Infer {
                 err
             })?;
 
+        response.retain_for_request();
         Ok(response)
     }
 
@@ -550,6 +555,7 @@ impl Infer {
                 err
             })?;
 
+        response.retain_for_request();
         let InferResult::Classification(mut response) = response else {
             panic!("unexpected enum variant")
         };
@@ -671,6 +677,7 @@ impl Infer {
                 err
             })?;
 
+        response.retain_for_request();
         let InferResult::TokenClassification(mut response) = response else {
             panic!("unexpected enum variant")
         };
@@ -862,7 +869,27 @@ async fn complete_batch(
             let cumulative_seq_lengths = batch.cumulative_seq_lengths.clone();
             let mut tokens = std::mem::take(&mut batch.tokens);
             let offsets = std::mem::take(&mut batch.offsets);
-            let results = execution.predict_tokens(batch).await;
+            let results =
+                execution
+                    .predict_tokens(batch)
+                    .await
+                    .and_then(|(mut outputs, duration)| {
+                        if let Some(memory) = &outputs.memory {
+                            let rows = outputs
+                                .values()
+                                .try_fold(0usize, |n, rows| n.checked_add(rows.len()))
+                                .ok_or_else(|| {
+                                    BackendError::Inference("Token result count overflow".into())
+                                })?;
+                            let bytes = rows
+                                .checked_mul(std::mem::size_of::<TokenPrediction>())
+                                .ok_or_else(|| {
+                                    BackendError::Inference("Token result memory overflow".into())
+                                })?;
+                            outputs.memory = Some(memory.reserve_more(bytes)?);
+                        }
+                        Ok((outputs, duration))
+                    });
             // Token text/offset construction can be large; retain its blocking worker.
             tokio::task::spawn_blocking(move || {
                 send_batch_results(entries, results, |predictions, index, metadata| {
@@ -928,7 +955,7 @@ async fn complete_batch(
     }
 }
 
-fn send_batch_results<T>(
+fn send_batch_results<T: HasResultMemory>(
     entries: Vec<Metadata>,
     results: Result<(T, Duration), BackendError>,
     mut response: impl FnMut(&mut T, usize, InferMetadata) -> InferResult,
@@ -937,6 +964,7 @@ fn send_batch_results<T>(
         Ok((mut outputs, inference)) => {
             for (index, entry) in entries.into_iter().enumerate() {
                 let metadata = InferMetadata {
+                    memory: outputs.result_memory(),
                     prompt_tokens: entry.prompt_tokens,
                     tokenization: entry.tokenization,
                     queue: entry.queue_time.elapsed().saturating_sub(inference),
@@ -957,6 +985,7 @@ fn send_batch_results<T>(
 
 #[derive(Debug)]
 pub struct InferMetadata {
+    pub memory: Option<ResultLease>,
     pub prompt_tokens: usize,
     pub tokenization: Duration,
     pub queue: Duration,
@@ -970,6 +999,19 @@ pub(crate) enum InferResult {
     TokenClassification(TokenClassificationInferResponse),
     PooledEmbedding(PooledEmbeddingsInferResponse),
     AllEmbedding(AllEmbeddingsInferResponse),
+}
+
+impl InferResult {
+    fn retain_for_request(&self) {
+        let metadata = match self {
+            Self::Decision(r) => &r.metadata,
+            Self::Classification(r) => &r.metadata,
+            Self::TokenClassification(r) => &r.metadata,
+            Self::PooledEmbedding(r) => &r.metadata,
+            Self::AllEmbedding(r) => &r.metadata,
+        };
+        retain_for_request(metadata.memory.clone());
+    }
 }
 
 #[derive(Debug)]

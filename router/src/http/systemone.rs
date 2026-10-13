@@ -835,6 +835,7 @@ mod tests {
                 },
             };
             let output = DecisionOutput {
+                memory: None,
                 logits: serde_json::from_value(seq["logits"].clone()).unwrap(),
                 action_probability: seq["action_probability"].as_f64().unwrap() as f32,
             };

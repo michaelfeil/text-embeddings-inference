@@ -821,6 +821,7 @@ impl LibtorchBackend {
         };
         let device = CString::new(device).map_err(start)?;
         // SAFETY: config and device stay valid during creation, and the bridge copies them.
+        text_embeddings_backend_core::result_memory::global_pool()?;
         let host_output_max_bytes = std::env::var("TEI_TORCH_HOST_OUTPUT_MAX_BYTES")
             .map(|value| value.parse::<usize>().map_err(start))
             .unwrap_or(Ok(512 << 20))?;
@@ -1061,8 +1062,8 @@ fn pack_output(
 impl LibtorchBackend {
     fn check_host_output(&self, bytes: usize) -> Result<(), BackendError> {
         if bytes > self.host_output_max_bytes {
-            return Err(inference(
-                "Host output exceeds TEI_TORCH_HOST_OUTPUT_MAX_BYTES",
+            return Err(BackendError::Overloaded(
+                "Host output exceeds TEI_TORCH_HOST_OUTPUT_MAX_BYTES".into(),
             ));
         }
         Ok(())
@@ -1280,6 +1281,8 @@ impl LibtorchBackend {
                 })
                 .ok_or_else(|| inference("Decision host output memory size overflow"))?;
             self.check_host_output(decision_bytes)?;
+            let memory = text_embeddings_backend_core::result_memory::global_pool()?
+                .reserve(decision_bytes)?;
             let mut logits = filled_vec(total, 0f32)?;
             let mut actions = filled_vec(b, 0f32)?;
             // SAFETY: native output counts bound capacity, validated packed/media buffers stay live,
@@ -1318,6 +1321,7 @@ impl LibtorchBackend {
             let decisions = collect_results(counts.into_iter().zip(actions).map(
                 |(count, action_probability)| {
                     let result = DecisionOutput {
+                        memory: Some(memory.clone()),
                         logits: collect_fallible(logits[offset..offset + count].iter().copied())?,
                         action_probability,
                     };
@@ -1346,7 +1350,7 @@ impl LibtorchBackend {
                     .and_then(|r| n.checked_add(r))
             })
             .ok_or_else(|| inference("Output size overflow"))?;
-        self.check_host_output(host_output_bytes(
+        let output_bytes = host_output_bytes(
             size,
             raw_rows,
             pooled
@@ -1354,7 +1358,10 @@ impl LibtorchBackend {
                 .checked_add(raw.len())
                 .ok_or_else(|| inference("Output count overflow"))?,
             self.cuda,
-        )?)?;
+        )?;
+        self.check_host_output(output_bytes)?;
+        let memory =
+            text_embeddings_backend_core::result_memory::global_pool()?.reserve(output_bytes)?;
         // CUDA results share one bounded completion path at every output size.
         // The model thread can submit the next forward while CPU packing finishes.
         if self.cuda {
@@ -1392,8 +1399,9 @@ impl LibtorchBackend {
             .ok_or_else(|| inference(native_error()))?;
             let output = NativeOutput { handle, size };
             return Ok(Inference::Deferred(Box::new(move || {
-                let result =
+                let mut result =
                     pack_output(output.values()?, pooled, raw, lengths, hidden, raw_width)?;
+                result.memory = Some(memory);
                 Ok((result, vec![]))
             })));
         }
@@ -1433,10 +1441,9 @@ impl LibtorchBackend {
         {
             return Err(inference(native_error()));
         }
-        Ok(Inference::Ready((
-            pack_output(&output, pooled, raw, lengths, hidden, raw_width)?,
-            vec![],
-        )))
+        let mut results = pack_output(&output, pooled, raw, lengths, hidden, raw_width)?;
+        results.memory = Some(memory);
+        Ok(Inference::Ready((results, vec![])))
     }
 }
 
@@ -1462,6 +1469,7 @@ impl Backend for LibtorchBackend {
         self.submit_inner(batch, 4, self.classification_width, None)
             .map(|result| {
                 result.map(|(values, _)| {
+                    predictions.memory = values.memory.clone();
                     for (index, value) in values {
                         if let Embedding::Pooled(value) = value {
                             predictions.insert(index, value);
@@ -1485,6 +1493,7 @@ impl Backend for LibtorchBackend {
         self.submit_inner(batch, 5, self.classification_width, None)
             .map(|result| {
                 result.map(|(values, _)| {
+                    predictions.memory = values.memory.clone();
                     for (index, value) in values {
                         if let Embedding::All(value) = value {
                             predictions.insert(index, value);

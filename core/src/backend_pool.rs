@@ -324,7 +324,10 @@ impl Execution {
         if !self.released {
             r.busy = false;
         }
-        if result.is_err() {
+        if result
+            .as_ref()
+            .is_err_and(|e| !matches!(e, BackendError::Overloaded(_)))
+        {
             r.healthy = false;
         }
         if let Ok((_, duration)) = result {

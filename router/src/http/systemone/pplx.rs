@@ -238,6 +238,7 @@ mod tests {
                     .answer(
                         question,
                         DecisionOutput {
+                            memory: None,
                             logits: serde_json::from_value(reference["logits"].clone())?,
                             action_probability: 1.,
                         },

@@ -1,8 +1,8 @@
 mod multimodal;
+pub mod result_memory;
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
 pub use multimodal::{AudioFeatures, ImagePatches, MultimodalEncoding};
-use nohash_hasher::IntMap;
 use serde::Deserialize;
 use std::fmt;
 use thiserror::Error;
@@ -41,9 +41,9 @@ pub enum Embedding {
     All(Vec<Vec<f32>>),
 }
 
-pub type Embeddings = IntMap<usize, Embedding>;
-pub type Predictions = IntMap<usize, Vec<f32>>;
-pub type TokenPredictions = IntMap<usize, Vec<Vec<f32>>>;
+pub type Embeddings = result_memory::ResultMap<Embedding>;
+pub type Predictions = result_memory::ResultMap<Vec<f32>>;
+pub type TokenPredictions = result_memory::ResultMap<Vec<Vec<f32>>>;
 
 #[derive(Debug, Clone)]
 pub enum DecisionInput {
@@ -68,10 +68,11 @@ pub struct ClefField {
     pub options: Vec<(usize, usize)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DecisionOutput {
     pub logits: Vec<f32>,
     pub action_probability: f32,
+    pub memory: Option<result_memory::ResultLease>,
 }
 
 /// An owned result, or CPU completion work after an ordered native submission.
@@ -171,6 +172,8 @@ impl fmt::Display for Pool {
 
 #[derive(Debug, Error, Clone)]
 pub enum BackendError {
+    #[error("{0}")]
+    Overloaded(String),
     #[error("No backend found")]
     NoBackend,
     #[error("Could not start backend: {0}")]
