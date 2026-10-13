@@ -433,7 +433,144 @@ mod tests {
     use super::*;
 
     fn fixtures() -> Value {
-        serde_json::from_str(include_str!("../../../tests/fixtures/d3-format.json")).unwrap()
+        // Prompt/answer examples from the published d3_format.py and d3_runtime.py.
+        json!({
+            "codes": [
+                "A",
+                "B",
+                "C",
+                "D",
+                "E"
+            ],
+            "cases": [
+                {
+                    "state": "Hello, café!",
+                    "question": {
+                        "type": "choice",
+                        "instructions": "Which queue?",
+                        "criteria": {
+                            "zeta": null,
+                            "alpha": "technical"
+                        }
+                    },
+                    "logits": [
+                        1.5,
+                        -0.5
+                    ],
+                    "user_prompt": "State:\nHello, café!\n\nQuestion:\nWhich queue?\n\nOptions:\nA: zeta\nB: alpha: technical\n\nReply with only the code of the best option.",
+                    "answer": {
+                        "type": "choice",
+                        "choice": "zeta",
+                        "probabilities": {
+                            "zeta": 0.880797081041162,
+                            "alpha": 0.11920291895883793
+                        },
+                        "confidence": 0.47293466783559523
+                    }
+                },
+                {
+                    "state": {
+                        "order": 42,
+                        "paid": true
+                    },
+                    "question": {
+                        "type": "noul"
+                    },
+                    "logits": [
+                        -1.0,
+                        1.0
+                    ],
+                    "user_prompt": "State:\n{\"order\": 42, \"paid\": true}\n\nQuestion:\nChoose the best matching option.\n\nOptions:\nA: No / false\nB: Yes / true\n\nReply with only the code of the best option.",
+                    "answer": {
+                        "type": "noul",
+                        "noul": 0.880797081041162
+                    }
+                },
+                {
+                    "state": null,
+                    "question": {
+                        "type": "noul",
+                        "instructions": false,
+                        "criteria": {
+                            "false": false,
+                            "true": 0
+                        }
+                    },
+                    "logits": [
+                        0.0,
+                        0.0
+                    ],
+                    "user_prompt": "State:\n(empty)\n\nQuestion:\nChoose the best matching option.\n\nOptions:\nA: No / false\nB: Yes / true\n\nReply with only the code of the best option.",
+                    "answer": {
+                        "type": "noul",
+                        "noul": 0.5
+                    }
+                },
+                {
+                    "state": "Ticket",
+                    "question": {
+                        "type": "score",
+                        "instructions": "Urgency?",
+                        "criteria": [
+                            "low",
+                            {
+                                "z": 1,
+                                "a": [
+                                    2,
+                                    3
+                                ]
+                            },
+                            "high"
+                        ]
+                    },
+                    "logits": [
+                        -0.3,
+                        1.2,
+                        0.4
+                    ],
+                    "user_prompt": "State:\nTicket\n\nQuestion:\nUrgency?\n\nOptions:\nA: low\nB: {\"z\": 1, \"a\": [2, 3]}\nC: high\n\nReply with only the code of the best option.",
+                    "answer": {
+                        "type": "score",
+                        "score": 1.1352492055445436,
+                        "probabilities": {
+                            "0": 0.13341442545738372,
+                            "1": 0.597921943540689,
+                            "2": 0.2686636310019273
+                        },
+                        "confidence": 0.15407134491920493,
+                        "legend": {
+                            "0": "low",
+                            "1": "{\"a\":[2,3],\"z\":1}",
+                            "2": "high"
+                        }
+                    }
+                },
+                {
+                    "state": "Ticket",
+                    "question": {
+                        "type": "choice",
+                        "criteria": {
+                            "only": {
+                                "b": 2,
+                                "a": 1
+                            }
+                        }
+                    },
+                    "logits": [
+                        1.0
+                    ],
+                    "user_prompt": "State:\nTicket\n\nQuestion:\nChoose the best matching option.\n\nOptions:\nA: only: {\"b\": 2, \"a\": 1}\n\nReply with only the code of the best option.",
+                    "answer": {
+                        "type": "choice",
+                        "choice": "only",
+                        "probabilities": {
+                            "only": 1.0
+                        },
+                        "confidence": 1.0
+                    }
+                }
+            ]
+        })
     }
     fn question(case: &Value) -> Question {
         let (kind, labels, _, criteria) = question_options(&case["question"]).unwrap();
@@ -551,23 +688,25 @@ mod tests {
         compare(&a, &b);
     }
     #[test]
-    #[ignore = "requires downloaded vllm-sr/d3 checkpoint"]
+    #[ignore = "requires D3_CHECKPOINT_DIR and D3_REFERENCE_DIR from scripts/d3-reference.py"]
     fn native_template_and_token_ids_match_upstream() -> anyhow::Result<()> {
         let root = std::env::var("D3_CHECKPOINT_DIR")?;
+        let references = std::env::var("D3_REFERENCE_DIR")?;
         let tokenizer = Tokenizer::from_file(Path::new(&root).join("tokenizer.json"))
             .map_err(|e| anyhow::anyhow!(e.to_string()))?;
         let model = D3::load(Path::new(&root), tokenizer, 16384, Default::default())?;
-        for case in fixtures()["cases"].as_array().unwrap() {
-            let raw: Request = serde_json::from_value(
-                json!({"state":case["state"],"questions":{"q":case["question"]}}),
-            )?;
-            let (request, _, _) = raw.into_common().map_err(anyhow::Error::msg)?;
-            let questions = model.prepare(request).map_err(anyhow::Error::msg)?;
-            assert_eq!(
-                questions[0].encoding.input_ids,
-                serde_json::from_value::<Vec<u32>>(case["input_ids"].clone())?
-            );
-        }
+        let raw: Request = serde_json::from_slice(&std::fs::read(
+            Path::new(&references).join("text-request.json"),
+        )?)?;
+        let expected: Value = serde_json::from_slice(&std::fs::read(
+            Path::new(&references).join("text-preprocessing.json"),
+        )?)?;
+        let (request, _, _) = raw.into_common().map_err(anyhow::Error::msg)?;
+        let questions = model.prepare(request).map_err(anyhow::Error::msg)?;
+        assert_eq!(
+            questions[0].encoding.input_ids,
+            serde_json::from_value::<Vec<u32>>(expected["input_ids"].clone())?
+        );
         Ok(())
     }
 }

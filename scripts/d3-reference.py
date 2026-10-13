@@ -48,7 +48,10 @@ def main():
     model = D3(checkpoint, device=args.device, batch_size=1)
     for name, request in cases.items():
         prepared = model.prepare(**request)
-        metadata = {}
+        text_encoding = model.processor.tokenizer(
+            next(iter(prepared.texts.values())), add_special_tokens=False
+        )
+        metadata = {"input_ids": text_encoding["input_ids"]}
         encoded = None
         if prepared.videos:
             image_texts = [model.processor.replace_image_token(prepared.media, image_idx=i) for i in range(len(prepared.images))]
