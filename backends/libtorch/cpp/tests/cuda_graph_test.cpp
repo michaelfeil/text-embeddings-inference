@@ -234,6 +234,18 @@ void retired_output_pool_test() {
  TORCH_CHECK(pools().count(retired)&&at::equal(held,expected),"Eviction freed a live output");
  held=at::Tensor();request(16);
  TORCH_CHECK(!pools().count(retired),"Released output left its retired pool reserved");
+ // Both a failed capture and an over-budget successful trial must release
+ // their private pools before eager fallback returns.
+ for(bool unsupported:{false,true}) {
+  const auto initial=pools();Uncapturable uncapturable;
+  const Model& trial_model=unsupported?static_cast<const Model&>(uncapturable):model;
+  CudaGraphCache trial(1,64,1,unsupported?512ULL<<20:1000,4);
+  std::vector<int32_t> offsets{0,4};auto ids=at::arange(4,options);
+  PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,4},options.dtype(at::kInt)),offsets.data(),1,4};
+  TORCH_CHECK(at::equal(trial.forward(trial_model,input),trial_model.forward(input)),"Trial fallback changed output");
+  TORCH_CHECK(trial.stats().attempts==1&&trial.size()==0,"Trial fixture did not reject a capture");
+  TORCH_CHECK(pools()==initial,"Rejected capture left a private pool reserved");
+ }
 }
 class GemmWorkspaces final:public Model {
  at::Tensor weight=at::randn({640,640},at::TensorOptions().device(at::kCUDA).dtype(at::kBFloat16));
