@@ -35,8 +35,10 @@ impl MemoryAdmission {
         );
         let payload = u32::try_from(payload_limit)?;
         anyhow::ensure!(
-            output_limit >= 64 * 1024,
-            "TEI_HTTP_OUTPUT_MAX_BYTES must be at least 65536 bytes (64 KiB)"
+            (64 * 1024..=u32::MAX as usize).contains(&output_limit)
+                && output_limit <= Semaphore::MAX_PERMITS,
+            "TEI_HTTP_OUTPUT_MAX_BYTES must be between 65536 and {} bytes",
+            (u32::MAX as usize).min(Semaphore::MAX_PERMITS)
         );
         anyhow::ensure!(
             input_limit >= payload_limit
@@ -217,8 +219,12 @@ impl io::Write for ReservedWriter {
             // A realloc may keep the old allocation alive while allocating the new
             // buffer. Charge the full new capacity before touching the old buffer.
             let new_permit = if let Some(budget) = &self.budget {
-                let count = u32::try_from(target)
-                    .map_err(|_| io::Error::other("HTTP response reservation overflow"))?;
+                let count = u32::try_from(target).map_err(|_| {
+                    // Geometric growth can exceed the supported budget even when
+                    // the configured budget itself fits the permit count.
+                    self.exhausted = true;
+                    io::Error::other("HTTP response memory capacity exhausted")
+                })?;
                 match budget.clone().try_acquire_many_owned(count) {
                     Ok(permit) => Some(permit),
                     Err(_) => {
@@ -325,6 +331,9 @@ mod tests {
             assert!(MemoryAdmission::new(2, 1024, 1024, output_limit).is_err());
         }
         assert!(MemoryAdmission::new(2, 1024, 1024, 65536).is_ok());
+        let maximum = (u32::MAX as usize).min(Semaphore::MAX_PERMITS);
+        assert!(MemoryAdmission::new(2, 1024, 1024, maximum).is_ok());
+        assert!(MemoryAdmission::new(2, 1024, 1024, maximum + 1).is_err());
         let state = MemoryAdmission::new(2, 1024, 1024, 256 * 1024).unwrap();
         let router = app(state.clone());
         let polls = Arc::new(AtomicUsize::new(0));
