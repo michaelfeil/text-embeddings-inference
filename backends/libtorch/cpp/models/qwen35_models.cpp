@@ -351,7 +351,7 @@ class Qwen35 final : public Model {
     TORCH_CHECK(!radix_enabled(input)||supports_radix(),"Noncausal Qwen3.5 attention does not support radix folding");
     TORCH_CHECK(!radix_enabled(input)||input.audios.empty(),"Qwen3.5 radix audio is not supported");
     auto states=at::embedding(w("embed_tokens.weight"),input.images.empty()?radix_ids(input):input.ids);
-    RequestImageFeatures shared_features;
+    RequestImageFeatures shared_features(input.images,cfg.string("_decision.kind")=="d3");
     for(const auto& image:input.images) {
       TORCH_CHECK(visual,"Qwen3.5 vision tower unavailable");
       auto compute=[&]{return visual->image_features(image).to(dtype);};

@@ -79,15 +79,21 @@ void d3_test(){
  TORCH_CHECK(upload_calls==1&&first_upload.unsafeGetTensorImpl()==second_upload.unsafeGetTensorImpl(),"Shared D3 pixels uploaded once per request");
  auto reshaped=pixels.view({2,2});uploads.get(reshaped,[&]{++upload_calls;return reshaped.to(at::kBFloat16);});
  TORCH_CHECK(upload_calls==2,"Distinct host layout incorrectly reused upload");
- RequestImageFeatures features;int vision_calls=0;
+ int vision_calls=0;
  ImageInput first_image{first_upload,{1,2,2},2,1,1,0};auto next_question=first_image;next_question.token_start=9;next_question.sequence_start=8;
+ RequestImageFeatures features({first_image,next_question});
  auto compute=[&]{++vision_calls;return at::ones({1,16});};
  auto first_features=features.get(first_image,compute),second_features=features.get(next_question,compute);
  TORCH_CHECK(vision_calls==1&&first_features.unsafeGetTensorImpl()==second_features.unsafeGetTensorImpl(),"Shared D3 vision computed once across question positions");
  auto other_grid=first_image;other_grid.grid_thw={1,1,4};features.get(other_grid,compute);
  auto distinct_pixels=first_image;distinct_pixels.pixels=first_upload.clone();features.get(distinct_pixels,compute);
  TORCH_CHECK(vision_calls==3,"Distinct pixels/grid incorrectly reused D3 vision");
- {RequestImageFeatures next_request;next_request.get(first_image,compute);}
+ c10::weak_intrusive_ptr<at::TensorImpl> last_feature(first_features.getIntrusivePtr());
+ first_features=at::Tensor();second_features=at::Tensor();
+ TORCH_CHECK(last_feature.expired(),"D3 feature memo retained pixels after their final consumer");
+ {RequestImageFeatures next_request({first_image});auto unique=next_request.get(first_image,compute);
+  c10::weak_intrusive_ptr<at::TensorImpl> unique_feature(unique.getIntrusivePtr());unique=at::Tensor();
+  TORCH_CHECK(unique_feature.expired(),"Unique D3 media feature should not enter memo");}
  TORCH_CHECK(vision_calls==4,"D3 vision must not survive a native request");
  Input in;Options cfg,backbone;
  cfg.values={{"format_id","d3-code-readout-v1"},{"prompt","d3"},{"pooling","last"},{"attention_mode","noncausal_full_attention"},{"readout_dtype","float32"}};

@@ -4,6 +4,7 @@
 #include <vector>
 #include <string_view>
 #include <unordered_map>
+#include <algorithm>
 
 namespace tei {
 // Gemma normalizes F32 pixels first; D3 must never round through FP16.
@@ -40,14 +41,26 @@ struct ImageInput {
 // Tensor identity comes from the request-local upload cache; no content hash,
 // caller feature key, or cross-request reuse can alias distinct media.
 class RequestImageFeatures {
- struct Entry {ImageInput image;at::Tensor features;};
+ struct Entry {ImageInput image;at::Tensor features;size_t remaining;};
  std::unordered_map<const at::TensorImpl*,std::vector<Entry>> entries;
  public:
+ explicit RequestImageFeatures(const std::vector<ImageInput>& images,bool enabled=true) {
+  if(!enabled)return;
+  for(const auto& image:images) {
+   auto& matches=entries[image.pixels.unsafeGetTensorImpl()];
+   auto match=std::find_if(matches.begin(),matches.end(),[&](const Entry& entry){return entry.image.grid_thw==image.grid_thw&&entry.image.merge_size==image.merge_size;});
+   if(match==matches.end())matches.push_back({image,{},1});else ++match->remaining;
+  }
+ }
  template<class Compute> at::Tensor get(const ImageInput& image,Compute&& compute) {
-  auto& matches=entries[image.pixels.unsafeGetTensorImpl()];
-  for(const auto& entry:matches)
-   if(entry.image.grid_thw==image.grid_thw&&entry.image.merge_size==image.merge_size)return entry.features;
-  auto result=compute();matches.push_back({image,result});return result;
+  auto found=entries.find(image.pixels.unsafeGetTensorImpl());
+  if(found!=entries.end())for(auto& entry:found->second) {
+   if(entry.image.grid_thw!=image.grid_thw||entry.image.merge_size!=image.merge_size||!entry.remaining)continue;
+   auto result=entry.features.defined()?entry.features:compute();
+   if(--entry.remaining)entry.features=result;else entry.features=at::Tensor();
+   return result;
+  }
+  return compute();
  }
 };
 
