@@ -66,6 +66,12 @@ void clef_test(){Input in;Options cfg,backbone;cfg.values={{"hidden_size","16"},
 }
 }
 void d3_test(){
+ // Values straddling a BF16 midpoint expose FP32->FP16->BF16 double rounding.
+ auto pixels=at::tensor({1.0038f,1.00395f,-1.0038f,-1.00395f},at::TensorOptions().dtype(at::kFloat));
+ auto uploaded=upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",true);
+ TORCH_CHECK(at::equal(uploaded,pixels.to(at::kBFloat16)),"D3 image upload must cast directly to BF16");
+ TORCH_CHECK(!at::equal(uploaded,pixels.to(at::kHalf).to(at::kBFloat16)),"D3 fixture must distinguish double rounding");
+ TORCH_CHECK(at::equal(upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",false),pixels.to(at::kHalf)),"Non-D3 Qwen3.5 must retain FP16 upload");
  Input in;Options cfg,backbone;
  cfg.values={{"format_id","d3-code-readout-v1"},{"prompt","d3"},{"pooling","last"},{"attention_mode","noncausal_full_attention"},{"readout_dtype","float32"}};
  backbone.values={{"model_type","qwen3_5"},{"hidden_size","16"}};

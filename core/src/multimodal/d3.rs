@@ -6,8 +6,9 @@ use super::{
 };
 use crate::TextEmbeddingsError;
 use infinity_v3_backend::ImagePatches;
-use std::{path::Path, process::Stdio, sync::Arc};
+use std::{io::Write, path::Path, process::Stdio, sync::Arc};
 use tokenizers::Tokenizer;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::process::Command;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
@@ -160,13 +161,16 @@ impl D3MediaProcessor {
                 .acquire_owned()
                 .await
                 .map_err(|_| invalid("Media workers closed"))?;
-            let (directory, indices, fps) = self.decode_video(&resolved.bytes).await?;
+            let (directory, indices, fps, spool_memory) =
+                self.decode_video(&resolved.bytes).await?;
             drop(resolved);
             let processor = self.images.video_frames(indices.len() + indices.len() % 2);
             let budget = self.budget.clone();
             let config = self.config.clone();
             let (frames, memory) = tokio::task::spawn_blocking(move || {
                 let _worker = worker;
+                // Keep all encoded spool reservations until the files are consumed.
+                let _spool_memory = spool_memory;
                 let mut groups = Vec::new();
                 let mut held = Vec::new();
                 for pair in indices.chunks(2) {
@@ -234,7 +238,15 @@ impl D3MediaProcessor {
         })
     }
 
-    async fn decode_video(&self, bytes: &[u8]) -> Result<(tempfile::TempDir, Vec<usize>, f64)> {
+    async fn decode_video(
+        &self,
+        bytes: &[u8],
+    ) -> Result<(
+        tempfile::TempDir,
+        Vec<usize>,
+        f64,
+        Vec<OwnedSemaphorePermit>,
+    )> {
         let format = if bytes.get(4..8) == Some(b"ftyp".as_slice()) {
             "mov"
         } else if bytes.starts_with(&[0x1a, 0x45, 0xdf, 0xa3]) {
@@ -310,8 +322,8 @@ impl D3MediaProcessor {
             .map(|n| format!("eq(n\\,{n})"))
             .collect::<Vec<_>>()
             .join("+");
-        // Preserve source frame indices in file names so timestamps use the same indices as upstream.
-        let status = Command::new("ffmpeg")
+        // Stream unchanged PNGs so byte limits are enforced before writing their payloads.
+        let mut child = Command::new("ffmpeg")
             .args([
                 "-nostdin",
                 "-v",
@@ -336,24 +348,121 @@ impl D3MediaProcessor {
                 "-frames:v",
                 &indices.len().to_string(),
             ])
-            .arg(directory.path().join("decoded-%08d.png"))
-            .stdout(Stdio::null())
+            .args(["-f", "image2pipe", "-c:v", "png", "pipe:1"])
+            .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true)
-            .status()
-            .await
+            .spawn()
             .map_err(|_| invalid("D3 video decoding requires ffmpeg"))?;
-        if !status.success() {
+        let mut stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| invalid("Missing video output"))?;
+        let mut spool_memory = Vec::new();
+        let decoded = async {
+            for index in &indices {
+                let frame_path = directory.path().join(format!("frame-{index:08}.png"));
+                let mut frame = std::fs::File::create(frame_path)
+                    .map_err(|_| invalid("Could not stage video frame"))?;
+                spool_memory.extend(
+                    copy_bounded_png(
+                        &mut stdout,
+                        &mut frame,
+                        self.config.max_image_bytes,
+                        &self.budget,
+                    )
+                    .await?,
+                );
+            }
+            let mut trailing = [0];
+            if stdout
+                .read(&mut trailing)
+                .await
+                .map_err(|_| invalid("Could not read video output"))?
+                != 0
+            {
+                return Err(invalid("Unexpected extra video frames"));
+            }
+            Ok::<_, TextEmbeddingsError>(())
+        }
+        .await;
+        if let Err(error) = decoded {
+            // Reap the decoder on explicit failures; kill_on_drop also covers cancellation.
+            let _ = child.kill().await;
+            let _ = child.wait().await;
+            return Err(error);
+        }
+        if !child
+            .wait()
+            .await
+            .map_err(|_| invalid("Video decoding failed"))?
+            .success()
+        {
             return Err(invalid("Video decoding failed"));
         }
-        for (i, index) in indices.iter().enumerate() {
-            std::fs::rename(
-                directory.path().join(format!("decoded-{:08}.png", i + 1)),
-                directory.path().join(format!("frame-{index:08}.png")),
-            )
-            .map_err(|_| invalid("Missing decoded video frame"))?;
+        Ok((directory, indices, fps, spool_memory))
+    }
+}
+
+/// PNG chunk lengths let us reject oversized output before reading or writing its payload.
+async fn copy_bounded_png<R: AsyncRead + Unpin, W: Write>(
+    reader: &mut R,
+    writer: &mut W,
+    max_bytes: usize,
+    budget: &MediaBudget,
+) -> Result<Vec<OwnedSemaphorePermit>> {
+    let mut signature = [0; 8];
+    reader
+        .read_exact(&mut signature)
+        .await
+        .map_err(|_| invalid("Missing decoded video frame"))?;
+    if signature != *b"\x89PNG\r\n\x1a\n" || max_bytes < signature.len() {
+        return Err(invalid("Invalid decoded video frame"));
+    }
+    let mut held = vec![budget.reserve(signature.len())?];
+    writer
+        .write_all(&signature)
+        .map_err(|_| invalid("Could not stage video frame"))?;
+    let mut size = signature.len();
+    let mut buffer = [0; 65_536];
+    loop {
+        let mut header = [0; 8];
+        reader
+            .read_exact(&mut header)
+            .await
+            .map_err(|_| invalid("Truncated decoded video frame"))?;
+        let payload = u32::from_be_bytes(header[..4].try_into().unwrap()) as usize;
+        let next = size
+            .checked_add(payload)
+            .and_then(|n| n.checked_add(12))
+            .filter(|n| *n <= max_bytes)
+            .ok_or_else(|| invalid("Decoded video frame exceeds byte limit"))?;
+        let extra_units = next.div_ceil(1024) - size.div_ceil(1024);
+        if extra_units > 0 {
+            held.push(budget.reserve(extra_units * 1024)?);
         }
-        Ok((directory, indices, fps))
+        writer
+            .write_all(&header)
+            .map_err(|_| invalid("Could not stage video frame"))?;
+        let mut remaining = payload + 4; // Include the chunk CRC without a payload-sized allocation.
+        while remaining > 0 {
+            let count = remaining.min(buffer.len());
+            reader
+                .read_exact(&mut buffer[..count])
+                .await
+                .map_err(|_| invalid("Truncated decoded video frame"))?;
+            writer
+                .write_all(&buffer[..count])
+                .map_err(|_| invalid("Could not stage video frame"))?;
+            remaining -= count;
+        }
+        size = next;
+        if &header[4..] == b"IEND" {
+            if payload != 0 {
+                return Err(invalid("Invalid decoded video frame"));
+            }
+            return Ok(held);
+        }
     }
 }
 
@@ -397,6 +506,48 @@ fn pair_patches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn png_stream_preserves_full_pixels_and_bounds_each_frame() {
+        let pixels = image::RgbImage::from_fn(31, 29, |x, y| {
+            image::Rgb([(x * 7) as u8, (y * 11) as u8, (x ^ y) as u8])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        pixels.write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let png = png.into_inner();
+        let mut output = Vec::new();
+        let budget = MediaBudget::new(png.len().div_ceil(1024) * 1024).unwrap();
+        let held = copy_bounded_png(&mut png.as_slice(), &mut output, png.len(), &budget)
+            .await
+            .unwrap();
+        assert_eq!(output, png);
+        assert_eq!(image::load_from_memory(&output).unwrap().to_rgb8(), pixels);
+        // The spool remains reserved until consumed, including across separate frames.
+        assert!(
+            copy_bounded_png(&mut png.as_slice(), &mut Vec::new(), png.len(), &budget)
+                .await
+                .is_err()
+        );
+        drop(held);
+        assert!(
+            copy_bounded_png(&mut png.as_slice(), &mut Vec::new(), png.len(), &budget)
+                .await
+                .is_ok()
+        );
+        let mut oversized = b"\x89PNG\r\n\x1a\n".to_vec();
+        oversized.extend_from_slice(&u32::MAX.to_be_bytes());
+        oversized.extend_from_slice(b"IDAT");
+        let mut written = Vec::new();
+        assert!(copy_bounded_png(
+            &mut oversized.as_slice(),
+            &mut written,
+            1024,
+            &MediaBudget::new(1024).unwrap()
+        )
+        .await
+        .is_err());
+        assert_eq!(written, b"\x89PNG\r\n\x1a\n"); // No payload is read, allocated, or written.
+    }
+
     #[test]
     fn sampling_matches_d3_linspace_and_ties_even() {
         assert_eq!(sample_indices(1, 24.), vec![0]);

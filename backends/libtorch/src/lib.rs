@@ -505,6 +505,11 @@ impl LibtorchBackend {
         } else {
             None
         };
+        if decision_kind == Some("d3") && dtype != "bfloat16" {
+            return Err(start(
+                "D3 requires bfloat16 for its backbone and vision tower",
+            ));
+        }
         let family = options["model_type"]
             .as_str()
             .ok_or_else(|| start("Missing model_type"))?
@@ -1560,6 +1565,22 @@ mod tests {
         let actual = model.embed(batch()).unwrap();
         for (index, expected) in expected {
             assert_eq!(values(&expected), values(&actual[&index]));
+        }
+    }
+
+    #[test]
+    fn d3_constructor_rejects_unsupported_dtype_before_loading_weights() {
+        let fixture = fixture("", false);
+        fs::write(
+            fixture.0.join("decision_config.json"),
+            r#"{"format_id":"d3-code-readout-v1"}"#,
+        )
+        .unwrap();
+        for dtype in ["float32", "float16"] {
+            let error = LibtorchBackend::new(&fixture.0, dtype, ModelType::Decision, "cpu")
+                .err()
+                .expect("D3 must reject unsupported precision");
+            assert!(error.to_string().contains("D3 requires bfloat16"));
         }
     }
 

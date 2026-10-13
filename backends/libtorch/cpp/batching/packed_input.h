@@ -2,8 +2,17 @@
 #include <ATen/ATen.h>
 #include <array>
 #include <vector>
+#include <string_view>
 
 namespace tei {
+// Gemma normalizes F32 pixels first; D3 must never round through FP16.
+inline at::Tensor upload_image_pixels(const at::Tensor& pixels, const c10::Device& device,
+ at::ScalarType dtype, std::string_view family, bool d3) {
+ if(family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2")return pixels;
+ const auto image_dtype=d3?at::kBFloat16:family.starts_with("qwen3_5")?at::kHalf:dtype;
+ return pixels.to(device).to(image_dtype);
+}
+
 struct ImageInput {
   at::Tensor pixels;
   std::array<int64_t,3> grid_thw;

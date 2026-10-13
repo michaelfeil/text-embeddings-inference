@@ -49,7 +49,7 @@ pub enum SystemOne {
     Onejev(onejev::Onejev),
     Clef(clef::Clef),
     Pplx(pplx::Pplx),
-    D3(d3::D3),
+    D3(Box<d3::D3>),
 }
 
 impl SystemOne {
@@ -68,12 +68,12 @@ impl SystemOne {
                     .with_images(path, multimodal_config)?,
             ))
         } else if matches!(protocol, Some(crate::DecisionProtocol::D3)) {
-            Ok(Self::D3(d3::D3::load(
+            Ok(Self::D3(Box::new(d3::D3::load(
                 path,
                 tokenizer,
                 max_input_length,
                 multimodal_config,
-            )?))
+            )?)))
         } else if matches!(protocol, Some(crate::DecisionProtocol::Pplx)) {
             Ok(Self::Pplx(pplx::Pplx::load(
                 path,
