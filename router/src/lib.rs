@@ -1068,10 +1068,6 @@ impl From<ResponseMetadata> for HeaderMap {
             value.compute_tokens.to_string().parse().unwrap(),
         );
         headers.insert(
-            "x-baseten-input-tokens",
-            value.compute_tokens.to_string().parse().unwrap(),
-        );
-        headers.insert(
             "x-total-time",
             value
                 .start_time
