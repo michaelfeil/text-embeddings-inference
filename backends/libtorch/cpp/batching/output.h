@@ -46,15 +46,35 @@ class OutputLease {
   OutputSlot* slot = nullptr;
   at::Device device;
   size_t input_cursor = 0;
+  bool output_started = false;
   // Called under the pool lock, before allocating replacement storage.
-  void make_room(size_t bytes, size_t replaced) {
+  void make_room(size_t bytes, size_t replaced, bool shrink_output = false) {
     TORCH_CHECK(bytes <= pool->max_bytes, "Native output staging exceeds its memory budget");
     auto fits = [&] { return pool->retained_bytes() - replaced <= pool->max_bytes - bytes; };
+    // Reacquiring a slot makes it busy, but its trailing pins have not been
+    // used by this lease. Active input pins (including the replacement) stay live.
+    if (!fits() && input_cursor < slot->inputs.size()) slot->inputs.resize(input_cursor);
     if (!fits()) {
       for (auto& idle : pool->slots) {
         if (&idle == slot || idle.busy) continue;
         idle.host = at::Tensor(); idle.device_output = at::Tensor(); idle.inputs.clear();
         if (fits()) break;
+      }
+    }
+    if (!fits() && shrink_output && !output_started && slot->host.defined()
+        && slot->device_output.defined() && size <= std::numeric_limits<size_t>::max() / (2 * sizeof(float))) {
+      const auto capacity = std::max(size, size_t{1});
+      const auto needed = capacity * sizeof(float);
+      const auto previous = slot->host.storage().nbytes() + slot->device_output.storage().nbytes();
+      if (previous > 2 * needed && 2 * needed <= pool->max_bytes - bytes
+          && pool->retained_bytes() - replaced - previous <= pool->max_bytes - bytes - 2 * needed) {
+        // No output copy references these oversized buffers yet. Keep only
+        // this request's output capacity so its real inputs can be admitted.
+        slot->host = at::Tensor(); slot->device_output = at::Tensor();
+        slot->host = at::empty({static_cast<int64_t>(capacity)},
+          at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
+        slot->device_output = at::empty({static_cast<int64_t>(capacity)},
+          at::TensorOptions().dtype(at::kFloat).device(device));
       }
     }
     TORCH_CHECK(fits(), "Native output staging memory budget is occupied by pending results");
@@ -131,7 +151,7 @@ public:
     if (input_cursor == slot->inputs.size()) slot->inputs.emplace_back();
     auto& pin = slot->inputs[input_cursor++];
     if (!pin.defined() || pin.scalar_type() != host.scalar_type() || pin.numel() < host.numel()) {
-      make_room(host.nbytes(), pin.defined() ? pin.storage().nbytes() : 0);
+      make_room(host.nbytes(), pin.defined() ? pin.storage().nbytes() : 0, true);
       pin = at::Tensor();
       pin = at::empty({host.numel()}, host.options().pinned_memory(true));
     }
@@ -143,6 +163,7 @@ public:
     return result;
   }
   void copy(const at::Tensor& tensor, size_t offset) {
+    output_started = true;
     auto source = tensor.contiguous().view({-1});
     TORCH_CHECK(offset <= size && static_cast<size_t>(source.numel()) <= size - offset,
                 "Native output exceeds provided capacity");

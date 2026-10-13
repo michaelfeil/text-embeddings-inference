@@ -123,6 +123,22 @@ int main() {
     try { tei::OutputLease oversized(bounded, device, std::numeric_limits<size_t>::max()); oversized.allocate(); }
     catch (const c10::Error&) { rejected = true; }
     TORCH_CHECK(rejected, "Oversized capacity overflow bypassed staging admission");
+    auto varied = std::make_shared<tei::OutputPool>(); varied->max_bytes = 4096;
+    { tei::OutputLease many_inputs(varied, device, 8); many_inputs.allocate();
+      many_inputs.upload(at::ones({256}, at::TensorOptions().dtype(at::kFloat)));
+      many_inputs.upload(at::ones({256}, at::TensorOptions().dtype(at::kFloat)));
+      many_inputs.record(); many_inputs.wait(); }
+    { tei::OutputLease other(varied, device, 8); other.allocate(); other.record(); other.wait(); }
+    { tei::OutputLease larger(varied, device, 500); larger.allocate();
+      TORCH_CHECK(varied->slots[0].inputs.empty(), "Selected slot retained unused input pins");
+      larger.record(); larger.wait(); }
+    { tei::OutputLease other(varied, device, 8); other.allocate(); other.record(); other.wait(); }
+    { tei::OutputLease smaller(varied, device, 8); smaller.allocate();
+      smaller.upload(at::ones({32}, at::TensorOptions().dtype(at::kFloat)));
+      TORCH_CHECK(varied->retained_bytes() <= varied->max_bytes,
+                  "Selected slot's old output capacity blocked a smaller request");
+      smaller.copy(at::full({8}, 5, at::TensorOptions().device(device)), 0); smaller.record();
+      TORCH_CHECK(smaller.wait()[7] == 5, "Selected-slot reclamation corrupted output"); }
     // Simulate device allocation pressure without consuming the GPU's memory.
     // An allocation failure must release the slot and its partial host allocation.
     auto pressured = std::make_shared<tei::OutputPool>();
