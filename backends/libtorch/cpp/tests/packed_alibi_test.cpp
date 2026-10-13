@@ -20,6 +20,25 @@ void overflowing_bias_storage_test() {
 int main(int argc, char** argv) {
   c10::InferenceMode guard;
   overflowing_bias_storage_test();
+  {
+    auto q=at::zeros({1}).as_strided({4096,12,1},{0,0,0});
+    tei::PackedInput input;input.batch=1;input.max_sequence=4096;
+    for(bool alibi:{false,true}) {
+      bool rejected=false;
+      try {
+        if(alibi)tei::packed_alibi_bias(q,input,at::ones({12}),-1,-1,1024);
+        else tei::packed_sequence_bias(q,input,1024);
+      } catch(const c10::Error& ex) {
+        rejected=std::string(ex.what()).find("exceeds its memory budget")!=std::string::npos;
+      }
+      TORCH_CHECK(rejected,"Finite attention geometry bypassed byte admission");
+    }
+    input.max_sequence=1;
+    auto small=q.narrow(0,0,1);
+    TORCH_CHECK(tei::packed_sequence_bias(small,input,1024).defined()
+      &&tei::packed_alibi_bias(small,input,at::ones({12}),-1,-1,1024).defined(),
+      "Valid bias failed after admission rejection");
+  }
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   at::manual_seed(2718);
   for(auto dtype: {at::kHalf,at::kBFloat16}) for(auto lengths: {std::vector<int>{3,13,7},std::vector<int>{13,3,7},std::vector<int>{33},std::vector<int>{128,128,128,128},std::vector<int>{32,64,96,128,160,192,224,256}}) {

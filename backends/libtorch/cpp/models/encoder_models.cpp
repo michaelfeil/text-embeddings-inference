@@ -466,7 +466,7 @@ struct Encoder final : Model {
     // All Jina layers share slopes and local positions, so materialize their
     // packed bias once per request rather than once per layer.
     std::optional<at::Tensor> attention_bias;
-    if(alibi && h.is_cuda() && !exact_alibi32 && !exact_alibi64)attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi);
+    if(alibi && h.is_cuda() && !exact_alibi32 && !exact_alibi64)attention_bias=packed_alibi_bias(h.view({h.size(0),heads,hidden/heads}),input,*alibi,-1,-1,o.integer("_attention_bias_max_bytes",default_attention_bias_max_bytes));
     bool scaled = family == Family::Nomic && local_cos.defined() && input.max_sequence > o.integer("max_trained_positions", 2048);
     at::Tensor cos_global, sin_global, cos_local, sin_local;
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -825,6 +825,9 @@ struct Deberta final : Model {
                               w("embeddings.word_embeddings.weight").options());
   }
   at::Tensor buckets(int64_t length)const {
+    // Includes signed bucket tables and conservative logarithmic temporaries.
+    admit_attention_bias(checked_size_product(checked_size_product(length,length),128),
+      o.integer("_attention_bias_max_bytes",default_attention_bias_max_bytes));
     auto idx=at::arange(length,at::TensorOptions().device(device).dtype(at::kLong));
     auto delta=idx.unsqueeze(1)-idx.unsqueeze(0);
     if(o.integer("position_buckets",-1)>0) {
@@ -885,9 +888,9 @@ struct Deberta final : Model {
         // The packed Torch kernel addresses bias with local query/key coordinates
         // and advances stride(0) per sequence, independently of packed QKV offsets.
         // Bound storage for both these actual tiles and the logical tensor view.
-        const int64_t nmax=input.max_sequence,stride=((nmax+7)/8)*8;
-        const int64_t tile=nmax*stride,batch_stride=heads*tile;
-        auto packed_bias=packed_sequence_bias(q,input);
+        const int64_t nmax=input.max_sequence,stride=checked_size_product(checked_size_sum(nmax,7)/8,8);
+        const int64_t tile=checked_size_product(nmax,stride),batch_stride=checked_size_product(heads,tile);
+        auto packed_bias=packed_sequence_bias(q,input,o.integer("_attention_bias_max_bytes",default_attention_bias_max_bytes));
         at::Tensor content_key,position_content;
         if(position_key[layer].defined())content_key=at::matmul(q.transpose(0,1),position_key[layer])/scale;
         if(position_query[layer].defined())position_content=at::matmul(k.transpose(0,1),position_query[layer])/scale;
