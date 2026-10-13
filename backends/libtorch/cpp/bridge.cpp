@@ -186,6 +186,8 @@ void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t
    family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2");
  const auto raw_rows=tei::validate_output_indices(cumulative,batch,pooled,pooled_count,raw,raw_count);
  TORCH_CHECK(model.model&&model.dense,"Native model is not ready");
+ TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
+ TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
  const auto raw_width=pool>=4?model.model->classification_width():model.model->output_width();
  const auto pooled_width=pool>=4?raw_width:model.dense->output_width(pool==3?model.config.vocab:raw_width);
  TORCH_CHECK(tei::expected_output_elements(pooled_count,raw_rows,pooled_width,raw_width)<=capacity,
