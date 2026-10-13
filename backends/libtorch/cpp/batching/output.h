@@ -6,6 +6,7 @@
 #include <condition_variable>
 #include <cstring>
 #include <memory>
+#include <limits>
 #include <mutex>
 #include <vector>
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -28,12 +29,36 @@ struct OutputPool {
   std::condition_variable available;
   std::array<OutputSlot, 2> slots;
   size_t next_slot = 0;
+  size_t max_bytes = 512ULL << 20;
+  size_t retained_bytes() const {
+    size_t bytes = 0;
+    for (const auto& slot : slots) {
+      if (slot.host.defined()) bytes += slot.host.storage().nbytes();
+      if (slot.device_output.defined()) bytes += slot.device_output.storage().nbytes();
+      for (const auto& input : slot.inputs)
+        if (input.defined()) bytes += input.storage().nbytes();
+    }
+    return bytes;
+  }
 };
 class OutputLease {
   std::shared_ptr<OutputPool> pool;
   OutputSlot* slot = nullptr;
   at::Device device;
   size_t input_cursor = 0;
+  // Called under the pool lock, before allocating replacement storage.
+  void make_room(size_t bytes, size_t replaced) {
+    TORCH_CHECK(bytes <= pool->max_bytes, "Native output staging exceeds its memory budget");
+    auto fits = [&] { return pool->retained_bytes() - replaced <= pool->max_bytes - bytes; };
+    if (!fits()) {
+      for (auto& idle : pool->slots) {
+        if (&idle == slot || idle.busy) continue;
+        idle.host = at::Tensor(); idle.device_output = at::Tensor(); idle.inputs.clear();
+        if (fits()) break;
+      }
+    }
+    TORCH_CHECK(fits(), "Native output staging memory budget is occupied by pending results");
+  }
 
 #ifdef TEI_TORCH_CUDA_KERNELS
   c10::cuda::CUDAStream stream;
@@ -64,25 +89,53 @@ public:
     catch (...) { /* CUDA failures are reported by submit/wait. */ }
 #endif
     slot->gpu.clear();
-    { std::lock_guard lock(pool->mutex); slot->busy = false; }
+    { std::lock_guard lock(pool->mutex);
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if (!recorded) {
+        // A failed submission has no result to preserve. Do not cache its
+        // partially allocated buffers after draining any submitted transfers.
+        slot->host = at::Tensor(); slot->device_output = at::Tensor(); slot->inputs.clear();
+      }
+#endif
+      slot->busy = false;
+    }
     pool->available.notify_one();
   }
   void allocate() {
     // Keep wait() non-null even when no output rows were requested.
+    TORCH_CHECK(size <= static_cast<size_t>(std::numeric_limits<int64_t>::max())
+      && size <= std::numeric_limits<size_t>::max() / (2 * sizeof(float)),
+                "Native output capacity is too large");
     const auto capacity = static_cast<int64_t>(std::max(size, size_t{1}));
-    if (!slot->host.defined() || static_cast<size_t>(slot->host.numel()) < size)
+    std::lock_guard lock(pool->mutex);
+    const bool grow_host = !slot->host.defined() || static_cast<size_t>(slot->host.numel()) < size;
+    const bool grow_device = !slot->device_output.defined() || static_cast<size_t>(slot->device_output.numel()) < size;
+    const auto bytes = static_cast<size_t>(capacity) * sizeof(float);
+    const auto replaced = (grow_host && slot->host.defined() ? slot->host.storage().nbytes() : 0)
+      + (grow_device && slot->device_output.defined() ? slot->device_output.storage().nbytes() : 0);
+    make_room(bytes * (static_cast<size_t>(grow_host) + static_cast<size_t>(grow_device)), replaced);
+    // Old storage has no remaining consumer after its previous lease completed.
+    // Release it before allocating the larger replacement to avoid doubling peaks.
+    if (grow_host) slot->host = at::Tensor();
+    if (grow_device) slot->device_output = at::Tensor();
+    if (grow_host)
       slot->host = at::empty({capacity},
           at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
-    if (!slot->device_output.defined() || static_cast<size_t>(slot->device_output.numel()) < size)
+    if (grow_device)
       slot->device_output = at::empty({capacity},
           at::TensorOptions().dtype(at::kFloat).device(device));
   }
   at::Tensor upload(const at::Tensor& host) {
     TORCH_CHECK(host.device().is_cpu() && host.is_contiguous(), "Invalid staged input");
+    std::unique_lock lock(pool->mutex);
     if (input_cursor == slot->inputs.size()) slot->inputs.emplace_back();
     auto& pin = slot->inputs[input_cursor++];
-    if (!pin.defined() || pin.scalar_type() != host.scalar_type() || pin.numel() < host.numel())
+    if (!pin.defined() || pin.scalar_type() != host.scalar_type() || pin.numel() < host.numel()) {
+      make_room(host.nbytes(), pin.defined() ? pin.storage().nbytes() : 0);
+      pin = at::Tensor();
       pin = at::empty({host.numel()}, host.options().pinned_memory(true));
+    }
+    lock.unlock();
     auto view = pin.narrow(0, 0, host.numel()).view(host.sizes());
     std::memcpy(view.data_ptr(), host.data_ptr(), host.nbytes());
     auto result = view.to(device, /*non_blocking=*/true);
