@@ -36,8 +36,10 @@ __device__ void packed_mean_cumulative(const T* input, const uint32_t* spans,
     __syncthreads();
     if (threadIdx.x < 8 && base + threadIdx.x < width) {
         const T reciprocal = T(1.0 / double(length));
+        const T original = partial[threadIdx.x] * reciprocal + T(0.f);
         output[uint64_t(blockIdx.y) * width + base + threadIdx.x] =
-            partial[threadIdx.x] * reciprocal + T(0.f);
+            packed_mean_finite_fallback(input, start, length, width,
+                                       base + threadIdx.x, original);
     }
 }
 __global__ void packed_mean_cumulative_f16(const __half* x,const uint32_t* cu,
