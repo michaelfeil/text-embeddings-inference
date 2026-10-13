@@ -3,10 +3,26 @@
 #include "kernels/decoder_packed_readout.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
+#include <limits>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <utility>
 namespace {
+void verify_subnormal_router(const c10::Device& device) {
+ auto host=at::full({1,128},-100.f,at::TensorOptions().dtype(at::kFloat));
+ auto* logits=host.mutable_data_ptr<float>();logits[0]=0.f;
+ for(int rank=0;rank<7;++rank)logits[127-rank]=-90.f-rank;
+ auto probabilities=tei::decoder_half_moe_probabilities(host.to(device));
+ auto observed=probabilities.cpu();const auto* values=observed.const_data_ptr<float>();
+ for(int expert=121;expert<128;++expert)
+  TORCH_CHECK(values[expert]>0.f&&values[expert]<std::numeric_limits<float>::min(),
+    "Exact MoE softmax must retain subnormal expert probabilities");
+ auto ids=at::argsort(probabilities,true,-1,true).narrow(-1,0,8).cpu();
+ const auto* selected=ids.const_data_ptr<int64_t>();
+ TORCH_CHECK(selected[0]==0,"MoE maximum expert changed");
+ for(int rank=1;rank<8;++rank)
+  TORCH_CHECK(selected[rank]==128-rank,"Subnormal router probabilities changed top8 expert order");
+}
 bool fail_cached_matmul=false;
 int cached_matmul_calls=0;
 int64_t expected_live_bytes_at_fallback=-1;
@@ -37,6 +53,7 @@ Tensor probe_cache_linear(const Tensor& x,const Tensor& weight) {
 int main(int argc,char** argv) {
  c10::InferenceMode inference;at::manual_seed(43);
  auto options=at::TensorOptions().dtype(at::kBFloat16).device(c10::Device(argc>1?argv[1]:"cuda:0"));
+ verify_subnormal_router(options.device());
  for(int64_t width:{896,1024,2048,3072,4096}) {
  for(int64_t rows:{1,7,257}) {
   auto x=(at::rand({rows,width},options)-.5),r=(at::rand_like(x)-.5),w=at::ones({width},options);
@@ -57,12 +74,12 @@ int main(int argc,char** argv) {
  auto rounded=(x+r).to(at::kFloat);auto wrong=(rounded*at::rsqrt(rounded.square().mean(-1,true)+1e-6)*w.to(at::kFloat)).to(at::kBFloat16);
  TORCH_CHECK(at::equal(result.first,expected),"Known residual-rounding regression must match independent FP32 oracle exactly");
  TORCH_CHECK((result.first-wrong).abs().max().item<float>()>=.125,"Fixture must distinguish pre-rounded residual statistics");
- bool rejected=false;try{tei::decoder_exact_rms_norm(x.to(at::kHalf),r.to(at::kHalf),w.to(at::kHalf),1e-6);}catch(const c10::Error&){rejected=true;}TORCH_CHECK(rejected==(width!=1024&&width!=896),"FP16 RMS must accept only registered widths 896 and 1024");
+ bool rejected=false;try{tei::decoder_exact_rms_norm(x.to(at::kHalf),r.to(at::kHalf),w.to(at::kHalf),1e-6);}catch(const c10::Error&){rejected=true;}TORCH_CHECK(rejected==(width!=1024&&width!=896&&width!=2048),"FP16 RMS must accept only registered widths 896, 1024 and 2048");
  }
  // FP16 uses its original registered 1024-wide geometry and preserves
  // FP32 residual statistics before the output store.
  auto half_options=options.dtype(at::kHalf);
- for(int64_t width:{896,1024})for(int64_t rows:{1,7,257})for(bool residual:{false,true}) {
+ for(int64_t width:{896,1024,2048})for(int64_t rows:{1,7,257})for(bool residual:{false,true}) {
   auto x=at::rand({rows,width},half_options)-.5,r=at::rand_like(x)-.5;
   auto w=at::ones({width},half_options);
   auto result=tei::decoder_exact_rms_norm(x,residual?r:at::Tensor(),w,1e-6);
