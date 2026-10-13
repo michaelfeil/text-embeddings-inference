@@ -35,6 +35,10 @@ impl MemoryAdmission {
         );
         let payload = u32::try_from(payload_limit)?;
         anyhow::ensure!(
+            output_limit >= 64 * 1024,
+            "TEI_HTTP_OUTPUT_MAX_BYTES must be at least 65536 bytes (64 KiB)"
+        );
+        anyhow::ensure!(
             input_limit >= payload_limit
                 && input_limit <= Semaphore::MAX_PERMITS
                 && output_limit > 0
@@ -60,7 +64,7 @@ pub(crate) enum ErrorShape {
     OpenAI,
 }
 impl ErrorShape {
-    fn for_path(path: &str) -> Self {
+    pub(crate) fn for_path(path: &str) -> Self {
         match path {
             "/v1/classify" => Self::Classify,
             "/embeddings" | "/v1/embeddings" => Self::OpenAI,
@@ -317,6 +321,10 @@ mod tests {
     }
     #[tokio::test]
     async fn slow_upload_is_admitted_before_poll_and_cancel_releases_capacity() {
+        for output_limit in [1, 65535] {
+            assert!(MemoryAdmission::new(2, 1024, 1024, output_limit).is_err());
+        }
+        assert!(MemoryAdmission::new(2, 1024, 1024, 65536).is_ok());
         let state = MemoryAdmission::new(2, 1024, 1024, 256 * 1024).unwrap();
         let router = app(state.clone());
         let polls = Arc::new(AtomicUsize::new(0));
@@ -421,6 +429,42 @@ mod tests {
         let error: serde_json::Value = rmp_serde::from_slice(&error_bytes).unwrap();
         assert_eq!(error["error_type"], "Overloaded");
         drop(error_bytes);
+        // Exercise both the input-conversion writer and final-format writer
+        // exhausting capacity while a genuine encoded response is still held.
+        for held_capacity in [128 * 1024, 64 * 1024] {
+            let other_output = state
+                .outputs
+                .clone()
+                .try_acquire_many_owned(held_capacity)
+                .unwrap();
+            let mut invalid = request(Body::from("{"));
+            *invalid.uri_mut() = "/v1/classify".parse().unwrap();
+            invalid.headers_mut().insert(
+                axum::http::header::ACCEPT,
+                axum::http::HeaderValue::from_static("application/msgpack"),
+            );
+            let converted = router.clone().oneshot(invalid).await.unwrap();
+            assert_eq!(
+                converted.status(),
+                axum::http::StatusCode::TOO_MANY_REQUESTS
+            );
+            assert_eq!(
+                converted.headers()[axum::http::header::CONTENT_TYPE],
+                "application/msgpack"
+            );
+            assert_eq!(state.requests.available_permits(), 0);
+            let bytes = axum::body::to_bytes(converted.into_body(), 1024)
+                .await
+                .unwrap();
+            let error: serde_json::Value = rmp_serde::from_slice(&bytes).unwrap();
+            assert_eq!(error["object"], "error");
+            assert_eq!(error["type"], "overloaded_error");
+            assert_eq!(error["code"], 429);
+            assert_eq!(state.requests.available_permits(), 0);
+            drop(bytes);
+            assert_eq!(state.requests.available_permits(), 1);
+            drop(other_output);
+        }
         drop(transport_clone);
         assert_eq!(state.requests.available_permits(), 2);
         assert_eq!(state.outputs.available_permits(), 256 * 1024);

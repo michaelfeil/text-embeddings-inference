@@ -123,7 +123,8 @@ allocator-reserved memory.
 HTTP POST requests also reserve a request slot before reading or parsing the body.
 `TEI_HTTP_INPUT_MAX_BYTES` limits aggregate reserved request-body capacity and
 `TEI_HTTP_OUTPUT_MAX_BYTES` limits aggregate encoded-response allocation capacity;
-each defaults to 536870912 bytes (512 MiB). Each admitted request reserves the
+each defaults to 536870912 bytes (512 MiB). The output budget must be at least
+65536 bytes (64 KiB); smaller values are rejected at startup. Each admitted request reserves the
 full configured `--payload-limit`, and remains admitted until its response bytes
 are consumed or dropped. Output capacity is reserved before JSON or MessagePack
 serialization allocates its buffer, including both old and new allocations during

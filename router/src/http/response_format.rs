@@ -135,6 +135,18 @@ fn memory_error(format: Format, shape: super::memory::ErrorShape) -> Response {
         .into_response()
 }
 
+enum ConversionError {
+    Failed,
+    Exhausted,
+}
+fn conversion_error(writer: &super::memory::ReservedWriter) -> ConversionError {
+    if writer.exhausted {
+        ConversionError::Exhausted
+    } else {
+        ConversionError::Failed
+    }
+}
+
 // Check permission only: positive q values do not rank formats. A specific
 // q=0 exclusion overrides a wildcard that would otherwise allow the media type.
 fn allows(headers: &HeaderMap, media_type: &str) -> bool {
@@ -198,6 +210,7 @@ fn select(headers: &HeaderMap, native: Option<&str>) -> Option<Format> {
 }
 
 pub(crate) async fn negotiate(request: Request, next: Next) -> Response {
+    let memory_error_shape = super::memory::ErrorShape::for_path(request.uri().path());
     let headers = request.headers().clone();
     let initial = select(&headers, None);
     // Native text routes can satisfy Accept values outside the API formats.
@@ -261,39 +274,51 @@ pub(crate) async fn negotiate(request: Request, next: Next) -> Response {
         let mut writer = super::memory::ReservedWriter::new();
         let mut length = 0usize;
         while let Some(frame) = std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
-            let frame = frame.map_err(|_| ())?;
+            let frame = frame.map_err(|_| ConversionError::Failed)?;
             if let Ok(data) = frame.into_data() {
-                length = length.checked_add(data.len()).ok_or(())?;
+                length = length
+                    .checked_add(data.len())
+                    .ok_or(ConversionError::Failed)?;
                 if length > 2 * 1024 * 1024 {
-                    return Err(());
+                    return Err(ConversionError::Failed);
                 }
-                writer.write_all(&data).map_err(|_| ())?;
+                writer
+                    .write_all(&data)
+                    .map_err(|_| conversion_error(&writer))?;
             }
         }
         let bytes = writer.finish();
         let value = if original_json {
-            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| ())?
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .map_err(|_| ConversionError::Failed)?
         } else if bytes.is_empty() {
             serde_json::Value::Null
         } else if let Ok(text) = std::str::from_utf8(&bytes) {
             serde_json::Value::String(text.to_owned())
         } else {
-            serde_json::to_value(bytes.to_vec()).map_err(|_| ())?
+            serde_json::to_value(bytes.to_vec()).map_err(|_| ConversionError::Failed)?
         };
         let mut encoded = super::memory::ReservedWriter::new();
         if format == Format::Json {
-            serde_json::to_writer(&mut encoded, &value).map_err(|_| ())?;
+            serde_json::to_writer(&mut encoded, &value).map_err(|_| conversion_error(&encoded))?;
         } else {
             value
                 .serialize(&mut rmp_serde::Serializer::new(&mut encoded).with_struct_map())
-                .map_err(|_| ())?;
+                .map_err(|_| conversion_error(&encoded))?;
         }
-        Ok::<_, ()>(encoded.finish())
+        Ok::<_, ConversionError>(encoded.finish())
     }
     .await;
     match encoded {
         Ok(bytes) => Response::from_parts(parts, Body::from(bytes)),
-        Err(()) => {
+        Err(ConversionError::Exhausted) => {
+            let (error_parts, error_body) = memory_error(format, memory_error_shape).into_parts();
+            parts.status = error_parts.status;
+            parts.headers.extend(error_parts.headers);
+            // Retain the admission lease in the original response extensions.
+            Response::from_parts(parts, error_body)
+        }
+        Err(ConversionError::Failed) => {
             parts.status = StatusCode::INTERNAL_SERVER_ERROR;
             Response::from_parts(parts, Body::empty())
         }
