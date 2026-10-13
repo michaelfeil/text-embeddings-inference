@@ -54,6 +54,16 @@ void input_descriptor_test() {
  gemma.merge_size=3;gemma.token_start=40;gemma.token_count=4;gemma.sequence_start=32;
  TORCH_CHECK(validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&gemma,1,nullptr,0,true)==64,
    "Valid Gemma pooled image rejected");
+ auto wrong_sequence=gemma;wrong_sequence.sequence_start=0;
+ rejects([&]{validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&wrong_sequence,1,nullptr,0,true);},
+   "Gemma image admitted keys from another packed sequence");
+ wrong_sequence.sequence_start=33;
+ rejects([&]{validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&wrong_sequence,1,nullptr,0,true);},
+   "Gemma image accepted a non-boundary sequence start");
+ auto second_row=image;second_row.token_start=40;second_row.sequence_start=32;
+ TORCH_CHECK(validate(&second_row,1,nullptr,0)==64,"Valid second-row temporal image rejected");
+ second_row.sequence_start=0;
+ rejects([&]{validate(&second_row,1,nullptr,0);},"Temporal image accepted another sequence start");
  rejects([&]{validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&image,1,nullptr,0,true);},
    "Multiple-frame Gemma image accepted");
  // Exercise the actual native bridge before model creation/any tensor upload.

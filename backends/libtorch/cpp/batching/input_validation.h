@@ -77,6 +77,7 @@ inline int64_t validate_input_descriptors(const int64_t* ids,const int64_t* type
       "Invalid ",name," token span");
     const auto* end=std::upper_bound(cumulative,cumulative+batch+1,start);
     TORCH_CHECK(count<=int64_t(*end)-start,"Media token span crosses packed sequence boundary");
+    return int64_t(*(end-1));
   };
   for(size_t i=0;i<image_count;++i) {
     const auto& item=images[i];
@@ -88,9 +89,9 @@ inline int64_t validate_input_descriptors(const int64_t* ids,const int64_t* type
     input_bytes(input_product(item.rows,item.patch_dim,"image payload"),sizeof(float),"image payload");
     const auto merged_rows=input_product(input_product(item.grid[0],item.grid[1]/item.merge_size,"merged image grid"),item.grid[2]/item.merge_size,"merged image grid");
     TORCH_CHECK(item.token_count==merged_rows,"Image token count does not match merged grid");
-    span(item.token_start,item.token_count,"image");
-    TORCH_CHECK(item.sequence_start>=0&&item.sequence_start<=item.token_start,
-      "Invalid image sequence start");
+    const auto sequence_start=span(item.token_start,item.token_count,"image");
+    TORCH_CHECK(item.sequence_start==sequence_start,
+      "Image sequence start does not match containing packed sequence");
   }
   for(size_t i=0;i<audio_count;++i) {
     const auto& item=audios[i];
