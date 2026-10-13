@@ -109,24 +109,29 @@ impl OwnedDecision {
             } => {
                 result.kind = 0;
                 result.question_type = i64::try_from(*question_type).map_err(inference)?;
-                result.markers = markers
-                    .iter()
-                    .map(|&n| i64::try_from(n).map_err(inference))
-                    .collect::<Result<_, _>>()?;
+                result.markers =
+                    collect_results(markers.iter().map(|&n| i64::try_from(n).map_err(inference)))?;
             }
             DecisionInput::OptionTokens { token_ids } => {
                 result.kind = 1;
-                result.token_ids = token_ids.iter().map(|&n| i64::from(n)).collect();
+                result.token_ids = collect_fallible(token_ids.iter().map(|&n| i64::from(n)))?;
             }
             DecisionInput::Clef { fields } => {
                 result.kind = 2;
+                result.fields = reserved_vec(fields.len())?;
+                result._spans = reserved_vec(fields.len())?;
                 for field in fields {
-                    let spans = field
-                        .options
-                        .iter()
-                        .flat_map(|&(a, b)| [a, b])
-                        .map(|n| i64::try_from(n).map_err(inference))
-                        .collect::<Result<Vec<_>, _>>()?;
+                    let mut spans = reserved_vec(
+                        field
+                            .options
+                            .len()
+                            .checked_mul(2)
+                            .ok_or_else(|| inference("Decision option count overflow"))?,
+                    )?;
+                    for &(a, b) in &field.options {
+                        spans.push(i64::try_from(a).map_err(inference)?);
+                        spans.push(i64::try_from(b).map_err(inference)?);
+                    }
                     result.fields.push(NativeDecisionField {
                         kind: i64::try_from(field.kind).map_err(inference)?,
                         question_start: i64::try_from(field.question.0).map_err(inference)?,
@@ -299,6 +304,59 @@ fn inference(error: impl ToString) -> BackendError {
     BackendError::Inference(error.to_string())
 }
 
+fn reserved_vec<T>(count: usize) -> Result<Vec<T>, BackendError> {
+    let mut values = Vec::new();
+    values.try_reserve_exact(count).map_err(inference)?;
+    Ok(values)
+}
+
+fn collect_fallible<T>(values: impl ExactSizeIterator<Item = T>) -> Result<Vec<T>, BackendError> {
+    let mut result = reserved_vec(values.len())?;
+    result.extend(values);
+    Ok(result)
+}
+
+fn collect_results<T>(
+    values: impl ExactSizeIterator<Item = Result<T, BackendError>>,
+) -> Result<Vec<T>, BackendError> {
+    let mut result = reserved_vec(values.len())?;
+    for value in values {
+        result.push(value?);
+    }
+    Ok(result)
+}
+
+fn filled_vec<T: Copy>(count: usize, value: T) -> Result<Vec<T>, BackendError> {
+    let mut result = reserved_vec(count)?;
+    result.resize(count, value);
+    Ok(result)
+}
+
+fn host_output_bytes(
+    elements: usize,
+    raw_rows: usize,
+    outputs: usize,
+    cuda: bool,
+) -> Result<usize, BackendError> {
+    let payload = elements
+        .checked_mul(std::mem::size_of::<f32>())
+        .and_then(|bytes| bytes.checked_mul(if cuda { 1 } else { 2 }));
+    // Include token-row Vec metadata and conservative map bucket storage,
+    // including the second map used by classification output conversion.
+    payload
+        .and_then(|bytes| {
+            raw_rows
+                .checked_mul(std::mem::size_of::<Vec<f32>>())
+                .and_then(|rows| bytes.checked_add(rows))
+        })
+        .and_then(|bytes| {
+            outputs
+                .checked_mul(8 * std::mem::size_of::<(usize, Embedding)>() + 8)
+                .and_then(|entries| bytes.checked_add(entries))
+        })
+        .ok_or_else(|| inference("Host output memory size overflow"))
+}
+
 pub fn device_count(device: &str) -> Result<usize, BackendError> {
     let device = CString::new(device).map_err(start)?;
     // SAFETY: the C string is valid for the duration of the synchronous call.
@@ -340,6 +398,7 @@ pub struct LibtorchBackend {
     decision: bool,
     supports_radix: bool,
     cuda: bool,
+    host_output_max_bytes: usize,
 }
 // SAFETY: the handle owns its tensors and is used by TEI's single backend worker.
 // It can move between threads; it is deliberately not Sync. InferenceMode is set per native call.
@@ -744,6 +803,12 @@ impl LibtorchBackend {
         };
         let device = CString::new(device).map_err(start)?;
         // SAFETY: config and device stay valid during creation, and the bridge copies them.
+        let host_output_max_bytes = std::env::var("TEI_TORCH_HOST_OUTPUT_MAX_BYTES")
+            .map(|value| value.parse::<usize>().map_err(start))
+            .unwrap_or(Ok(512 << 20))?;
+        if host_output_max_bytes == 0 {
+            return Err(start("Host output memory budget must be positive"));
+        }
         let handle = NonNull::new(unsafe { tei_create(&native, device.as_ptr(), dtype) })
             .ok_or_else(|| start(native_error()))?;
         let mut model = Self {
@@ -757,6 +822,7 @@ impl LibtorchBackend {
             cuda: device.to_bytes().starts_with(b"cuda")
                 || (device.to_bytes() == b"auto" && device_count("cuda").unwrap_or(0) > 0),
             decision,
+            host_output_max_bytes,
         };
         fn flatten(value: &serde_json::Value, key: &str, output: &mut Vec<(String, String)>) {
             match value {
@@ -941,29 +1007,48 @@ fn pack_output(
     lengths: Vec<i64>,
     hidden: usize,
     raw_width: usize,
-) -> Embeddings {
+) -> Result<Embeddings, BackendError> {
     let mut result = Embeddings::default();
+    result
+        .try_reserve(
+            pooled
+                .len()
+                .checked_add(raw.len())
+                .ok_or_else(|| inference("Output count overflow"))?,
+        )
+        .map_err(inference)?;
     let mut offset = 0;
     for index in pooled {
         result.insert(
             index as usize,
-            Embedding::Pooled(output[offset..offset + hidden].to_vec()),
+            Embedding::Pooled(collect_fallible(
+                output[offset..offset + hidden].iter().copied(),
+            )?),
         );
         offset += hidden;
     }
     for index in raw {
         let size = lengths[index as usize] as usize * raw_width;
-        let values = output[offset..offset + size]
-            .chunks_exact(raw_width)
-            .map(<[f32]>::to_vec)
-            .collect();
+        let values = collect_results(
+            output[offset..offset + size]
+                .chunks_exact(raw_width)
+                .map(|row| collect_fallible(row.iter().copied())),
+        )?;
         result.insert(index as usize, Embedding::All(values));
         offset += size;
     }
-    result
+    Ok(result)
 }
 
 impl LibtorchBackend {
+    fn check_host_output(&self, bytes: usize) -> Result<(), BackendError> {
+        if bytes > self.host_output_max_bytes {
+            return Err(inference(
+                "Host output exceeds TEI_TORCH_HOST_OUTPUT_MAX_BYTES",
+            ));
+        }
+        Ok(())
+    }
     fn run_inner(
         &self,
         batch: Batch,
@@ -993,7 +1078,7 @@ impl LibtorchBackend {
         let owned_radix = OwnedRadix::from_batch(&batch)?;
         let native_radix = owned_radix.as_ref().map(OwnedRadix::native);
         let b = ends.len() - 1;
-        let lengths: Vec<i64> = ends.windows(2).map(|w| (w[1] - w[0]) as i64).collect();
+        let lengths = collect_fallible(ends.windows(2).map(|w| (w[1] - w[0]) as i64))?;
         let seq = *lengths.iter().max().unwrap() as usize;
         if !batch.multimodal.is_empty() && batch.multimodal.len() != b {
             return Err(inference("Invalid multimodal batch length"));
@@ -1021,9 +1106,16 @@ impl LibtorchBackend {
         let mut audios = Vec::new();
         let mut media_positions = Vec::new();
         if batch.multimodal.iter().any(Option::is_some) {
-            media_positions = (0..3)
-                .flat_map(|_| batch.position_ids.iter().map(|&p| i64::from(p)))
-                .collect();
+            media_positions = reserved_vec(
+                batch
+                    .position_ids
+                    .len()
+                    .checked_mul(3)
+                    .ok_or_else(|| inference("Media position count overflow"))?,
+            )?;
+            for _ in 0..3 {
+                media_positions.extend(batch.position_ids.iter().map(|&p| i64::from(p)));
+            }
             for (row, media) in batch.multimodal.iter().enumerate() {
                 let Some(media) = media else { continue };
                 let begin = ends[row] as usize;
@@ -1058,6 +1150,8 @@ impl LibtorchBackend {
                     {
                         return Err(inference("Invalid image layout or token span"));
                     }
+                    images.try_reserve(1).map_err(inference)?;
+                    image_keys.try_reserve(1).map_err(inference)?;
                     images.push(NativeImage {
                         pixels: image.pixels.as_ptr(),
                         rows: patches as i64,
@@ -1088,6 +1182,7 @@ impl LibtorchBackend {
                     {
                         return Err(inference("Invalid audio layout or token span"));
                     }
+                    audios.try_reserve(1).map_err(inference)?;
                     audios.push(NativeAudio {
                         values: audio.values.as_ptr(),
                         mask: audio.mask.as_ptr(),
@@ -1100,13 +1195,13 @@ impl LibtorchBackend {
             }
         }
         // Preserve TEI's packed layout: allocations scale with actual tokens, never B * max_length.
-        let ids: Vec<i64> = batch.input_ids.iter().map(|&id| id as i64).collect();
-        let types: Vec<i64> = batch.token_type_ids.iter().map(|&id| id as i64).collect();
-        let positions: Vec<i64> = batch.position_ids.iter().map(|&id| id as i64).collect();
-        let cumulative = ends
-            .iter()
-            .map(|&end| i32::try_from(end).map_err(inference))
-            .collect::<Result<Vec<_>, _>>()?;
+        let ids = collect_fallible(batch.input_ids.iter().map(|&id| id as i64))?;
+        let types = collect_fallible(batch.token_type_ids.iter().map(|&id| id as i64))?;
+        let positions = collect_fallible(batch.position_ids.iter().map(|&id| id as i64))?;
+        let cumulative = collect_results(
+            ends.iter()
+                .map(|&end| i32::try_from(end).map_err(inference)),
+        )?;
         // Relative-only DeBERTa buckets long distances instead of indexing a
         // learned absolute-position table. Keep that table bound for other models
         // and for DeBERTa configurations that enable position-biased input.
@@ -1131,12 +1226,9 @@ impl LibtorchBackend {
                     "Decision metadata count does not match a typed decision model/batch",
                 ));
             }
-            let owned = requests
-                .iter()
-                .map(OwnedDecision::new)
-                .collect::<Result<Vec<_>, _>>()?;
-            let native = owned.iter().map(OwnedDecision::native).collect::<Vec<_>>();
-            let mut counts = vec![0i64; b];
+            let owned = collect_results(requests.iter().map(OwnedDecision::new))?;
+            let native = collect_fallible(owned.iter().map(OwnedDecision::native))?;
+            let mut counts = filled_vec(b, 0i64)?;
             // SAFETY: descriptors and their backing span/token buffers remain owned above.
             if unsafe {
                 tei_decision_counts(
@@ -1149,16 +1241,29 @@ impl LibtorchBackend {
             {
                 return Err(inference(native_error()));
             }
-            let counts = counts
-                .into_iter()
-                .map(|count| usize::try_from(count).map_err(inference))
-                .collect::<Result<Vec<_>, _>>()?;
+            let counts = collect_results(
+                counts
+                    .into_iter()
+                    .map(|count| usize::try_from(count).map_err(inference)),
+            )?;
             let total = counts.iter().try_fold(0usize, |n, &count| {
                 n.checked_add(count)
                     .ok_or_else(|| inference("Decision output size overflow"))
             })?;
-            let mut logits = vec![0f32; total];
-            let mut actions = vec![0f32; b];
+            let decision_bytes = total
+                .checked_mul(2 * std::mem::size_of::<f32>())
+                .and_then(|bytes| {
+                    b.checked_mul(
+                        std::mem::size_of::<DecisionOutput>()
+                            + std::mem::size_of::<usize>()
+                            + std::mem::size_of::<f32>(),
+                    )
+                    .and_then(|rows| bytes.checked_add(rows))
+                })
+                .ok_or_else(|| inference("Decision host output memory size overflow"))?;
+            self.check_host_output(decision_bytes)?;
+            let mut logits = filled_vec(total, 0f32)?;
+            let mut actions = filled_vec(b, 0f32)?;
             // SAFETY: native output counts bound capacity, validated packed/media buffers stay live,
             // and all exceptions are caught by the bridge before returning across the C ABI.
             if unsafe {
@@ -1192,30 +1297,28 @@ impl LibtorchBackend {
                 return Err(inference(native_error()));
             }
             let mut offset = 0;
-            let decisions = counts
-                .into_iter()
-                .zip(actions)
-                .map(|(count, action_probability)| {
+            let decisions = collect_results(counts.into_iter().zip(actions).map(
+                |(count, action_probability)| {
                     let result = DecisionOutput {
-                        logits: logits[offset..offset + count].to_vec(),
+                        logits: collect_fallible(logits[offset..offset + count].iter().copied())?,
                         action_probability,
                     };
                     offset += count;
-                    result
-                })
-                .collect();
+                    Ok(result)
+                },
+            ))?;
             return Ok(Inference::Ready((Embeddings::default(), decisions)));
         }
-        let pooled: Vec<i64> = batch.pooled_indices.iter().map(|&n| n as i64).collect();
-        let raw: Vec<i64> = batch.raw_indices.iter().map(|&n| n as i64).collect();
+        let pooled = collect_fallible(batch.pooled_indices.iter().map(|&n| n as i64))?;
+        let raw = collect_fallible(batch.raw_indices.iter().map(|&n| n as i64))?;
         if pooled.iter().chain(&raw).any(|&n| n as usize >= b) {
             return Err(inference("Invalid output index"));
         }
         let raw_width = if pool >= 4 { hidden } else { self.output_width };
-        let raw_rows = raw
-            .iter()
-            .map(|&i| lengths[i as usize] as usize)
-            .sum::<usize>();
+        let raw_rows = raw.iter().try_fold(0usize, |rows, &i| {
+            rows.checked_add(lengths[i as usize] as usize)
+                .ok_or_else(|| inference("Raw output row count overflow"))
+        })?;
         let size = pooled
             .len()
             .checked_mul(hidden)
@@ -1225,6 +1328,15 @@ impl LibtorchBackend {
                     .and_then(|r| n.checked_add(r))
             })
             .ok_or_else(|| inference("Output size overflow"))?;
+        self.check_host_output(host_output_bytes(
+            size,
+            raw_rows,
+            pooled
+                .len()
+                .checked_add(raw.len())
+                .ok_or_else(|| inference("Output count overflow"))?,
+            self.cuda,
+        )?)?;
         // CUDA results share one bounded completion path at every output size.
         // The model thread can submit the next forward while CPU packing finishes.
         if self.cuda {
@@ -1262,11 +1374,12 @@ impl LibtorchBackend {
             .ok_or_else(|| inference(native_error()))?;
             let output = NativeOutput { handle, size };
             return Ok(Inference::Deferred(Box::new(move || {
-                let result = pack_output(output.values()?, pooled, raw, lengths, hidden, raw_width);
+                let result =
+                    pack_output(output.values()?, pooled, raw, lengths, hidden, raw_width)?;
                 Ok((result, vec![]))
             })));
         }
-        let mut output = vec![0f32; size];
+        let mut output = filled_vec(size, 0f32)?;
         // SAFETY: validated dimensions and indices bound every native read/write. All buffers stay
         // live until this synchronous call returns; exceptions cannot cross the C ABI.
         if unsafe {
@@ -1303,7 +1416,7 @@ impl LibtorchBackend {
             return Err(inference(native_error()));
         }
         Ok(Inference::Ready((
-            pack_output(&output, pooled, raw, lengths, hidden, raw_width),
+            pack_output(&output, pooled, raw, lengths, hidden, raw_width)?,
             vec![],
         )))
     }
@@ -1324,18 +1437,19 @@ impl Backend for LibtorchBackend {
         if self.classification_width == 0 {
             return Err(inference("Checkpoint has no classification head"));
         }
-        batch.pooled_indices = (0..batch.len() as u32).collect();
+        batch.pooled_indices = collect_fallible(0..batch.len() as u32)?;
         batch.raw_indices.clear();
+        let mut predictions = Predictions::default();
+        predictions.try_reserve(batch.len()).map_err(inference)?;
         self.submit_inner(batch, 4, self.classification_width, None)
             .map(|result| {
                 result.map(|(values, _)| {
-                    values
-                        .into_iter()
-                        .filter_map(|(index, value)| match value {
-                            Embedding::Pooled(value) => Some((index, value)),
-                            _ => None,
-                        })
-                        .collect()
+                    for (index, value) in values {
+                        if let Embedding::Pooled(value) = value {
+                            predictions.insert(index, value);
+                        }
+                    }
+                    predictions
                 })
             })
     }
@@ -1346,18 +1460,19 @@ impl Backend for LibtorchBackend {
         if self.classification_width == 0 {
             return Err(inference("Checkpoint has no classification head"));
         }
-        batch.raw_indices = (0..batch.len() as u32).collect();
+        batch.raw_indices = collect_fallible(0..batch.len() as u32)?;
         batch.pooled_indices.clear();
+        let mut predictions = TokenPredictions::default();
+        predictions.try_reserve(batch.len()).map_err(inference)?;
         self.submit_inner(batch, 5, self.classification_width, None)
             .map(|result| {
                 result.map(|(values, _)| {
-                    values
-                        .into_iter()
-                        .filter_map(|(index, value)| match value {
-                            Embedding::All(value) => Some((index, value)),
-                            _ => None,
-                        })
-                        .collect()
+                    for (index, value) in values {
+                        if let Embedding::All(value) = value {
+                            predictions.insert(index, value);
+                        }
+                    }
+                    predictions
                 })
             })
     }
@@ -1396,6 +1511,33 @@ mod pytorch_checkpoint;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_output_admission_and_reservation_failures_are_recoverable() {
+        assert!(reserved_vec::<u64>(usize::MAX).is_err());
+        assert!(host_output_bytes(usize::MAX, 0, 0, false).is_err());
+        let fixture = fixture("", false);
+        let mut model = LibtorchBackend::new(
+            &fixture.0,
+            "float32",
+            ModelType::Embedding(Pool::Mean),
+            "cpu",
+        )
+        .unwrap();
+        let expected = model.embed(batch()).unwrap();
+        model.host_output_max_bytes = 1;
+        assert!(model
+            .embed(batch())
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("HOST_OUTPUT_MAX_BYTES"));
+        model.host_output_max_bytes = 512 << 20;
+        let actual = model.embed(batch()).unwrap();
+        for (index, expected) in expected {
+            assert_eq!(values(&expected), values(&actual[&index]));
+        }
+    }
 
     #[test]
     fn synchronous_native_output_allows_spare_capacity() {
