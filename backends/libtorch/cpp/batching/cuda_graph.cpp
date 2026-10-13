@@ -34,6 +34,9 @@ struct CudaGraphCache::Impl {
   std::unordered_map<std::string, std::unique_ptr<Entry>> entries;
   std::list<std::string> lru;
   std::unordered_set<std::string> failed;
+  // Warmup allocations and BLAS workspaces are stream-local. Reuse one lane
+  // per device instead of retaining another allocator cache for every shape.
+  std::unordered_map<c10::DeviceIndex,c10::cuda::CUDAStream> capture_streams;
 #endif
   Impl(size_t count,int64_t tokens,size_t uses,uint64_t bytes,size_t captures)
     :limit(count),max_tokens(tokens),reuse(uses),max_captures(captures),max_bytes(bytes) {
@@ -164,7 +167,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     entry->input.fold_gather=input.fold_gather.clone();
   }
   auto current=c10::cuda::getCurrentCUDAStream(input.ids.device().index());
-  auto capture_stream=c10::cuda::getStreamFromPool(false,input.ids.device().index());
+  const auto capture_device=input.ids.device().index();
+  auto found_stream=impl->capture_streams.find(capture_device);
+  if(found_stream==impl->capture_streams.end())
+    found_stream=impl->capture_streams.emplace(capture_device,c10::cuda::getStreamFromPool(false,capture_device)).first;
+  auto capture_stream=found_stream->second;
   at::cuda::CUDAEvent input_ready;input_ready.record(current);input_ready.block(capture_stream);
   bool capturing=false;
   try {
