@@ -1,101 +1,13 @@
 // Independent exact-length reference for the private native Torch Flash adapter.
 #include "kernels/torch_flash_fma.h"
 #include "kernels/torch_flash_exact32.h"
-#include "batching/prefix_cache.h"
-#include <ATen/ops/_cudnn_attention_forward.h>
-#include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/Parallel.h>
-#include <ATen/CPUGeneratorImpl.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <vector>
 #include <cmath>
-#include <cstring>
 
-// Isolate attention from shape-dependent projection rounding by supplying
-// identical Q/K/V operands to complete and resumed causal execution.
-static void cached_suffix_spans(const c10::Device& device) {
-  const int64_t total=512,heads=4,kvheads=2,dim=128;
-  auto options=at::TensorOptions().device(device).dtype(at::kBFloat16);
-  auto combined=at::randn({total,heads+2*kvheads,dim},options);
-  auto q=combined.narrow(1,0,heads),k=combined.narrow(1,heads,kvheads),v=combined.narrow(1,heads+kvheads,kvheads);
-  auto cumulative=at::tensor(std::vector<int32_t>{0,total},options.dtype(at::kInt));
-  auto reference=tei::torch_flash_fma(q,k,v,cumulative,total,1./std::sqrt(double(dim)),true);
-  for(int64_t prefix:{1,13,127,129,383,511}) {
-    auto count=total-prefix;
-    auto suffix_cu=at::tensor(std::vector<int32_t>{0,int32_t(count)},options.dtype(at::kInt));
-    auto direct=tei::torch_flash_fma_varlen(q.narrow(0,prefix,count),k,v,suffix_cu,cumulative,count,total,1./std::sqrt(double(dim)),true);
-    TORCH_CHECK(at::equal(direct,reference.narrow(0,prefix,count)),
-      "Matched-operand rectangular suffix attention changed outputs prefix=",prefix,
-      " maxabs=",(direct-reference.narrow(0,prefix,count)).abs().max().item<float>());
-  }
-  std::cout<<"Matched-operand cached suffix attention preserves original BF16 arithmetic\n";
-}
-
-static void default_torch_suffix_spans(const c10::Device& device) {
-  constexpr int64_t total=2048;
-  for(int64_t dim:{64,128})for(auto dtype:{at::kBFloat16,at::kHalf}) {
-    const int64_t heads=dim==64?14:16,kvheads=dim==64?2:8;
-    auto options=at::TensorOptions().device(device).dtype(dtype);
-    // Seed1244 exercises an FP16 value at an output rounding boundary.
-    auto generator=at::detail::createCPUGenerator(1244);
-    auto cpu=at::TensorOptions().dtype(at::kFloat);
-    auto q=at::randn({total,heads,dim},generator,cpu).to(options);
-    auto k=at::randn({total,kvheads,dim},generator,cpu).to(options);
-    auto v=at::randn({total,kvheads,dim},generator,cpu).to(options);
-    auto cumulative=at::tensor(std::vector<int32_t>{0,total},options.dtype(at::kInt));
-    const auto scale=1./std::sqrt(double(dim));
-    auto reference=std::get<0>(at::_flash_attention_forward(q,k,v,cumulative,cumulative,total,total,0.,true,false,scale,-1,-1));
-    auto suffix_cu=at::tensor(std::vector<int32_t>{0,1},options.dtype(at::kInt));
-    auto actual=tei::torch_flash_unfused_varlen(q.narrow(0,total-1,1),k,v,suffix_cu,cumulative,1,total,scale);
-    auto expected=reference.narrow(0,total-1,1);
-    bool agrees=at::equal(actual,expected);
-    if(!agrees&&dtype==at::kHalf&&dim==128) {
-      auto a=actual.cpu().contiguous(),b=expected.cpu().contiguous();int maximum=0;
-      auto ordered=[](uint16_t bits){return bits&0x8000?32768-int(bits&0x7fff):32768+int(bits);};
-      for(int64_t i=0;i<a.numel();++i) {
-        uint16_t x,y;std::memcpy(&x,a.const_data_ptr<at::Half>()+i,sizeof(x));
-        std::memcpy(&y,b.const_data_ptr<at::Half>()+i,sizeof(y));
-        maximum=std::max(maximum,std::abs(ordered(x)-ordered(y)));
-      }
-      TORCH_CHECK(maximum<=1,"Default Torch head128 query exceeded one FP16 output step: ",maximum);
-      agrees=true;
-    }
-    TORCH_CHECK(agrees,
-      "Default Torch final query changed full-context arithmetic dtype=",dtype," head_dim=",dim,
-      " maxabs=",(actual-expected).abs().max().item<float>());
-  }
-  std::cout<<"Default Torch final queries match BF16 exactly and head128 FP16 within one output step\n";
-}
-
-static void cudnn_cached_suffix(const c10::Device& device) {
-  auto major=at::cuda::getDeviceProperties(device.index())->major;
-  if(major!=9&&major!=10)return;
-  constexpr int64_t tokens=512,heads=14,kvheads=2,dim=64;
-  auto options=at::TensorOptions().device(device).dtype(at::kBFloat16);
-  auto q=at::randn({tokens,heads,dim},options),k=at::randn({tokens,kvheads,dim},options),v=at::randn_like(k);
-  int32_t full_offsets[]={0,tokens};tei::PackedInput original;
-  original.offsets=full_offsets;original.batch=1;original.max_sequence=tokens;
-  original.cumulative=at::tensor(std::vector<int32_t>{0,tokens},options.dtype(at::kInt));
-  auto reference=std::get<0>(at::_cudnn_attention_forward(q,k,v,std::nullopt,original.cumulative,
-    original.cumulative,tokens,tokens,true,0.,true,false));
-  for(int64_t boundary:{1,13,384,448,511}) {
-    auto count=tokens-boundary;auto source=std::make_shared<tei::PrefixEntry>();
-    source->layers[0]={k.narrow(0,0,boundary).clone(),v.narrow(0,0,boundary).clone(),{}, {}};
-    auto budget=std::make_shared<tei::PrefixBudget>();
-    tei::PrefixContext context{original,{0,int32_t(count)},{boundary},{source},{nullptr},16<<20,budget};
-    int32_t suffix_offsets[]={0,int32_t(count)};auto input=original;input.offsets=suffix_offsets;
-    input.cumulative=at::tensor(std::vector<int32_t>{0,int32_t(count)},options.dtype(at::kInt));
-    input.max_sequence=count;input.prefix=&context;
-    auto actual=tei::prefix_attention(q.narrow(0,boundary,count),k.narrow(0,boundary,count),v.narrow(0,boundary,count),
-      input,0,1./std::sqrt(double(dim)),-1,-1,false,true,true);
-    TORCH_CHECK(actual.sizes()==reference.narrow(0,boundary,count).sizes()
-      &&at::equal(actual,reference.narrow(0,boundary,count)),
-      "cuDNN cache attention changed packed-provider output boundary=",boundary);
-  }
-  std::cout<<"cuDNN cached GQA suffixes preserve packed-provider outputs exactly\n";
-}
 
 // Media attention retains true head width72 and distinct query/key lengths.
 static void media_spans(const c10::Device& device) {
@@ -193,9 +105,6 @@ int main(int argc,char** argv) {
   c10::InferenceMode guard;
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   media_spans(device);
-  cached_suffix_spans(device);
-  default_torch_suffix_spans(device);
-  cudnn_cached_suffix(device);
   at::manual_seed(9917);at::set_num_threads(1);
   alibi32_spans(device);
   for(auto dtype:{at::kHalf,at::kBFloat16})for(int64_t dim:{32,64,128,256})

@@ -1,4 +1,3 @@
-#include "prefix_cache_test.h"
 // Native actual-length image/deepstack regression; no Python or token padding.
 #include "models/qwen3_vl_models.h"
 #include "models/qwen35_models.h"
@@ -50,15 +49,10 @@ int main(int argc,char** argv) {
   input.images.push_back({at::rand({4,6}),{1,2,2},2,1,1,0});
   input.multimodal_positions=input.positions.unsqueeze(0).repeat({3,1});
   auto visual=model->forward(input);
-  check_prefix_cache(*model,input);
-  PrefixCache media_cache(16<<20,32,8);
-  TORCH_CHECK(at::allclose(media_cache.run(*model,input,0),visual,1e-5,2e-5),"Image cache fill changed outputs");
-  TORCH_CHECK(at::allclose(media_cache.run(*model,input,0),visual,1e-5,2e-5),"Image cache reuse changed outputs");
   TORCH_CHECK((visual-plain).abs().max().item<float>()>1e-4,"Image features not injected");
   TORCH_CHECK(at::allclose(visual.narrow(0,4,2),plain.narrow(0,4,2),1e-5,1e-6),"Images leaked between packed sequences");
   TORCH_CHECK(at::allclose(visual.narrow(0,0,1),plain.narrow(0,0,1),1e-5,1e-6),"Image affected causal prefix");
   input.images[0].pixels=at::zeros({4,6});auto changed=model->forward(input);
-  TORCH_CHECK(at::allclose(media_cache.run(*model,input,0),changed,1e-5,2e-5),"Different pixels reused an old image's prefix state");
   TORCH_CHECK((changed.narrow(0,1,3)-visual.narrow(0,1,3)).abs().max().item<float>()>1e-4,"Image pixels ignored");
   TORCH_CHECK(at::allclose(changed.narrow(0,4,2),visual.narrow(0,4,2),1e-5,1e-6),"Changed image leaked between sequences");
   std::cout<<"Qwen3-VL natural patches, image injection, deepstack and packed isolation passed\n";
@@ -105,12 +99,6 @@ int main(int argc,char** argv) {
     dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);
     dev.multimodal_positions=host.multimodal_positions.to(device);dev.images[0].pixels=host.images[0].pixels.to(device);
     auto expected=reference->forward(host).to(at::kFloat),actual=native->forward(dev).cpu().to(at::kFloat);
-    check_prefix_cache(*native,dev,0,.003,.003);
-    PrefixCache context_cache(1<<20,64,8);context_cache.run(*native,dev,0);
-    auto plain=dev;plain.images.clear();
-    auto plain_expected=native->forward(plain),plain_cached=context_cache.run(*native,plain,0);
-    TORCH_CHECK(context_cache.stats().hits==0&&at::allclose(plain_expected,plain_cached,.003,.003),
-      "Image-batch residual context leaked into plain-text prefix entries");
     TORCH_CHECK(at::allclose(expected,actual,.03,.03),"Qwen3-VL CUDA/CPU image parity mismatch: ",(expected-actual).abs().max().item<float>());
     std::cout<<"Qwen3-VL CUDA/CPU float16 parity maxabs="<<(expected-actual).abs().max().item<float>()<<"\n";
 #ifdef TEI_TORCH_CUDA_KERNELS

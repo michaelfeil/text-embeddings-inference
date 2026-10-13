@@ -48,8 +48,6 @@ This fork serves inference through HTTP using Candle by default, with an optiona
 [experimental native LibTorch 2.14.1 backend](docs/libtorch-backend.md). The Python
 backend, Intel IPEX/Gaudi images, and public gRPC API have been removed.
 OpenTelemetry export over OTLP/gRPC remains supported.
-LibTorch also has an optional [experimental prefix cache](docs/libtorch-prefix-cache.md)
-for supported causal models, disabled by default during numerical qualification.
 
 infinity_v3 is a toolkit for deploying and serving open source text embeddings and sequence
 classification models. infinity_v3 enables high-performance extraction for the most popular models, including FlagEmbedding,
