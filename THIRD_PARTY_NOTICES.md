@@ -17,6 +17,7 @@ CUDA libraries, model weights, or container base images.
 | Candle rotary extension | [Apache text](backends/candle/extensions/candle-rotary/LICENSE-APACHE) and [MIT text](backends/candle/extensions/candle-rotary/LICENSE-MIT). |
 | RadixMLP-derived layers | MIT attribution in [index-select](backends/candle/src/layers/index_select.rs) and [RadixMLP](backends/candle/src/layers/radix_mlp.rs) source headers. |
 | CUTLASS-derived Gemma4 and Nomic MoE kernels | [BSD-3-Clause text](backends/candle/extensions/candle-gemma4-moe/LICENSE.cutlass). |
+| xxHash prefix fingerprints | [BSD-2-Clause text](backends/libtorch/cpp/vendor/xxhash/LICENSE), upstream header notices, and [pinned source provenance](backends/libtorch/cpp/vendor/xxhash/provenance.json). |
 | ALiBi implementation | [Source notices](backends/candle/src/alibi.rs) for Google AI Language Team, Hugging Face, and Jina AI. |
 
 The native Torch [embedding normalization kernel](backends/libtorch/cpp/kernels/encoder_embedding_norm.cuh)
