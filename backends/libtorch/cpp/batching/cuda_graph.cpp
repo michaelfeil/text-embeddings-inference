@@ -168,6 +168,9 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     if(capturing) {
       try {c10::cuda::CUDAStreamGuard stream(capture_stream);entry->graph->capture_end();}catch(...){}
     }
+    // Eager warmups may still use entry storage on the dedicated stream even
+    // when capture fails. Complete them before releasing that storage/pool.
+    capture_stream.synchronize();
     entry.reset();
     cudaGetLastError();
     // The lifetime attempt budget also bounds this negative cache.

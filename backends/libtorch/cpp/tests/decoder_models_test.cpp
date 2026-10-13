@@ -10,6 +10,7 @@
 #include <iostream>
 #include <atomic>
 #include <barrier>
+#include <future>
 #include <thread>
 #include <ATen/Parallel.h>
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -393,6 +394,83 @@ void cache_stream_test(Model& model,PackedInput input) {
   TORCH_CHECK(at::allclose(resumed,expected,.01,.02),"Producer-stream pending reuse changed outputs");
  }
 }
+void native_engine_stream_test(const c10::Device& device) {
+ auto producer=c10::cuda::getStreamFromPool(false,device.index());
+ auto consumer=c10::cuda::getStreamFromPool(false,device.index());
+ for(bool caching:{false,true}) {
+  auto cfg=config("qwen3");cfg.values["num_attention_heads"]="2";
+  cfg.values["num_key_value_heads"]="1";cfg.values["head_dim"]="8";
+  auto tensors=weights(cfg);
+  for(auto& [name,value]:tensors)if(name.ends_with("q_norm.weight")||name.ends_with("k_norm.weight"))value=value.repeat({2});
+  TeiConfig shape{16,2,2,24,32,32,1,1e-6,3};
+  auto handle=tei_create(&shape,device.str().c_str(),2);TORCH_CHECK(handle,tei_error());
+  struct EngineOwner{void* value;~EngineOwner(){if(value)tei_destroy(value);}} owner{handle};
+  for(const auto& [key,value]:cfg.values)TORCH_CHECK(tei_option(handle,key.c_str(),value.c_str())==0,tei_error());
+  TORCH_CHECK(tei_option(handle,"_cuda_graphs","true")==0,tei_error());
+  TORCH_CHECK(tei_option(handle,"_cuda_graph_reuse","1")==0,tei_error());
+  if(caching)TORCH_CHECK(tei_option(handle,"_prefix_cache_max_bytes","1048576")==0,tei_error());
+  for(const auto& [key,value]:tensors)TORCH_CHECK(tei_weight(handle,key.c_str(),
+   reinterpret_cast<const uint8_t*>(value.const_data_ptr()),value.sizes().data(),value.dim(),0)==0,tei_error());
+  TORCH_CHECK(tei_ready(handle)==0,tei_error());
+  std::array<int64_t,4> a={3,4,5,6},b={7,4,5,8},types{},positions={0,1,2,3};
+  int32_t ends[]={0,4};int64_t selected[]={0};
+  auto submit=[&](const auto& ids) {
+   auto output=tei_forward_submit(handle,ids.data(),types.data(),positions.data(),ends,1,4,2,selected,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr);
+   TORCH_CHECK(output,tei_error());return output;
+  };
+  struct OutputOwner{void* value=nullptr;~OutputOwner(){if(value)tei_output_destroy(value);}};
+  std::array<float,16> expected_a{},expected_b{};
+  auto warm=[&](const auto& ids,auto& expected,c10::cuda::CUDAStream stream) {
+   c10::cuda::CUDAStreamGuard guard(stream);
+   for(int i=0;i<4;++i) {OutputOwner output{submit(ids)};auto data=tei_output_wait(output.value);
+    TORCH_CHECK(data,tei_error());std::copy(data,data+16,expected.begin());}
+  };
+  warm(a,expected_a,producer);warm(b,expected_b,consumer);
+  TORCH_CHECK(expected_a!=expected_b,"Stream fixture cannot distinguish its two requests");
+  TORCH_CHECK(tei_graph_count(handle)==1,"Native stream fixture did not retain a shared graph");
+  struct Gate {
+   std::atomic<bool> open=false;std::mutex mutex;std::condition_variable changed;
+   c10::cuda::CUDAStream stream;
+   explicit Gate(c10::cuda::CUDAStream value):stream(value) {}
+   void release(){open.store(true);open.notify_all();changed.notify_all();}
+   ~Gate(){release();stream.synchronize();}
+  } gate(producer);
+  C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
+  at::cuda::CUDAEvent blocked;blocked.record(producer);
+  std::jthread watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return gate.open.load();});gate.release();});
+  OutputOwner first,second;
+  {c10::cuda::CUDAStreamGuard guard(producer);first.value=submit(a);}
+  at::cuda::CUDAEvent consumed;
+  {c10::cuda::CUDAStreamGuard guard(consumer);second.value=submit(b);consumed.record(consumer);}
+  std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  const bool pending=!blocked.query(),ordered=!consumed.query();gate.release();watchdog.join();
+  TORCH_CHECK(pending,"Native stream fixture did not retain queued producer work");
+  TORCH_CHECK(ordered,"A different stream bypassed native submission ordering");
+  for(auto pair:{std::pair{first.value,&expected_a},std::pair{second.value,&expected_b}}) {
+   auto data=tei_output_wait(pair.first);TORCH_CHECK(data,tei_error());
+   TORCH_CHECK(std::equal(data,data+16,pair.second->begin()),"Cross-stream replay overwrote a deferred native result");
+  }
+  tei_output_destroy(first.value);first.value=nullptr;
+  tei_output_destroy(second.value);second.value=nullptr;
+  // Destruction must drain a genuinely pending submission, and the lease still
+  // owns its host result afterward. No engine calls start after destruction.
+  gate.open.store(false);
+  C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
+  at::cuda::CUDAEvent retiring;retiring.record(producer);
+  std::jthread retire_watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return gate.open.load();});gate.release();});
+  OutputOwner survivor;
+  {c10::cuda::CUDAStreamGuard guard(producer);survivor.value=submit(a);}
+  const bool retiring_pending=!retiring.query();
+  auto destroyed=std::async(std::launch::async,[handle]{tei_destroy(handle);});
+  const auto retiring_status=destroyed.wait_for(std::chrono::milliseconds(10));
+  gate.release();retire_watchdog.join();destroyed.get();owner.value=nullptr;
+  TORCH_CHECK(retiring_pending,"Destruction fixture did not retain queued GPU work");
+  TORCH_CHECK(retiring_status==std::future_status::timeout,"Engine destruction released a pending submission");
+  const auto saved=tei_output_wait(survivor.value);
+  TORCH_CHECK(saved&&std::equal(saved,saved+16,expected_a.begin()),"Engine destruction invalidated an owned output lease");
+ }
+ std::cout<<"native stream ordering, pending engine retirement and independent deferred leases passed (cache off/on)\n";
+}
 #endif
 void multimodal_test(){
  auto cfg=config("qwen3");auto w=weights(cfg);auto model=create_decoder(cfg,w,c10::Device("cpu"),at::kFloat);model->ready();
@@ -530,6 +608,6 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
  multimodal_test();
  probe_cache_test();
 #ifdef TEI_TORCH_CUDA_KERNELS
- if(argc>1)linear_workspace_test(c10::Device(argv[1]));
+ if(argc>1) {linear_workspace_test(c10::Device(argv[1]));native_engine_stream_test(c10::Device(argv[1]));}
 #endif
 }
