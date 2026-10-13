@@ -63,14 +63,17 @@ public:
 };
 class Media final:public Model {
 public:
+ bool prepare_features=true;
+ mutable bool observed_shared_images=false;
  void ready() override{}
  void prepare_input(PackedInput& input) const override {
   int active_device=-1;
   TORCH_CHECK(cudaGetDevice(&active_device)==cudaSuccess && active_device==input.ids.get_device(),"Media preparation ran without the input device guard");
-  for(auto& image:input.images)image.prepared_features=image.pixels.sum().view({1,1});
+  if(prepare_features)for(auto& image:input.images)image.prepared_features=image.pixels.sum().view({1,1});
   for(auto& audio:input.audios)audio.selected_frames=at::nonzero(audio.validity).flatten();
  }
  at::Tensor forward(const PackedInput& input) const override {
+  observed_shared_images=input.images.size()==2&&input.images[0].pixels.unsafeGetTensorImpl()==input.images[1].pixels.unsafeGetTensorImpl();
   auto result=input.ids.to(at::kFloat);
   for(const auto& image:input.images)result=result+(image.prepared_features.defined()?image.prepared_features.sum():image.pixels.sum())+image.grid_thw[1]+image.token_start;
   for(const auto& audio:input.audios) {
@@ -373,5 +376,21 @@ int main(){c10::InferenceMode guard;admission_test();retired_output_pool_test();
  Dense other_model;
  TORCH_CHECK(at::equal(media_cache.forward(other_model,input).clone(),other_model.forward(input)),"Graph reused across different model instances");
  TORCH_CHECK(media_cache.size()==before+1,"Model instance is missing from graph key");
+ // D3 skips prepared features: shared uploads must remain shared in capture.
+ Media shared_media;shared_media.prepare_features=false;CudaGraphCache shared_cache(4,8,1);
+ auto shared=input;shared.images.push_back(shared.images.front());
+ auto shared_output=shared_cache.forward(shared_media,shared).clone();
+ TORCH_CHECK(shared_media.observed_shared_images,"Graph cloned shared media pixels more than once");
+ TORCH_CHECK(at::equal(shared_output,shared_media.forward(shared)),"Shared-media capture changed full outputs");
+ shared.images[0].pixels.add_(2);
+ TORCH_CHECK(at::equal(shared_cache.forward(shared_media,shared).clone(),shared_media.forward(shared)),"Shared-media replay retained stale pixels");
+ auto distinct=shared;distinct.images[1].pixels=shared.images[0].pixels.clone()+3;
+ auto distinct_output=shared_cache.forward(shared_media,distinct).clone();
+ TORCH_CHECK(!shared_media.observed_shared_images&&shared_cache.size()==2,"Image alias pattern is missing from graph key");
+ TORCH_CHECK(at::equal(distinct_output,shared_media.forward(distinct)),"Distinct media replay overwrote one shared clone");
+ distinct.images[1].pixels.add_(4);
+ TORCH_CHECK(at::equal(shared_cache.forward(shared_media,distinct).clone(),shared_media.forward(distinct)),"Distinct media replay retained stale pixels");
+ shared.images[1].grid_thw[1]++;
+ TORCH_CHECK(at::equal(shared_cache.forward(shared_media,shared).clone(),shared_media.forward(shared))&&shared_cache.size()==3,"Shared pixel identity hid distinct image layout");
  std::cout<<"CUDA graph dynamic inputs, exact sequence keys, bounded eviction and eager fallback passed\n";
 }
