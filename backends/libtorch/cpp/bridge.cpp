@@ -33,6 +33,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include "batching/prefix_cache.h"
 #include <memory>
 #include <string>
 #include <set>
@@ -77,6 +78,8 @@ struct Engine {
   std::unique_ptr<tei::DenseChain> dense;
   std::unique_ptr<tei::DecisionHead> decision;
   std::unique_ptr<tei::CudaGraphCache> graphs;
+  std::unique_ptr<tei::PrefixCache> prefix;
+  bool prefix_probe=false;
   bool media_graphs=false;
   bool nomic_moe_graphs=false;
   bool graph_policy_ready() const {
@@ -125,6 +128,10 @@ struct Engine {
     }
     TORCH_CHECK(model, "Unsupported native Torch model family: ", family);
     model->ready();
+    auto cache_bytes=options.integer("_prefix_cache_max_bytes",0);
+    auto cache_tokens=options.integer("_prefix_cache_max_tokens",8192),cache_entries=options.integer("_prefix_cache_entries",64);
+    TORCH_CHECK(cache_bytes>=0&&cache_tokens>0&&cache_entries>0,"Invalid prefix cache bounds");
+    if(cache_bytes)prefix=std::make_unique<tei::PrefixCache>(cache_bytes,cache_tokens,cache_entries);
     TORCH_CHECK(model->output_width() > 0, "Model must declare a positive output width");
     dense->output_width(options.string("_pooling") == "splade" ? config.vocab : model->output_width());
     media_graphs=options.boolean("_media_cuda_graphs",false);
@@ -185,9 +192,13 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
  auto input=[&](const int64_t* data){TORCH_CHECK(data,"Missing native token buffer");return upload(at::from_blob(const_cast<int64_t*>(data),{tokens},options));};
  auto cu=upload(at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)));
  tei::PackedInput packed{input(ids),input(types),input(positions),cu,cumulative,batch,max_sequence};
+ packed.host_ids=at::from_blob(const_cast<int64_t*>(ids),{tokens},options);
+ packed.host_types=at::from_blob(const_cast<int64_t*>(types),{tokens},options);
+ packed.host_positions=at::from_blob(const_cast<int64_t*>(positions),{tokens},options);
  TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
  TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
  if(media_positions)packed.multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options).to(model.device);
+ if(media_positions)packed.host_multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options);
  for(size_t i=0;i<image_count;++i){const auto& item=images[i];
   const auto family=model.options.string("model_type");
   // Gemma normalizes incoming pixels in F32 before casting for projection.
@@ -224,6 +235,7 @@ void attach_radix(Engine& model,tei::PackedInput& packed,const int64_t* ids,cons
       metadata.compact_positions=host(radix->positions,compact);
       metadata.scatter_unfold=host(radix->scatter,total);
       metadata.fold_gather=host(radix->fold,compact);
+      packed.host_scatter_unfold=metadata.scatter_unfold;
       // Validate complete causal contexts on host before capture or map upload.
       tei::validate_radix(metadata,true);
       if(image_count||media_positions) {
@@ -343,6 +355,36 @@ int64_t tei_output_width(void* handle) {
 int32_t tei_supports_radix(void* handle) {
   return static_cast<Engine*>(handle)->model->supports_radix() ? 1 : 0;
 }
+int32_t tei_prefix_cache_supported(void* handle,int32_t operation) {
+  int32_t supported=-1;
+  checked([&] {
+    const auto& engine=*static_cast<Engine*>(handle);
+    TORCH_CHECK(engine.model&&operation>=0&&operation<=2,"Invalid prefix-cache capability query");
+    supported=engine.model->supports_prefix_cache(operation)?1:0;
+  });
+  return supported;
+}
+int32_t tei_prefix_cache_stats(void* handle,uint64_t* counters,size_t count) {
+  return checked([&] {
+    TORCH_CHECK(counters&&count>=7,"Prefix-cache stats require seven counters");
+    const auto& engine=*static_cast<Engine*>(handle);
+    auto s=engine.prefix?engine.prefix->stats():tei::PrefixCache::Stats{};
+    counters[0]=s.hits;counters[1]=s.misses;counters[2]=s.reused_tokens;counters[3]=s.admissions;
+    counters[4]=s.evictions;counters[5]=s.bypasses;counters[6]=engine.prefix?engine.prefix->bytes():0;
+  });
+}
+int32_t tei_prefix_cache_clear(void* handle) {
+  return checked([&] {auto& engine=*static_cast<Engine*>(handle);if(engine.prefix)engine.prefix->clear();});
+}
+int32_t tei_prefix_cache_set_probe(void* handle,int32_t enabled) {
+  int32_t previous=-1;
+  checked([&] {
+    TORCH_CHECK(handle&&(enabled==0||enabled==1),"Invalid prefix-cache probe flag");
+    auto& engine=*static_cast<Engine*>(handle);
+    previous=engine.prefix_probe?1:0;engine.prefix_probe=enabled!=0;
+  });
+  return previous;
+}
 int64_t tei_graph_count(void* handle) {
   const auto& engine = *static_cast<Engine*>(handle);
   return engine.graphs ? engine.graphs->size() : 0;
@@ -392,9 +434,11 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
   auto packed=packed_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count);
   attach_radix(engine,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
-  const bool use_graph=engine.graphs&&engine.graph_policy_ready()&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
+  const bool cached=!engine.prefix_probe&&engine.prefix&&engine.model->supports_prefix_cache(0)
+    &&std::none_of(converted.begin(),converted.end(),[](const auto& request){return request.kind==tei::DecisionRequest::Kind::Warmup;});
+  const bool use_graph=!cached&&engine.graphs&&engine.graph_policy_ready()&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
   if(!use_graph)engine.model->prepare_input(packed);
-  auto hidden=use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
+  auto hidden=cached?engine.prefix->run(*engine.model,packed,0):use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
   auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
   std::vector<at::Tensor> values;for(size_t i=0;i<results.size();++i){TORCH_CHECK(results[i].logits.numel()==engine.decision->output_count(converted[i]),"Decision head output width mismatch");values.push_back(results[i].logits.flatten());}
   std::vector<at::Tensor> action_values;for(const auto& result:results)action_values.push_back(result.action_probability);
@@ -433,9 +477,11 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
       media_positions,images,image_count,audios,audio_count,completion);
     auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
     attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix,completion);
-    const bool graph_eligible = model.graphs && model.graph_policy_ready() && (model.media_graphs || (!image_count && !audio_count && !media_positions));
+    const int operation=pool>=4?(pool==5?2:1):0;
+    const bool cached=!model.prefix_probe&&model.prefix&&model.model->supports_prefix_cache(operation);
+    const bool graph_eligible = !cached && model.graphs && model.graph_policy_ready() && (model.media_graphs || (!image_count && !audio_count && !media_positions));
     if(!graph_eligible)model.model->prepare_input(packed);
-    auto h = graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
+    auto h = cached ? model.prefix->run(*model.model,packed,operation) : graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
       : pool >= 4 ? model.model->predict(packed, pool == 5) : model.model->forward(packed);
     // Project only requested real token spans once. Offsets below preserve
     // caller order, repeated requests and mixed pooled/raw output semantics.

@@ -1,4 +1,5 @@
 #include "batching/radix.h"
+#include "batching/prefix_cache.h"
 #include "models/decoder_models.h"
 #include "kernels/moe_kernels.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -41,6 +42,12 @@ class Decoder final : public Model {
       return no_bias_cache.forward(x,w);
 #endif
     return at::linear(x,w,b);
+  }
+  at::Tensor cached_prefix_linear(const at::Tensor& x,const at::Tensor& w,const at::Tensor& b,
+    const PackedInput& input) const {
+    if(input.prefix&&radix_ids(input.prefix->original).numel()>x.size(0))
+      return prefix_linear(x,w,b,input);
+    return cached_linear(x,w,b);
   }
   Options options;
   Weights weights;
@@ -217,17 +224,40 @@ class Decoder final : public Model {
     }
     return at::cat(outputs, 0);
   }
-  at::Tensor attend(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input) const {
+  at::Tensor attend_cached(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input,int64_t layer) const {
+    auto rows=radix_unfold_qkv(q,k,v,input);
+    if(std::none_of(input.prefix->hits.begin(),input.prefix->hits.end(),[](auto hit){return hit!=0;})) {
+      // Cold capture must retain the model's original attention provider and
+      // arithmetic, including configured cuDNN varlen execution.
+      for(int64_t row=0;row<input.batch;++row)if(input.prefix->writers[row]) {
+        auto saved=int64_t(input.prefix->writers[row]->identity.tokens.size());auto start=input.offsets[row];
+        input.prefix->store(row,layer,PrefixLayer{rows[1].narrow(0,start,saved),rows[2].narrow(0,start,saved),{}, {}});
+      }
+      return radix_fold(attend_full(rows[0],rows[1],rows[2],input),input);
+    }
+    bool exact=false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+    exact=exact_decoder_math();
+#endif
+    auto full_length=input.prefix->original.max_sequence;
+    const bool window_inactive=(left_window<0||left_window>=full_length-1)
+      &&(right_window<0||right_window==0||right_window>=full_length-1);
+    const bool use_cudnn=!exact&&cudnn_varlen&&full_length>=512&&window_inactive;
+    return radix_fold(prefix_attention(rows[0],rows[1],rows[2],input,layer,
+      1./std::sqrt(static_cast<double>(head_dim)),left_window,right_window,exact,true,use_cudnn),input);
+  }
+  at::Tensor attend(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input,int64_t layer) const {
+    if(input.prefix)return attend_cached(q,k,v,input,layer);
     if(!radix_enabled(input))return attend_full(q,k,v,input);
     auto unfolded=radix_unfold_qkv(q,k,v,input);
     auto full=attend_full(unfolded[0],unfolded[1],unfolded[2],input);
     return radix_fold(full,input);
   }
-  at::Tensor mlp(const at::Tensor& x, const DecoderLayer& layer) const {
+  at::Tensor mlp(const at::Tensor& x, const DecoderLayer& layer,const PackedInput& input) const {
     if (!layer.router.defined()) {
 #ifdef TEI_TORCH_CUDA_KERNELS
       auto both = layer.fp8_gate_up ? layer.fp8_gate_up->forward(x,layer.gate_up_bias)
-        : cached_linear(x,layer.gate_up,layer.gate_up_bias);
+        : cached_prefix_linear(x,layer.gate_up,layer.gate_up_bias,input);
 #else
       auto both = at::linear(x,layer.gate_up,layer.gate_up_bias);
 #endif
@@ -237,7 +267,7 @@ class Decoder final : public Model {
         int code=activation=="silu"||activation=="swish"?5:activation=="relu"?3:4;
         auto activated=fused_gated_activation(both,code);
         return layer.fp8_down ? layer.fp8_down->forward(activated,layer.down_bias)
-          : cached_linear(activated,layer.down,layer.down_bias);
+          : cached_prefix_linear(activated,layer.down,layer.down_bias,input);
       }
 #endif
       return at::linear(activate(both.narrow(-1, 0, width)) * both.narrow(-1, width, width), layer.down, layer.down_bias);
@@ -508,6 +538,14 @@ public:
     weights.clear();
   }
   bool supports_radix() const override {return causal;}
+  int64_t prefix_layers() const override {return layer_count;}
+  bool supports_prefix_cache(int operation) const override {return causal&&(operation==0||(operation==1&&classification_width()>0));}
+  uint64_t prefix_payload_bytes(int64_t tokens) const override {
+    auto bytes=prefix_storage_bytes(tokens,output_width(),embedding.element_size());
+    const auto kv=prefix_storage_bytes(tokens,2*kvheads*head_dim,embedding.element_size());
+    for(int64_t layer=0;layer<layer_count;++layer)bytes=prefix_storage_sum(bytes,kv);
+    return bytes;
+  }
   int64_t output_width() const override { return projection.defined() ? projection.size(0) : hidden; }
   int64_t classification_width() const override {return score.defined()?score.size(0):0;}
   at::Tensor predict(const PackedInput& input,bool tokenwise) const override {
@@ -515,21 +553,22 @@ public:
     TORCH_CHECK(score.defined(),"Decoder checkpoint has no supported sequence classification score head");
     for(int64_t row=0;row<input.batch;++row)TORCH_CHECK(input.offsets[row+1]>input.offsets[row],"Sequence classification requires nonempty inputs");
     auto hidden_states=forward(input);
+    const auto& logical=prefix_logical_input(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
     if((dtype==at::kBFloat16||qwen_half_exact)&&family=="qwen2"&&hidden==896&&head_dim==64&&hidden_states.is_cuda()) {
       TORCH_CHECK(hidden_states.size(-1)==score.size(1),"Classifier backbone output projection has incompatible width");
-      return at::linear(qwen2_packed_classifier_rows(hidden_states,input.ids,input.cumulative,
-        input.batch,options.integer("pad_token_id",-1)),score,score_bias);
+      return at::linear(qwen2_packed_classifier_rows(hidden_states,logical.ids,logical.cumulative,
+        logical.batch,options.integer("pad_token_id",-1)),score,score_bias);
     }
 #endif
-    auto starts=input.cumulative.narrow(0,0,input.batch).to(at::kLong);
-    auto ends=input.cumulative.narrow(0,1,input.batch).to(at::kLong)-1;
+    auto starts=logical.cumulative.narrow(0,0,logical.batch).to(at::kLong);
+    auto ends=logical.cumulative.narrow(0,1,logical.batch).to(at::kLong)-1;
     at::Tensor selected=ends;
     if(options.values.count("pad_token_id")) {
-      auto rows=at::repeat_interleave(at::arange(input.batch,input.ids.options()),ends-starts+1,0,input.ids.numel());
-      auto positions=at::arange(input.ids.numel(),input.ids.options());
-      auto candidates=at::where(input.ids==options.integer("pad_token_id"),-1,positions);
-      selected=at::full({input.batch},-1,input.ids.options());
+      auto rows=at::repeat_interleave(at::arange(logical.batch,logical.ids.options()),ends-starts+1,0,logical.ids.numel());
+      auto positions=at::arange(logical.ids.numel(),logical.ids.options());
+      auto candidates=at::where(logical.ids==options.integer("pad_token_id"),-1,positions);
+      selected=at::full({logical.batch},-1,logical.ids.options());
       selected.scatter_reduce_(0,rows,candidates,"amax",true);
       selected=at::where(selected<0,starts,selected);
     }
@@ -541,7 +580,7 @@ public:
     const auto& positions=radix_positions(input);
     auto compact=forward_states(input,at::embedding(embedding,radix_ids(input)),
       cos_cache.index_select(0,positions).unsqueeze(1),sin_cache.index_select(0,positions).unsqueeze(1));
-    return radix_unfold(compact,input);
+    return prefix_restore(input,radix_unfold(compact,input));
   }
   at::Tensor multimodal_forward(const PackedInput& input,const at::Tensor& indices,const at::Tensor& visual,
     const at::Tensor& cosine,const at::Tensor& sine,const std::vector<at::Tensor>& deepstack) const {
@@ -597,17 +636,17 @@ public:
         {q = rotate(q, cosine, sine); k = rotate(k, cosine, sine);}
       }
       if (query_scale.defined()) q = q * query_scale.index_select(0, radix_positions(input)).view({-1, 1, 1});
-      auto attended = attend(q, k, v, input).contiguous().view({h.size(0), heads * head_dim});
-      auto projected=cached_linear(attended,layer.out,layer.out_bias);
+      auto attended = attend(q, k, v, input, layer_index).contiguous().view({h.size(0), heads * head_dim});
+      auto projected=cached_prefix_linear(attended,layer.out,layer.out_bias,input);
 #ifdef TEI_TORCH_CUDA_KERNELS
       if (h.is_cuda()) {
         auto pair=residual_norm(projected,residual,layer.post_norm);
-        residual=pair.second;h=mlp(pair.first,layer);
+        residual=pair.second;h=mlp(pair.first,layer,input);
       } else
 #endif
       {
         h=h+projected;
-        h=h+mlp(norm(h,layer.post_norm),layer);
+        h=h+mlp(norm(h,layer.post_norm),layer,input);
       }
       if(visual_indices.defined()&&layer_index<deepstack.size()) {
         const auto& features=deepstack[layer_index];

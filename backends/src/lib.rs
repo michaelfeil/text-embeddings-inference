@@ -296,14 +296,21 @@ impl Backend {
             offsets: vec![],
         };
 
-        match &self.model_type {
-            ModelType::Decision => self
-                .decide(batch.clone(), vec![DecisionInput::Warmup; batch.len()])
-                .await
-                .map(|_| ()),
-            ModelType::Classifier => self.predict(batch).await.map(|_| ()),
-            ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
-        }
+        self.probe(batch).await
+    }
+
+    async fn probe(&self, batch: Batch) -> Result<(), BackendError> {
+        let (sender, receiver) = oneshot::channel();
+        self.backend_sender
+            .send(BackendCommand::Probe(
+                batch,
+                self.model_type.clone(),
+                Span::current(),
+                sender,
+            ))
+            .await
+            .map_err(|_| BackendError::Unhealthy)?;
+        receiver.await.map_err(|_| BackendError::Unhealthy)?
     }
 
     #[instrument(skip(self))]
@@ -340,14 +347,7 @@ impl Backend {
                 tokens: vec![],
                 offsets: vec![],
             };
-            match &self.model_type {
-                ModelType::Decision => self
-                    .decide(batch.clone(), vec![DecisionInput::Warmup; batch.len()])
-                    .await
-                    .map(|_| ()),
-                ModelType::Classifier => self.predict(batch).await.map(|_| ()),
-                ModelType::Embedding(_) => self.embed(batch).await.map(|_| ()),
-            }
+            self.probe(batch).await
         }
     }
 
@@ -692,6 +692,12 @@ impl BackendThread {
             while let Some(cmd) = backend_receiver.blocking_recv() {
                 let start = Instant::now();
                 match cmd {
+                    BackendCommand::Probe(batch, model_type, span, sender) => {
+                        let _span = span.entered();
+                        let result = backend.probe(batch, &model_type);
+                        let _ = health_sender.send(result.is_ok());
+                        let _ = sender.send(result);
+                    }
                     BackendCommand::Decide(batch, inputs, span, sender) => {
                         let _span = span.entered();
                         let result = backend.decide(batch, inputs);
@@ -741,6 +747,12 @@ impl Drop for BackendThread {
 }
 
 enum BackendCommand {
+    Probe(
+        Batch,
+        ModelType,
+        Span,
+        oneshot::Sender<Result<(), BackendError>>,
+    ),
     Decide(
         Batch,
         Vec<DecisionInput>,
@@ -1040,8 +1052,14 @@ mod completion_tests {
         gate: Arc<Mutex<std::sync::mpsc::Receiver<Result<(), BackendError>>>>,
         started: std::sync::mpsc::Sender<()>,
         completed: Arc<AtomicUsize>,
+        probes: Arc<AtomicUsize>,
     }
     impl CoreBackend for DeferredBackend {
+        fn probe(&self, _: Batch, model_type: &ModelType) -> Result<(), BackendError> {
+            assert!(matches!(model_type, ModelType::Embedding(_)));
+            self.probes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
         fn health(&self) -> Result<(), BackendError> {
             Ok(())
         }
@@ -1092,10 +1110,12 @@ mod completion_tests {
         let (gate, wait) = std::sync::mpsc::channel();
         let (started, start) = std::sync::mpsc::channel();
         let completed = Arc::new(AtomicUsize::new(0));
+        let probes = Arc::new(AtomicUsize::new(0));
         let backend = Box::new(DeferredBackend {
             gate: Arc::new(Mutex::new(wait)),
             started,
             completed: completed.clone(),
+            probes: probes.clone(),
         });
         let (commands, receiver) = mpsc::channel(8);
         let (health, _) = watch::channel(false);
@@ -1109,6 +1129,18 @@ mod completion_tests {
         start.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(completed.load(Ordering::SeqCst), 0);
         drop(canceled);
+        let (response, probed) = oneshot::channel();
+        commands
+            .blocking_send(BackendCommand::Probe(
+                batch(),
+                ModelType::Embedding(Pool::Cls),
+                Span::none(),
+                response,
+            ))
+            .unwrap();
+        probed.blocking_recv().unwrap().unwrap();
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+        assert_eq!(completed.load(Ordering::SeqCst), 0);
         let (response, result) = oneshot::channel();
         commands
             .blocking_send(BackendCommand::Embed(batch(), Span::none(), response))
