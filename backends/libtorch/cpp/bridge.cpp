@@ -228,10 +228,12 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
  auto cu=upload(at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)));
  tei::PackedInput packed{input(ids),input(types),input(positions),cu,cumulative,batch,max_sequence};
  if(media_positions)packed.multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options).to(model.device);
+ const bool d3=model.options.string("_decision.kind")=="d3";
+ tei::RequestImageUploads shared_images;
  for(size_t i=0;i<image_count;++i){const auto& item=images[i];
   auto host_pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
-  auto pixels=tei::upload_image_pixels(host_pixels,model.device,model.dtype,family,
-    model.options.string("_decision.kind")=="d3");
+  auto upload=[&]{return tei::upload_image_pixels(host_pixels,model.device,model.dtype,family,d3);};
+  auto pixels=d3?shared_images.get(host_pixels,upload):upload();
   packed.images.push_back({pixels,{item.grid[0],item.grid[1],item.grid[2]},item.merge_size,item.token_start,item.token_count,item.sequence_start});
   std::copy_n(item.feature_key,32,packed.images.back().feature_key.begin());
   packed.images.back().has_feature_key=item.has_feature_key!=0;

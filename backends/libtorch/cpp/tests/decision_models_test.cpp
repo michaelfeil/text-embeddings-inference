@@ -72,6 +72,23 @@ void d3_test(){
  TORCH_CHECK(at::equal(uploaded,pixels.to(at::kBFloat16)),"D3 image upload must cast directly to BF16");
  TORCH_CHECK(!at::equal(uploaded,pixels.to(at::kHalf).to(at::kBFloat16)),"D3 fixture must distinguish double rounding");
  TORCH_CHECK(at::equal(upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",false),pixels.to(at::kHalf)),"Non-D3 Qwen3.5 must retain FP16 upload");
+ // One prepared image is shared by all questions, with one media reservation.
+ RequestImageUploads uploads;int upload_calls=0;
+ auto upload=[&]{++upload_calls;return upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",true);};
+ auto first_upload=uploads.get(pixels,upload),second_upload=uploads.get(pixels,upload);
+ TORCH_CHECK(upload_calls==1&&first_upload.unsafeGetTensorImpl()==second_upload.unsafeGetTensorImpl(),"Shared D3 pixels uploaded once per request");
+ auto reshaped=pixels.view({2,2});uploads.get(reshaped,[&]{++upload_calls;return reshaped.to(at::kBFloat16);});
+ TORCH_CHECK(upload_calls==2,"Distinct host layout incorrectly reused upload");
+ RequestImageFeatures features;int vision_calls=0;
+ ImageInput first_image{first_upload,{1,2,2},2,1,1,0};auto next_question=first_image;next_question.token_start=9;next_question.sequence_start=8;
+ auto compute=[&]{++vision_calls;return at::ones({1,16});};
+ auto first_features=features.get(first_image,compute),second_features=features.get(next_question,compute);
+ TORCH_CHECK(vision_calls==1&&first_features.unsafeGetTensorImpl()==second_features.unsafeGetTensorImpl(),"Shared D3 vision computed once across question positions");
+ auto other_grid=first_image;other_grid.grid_thw={1,1,4};features.get(other_grid,compute);
+ auto distinct_pixels=first_image;distinct_pixels.pixels=first_upload.clone();features.get(distinct_pixels,compute);
+ TORCH_CHECK(vision_calls==3,"Distinct pixels/grid incorrectly reused D3 vision");
+ {RequestImageFeatures next_request;next_request.get(first_image,compute);}
+ TORCH_CHECK(vision_calls==4,"D3 vision must not survive a native request");
  Input in;Options cfg,backbone;
  cfg.values={{"format_id","d3-code-readout-v1"},{"prompt","d3"},{"pooling","last"},{"attention_mode","noncausal_full_attention"},{"readout_dtype","float32"}};
  backbone.values={{"model_type","qwen3_5"},{"hidden_size","16"}};
