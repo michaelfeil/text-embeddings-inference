@@ -2107,6 +2107,7 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     ),
     info(
     title = "infinity_v3",
+    contact(name = "infinity authors"),
     license(
     name = "Infinity License 1.0 for Commercial Use OR PolyForm Noncommercial 1.0.0 (see scope and retained licenses)"
     )
