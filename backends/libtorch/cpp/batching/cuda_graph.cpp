@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "batching/cuda_graph.h"
+#include <algorithm>
+#include <iterator>
+#include <optional>
 #include <string>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include <ATen/cuda/CUDAGraph.h>
@@ -30,10 +33,24 @@ struct CudaGraphCache::Impl {
     std::unique_ptr<at::cuda::CUDAGraph> graph;
     std::list<std::string>::iterator lru;
     uint64_t bytes=0;
+    std::optional<c10::cuda::CUDAStream> capture_stream;
   };
   std::unordered_map<std::string, std::unique_ptr<Entry>> entries;
   std::list<std::string> lru;
   std::unordered_set<std::string> failed;
+  // Reuse retired lanes, but never share a lane between live graphs: graph
+  // destruction clears cuBLAS workspaces associated with its capture stream.
+  std::unordered_map<c10::DeviceIndex,std::vector<c10::cuda::CUDAStream>> capture_streams;
+  std::vector<c10::MempoolId_t> retired_pools;
+  void reclaim_retired() {
+    for(auto pool=retired_pools.begin();pool!=retired_pools.end();) {
+      c10::cuda::CUDACachingAllocator::emptyCache(*pool);
+      bool retained=false;
+      for(const auto& segment:c10::cuda::CUDACachingAllocator::snapshot(*pool,false).segments)
+        if(segment.owner_private_pool_id==*pool){retained=true;break;}
+      if(retained)++pool;else pool=retired_pools.erase(pool);
+    }
+  }
 #endif
   Impl(size_t count,int64_t tokens,size_t uses,uint64_t bytes,size_t captures)
     :limit(count),max_tokens(tokens),reuse(uses),max_captures(captures),max_bytes(bytes) {
@@ -60,6 +77,9 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   auto input=original;
   c10::cuda::OptionalCUDAGuard device;
   if(input.ids.is_cuda())device.set_device(input.ids.device());
+  // Outputs can outlive eviction. Retry their retired pools before the next
+  // request allocates, so dropping the last output also releases reservation.
+  if(!impl->retired_pools.empty())impl->reclaim_retired();
   model.prepare_input(input);
   // Pool reservation accounting requires the native caching allocator.
   if(c10::cuda::CUDACachingAllocator::name()!="native")return run(input);
@@ -164,7 +184,22 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     entry->input.fold_gather=input.fold_gather.clone();
   }
   auto current=c10::cuda::getCurrentCUDAStream(input.ids.device().index());
-  auto capture_stream=c10::cuda::getStreamFromPool(false,input.ids.device().index());
+  const auto capture_device=input.ids.device().index();
+  auto& lanes=impl->capture_streams[capture_device];
+  auto available=[&](c10::cuda::CUDAStream lane) {
+    for(const auto& resident:impl->entries)
+      if(resident.second->capture_stream==lane)return false;
+    return true;
+  };
+  auto lane=std::find_if(lanes.begin(),lanes.end(),available);
+  if(lane==lanes.end()) {
+    const auto candidate=c10::cuda::getStreamFromPool(false,capture_device);
+    // The upstream stream pool can wrap. Never collide with a live entry.
+    if(!available(candidate))return run(input);
+    lanes.push_back(candidate);lane=std::prev(lanes.end());
+  }
+  const auto capture_stream=*lane;
+  entry->capture_stream=capture_stream;
   at::cuda::CUDAEvent input_ready;input_ready.record(current);input_ready.block(capture_stream);
   bool capturing=false;
   try {
@@ -214,7 +249,13 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     // before destroying an entry and its private pool.
     current.synchronize();
     impl->counters.live_bytes-=impl->entries.at(impl->lru.back())->bytes;
+    const auto retired_pool=impl->entries.at(impl->lru.back())->graph->pool();
     impl->entries.erase(impl->lru.back());impl->lru.pop_back();++impl->counters.evictions;
+    // Reclaim only this retired private pool, preserving eager caches and live
+    // graph pools. Live output tensors continue to own their storage.
+    TORCH_CHECK(retired_pool.first||retired_pool.second,"Missing retired graph pool");
+    impl->retired_pools.push_back(retired_pool);
+    impl->reclaim_retired();
   }
   ++impl->counters.captures;impl->counters.live_bytes+=entry->bytes;
   impl->counters.admitted_bytes+=entry->bytes;

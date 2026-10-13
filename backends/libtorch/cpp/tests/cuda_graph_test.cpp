@@ -8,9 +8,11 @@
 #include <iostream>
 #include <cuda_runtime_api.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <ATen/cuda/CUDAEvent.h>
 #include <thread>
 #include <chrono>
+#include <set>
 using namespace tei;
 class Dense final:public Model {
 public:
@@ -208,7 +210,64 @@ void admission_test() {
   TORCH_CHECK(at::equal(tiny_budget.forward(model,input),model.forward(input)),"Budget fallback changed output");
  TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==0,"Oversized inputs allocated a graph pool");
 }
-int main(){c10::InferenceMode guard;admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
+void retired_output_pool_test() {
+ auto pools=[] {
+  std::set<c10::MempoolId_t> result;
+  for(const auto& segment:c10::cuda::CUDACachingAllocator::snapshot({0,0},false).segments)
+   if(segment.owner_private_pool_id!=c10::MempoolId_t{0,0})result.insert(segment.owner_private_pool_id);
+  return result;
+ };
+ Dense model;CudaGraphCache cache(1,64,1);
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ auto request=[&](int n) {
+  std::vector<int32_t> offsets{0,n};auto ids=at::arange(n,options);
+  PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,n},options.dtype(at::kInt)),offsets.data(),1,n};
+  auto result=cache.forward(model,input);
+  TORCH_CHECK(at::equal(result,model.forward(input)),"Retired-pool fixture changed output");
+  return result;
+ };
+ const auto before=pools();auto held=request(4);auto added=pools();
+ for(const auto& pool:before)added.erase(pool);
+ TORCH_CHECK(added.size()==1,"Retired-pool fixture did not capture a private pool");
+ const auto retired=*added.begin();auto expected=held.clone();
+ request(8);
+ TORCH_CHECK(pools().count(retired)&&at::equal(held,expected),"Eviction freed a live output");
+ held=at::Tensor();request(16);
+ TORCH_CHECK(!pools().count(retired),"Released output left its retired pool reserved");
+}
+class GemmWorkspaces final:public Model {
+ at::Tensor weight=at::randn({640,640},at::TensorOptions().device(at::kCUDA).dtype(at::kBFloat16));
+public:
+ void ready() override{}
+ at::Tensor forward(const PackedInput& input) const override {
+  auto hidden=input.ids.to(at::kBFloat16).unsqueeze(1).repeat({1,640})*.001;
+  // The long reduction uses cuBLAS workspace, unlike tiny forward-only GEMMs.
+  auto cross=at::mm(hidden.transpose(0,1),hidden);
+  return at::mm(hidden,at::mm(cross,weight));
+ }
+};
+void gemm_workspace_lifetime_test() {
+ GemmWorkspaces model;CudaGraphCache cache(2,65536,1,2ULL<<30,16);
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ auto request=[&](int n) {
+  std::vector<int32_t> offsets{0,n};auto ids=at::arange(n,options);
+  PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,n},options.dtype(at::kInt)),offsets.data(),1,n};
+  auto expected=model.forward(input),actual=cache.forward(model,input).clone();
+  TORCH_CHECK(at::equal(actual,expected),"Surviving GEMM graph changed after graph destruction");
+  c10::cuda::getCurrentCUDAStream().synchronize();
+ };
+ for(int i=1;i<=8;++i) {
+  if(i>1)request((i+126)*256);
+  request((i+127)*256);
+  // Simulate allocator pressure reclaiming unused storage. A surviving graph
+  // must still own its workspace; production does not clear the global cache.
+  c10::cuda::CUDACachingAllocator::emptyCache();
+  if(i>1)request((i+126)*256);
+ }
+ TORCH_CHECK(cache.stats().captures==8&&cache.stats().evictions==6&&cache.stats().hits==14,
+   "GEMM fixture did not exercise eviction and surviving replay");
+}
+int main(){c10::InferenceMode guard;admission_test();retired_output_pool_test();gemm_workspace_lifetime_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);
