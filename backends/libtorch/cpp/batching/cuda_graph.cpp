@@ -123,9 +123,19 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   std::ostringstream key;
   key<<operation<<':'<<model.prefix_namespace()<<':'<<input.ids.device()<<':'<<input.ids.scalar_type()<<':'<<input.positions.scalar_type()<<':'<<input.types.scalar_type()<<':'<<input.cumulative.scalar_type()<<':'<<input.max_sequence<<':';
   for(int64_t i=0;i<=input.batch;++i)key<<input.offsets[i]<<',';
-  auto tensor_key=[&](const at::Tensor& tensor) {
+  auto tensor_key=[&](const at::Tensor& tensor,int64_t rows=-1) {
     key<<';'<<tensor.defined();
-    if(tensor.defined())key<<':'<<tensor.device()<<':'<<tensor.scalar_type()<<':'<<tensor.sizes();
+    if(tensor.defined()) {
+      key<<':'<<tensor.device()<<':'<<tensor.scalar_type()<<':';
+      if(rows<0)key<<tensor.sizes();
+      else {
+        TORCH_CHECK(tensor.dim()>0&&rows<=tensor.size(0),"Invalid graph prefix span");
+        key<<'[';
+        for(int64_t dim=0;dim<tensor.dim();++dim)
+          key<<(dim?", ":"")<<(dim?tensor.size(dim):rows);
+        key<<']';
+      }
+    }
   };
   auto describe_extras=[&](const PackedInput& value) {
   key<<";images="<<value.images.size();
@@ -156,9 +166,9 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     tensor_key(prefix.original.compact_ids);tensor_key(prefix.original.scatter_unfold);
     describe_extras(prefix.original);
     for(size_t row=0;row<prefix.readers.size();++row)if(prefix.hits[row]) {
-      tensor_key(prefix.readers[row]->output.narrow(0,0,prefix.hits[row]));
+      tensor_key(prefix.readers[row]->output,prefix.hits[row]);
       for(const auto& [layer,state]:prefix.readers[row]->layers) {
-        key<<':'<<layer;tensor_key(state.key.narrow(0,0,prefix.hits[row]));tensor_key(state.value.narrow(0,0,prefix.hits[row]));
+        key<<':'<<layer;tensor_key(state.key,prefix.hits[row]);tensor_key(state.value,prefix.hits[row]);
       }
     }
   }
@@ -248,7 +258,18 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
       // Initialize GEMM and attention handles before entering capture.
       for(int i=0;i<3;++i)entry->output=run(entry->input);
       if(entry->prefix) {
-        for(auto& layers:entry->prefix->graph_layers)layers.clear();
+        // Warmups allocate full K/V arenas. Bind verified parent views directly
+        // into them so replay writes only suffix rows, without concatenation.
+        for(size_t row=0;row<entry->prefix->readers.size();++row)if(entry->prefix->hits[row]) {
+          auto& reader=entry->prefix->readers[row];
+          for(auto& [layer,state]:reader->layers) {
+            c10::cuda::CUDACachingAllocator::recordStream(state.key.storage().data_ptr(),capture_stream);
+            c10::cuda::CUDACachingAllocator::recordStream(state.value.storage().data_ptr(),capture_stream);
+            const auto& full=entry->prefix->graph_layers[row].at(layer);
+            state.key=full.key.narrow(0,0,entry->prefix->hits[row]);
+            state.value=full.value.narrow(0,0,entry->prefix->hits[row]);
+          }
+        }
         for(auto& output:entry->prefix->graph_outputs)output=at::Tensor();
       }
       entry->graph=std::make_unique<at::cuda::CUDAGraph>();
@@ -290,8 +311,10 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     for(const auto& image:entry->original.images){charge(image.prepared_features);charge(image.pixels);}
     for(const auto& audio:entry->original.audios){charge(audio.features);charge(audio.validity);charge(audio.selected_frames);}
     for(const auto& reader:entry->prefix->readers)if(reader) {
-      charge(reader->output);for(const auto& [layer,state]:reader->layers){charge(state.key);charge(state.value);}
+      charge(reader->output);
     }
+    for(const auto& row:entry->prefix->graph_layers)
+      for(const auto& [layer,state]:row){charge(state.key);charge(state.value);}
   }
   if(entry->bytes>impl->max_bytes-impl->counters.admitted_bytes) {
     // Allow only one oversized trial; drain replay before pool destruction.

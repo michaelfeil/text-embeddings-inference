@@ -65,22 +65,40 @@ bool PrefixContext::store(int64_t row,int64_t layer,const PrefixLayer& source,
 }
 PrefixContext::KV PrefixContext::attention(int64_t layer,const at::Tensor& key,const at::Tensor& value,bool capture) {
   std::vector<at::Tensor> keys,values;
+  std::vector<at::Tensor> targets,sources;
   for(int64_t row=0;row<original.batch;++row) {
     int64_t length=offsets[row+1]-offsets[row],full=length+hits[row];
     auto k=key.narrow(0,offsets[row],length),v=value.narrow(0,offsets[row],length);
-    if(hits[row]) {
+    if(capture&&collect_graph) {
+      auto& saved=graph_layers[row][layer];
+      if(!saved.key.defined()) {
+        auto key_shape=k.sizes().vec(),value_shape=v.sizes().vec();
+        key_shape[0]=full;value_shape[0]=full;
+        saved.key=at::empty(key_shape,k.options());saved.value=at::empty(value_shape,v.options());
+        if(hits[row]) {
+          auto old=previous(row,layer);
+          TORCH_CHECK(old&&old->key.defined()&&old->key.size(0)>=hits[row],"Missing graph prefix attention state");
+          targets.push_back(saved.key.narrow(0,0,hits[row]));sources.push_back(old->key.narrow(0,0,hits[row]));
+          targets.push_back(saved.value.narrow(0,0,hits[row]));sources.push_back(old->value.narrow(0,0,hits[row]));
+        }
+      }
+      targets.push_back(saved.key.narrow(0,hits[row],length));sources.push_back(k);
+      targets.push_back(saved.value.narrow(0,hits[row],length));sources.push_back(v);
+      k=saved.key;v=saved.value;
+    } else if(hits[row]) {
       auto old=previous(row,layer);
       TORCH_CHECK(old&&old->key.defined()&&old->key.size(0)>=hits[row],"Missing prefix attention state");
       k=at::cat({old->key.narrow(0,0,hits[row]),k},0);
       v=at::cat({old->value.narrow(0,0,hits[row]),v},0);
     }
     if(capture&&collect_graph)graph_layers[row][layer]=PrefixLayer{k,v,{}, {}};
-    if(capture&&writers[row]) {
-      auto saved=int64_t(writers[row]->identity.tokens.size());
-      store(row,layer,PrefixLayer{k.narrow(0,0,saved),v.narrow(0,0,saved),{}, {}});
-    }
     TORCH_CHECK(full==original.offsets[row+1]-original.offsets[row],"Cached keys must preserve the full logical context");
     keys.push_back(k);values.push_back(v);
+  }
+  if(!targets.empty())tensor_copies(targets,sources);
+  if(capture)for(int64_t row=0;row<original.batch;++row)if(writers[row]) {
+    auto saved=int64_t(writers[row]->identity.tokens.size());
+    store(row,layer,PrefixLayer{keys[row].narrow(0,0,saved),values[row].narrow(0,0,saved),{}, {}});
   }
   // Full K/V boundaries are unchanged by suffix execution. Reuse the existing
   // device metadata instead of synchronizing a host upload at every layer.
