@@ -94,7 +94,7 @@ private:
   std::vector<std::shared_ptr<PrefixEntry>> entries;
   Stats counters;
   uint64_t model_epoch=0;
-  std::array<int64_t,19+at::num_sdp_backends> math_policy{};
+  std::array<int64_t,22+at::num_sdp_backends> math_policy{};
   std::unique_ptr<PrefixLinearPlans> linear;
 };
 }

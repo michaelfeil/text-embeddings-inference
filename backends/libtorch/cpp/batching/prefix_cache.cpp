@@ -284,6 +284,11 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   policy[18]=global.userEnabledOverrideableSDP();
   auto priority=at::globalContext().sDPPriorityOrder();
   for(size_t i=0;i<priority.size();++i)policy[19+i]=int64_t(priority[i]);
+  // Global deterministicAlgorithms does not cover cuDNN's algorithm controls.
+  constexpr auto cudnn_policy=19+at::num_sdp_backends;
+  policy[cudnn_policy]=global.deterministicCuDNN();
+  policy[cudnn_policy+1]=global.benchmarkCuDNN();
+  policy[cudnn_policy+2]=global.benchmarkLimitCuDNN();
   if(model_epoch!=model.prefix_namespace()||math_policy!=policy) {
     entries.clear();linear->clear();model_epoch=model.prefix_namespace();math_policy=policy;
   }

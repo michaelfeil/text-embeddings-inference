@@ -157,6 +157,28 @@ void cache_admission_test(Model& model) {
  at::globalContext().setSDPUseFlash(flash);
  check_close(attention_changed,reference);
  TORCH_CHECK(measure.stats().hits==hits,"Attention backend policy retained old prefix state");
+ auto check_cudnn_policy=[&](auto change,auto restore) {
+  check_close(measure.run(observed,input,0),reference);
+  const auto before=measure.stats().hits;
+  change();at::Tensor changed;
+  try {changed=measure.run(observed,input,0);}catch(...) {restore();throw;}
+  restore();check_close(changed,reference);
+  TORCH_CHECK(measure.stats().hits==before,"cuDNN algorithm policy reused old prefix state");
+  check_close(measure.run(observed,input,0),reference);
+  const auto restored=measure.stats().hits;
+  check_close(measure.run(observed,input,0),reference);
+  TORCH_CHECK(measure.stats().hits==restored+1,"Restored cuDNN policy prevented normal prefix reuse");
+ };
+ auto& global=at::globalContext();
+ const auto deterministic=global.deterministicCuDNN();
+ check_cudnn_policy([&]{global.setDeterministicCuDNN(!deterministic);},
+                   [&]{global.setDeterministicCuDNN(deterministic);});
+ const auto benchmark=global.benchmarkCuDNN();
+ check_cudnn_policy([&]{global.setBenchmarkCuDNN(!benchmark);},
+                   [&]{global.setBenchmarkCuDNN(benchmark);});
+ const auto benchmark_limit=global.benchmarkLimitCuDNN();
+ check_cudnn_policy([&]{global.setBenchmarkLimitCuDNN(benchmark_limit==0?1:0);},
+                   [&]{global.setBenchmarkLimitCuDNN(benchmark_limit);});
  input.ids=at::tensor({8,4,5,6},options);
  observed.fail=true;bool failed=false;try{measure.run(observed,input,0);}catch(const c10::Error&){failed=true;}
  TORCH_CHECK(failed&&observed.capturing&&measure.bytes()==0,"Failure retained resident or reserved cache memory");
