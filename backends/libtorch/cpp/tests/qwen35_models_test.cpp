@@ -1,4 +1,3 @@
-#include "prefix_cache_test.h"
 #include "models/qwen35_models.h"
 #include "models/decision_models.h"
 #include "batching/radix.h"
@@ -48,7 +47,6 @@ int main(int argc,char** argv) {
     return PackedInput{tokens,at::zeros_like(tokens),pos,cu,ends.data(),static_cast<int64_t>(ends.size()-1),max};
   };
   auto output=model->forward(make({1,2,3,4,5},offsets));
-  check_prefix_cache(*model,make({1,2,3,4,5},offsets));
   auto independent=at::cat({model->forward(make({1,2,3},one)),model->forward(make({4,5},two))},0);
   Weights owned_loader;
   for(const auto& [name,value]:weights)owned_loader[name]=value.clone();
@@ -94,7 +92,6 @@ int main(int argc,char** argv) {
   bool rejected=false;try{bidirectional->forward(folded);}catch(const c10::Error&){rejected=true;}
   TORCH_CHECK(rejected,"Noncausal Qwen3.5 accepted folded prefixes");
   auto bi=bidirectional->forward(make({1,2,3,4,5},offsets));
-  check_prefix_cache(*bidirectional,make({1,2,3,4,5},offsets));
   auto future=bidirectional->forward(make({1,2,31,4,5},offsets));
   TORCH_CHECK((bi.select(0,0)-future.select(0,0)).abs().max().item<float>()>1e-5,"Qwen3.5 noncausal full attention ignored future tokens");
   TORCH_CHECK(at::allclose(bi.narrow(0,3,2),future.narrow(0,3,2),1e-5,1e-6),"Noncausal Qwen3.5 crossed packed sequence boundaries");
@@ -111,7 +108,6 @@ int main(int argc,char** argv) {
     moe_weights[p+"shared_expert_gate.weight"]=at::zeros({1,16});
   }
   auto moe=build(moe_cfg,moe_weights,c10::Device("cpu"),at::kFloat);moe->ready();
-  check_prefix_cache(*moe,make({1,2,3,4,5},offsets));
   auto routed=moe->forward(make({1,2,3,4,5},offsets));
   auto routed_single=at::cat({moe->forward(make({1,2,3},one)),moe->forward(make({4,5},two))},0);
   TORCH_CHECK(at::allclose(routed,routed_single,1e-5,1e-6),"Qwen3.5 routed experts leak packed sequences");
@@ -130,7 +126,6 @@ int main(int argc,char** argv) {
     auto host=make({1,2,3,4,5},offsets),dev=host;
     dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);
     auto reference=cpu->forward(host).to(at::kFloat),actual=cuda->forward(dev).cpu().to(at::kFloat);
-    check_prefix_cache(*cuda,dev,0,.01,.02);
     TORCH_CHECK(at::allclose(reference,actual,.025,.025),"Qwen3.5 native CUDA DeltaNet disagrees with CPU recurrence, maxabs=",(reference-actual).abs().max().item<float>());
     std::cout<<"Qwen3.5 CUDA DeltaNet/CPU reference parity maxabs="<<(reference-actual).abs().max().item<float>()<<"\n";
   }

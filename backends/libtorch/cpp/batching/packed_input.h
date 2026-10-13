@@ -4,7 +4,6 @@
 #include <vector>
 
 namespace tei {
-struct PrefixContext;
 struct ImageInput {
   at::Tensor pixels;
   std::array<int64_t,3> grid_thw;
@@ -29,10 +28,5 @@ struct PackedInput {
   // Radix maps share only actual token rows with identical causal prefixes.
   at::Tensor compact_ids{}, compact_positions{}, compact_types{};
   at::Tensor scatter_unfold{}, fold_gather{};
-  // Execution-only state; original logical request metadata lives in the context.
-  PrefixContext* prefix=nullptr;
-  // Borrowed full-input host views, valid for this native submission only.
-  // Prefix identity must not copy token metadata back from the device.
-  at::Tensor host_ids{}, host_types{}, host_positions{}, host_multimodal_positions{}, host_scatter_unfold{};
 };
 }
