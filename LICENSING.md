@@ -6,6 +6,46 @@ licensors, effective date, and retained independent licenses. INFOIL is a
 custom source-available license with use restrictions; it is not an
 unrestricted open-source license.
 
+## Proposed successor: Infinity License 1.0 for Commercial Use (not adopted)
+
+The [Infinity License 1.0 for Commercial Use draft](docs/licensing/Infinity-License-1.0-for-Commercial-Use-DRAFT.txt),
+written by **Michael Feil**, is a custom source-available license.
+The proposed licensors remain **Infinity Core Contributors**.
+INFOIL 1.0 remains the adopted license; this draft grants no new permissions.
+
+Its **Commercial Use Terms** expressly allow **commercial enterprise use on
+your own hardware or capacity supplied by an unlisted provider**, subject
+to the platform restrictions. **You may not deploy Infinity commercially
+on the listed platforms**, whether you are the platform operator or its
+customer.
+
+| Use | Proposed rule |
+| --- | --- |
+| Commercial deployment on a listed platform, including an enterprise customer's private endpoints or rented GPUs | Prohibited. |
+| Ordinary AWS infrastructure such as EC2 | Allowed; **Amazon Bedrock is separately prohibited** for commercial deployment. |
+| Traditional enterprise on its own hardware or capacity supplied by an unlisted provider | Commercial use allowed, subject to the platform restrictions below. |
+| Noncommercial research, education, and personal experimentation | Allowed on every platform. |
+| Employee or contractor preparing a listed platform's prohibited deployment | Prohibited; employment alone does not restrict personal projects. |
+| Manual, agent, or subprocessor rewrite using covered code, documentation, or derived design for a prohibited deployment | Prohibited, including C/Go ports before deployment. |
+
+The [fixed OpenRouter snapshot](docs/licensing/openrouter-providers-2026-10-13.json)
+accounts for all 93 directory entries retrieved on 2026-10-13: 89 listed and
+four excluded (Azure, Baseten, Google Vertex, Google AI Studio). Oracle
+Cloud is also permitted. The snapshot explains the API-only entries and
+each inclusion or exclusion; future OpenRouter changes do not alter the list.
+
+Named permitted providers may run their own deployments on leased hardware
+when they actually manage serving, including Baseten deployments. Routing
+through them does not permit deployment inside a listed platform's service.
+Buying NVIDIA hardware, downloading models, or using DNS alone is not
+platform deployment.
+
+Redistributions retain the same license and corresponding source. Existing
+grants and third-party rights remain intact; adoption needs authorization
+from the applicable rights holders and an adoption notice. The rewrite
+condition concerns licensed materials; it does not claim ownership of
+[general ideas or algorithms](https://www.copyright.gov/register/tx-programs.html).
+
 ## Adoption and existing rights
 
 - **Licensor:** Infinity Core Contributors, meaning each copyright holder or
