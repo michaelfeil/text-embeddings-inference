@@ -3,6 +3,7 @@
 // Upstream Apache-2.0 notices remain in LICENSE and NOTICE.
 #include "models/gemma_models.h"
 #include "helpers/image_feature_cache.h"
+#include "helpers/fp8_linear.h"
 #include "batching/radix.h"
 #include "models/decoder_models.h"
 #include "kernels/qwen35_kernels.h"
@@ -42,6 +43,7 @@ class Gemma final : public Model {
   bool legacy, embedding2, causal;
   bool publisher_sequence=false;
   bool embedding2_reference_cuda = false;
+  bool fused_legacy_residual=false;
   struct Layer {
     std::string p;
     at::Tensor qkv, gate_up;
@@ -50,9 +52,10 @@ class Gemma final : public Model {
     at::Tensor cos, sin;
   };
   std::vector<Layer> stack;
+  std::unique_ptr<OrdinaryLinearExecutor> ordinary_ffn;
   Weights norm_scales;
   Weights router_f32;
-  at::Tensor vision_frequency;
+  at::Tensor vision_frequency, legacy_embedding_scale;
   mutable ImageFeatureCache image_features;
   std::unordered_map<int64_t,at::Tensor> norm_ones;
   std::unordered_map<std::string,std::array<double,4>> audio_bounds;
@@ -465,6 +468,11 @@ class Gemma final : public Model {
       return gemma4_bf16_norm_residual(residual,x,weight(norm_scales,prefix+name+".weight"),epsilon,{});
     if(embedding2_reference_cuda)
       return gemma2_residual_norm_cuda(residual,x,weight(norm_scales,prefix+name+".weight"),epsilon);
+    if(fused_legacy_residual) {
+      auto output=gemma3_legacy_residual_norm_cuda(residual,x,
+        weight(norm_scales,prefix+name+".weight"),epsilon);
+      if(output.defined())return output;
+    }
 #endif
     return residual+norm(x,name);
   }
@@ -691,6 +699,11 @@ class Gemma final : public Model {
     }
   }
   void ready() override {
+    if(legacy) {
+      legacy_embedding_scale=at::scalar_tensor(std::sqrt(static_cast<double>(hidden)),w("embed_tokens.weight").options());
+      // Complete initialization before the model moves to another inference stream.
+      if(legacy_embedding_scale.is_cuda())static_cast<void>(legacy_embedding_scale.item<double>());
+    }
     // The trained Gemma2 profile retains Candle's original sqrt/div norm tree
     // and BF16 intermediate rounding. Reset when preparing another model.
     embedding2_reference_cuda = embedding2 && device.is_cuda() && dtype==at::kBFloat16 &&
@@ -730,6 +743,16 @@ class Gemma final : public Model {
           weight(weights,base+".output_min").item<double>(),weight(weights,base+".output_max").item<double>()};
       }
     }
+    fused_legacy_residual=legacy && device.is_cuda() && dtype==at::kBFloat16 &&
+      hidden==768 && heads==3 && layers==24 && integer("intermediate_size",0)==1152 &&
+      integer("num_key_value_heads",heads)==1 && integer("head_dim",hidden/heads)==256;
+    ordinary_ffn.reset();
+    // Conditional on exact original learned Gemma3 Wi/Wo tactic replay proof.
+    // One model-wide bounded executor; other families/geometries remain ATen.
+    if(legacy && device.is_cuda() && dtype==at::kBFloat16 && hidden==768 &&
+      heads==3 && layers==24 && integer("intermediate_size",0)==1152 &&
+      integer("num_key_value_heads",heads)==1 && integer("head_dim",hidden/heads)==256)
+      ordinary_ffn=std::make_unique<OrdinaryLinearExecutor>();
     auto first_shared = layers - integer("num_kv_shared_layers", 0);
     TORCH_CHECK(first_shared >= 0, "Gemma shared KV layer count exceeds layer count");
     auto pattern = integer("_sliding_window_pattern", integer("sliding_window_pattern", 6));
@@ -829,12 +852,20 @@ class Gemma final : public Model {
     return at::linear(states.index_select(0,ids),weight(weights,"score.weight"));
   }
   at::Tensor forward_impl(const PackedInput& input,bool is_causal) const {
+#ifdef TEI_TORCH_CUDA_KERNELS
+    // The synchronous call owns the device guard; the session owns no guard.
+    c10::cuda::OptionalCUDAGuard ordinary_guard;
+    if(ordinary_ffn)ordinary_guard.set_device(device);
+#endif
+    // Reuse this call's stream/context/policy snapshot for all Wi/Wo pairs.
+    auto ordinary_session=ordinary_ffn?ordinary_ffn->prepare(w("embed_tokens.weight")):
+      OrdinaryLinearExecutor::Session{};
     TORCH_CHECK(!radix_enabled(input) || (is_causal && !legacy && !embedding2),
       "Gemma radix folding requires causal Gemma4 hidden states");
     const auto& ids=radix_ids(input);
     const auto& positions=radix_positions(input);
     const auto tokens=ids.numel();
-    auto scale = at::scalar_tensor(std::sqrt(static_cast<double>(hidden)), w("embed_tokens.weight").options());
+    auto scale = legacy ? legacy_embedding_scale : at::scalar_tensor(std::sqrt(static_cast<double>(hidden)), w("embed_tokens.weight").options());
     auto states = at::embedding(w("embed_tokens.weight"), ids) * scale;
     at::Tensor ple;
     auto inject_images=[&]() {
@@ -874,6 +905,8 @@ class Gemma final : public Model {
     }
 
     std::array<std::pair<at::Tensor,at::Tensor>,2> shared;
+    // Request-local gathers reuse identical shared RoPE tables across layers.
+    std::array<std::pair<at::Tensor,at::Tensor>,2> legacy_rotary;
     for (int64_t i = 0; i < layers; ++i) {
       const auto& layer = stack[i]; auto p = layer.p;
       auto normalized = norm(states, p + "input_layernorm");
@@ -893,19 +926,41 @@ class Gemma final : public Model {
           v = layer.k_equals_v ? k : linear(normalized, p + "self_attn.v_proj").view({tokens, layer.kv, layer.dim});
         }
       }
-      q = norm(q, p + "self_attn.q_norm");
+      bool fused_qk_rotary=false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(legacy && device.is_cuda() && dtype==at::kBFloat16 && !layer.shared &&
+         layer.dim>0 && layer.dim<=8192 && layer.dim%2==0) {
+        auto result=gemma3_qk_norm_rotary_cuda(q,k,
+          weight(norm_scales,prefix+p+"self_attn.q_norm.weight"),
+          weight(norm_scales,prefix+p+"self_attn.k_norm.weight"),
+          layer.cos,layer.sin,positions,epsilon);
+        q=std::move(result.first);k=std::move(result.second);fused_qk_rotary=true;
+      }
+#endif
+      if(!fused_qk_rotary) q = norm(q, p + "self_attn.q_norm");
       if (layer.shared) {
         q = radix_unfold(rotate(q, layer, positions),input);
         k = shared[layer.sliding].first; v = shared[layer.sliding].second;
         TORCH_CHECK(k.defined(), "Missing shared Gemma KV states at layer ", i);
       } else {
+        if(!fused_qk_rotary) {
         k = norm(k, p + "self_attn.k_norm");
 #ifdef TEI_TORCH_CUDA_KERNELS
         if (legacy && device.is_cuda()) {
           // The fork's packed Gemma3 rotary contracts the first product in
           // BF16/Half. Gemma4's composed rotary retains separate rounding.
-          auto cos = layer.cos.index_select(0, positions).contiguous();
-          auto sin = layer.sin.index_select(0, positions).contiguous();
+          at::Tensor cos, sin;
+          if (fused_legacy_residual && layer.dim == 256) {
+            auto& tables = legacy_rotary[layer.sliding];
+            if (!tables.first.defined()) {
+              tables.first = layer.cos.index_select(0, positions).contiguous();
+              tables.second = layer.sin.index_select(0, positions).contiguous();
+            }
+            cos = tables.first; sin = tables.second;
+          } else {
+            cos = layer.cos.index_select(0, positions).contiguous();
+            sin = layer.sin.index_select(0, positions).contiguous();
+          }
           // Both norms own fresh contiguous buffers, so rotation can reuse
           // them exactly as Candle does, without extra Q/K allocations.
           encoder_rotary_inplace(q,k,cos,sin);
@@ -914,6 +969,7 @@ class Gemma final : public Model {
         {
           q = rotate(q, layer, positions);
           k = rotate(k, layer, positions);
+        }
         }
         if (!legacy) v = norm(v, "", true);
         auto full=radix_unfold_qkv(q,k,v,input);
@@ -925,11 +981,25 @@ class Gemma final : public Model {
         .reshape({tokens, heads * layer.dim});
 
       output=radix_enabled(input)?linear_radix_projection(output,p+"self_attn.o_proj",input):linear(output,p+"self_attn.o_proj");
-      states = residual_norm(states,output,p+"post_attention_layernorm");
+      bool fused_residual_prenorm=false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+      if(fused_legacy_residual) {
+        auto result=gemma3_residual_prenorm_cuda(states,output,
+          weight(norm_scales,prefix+p+"post_attention_layernorm.weight"),
+          weight(norm_scales,prefix+p+"pre_feedforward_layernorm.weight"),epsilon);
+        if(result.first.defined()) {
+          states=std::move(result.first);normalized=std::move(result.second);
+          fused_residual_prenorm=true;
+        }
+      }
+#endif
+      if(!fused_residual_prenorm) {
+        states = residual_norm(states,output,p+"post_attention_layernorm");
+        normalized = norm(states, p + "pre_feedforward_layernorm");
+      }
 
-      normalized = norm(states, p + "pre_feedforward_layernorm");
-
-      auto gu = at::linear(normalized, layer.gate_up);
+      auto gu=ordinary_ffn ? ordinary_ffn->forward(normalized,layer.gate_up,ordinary_session) : at::Tensor();
+      if(!gu.defined())gu=at::linear(normalized,layer.gate_up);
       auto width = gu.size(-1) / 2;
       at::Tensor mlp;
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -938,7 +1008,9 @@ class Gemma final : public Model {
       else
 #endif
       mlp=activate(gu.narrow(-1,0,width))*gu.narrow(-1,width,width);
-      mlp=linear(mlp,p+"mlp.down_proj");
+      auto down=ordinary_ffn && !has(p+"mlp.down_proj.bias") ?
+        ordinary_ffn->forward(mlp,w(p+"mlp.down_proj.weight"),ordinary_session) : at::Tensor();
+      mlp=down.defined() ? down : linear(mlp,p+"mlp.down_proj");
 
       if(boolean("enable_moe_block",false))mlp=moe(states,mlp,p,input);
 #ifdef TEI_TORCH_CUDA_KERNELS
