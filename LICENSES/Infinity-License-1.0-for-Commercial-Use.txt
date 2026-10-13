@@ -4,7 +4,8 @@ Licensors: Infinity Core Contributors, each for rights they own or control.
 
 This is a custom source-available license. The applicable Adoption Notice
 identifies the covered rights and effective version. It is offered as an
-alternative to Infinity License 1.0 for Noncommercial Use.
+alternative to PolyForm Noncommercial License 1.0.0. These terms do not
+limit rights independently granted under that alternative.
 
 1. PERMISSION
 
@@ -61,20 +62,23 @@ rights, and nonwaivable legal rights remain unaffected.
 
 4. SHARING AND CONTRIBUTIONS
 
-Distributions must retain both Infinity License 1.0 alternatives, the
-commercial license's Appendix A, the adoption notice, and third-party
-notices; identify changes; and offer covered modifications under both
-alternatives so recipients retain the same choice. Supply editable source
+Distributions under this commercial license must retain this license,
+Appendix A, PolyForm Noncommercial License 1.0.0, the adoption notice, and
+third-party notices; identify changes; and offer covered modifications under
+both this license and PolyForm Noncommercial License 1.0.0 so recipients
+retain the same choice. Supply editable source
 and build/install instructions with the distribution, or through a free
 download available for at least three years after the last corresponding
 distribution. Credentials, customer data, separately licensed weights,
 independent applications, and standard tools are excluded from that source
-obligation.
+obligation. These distribution requirements do not apply when relying
+solely on the independent PolyForm alternative.
 
 Private modifications and network access alone do not require publication.
 API clients may retain their own licenses. Contributions intentionally
-submitted for inclusion are offered under both alternatives unless otherwise
-agreed; ownership stays with contributors. Relicensing or exceptions require
+submitted to this repository for inclusion are offered under both this
+license and PolyForm Noncommercial License 1.0.0 unless otherwise agreed;
+ownership stays with contributors. Relicensing or exceptions require
 the applicable rights holders' authorization, including for existing
 INFOIL-only contributions.
 

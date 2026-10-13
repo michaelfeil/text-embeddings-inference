@@ -1,21 +1,25 @@
-infinity_v3 -- Infinity License 1.0 Dual-License Adoption Notice
+infinity_v3 -- Dual-License Adoption Notice
 
 Licensors: Infinity Core Contributors. This describes the individual rights
 holders and their authorized licensors, identified by source notices and
 contribution records. It is not a separate legal entity, an assignment of
 copyright, or authority to license another contributor's work. Each grants
 only rights they own or are authorized to license.
-License-text author: Michael Feil. Authorship of these terms does not confer
-ownership of other contributors' software.
+Commercial license-text author: Michael Feil. The PolyForm license text is
+published by the PolyForm Project and reproduced without modification.
+Authorship of license terms does not confer ownership of others' software.
 
 Offered alternatives (recipient's choice for covered rights):
   - Infinity License 1.0 for Commercial Use; OR
-  - Infinity License 1.0 for Noncommercial Use.
+  - PolyForm Noncommercial License 1.0.0 (PolyForm-Noncommercial-1.0.0).
 
-A recipient must comply with one applicable alternative for each use.
-Neither choice permits commercial use on the commercial license's listed
-platforms. Noncommercial use may run on every platform. Distributions and
-covered modifications must preserve both alternatives for recipients.
+Recipients may rely independently on either applicable alternative.
+PolyForm is offered without additional conditions. The commercial license's
+platform blacklist, rewrite restriction, source-disclosure requirements, and
+dual-license redistribution requirements do not apply to uses independently
+permitted by PolyForm. PolyForm's own text defines its permitted purposes,
+including its Noncommercial Organizations provision. This notice identifies
+scope and licensors; it does not narrow PolyForm's permissions.
 INFOIL is not a third alternative for newly covered contributions.
 
 Effective event and first covered version:
@@ -54,8 +58,9 @@ first offered solely under these alternatives. Retaining a license text or
 acting as a maintainer does not authorize relicensing another holder's work.
 
 These are source-available licenses with use restrictions, not unrestricted
-open-source licenses. New contributions are offered under both alternatives
-unless different terms are expressly agreed before inclusion. Ownership
+open-source licenses. New contributions intentionally submitted to this
+repository for inclusion are offered under both alternatives unless different
+terms are expressly agreed before inclusion. Ownership
 stays with contributors. No automatic right to later license versions or
 blanket authority to issue exceptions for others' contributions is granted.
 
@@ -73,7 +78,8 @@ Licensors: Infinity Core Contributors, each for rights they own or control.
 
 This is a custom source-available license. The applicable Adoption Notice
 identifies the covered rights and effective version. It is offered as an
-alternative to Infinity License 1.0 for Noncommercial Use.
+alternative to PolyForm Noncommercial License 1.0.0. These terms do not
+limit rights independently granted under that alternative.
 
 1. PERMISSION
 
@@ -130,20 +136,23 @@ rights, and nonwaivable legal rights remain unaffected.
 
 4. SHARING AND CONTRIBUTIONS
 
-Distributions must retain both Infinity License 1.0 alternatives, the
-commercial license's Appendix A, the adoption notice, and third-party
-notices; identify changes; and offer covered modifications under both
-alternatives so recipients retain the same choice. Supply editable source
+Distributions under this commercial license must retain this license,
+Appendix A, PolyForm Noncommercial License 1.0.0, the adoption notice, and
+third-party notices; identify changes; and offer covered modifications under
+both this license and PolyForm Noncommercial License 1.0.0 so recipients
+retain the same choice. Supply editable source
 and build/install instructions with the distribution, or through a free
 download available for at least three years after the last corresponding
 distribution. Credentials, customer data, separately licensed weights,
 independent applications, and standard tools are excluded from that source
-obligation.
+obligation. These distribution requirements do not apply when relying
+solely on the independent PolyForm alternative.
 
 Private modifications and network access alone do not require publication.
 API clients may retain their own licenses. Contributions intentionally
-submitted for inclusion are offered under both alternatives unless otherwise
-agreed; ownership stays with contributors. Relicensing or exceptions require
+submitted to this repository for inclusion are offered under both this
+license and PolyForm Noncommercial License 1.0.0 unless otherwise agreed;
+ownership stays with contributors. Relicensing or exceptions require
 the applicable rights holders' authorization, including for existing
 INFOIL-only contributions.
 
@@ -261,88 +270,140 @@ software projects, purchased hardware, or independently licensed models.
 - Z.ai (z-ai)
 
 =======================================================================
-NONCOMMERCIAL ALTERNATIVE -- COVERED RIGHTS ONLY
+POLYFORM ALTERNATIVE -- UNMODIFIED STANDARD TERMS FOR COVERED RIGHTS
 =======================================================================
 
-Infinity License 1.0 for Noncommercial Use
-License author: Michael Feil
-Licensors: Infinity Core Contributors, each for rights they own or control.
+# PolyForm Noncommercial License 1.0.0
 
-This is a custom source-available license. The applicable Adoption Notice
-identifies the covered rights and effective version. It is offered as an
-alternative to Infinity License 1.0 for Commercial Use.
+<https://polyformproject.org/licenses/noncommercial/1.0.0>
 
-1. PERMISSION
+## Acceptance
 
-By accepting these terms, you may use, copy, modify, and distribute the
-covered code and documentation, including modifications and binaries,
-for noncommercial purposes only, worldwide and without royalties for the
-duration of the contributors' rights. Each contributor grants only rights
-they control. Existing Apache, INFOIL, and third-party grants remain intact.
-No ownership, trademarks, or rights over model weights or outputs are
-transferred.
+In order to get any license under these terms, you must agree
+to them as both strict obligations and conditions to all
+your licenses.
 
-2. NONCOMMERCIAL USE TERMS
+## Copyright License
 
-Noncommercial use, including research, education, and personal
-experimentation, is allowed on every platform, including those listed in
-the commercial license's Appendix A. Employment by a listed provider alone
-does not restrict independent personal projects.
+The licensor grants you a copyright license for the
+software to do everything you might do with the software
+that would otherwise infringe the licensor's copyright
+in it for any permitted purpose.  However, you may
+only distribute the software according to [Distribution
+License](#distribution-license) and make changes or new works
+based on the software according to [Changes and New Works
+License](#changes-and-new-works-license).
 
-Business operations and product or service development are commercial,
-even before revenue. Research salaries, academic grants, or paying for
-generic compute alone do not make research commercial. Developing a
-business or preparing a commercial deployment is not noncommercial use.
-A research customer does not exempt a provider's paid software-based
-inference service.
+## Distribution License
 
-3. REWRITES AND COMMERCIAL USE
+The licensor grants you an additional copyright license
+to distribute copies of the software.  Your license
+to distribute covers distributing the software with
+changes and new works permitted by [Changes and New Works
+License](#changes-and-new-works-license).
 
-Using covered source, documentation, or design obtained from them to create,
-commission, or assist a replacement for commercial use is commercial
-development, even before deployment. This includes manual rewrites, coding
-agents, contractors, subprocessors, intermediate design specifications, and
-ports to C, Go, or any language. Noncommercial rewrites remain permitted.
+## Notices
 
-Commercial development or deployment requires permission under Infinity
-License 1.0 for Commercial Use or another applicable independent grant;
-this license does not authorize it. General ideas, algorithms, independent
-development without these materials, independently licensed rights, and
-nonwaivable legal rights remain unaffected.
+You must ensure that anyone who gets a copy of any part of
+the software from you also gets a copy of these terms or the
+URL for them above, as well as copies of any plain-text lines
+beginning with `Required Notice:` that the licensor provided
+with the software.  For example:
 
-4. SHARING AND CONTRIBUTIONS
+> Required Notice: Copyright Yoyodyne, Inc. (http://example.com)
 
-Distributions must retain both Infinity License 1.0 alternatives, the
-commercial license's Appendix A, the adoption notice, and third-party
-notices; identify changes; and offer covered modifications under both
-alternatives so recipients retain the same choice. Supply editable source
-and build/install instructions with the distribution, or through a free
-download available for at least three years after the last corresponding
-distribution. Credentials, customer data, separately licensed weights,
-independent applications, and standard tools are excluded from that source
-obligation.
+## Changes and New Works License
 
-Private modifications and network access alone do not require publication.
-API clients may retain their own licenses. Contributions intentionally
-submitted for inclusion are offered under both alternatives unless otherwise
-agreed; ownership stays with contributors. Relicensing or exceptions require
-the applicable rights holders' authorization, including for existing
-INFOIL-only contributions.
+The licensor grants you an additional copyright license to
+make changes and new works based on the software for any
+permitted purpose.
 
-5. PATENTS, TERMINATION, AND LIABILITY
+## Patent License
 
-Contributors license controlled patent claims necessarily practiced by
-their contributions, alone or in their submitted combination, to make, use,
-sell, offer for sale, and import the software for permitted uses. This
-patent grant ends if you bring a patent claim alleging the software
-infringes.
+The licensor grants you a patent license for the software that
+covers patent claims the licensor can license, or becomes able
+to license, that you would infringe by using the software.
 
-Copyright permissions terminate on breach. A first breach cured within 30
-days of learning of it restores them; later reinstatement requires the
-affected rights holders' permission. Compliant recipients retain rights. To
-the extent law permits, the software is provided as is, without warranty,
-and contributors are not liable for resulting losses. Unenforceable terms
-do not invalidate the rest. Later versions do not change existing grants.
+## Noncommercial Purposes
+
+Any noncommercial purpose is a permitted purpose.
+
+## Personal Uses
+
+Personal use for research, experiment, and testing for
+the benefit of public knowledge, personal study, private
+entertainment, hobby projects, amateur pursuits, or religious
+observance, without any anticipated commercial application,
+is use for a permitted purpose.
+
+## Noncommercial Organizations
+
+Use by any charitable organization, educational institution,
+public research organization, public safety or health
+organization, environmental protection organization,
+or government institution is use for a permitted purpose
+regardless of the source of funding or obligations resulting
+from the funding.
+
+## Fair Use
+
+You may have "fair use" rights for the software under the
+law. These terms do not limit them.
+
+## No Other Rights
+
+These terms do not allow you to sublicense or transfer any of
+your licenses to anyone else, or prevent the licensor from
+granting licenses to anyone else.  These terms do not imply
+any other licenses.
+
+## Patent Defense
+
+If you make any written claim that the software infringes or
+contributes to infringement of any patent, your patent license
+for the software granted under these terms ends immediately. If
+your company makes such a claim, your patent license ends
+immediately for work on behalf of your company.
+
+## Violations
+
+The first time you are notified in writing that you have
+violated any of these terms, or done anything with the software
+not covered by your licenses, your licenses can nonetheless
+continue if you come into full compliance with these terms,
+and take practical steps to correct past violations, within
+32 days of receiving notice.  Otherwise, all your licenses
+end immediately.
+
+## No Liability
+
+***As far as the law allows, the software comes as is, without
+any warranty or condition, and the licensor will not be liable
+to you for any damages arising out of these terms or the use
+or nature of the software, under any kind of legal claim.***
+
+## Definitions
+
+The **licensor** is the individual or entity offering these
+terms, and the **software** is the software the licensor makes
+available under these terms.
+
+**You** refers to the individual or entity agreeing to these
+terms.
+
+**Your company** is any legal entity, sole proprietorship,
+or other kind of organization that you work for, plus all
+organizations that have control over, are under the control of,
+or are under common control with that organization.  **Control**
+means ownership of substantially all the assets of an entity,
+or the power to direct its management and policies by vote,
+contract, or otherwise.  Control can be direct or indirect.
+
+**Your licenses** are all the licenses granted to you for the
+software under these terms.
+
+**Use** means anything you do with the software requiring one
+of your licenses.
 
 =======================================================================
 RETAINED HISTORICAL INFOIL ADOPTION AND APACHE LICENSE

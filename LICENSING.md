@@ -1,9 +1,9 @@
 # infinity_v3 licensing
 
-Covered fork contributions are offered under a choice of:
+Covered fork contributions are offered under your choice of:
 
-- [Infinity License 1.0 for Commercial Use](LICENSES/Infinity-License-1.0-for-Commercial-Use.txt).
-- [Infinity License 1.0 for Noncommercial Use](LICENSES/Infinity-License-1.0-for-Noncommercial-Use.txt).
+- [PolyForm Noncommercial License 1.0.0](LICENSES/PolyForm-Noncommercial-1.0.0.txt), the unmodified standard license.
+- [Infinity License 1.0 for Commercial Use](LICENSES/Infinity-License-1.0-for-Commercial-Use.txt), the custom commercial alternative.
 
 The [Adoption Notice and complete license bundle](LICENSE) define the covered
 rights, exclusions, and effective version. Adoption takes effect at the merge
@@ -11,60 +11,72 @@ that first introduces that notice into `mf/faster-tei`; that merge commit and
 date identify the first covered source version and effective date. The
 pre-adoption integration base is `ec11d07f4a0c354279366c616ac9184cc0c84850`.
 
-These are custom source-available licenses. **Michael Feil** is the author of
-the license texts. **Infinity Core Contributors** describes each rights
-holder or authorized licensor for their own contributions; it does not
-assign ownership or permit one contributor to relicense another's work.
+**Infinity Core Contributors** describes each rights holder or authorized
+licensor for their own contributions; it does not assign ownership or permit
+one contributor to relicense another's work. **Michael Feil** authored the
+commercial license text. PolyForm is published by the PolyForm Project. Both
+alternatives are source-available licenses with use restrictions.
 
-## Choose the alternative that permits your use
+## Researchers: the standard PolyForm option
 
-Commercial enterprise use is allowed on your own hardware or capacity
-supplied by an unlisted provider, subject to the commercial platform
-restrictions. Noncommercial use, including research, education, and personal
-experimentation, is allowed on every platform. Business operations and
-product or service development are commercial even before revenue.
+For noncommercial research, you can use the unmodified
+[PolyForm Noncommercial 1.0.0 license](https://polyformproject.org/licenses/noncommercial/1.0.0).
+Its SPDX identifier is
+[`PolyForm-Noncommercial-1.0.0`](https://spdx.org/licenses/PolyForm-Noncommercial-1.0.0.html).
+No separate permission request to Infinity is needed for covered rights when
+your use complies with that license.
 
-This is a choice between the two alternatives, not a requirement to satisfy
-both sets of use restrictions. Each use must comply with the applicable
-alternative; a noncommercial deployment does not authorize a later
-commercial deployment. Distributions must preserve both alternatives so
-recipients and users of covered modifications retain the same choice.
+PolyForm permits noncommercial purposes on any platform. Its Personal Uses
+clause covers specified personal activities without anticipated commercial
+application. Its Noncommercial Organizations clause also expressly permits
+use by charitable organizations, educational institutions, public research
+organizations, public safety or health organizations, environmental
+protection organizations, and government institutions, regardless of funding
+sources or resulting funding obligations. Those permissions follow PolyForm's
+text; they are not narrowed by the commercial alternative's definitions.
+
+**No Infinity-specific conditions are added to PolyForm.** The commercial
+platform blacklist, custom rewrite restriction, source-disclosure requirement,
+and requirement to preserve both alternatives do not apply to uses relying
+solely on PolyForm. PolyForm does not require publishing modifications or
+licensing your modifications under both alternatives. When distributing,
+follow PolyForm's Notices clause and any independently applicable third-party
+terms. Institutional approval policies may still apply.
 
 | Use | License treatment for covered rights |
 | --- | --- |
-| Enterprise application on its own hardware or an unlisted provider's capacity | Allowed under the commercial license, subject to its platform restrictions. |
-| Commercial deployment on a listed platform, including private endpoints, rented GPUs, or one customer's endpoint | Prohibited for operators and customers regardless of billing unit. |
-| Ordinary AWS infrastructure such as EC2 | Allowed under the commercial license; Amazon Bedrock is separately prohibited. |
-| Azure, Baseten, Google Cloud / AI Studio, or Oracle Cloud | Expressly permitted by the commercial license. |
-| Noncommercial research, education, or personal use on Modal, Together, Fireworks, or another listed platform | Allowed under the noncommercial license. |
-| Academic research paid for by grants, researcher salaries, or generic compute rental | Those payments alone do not make the research commercial. |
-| A provider sells an Infinity-based inference service to one research customer | Commercial; the customer's research purpose does not exempt the provider. |
-| Employee's independent noncommercial personal project | Allowed; employment alone does not restrict it. |
-| Employee or contractor prepares a listed platform's prohibited deployment | Prohibited, including development before deployment. |
-| Manual, agent, or subprocessor rewrite using covered source, documentation, or derived design for a prohibited commercial deployment | Prohibited, including C/Go ports and intermediate specifications. |
-| Noncommercial rewrite with no commercial development or deployment purpose | Allowed under the noncommercial license. |
+| Noncommercial research on Modal, Together, Fireworks, or another listed platform | Allowed under PolyForm; there is no provider blacklist in that alternative. |
+| Use by a university or public research organization, including funded work | Expressly permitted by PolyForm's Noncommercial Organizations clause. |
+| A personal hobby or research project without anticipated commercial application | Covered by PolyForm's Personal Uses clause. |
+| Commercial enterprise use not independently permitted by PolyForm, on owned hardware or an unlisted provider | Allowed under the commercial alternative, subject to its restrictions. |
+| Commercial deployment not independently permitted by PolyForm, on a listed platform | Not authorized by the commercial alternative, including private endpoints and rented GPUs. |
+| A for-profit provider sells an inference service to a university | The customer's PolyForm eligibility does not itself license the provider's separate commercial use. |
+| Rewrite, including an agent-assisted C/Go port, for a listed platform's prohibited commercial deployment | Prohibited under the commercial alternative; PolyForm independently authorizes only its own permitted purposes. |
+| Distribution relying solely on PolyForm | Follow PolyForm's notices; no added Infinity source-disclosure or dual-license condition. |
 
 ## Commercial Use Terms
 
-The commercial license's Appendix A is the fixed platform blacklist. It
-contains 89 entries from the [recorded OpenRouter directory snapshot](docs/licensing/openrouter-providers-2026-10-13.json),
+The commercial alternative permits enterprise use on owned hardware or
+unlisted providers, subject to its platform restrictions. Its Appendix A is
+the fixed blacklist of 89 entries from the
+[recorded OpenRouter directory snapshot](docs/licensing/openrouter-providers-2026-10-13.json),
 retrieved on 2026-10-13 UTC. Four of the directory's 93 entries were excluded:
 Azure, Baseten, Google Vertex, and Google AI Studio. Oracle Cloud is also
-expressly permitted. The snapshot records provider identifiers and API-only
-entries excluded from the list. Future OpenRouter changes do not alter the
-license, and no revenue test applies.
+expressly permitted. Ordinary AWS infrastructure such as EC2 is permitted;
+Amazon Bedrock is separately restricted. Future OpenRouter changes do not
+alter the list, and no revenue test applies.
 
-The named permitted providers may operate their own deployments on hardware
-leased from listed operators if they actually manage serving. This does not
-permit deployment inside a listed service, including Bedrock. Routing,
-reselling, or relabeling cannot bypass the restriction. Buying NVIDIA
-hardware, downloading models, storage, DNS, transit, or unrelated API calls
-alone is not platform deployment.
+Under the commercial alternative, the named permitted providers may operate
+their own deployments on hardware leased from listed operators if they
+actually manage serving. This does not permit deployment inside a listed
+service, including Bedrock. Routing, reselling, or relabeling cannot bypass
+its restriction. Buying NVIDIA hardware, downloading models, storage, DNS,
+transit, or unrelated API calls alone is not platform deployment.
 
-The rewrite condition concerns use of licensed source, documentation, and
+The custom rewrite condition concerns licensed source, documentation, and
 design obtained from them. General ideas, algorithms, independent development
 without those materials, independently licensed rights, and nonwaivable legal
-rights remain unaffected.
+rights remain unaffected. This condition is not added to PolyForm.
 
 ## Existing rights and third-party material
 
@@ -92,21 +104,22 @@ their independent grants and notices. Model weights and outputs do not become
 covered by either alternative merely through use. See [NOTICE](NOTICE),
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), and component notices.
 
+
 ## Contributions, redistribution, and packaging
 
-New covered contributions intentionally submitted for inclusion are offered
-under both alternatives unless different terms are expressly agreed before
-inclusion. Contributors retain ownership. Neither the collective licensor
-name nor either license gives anyone blanket authority to issue exceptions
-or relicense another holder's work.
+New covered contributions intentionally submitted to this repository for
+inclusion are offered under both the commercial license and PolyForm unless
+different terms are expressly agreed before inclusion. This is an inbound
+contribution policy, not an additional condition on using or redistributing
+software under PolyForm. Contributors retain ownership.
 
-Redistributions retain both alternatives, Appendix A, the adoption notice,
-and third-party notices, identify changes, and provide covered modifications
-under both alternatives. Include corresponding editable source and
-build/install instructions, or a free download available for at least three
-years after the last corresponding distribution. Private modifications and
-network use alone do not require publication. Independent API clients may
-retain their own licenses.
+Redistributions under the commercial alternative must retain both licenses,
+Appendix A, the adoption notice, and third-party notices, identify changes,
+and offer covered modifications under both alternatives. Include editable
+source and build/install instructions, or a free download available for at
+least three years after the last corresponding distribution. These are
+conditions of the commercial alternative only. Neither alternative requires
+publication merely because of private modifications or network use.
 
 The root `LICENSE` bundles both complete alternatives and the unchanged
 historical INFOIL/Apache bundle. First-party Cargo packages use this bundle
@@ -114,6 +127,11 @@ through `license-file`; independently licensed extension crates retain their
 own declarations. Docker builds install the license bundle and component
 notices at `/usr/share/licenses/infinity_v3/`; native LibTorch installations
 retain their existing `share/licenses/tei_torch/` location.
+
+The PolyForm file is a byte-for-byte copy of the
+[official plain text](https://polyformproject.org/licenses/noncommercial/1.0.0.txt),
+with SHA-256 `ffcca38841adb694b6f380647e15f17c446a4d1656fed51a1e2041d064c94cc8`.
+The license text is not modified to add project-specific conditions.
 
 This is not a complete audit of transitive dependencies, model weights,
 CUDA libraries, or base images. Distributors must retain any additional
