@@ -84,6 +84,9 @@ struct Engine {
   }
   Engine(TeiConfig cfg, c10::Device dev, at::ScalarType type) : config(cfg), device(dev), dtype(type) {}
   void ready() {
+    auto staging_bytes = options.integer("_output_staging_max_bytes", 512LL << 20);
+    TORCH_CHECK(staging_bytes > 0, "Output staging memory budget must be positive");
+    outputs->max_bytes = static_cast<size_t>(staging_bytes);
     dense = std::make_unique<tei::DenseChain>(options, weights);
     auto family = options.string("model_type", "bert");
     if(options.boolean("_fp8_dynamic",false)) {

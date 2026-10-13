@@ -248,3 +248,13 @@ Request metadata stays owned until host results are ready, including after clien
 cancellation. Only successful deferred submission releases the exclusive model
 lease early. Completion failures close the replica pool, and shutdown drains and
 joins the completion worker before destroying the model and its CUDA graphs.
+
+`TEI_TORCH_OUTPUT_STAGING_MAX_BYTES` limits the combined retained pinned inputs,
+pinned outputs and GPU output buffers across both staging slots per replica.
+It defaults to 536870912 bytes (512 MiB). Idle slot buffers are released before
+growing a buffer when needed to fit the budget; pending results stay owned until
+their completion lease is released. A submission that cannot fit returns a backend
+error before allocating additional staging storage. Increase the limit for larger
+raw outputs only when the deployment has sufficient host and device memory.
+This limit covers staging tensor storage, not model weights, activations or memory
+reserved by the host/CUDA caching allocators.

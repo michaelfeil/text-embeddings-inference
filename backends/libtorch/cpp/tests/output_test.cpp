@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "batching/output.h"
 #include "batching/cuda_graph.h"
+#include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
 #include <future>
@@ -96,6 +97,64 @@ int main() {
     const auto [third_host, third_value] = third.get();
     TORCH_CHECK(waiting == std::future_status::timeout, "C reused free B while A was still owned");
     TORCH_CHECK(third_host == first_host && third_value == 3, "C did not reuse A safely");
+    // Admission protects pending results; only completed idle buffers may be evicted.
+    auto bounded = std::make_shared<tei::OutputPool>();
+    bounded->max_bytes = 256;
+    auto held = std::make_unique<tei::OutputLease>(bounded, device, 8);
+    held->allocate(); held->copy(at::ones({8}, at::TensorOptions().device(device)), 0); held->record();
+    bool rejected = false;
+    try { tei::OutputLease oversized(bounded, device, 32); oversized.allocate(); }
+    catch (const c10::Error&) { rejected = true; }
+    TORCH_CHECK(rejected && bounded->retained_bytes() == 64,
+                "Admission allocated over budget or freed a pending result");
+    TORCH_CHECK(held->wait()[7] == 1, "Budget rejection corrupted pending output");
+    held.reset();
+    // Next submission uses the other slot and releases the completed idle cache.
+    { tei::OutputLease small(bounded, device, 8); small.allocate(); small.record(); small.wait(); }
+    { tei::OutputLease larger(bounded, device, 32); larger.allocate();
+      TORCH_CHECK(bounded->retained_bytes() == 256, "Idle staging eviction did not respect the budget");
+      rejected = false;
+      try { larger.upload(at::ones({1}, at::TensorOptions().dtype(at::kFloat))); }
+      catch (const c10::Error&) { rejected = true; }
+      TORCH_CHECK(rejected && bounded->retained_bytes() == 256, "Input staging exceeded the budget");
+      larger.copy(at::full({32}, 9, at::TensorOptions().device(device)), 0); larger.record();
+      TORCH_CHECK(larger.wait()[31] == 9, "Staging did not recover after admission rejection"); }
+    rejected = false;
+    try { tei::OutputLease oversized(bounded, device, std::numeric_limits<size_t>::max()); oversized.allocate(); }
+    catch (const c10::Error&) { rejected = true; }
+    TORCH_CHECK(rejected, "Oversized capacity overflow bypassed staging admission");
+    auto varied = std::make_shared<tei::OutputPool>(); varied->max_bytes = 4096;
+    { tei::OutputLease many_inputs(varied, device, 8); many_inputs.allocate();
+      many_inputs.upload(at::ones({256}, at::TensorOptions().dtype(at::kFloat)));
+      many_inputs.upload(at::ones({256}, at::TensorOptions().dtype(at::kFloat)));
+      many_inputs.record(); many_inputs.wait(); }
+    { tei::OutputLease other(varied, device, 8); other.allocate(); other.record(); other.wait(); }
+    { tei::OutputLease larger(varied, device, 500); larger.allocate();
+      TORCH_CHECK(varied->slots[0].inputs.empty(), "Selected slot retained unused input pins");
+      larger.record(); larger.wait(); }
+    { tei::OutputLease other(varied, device, 8); other.allocate(); other.record(); other.wait(); }
+    { tei::OutputLease smaller(varied, device, 8); smaller.allocate();
+      smaller.upload(at::ones({32}, at::TensorOptions().dtype(at::kFloat)));
+      TORCH_CHECK(varied->retained_bytes() <= varied->max_bytes,
+                  "Selected slot's old output capacity blocked a smaller request");
+      smaller.copy(at::full({8}, 5, at::TensorOptions().device(device)), 0); smaller.record();
+      TORCH_CHECK(smaller.wait()[7] == 5, "Selected-slot reclamation corrupted output"); }
+    // Simulate device allocation pressure without consuming the GPU's memory.
+    // An allocation failure must release the slot and its partial host allocation.
+    auto pressured = std::make_shared<tei::OutputPool>();
+    const auto fraction = c10::cuda::CUDACachingAllocator::getMemoryFraction(0);
+    c10::cuda::CUDACachingAllocator::emptyCache();
+    c10::cuda::CUDACachingAllocator::setMemoryFraction(0, 0);
+    bool allocation_failed = false;
+    try { tei::OutputLease failed(pressured, device, 8 * 1024 * 1024); failed.allocate(); }
+    catch (const c10::OutOfMemoryError&) { allocation_failed = true; }
+    catch (...) { c10::cuda::CUDACachingAllocator::setMemoryFraction(fraction, 0); throw; }
+    c10::cuda::CUDACachingAllocator::setMemoryFraction(fraction, 0);
+    TORCH_CHECK(allocation_failed && pressured->retained_bytes() == 0,
+                "Failed allocation retained partial staging buffers");
+    { tei::OutputLease recovered(pressured, device, 8); recovered.allocate();
+      recovered.copy(at::full({8}, 11, at::TensorOptions().device(device)), 0); recovered.record();
+      TORCH_CHECK(recovered.wait()[7] == 11, "Device allocation failure poisoned subsequent submission"); }
     std::cout << "output staging, overlap, graph eviction, alternation, reuse and cancellation passed\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
