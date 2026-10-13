@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "batching/cuda_graph.h"
+#include <algorithm>
+#include <iterator>
+#include <optional>
 #include <string>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include <ATen/cuda/CUDAGraph.h>
@@ -30,13 +33,14 @@ struct CudaGraphCache::Impl {
     std::unique_ptr<at::cuda::CUDAGraph> graph;
     std::list<std::string>::iterator lru;
     uint64_t bytes=0;
+    std::optional<c10::cuda::CUDAStream> capture_stream;
   };
   std::unordered_map<std::string, std::unique_ptr<Entry>> entries;
   std::list<std::string> lru;
   std::unordered_set<std::string> failed;
-  // Warmup allocations and BLAS workspaces are stream-local. Reuse one lane
-  // per device instead of retaining another allocator cache for every shape.
-  std::unordered_map<c10::DeviceIndex,c10::cuda::CUDAStream> capture_streams;
+  // Reuse retired lanes, but never share a lane between live graphs: graph
+  // destruction clears cuBLAS workspaces associated with its capture stream.
+  std::unordered_map<c10::DeviceIndex,std::vector<c10::cuda::CUDAStream>> capture_streams;
 #endif
   Impl(size_t count,int64_t tokens,size_t uses,uint64_t bytes,size_t captures)
     :limit(count),max_tokens(tokens),reuse(uses),max_captures(captures),max_bytes(bytes) {
@@ -168,10 +172,21 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   }
   auto current=c10::cuda::getCurrentCUDAStream(input.ids.device().index());
   const auto capture_device=input.ids.device().index();
-  auto found_stream=impl->capture_streams.find(capture_device);
-  if(found_stream==impl->capture_streams.end())
-    found_stream=impl->capture_streams.emplace(capture_device,c10::cuda::getStreamFromPool(false,capture_device)).first;
-  auto capture_stream=found_stream->second;
+  auto& lanes=impl->capture_streams[capture_device];
+  auto available=[&](c10::cuda::CUDAStream lane) {
+    for(const auto& resident:impl->entries)
+      if(resident.second->capture_stream==lane)return false;
+    return true;
+  };
+  auto lane=std::find_if(lanes.begin(),lanes.end(),available);
+  if(lane==lanes.end()) {
+    const auto candidate=c10::cuda::getStreamFromPool(false,capture_device);
+    // The upstream stream pool can wrap. Never collide with a live entry.
+    if(!available(candidate))return run(input);
+    lanes.push_back(candidate);lane=std::prev(lanes.end());
+  }
+  const auto capture_stream=*lane;
+  entry->capture_stream=capture_stream;
   at::cuda::CUDAEvent input_ready;input_ready.record(current);input_ready.block(capture_stream);
   bool capturing=false;
   try {
