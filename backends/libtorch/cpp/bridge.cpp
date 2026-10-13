@@ -33,6 +33,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <mutex>
+#include "batching/input_validation.h"
 #include <memory>
 #include <string>
 #include <set>
@@ -175,24 +176,39 @@ struct Engine {
     }
   }
 };
+void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t* types,
+ const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,int32_t pool,
+ const int64_t* pooled,size_t pooled_count,const int64_t* raw,size_t raw_count,size_t capacity,
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count) {
+ const auto family=model.options.string("model_type");
+ tei::validate_input_descriptors(ids,types,positions,cumulative,batch,max_sequence,
+   media_positions,images,image_count,audios,audio_count,
+   family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2");
+ const auto raw_rows=tei::validate_output_indices(cumulative,batch,pooled,pooled_count,raw,raw_count);
+ TORCH_CHECK(model.model&&model.dense,"Native model is not ready");
+ const auto raw_width=pool>=4?model.model->classification_width():model.model->output_width();
+ const auto pooled_width=pool>=4?raw_width:model.dense->output_width(pool==3?model.config.vocab:raw_width);
+ TORCH_CHECK(tei::expected_output_elements(pooled_count,raw_rows,pooled_width,raw_width)<=capacity,
+   "Native output exceeds provided capacity");
+}
 tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
  const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,tei::OutputLease* completion=nullptr) {
- TORCH_CHECK(batch>0&&cumulative&&cumulative[0]==0,"Invalid native packed batch");
- for(int64_t i=0;i<batch;++i)TORCH_CHECK(cumulative[i+1]>cumulative[i],"Native packed sequences must be nonempty");
- auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);const int64_t tokens=cumulative[batch];
+ const auto family=model.options.string("model_type");
+ const bool gemma_image=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
+ const auto tokens=tei::validate_input_descriptors(ids,types,positions,cumulative,batch,max_sequence,
+   media_positions,images,image_count,audios,audio_count,gemma_image);
+ TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
+ TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
+ auto options=at::TensorOptions().dtype(at::kLong).device(at::kCPU);
  auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
  auto input=[&](const int64_t* data){TORCH_CHECK(data,"Missing native token buffer");return upload(at::from_blob(const_cast<int64_t*>(data),{tokens},options));};
  auto cu=upload(at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)));
  tei::PackedInput packed{input(ids),input(types),input(positions),cu,cumulative,batch,max_sequence};
- TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
- TORCH_CHECK(!audio_count||model.model->supports_audio(),"This native model does not yet support audio");
  if(media_positions)packed.multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options).to(model.device);
  for(size_t i=0;i<image_count;++i){const auto& item=images[i];
-  const auto family=model.options.string("model_type");
   // Gemma normalizes incoming pixels in F32 before casting for projection.
   // Casting the raw pixels first loses precision before that normalization.
-  const bool gemma_image=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
   const auto image_dtype=gemma_image?at::kFloat:family.starts_with("qwen3_5")?at::kHalf:model.dtype;
   auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
   // Upload F32 pixels before dtype conversion: avoid CPU worker-pool casting.
@@ -429,6 +445,9 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
                     const TeiAudio* audios, size_t audio_count, const TeiRadix* radix, tei::OutputLease* completion) {
   return checked([&] {
     auto& model = *static_cast<Engine*>(handle);
+    validate_forward_descriptors(model,ids,types,positions,cumulative,batch,max_sequence,pool,
+      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count);
+    TORCH_CHECK(completion||output||(!pooled_count&&!raw_count),"Missing native output buffer");
     auto packed=packed_input(model,ids,types,positions,cumulative,batch,max_sequence,
       media_positions,images,image_count,audios,audio_count,completion);
     auto upload=[&](const at::Tensor& host){return completion?completion->upload(host):host.to(model.device);};
@@ -536,6 +555,8 @@ void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
   std::unique_ptr<tei::OutputLease> lease;
   const auto status=checked([&] {
     auto& model=*static_cast<Engine*>(handle);
+    validate_forward_descriptors(model,ids,types,positions,cumulative,batch,max_sequence,pool,
+      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count);
     TORCH_CHECK(model.device.is_cuda(), "Deferred output requires CUDA");
     lease=std::make_unique<tei::OutputLease>(model.outputs,model.device,capacity);
     lease->allocate();
