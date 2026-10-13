@@ -162,8 +162,9 @@ afterward existing graphs still replay and other shapes run eagerly.
 private-pool reserved segments plus static CUDA input buffers, cumulatively even
 after eviction. An oversized trial capture stops further captures, so the bound
 can overshoot by one trial pool. These budgets bound graph admission, not total
-model/allocator memory or CUDA graph executable metadata. No global allocator
-cleanup runs per request. Set entries or attempts to zero to disable capture.
+model/allocator memory or CUDA graph executable metadata. Eviction reclaims only
+the retired private pool; live output tensors keep their storage. No global
+allocator cleanup runs per request. Set entries or attempts to zero to disable capture.
 The default capture limit is 4096 tokens; `TEI_TORCH_CUDA_GRAPH_MAX_TOKENS` accepts
 a positive override. Unsupported capture operations run eagerly. Media capture
 requires the additional experimental flag described below.

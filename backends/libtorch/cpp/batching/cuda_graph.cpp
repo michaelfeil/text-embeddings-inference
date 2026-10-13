@@ -221,7 +221,12 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     // before destroying an entry and its private pool.
     current.synchronize();
     impl->counters.live_bytes-=impl->entries.at(impl->lru.back())->bytes;
+    const auto retired_pool=impl->entries.at(impl->lru.back())->graph->pool();
     impl->entries.erase(impl->lru.back());impl->lru.pop_back();++impl->counters.evictions;
+    // Reclaim only this retired private pool, preserving eager caches and live
+    // graph pools. Live output tensors continue to own their storage.
+    TORCH_CHECK(retired_pool.first||retired_pool.second,"Missing retired graph pool");
+    c10::cuda::CUDACachingAllocator::emptyCache(retired_pool);
   }
   ++impl->counters.captures;impl->counters.live_bytes+=entry->bytes;
   impl->counters.admitted_bytes+=entry->bytes;
