@@ -154,7 +154,8 @@ struct Engine {
     auto cache_bytes=options.integer("_prefix_cache_max_bytes",0);
     auto cache_tokens=options.integer("_prefix_cache_max_tokens",8192),cache_entries=options.integer("_prefix_cache_entries",64);
     TORCH_CHECK(cache_bytes>=0&&cache_tokens>0&&cache_entries>0,"Invalid prefix cache bounds");
-    if(cache_bytes)prefix=std::make_unique<tei::PrefixCache>(cache_bytes,cache_tokens,cache_entries,2);
+    if(cache_bytes)prefix=std::make_unique<tei::PrefixCache>(cache_bytes,cache_tokens,cache_entries,2,
+      tei::PrefixCache::StreamOrder::EngineOrdered);
     TORCH_CHECK(model->output_width() > 0, "Model must declare a positive output width");
     dense->output_width(options.string("_pooling") == "splade" ? config.vocab : model->output_width());
     media_graphs=options.boolean("_media_cuda_graphs",false);

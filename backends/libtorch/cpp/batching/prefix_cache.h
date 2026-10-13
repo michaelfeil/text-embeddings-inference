@@ -51,7 +51,8 @@ struct PrefixEntry {
   uint64_t bytes=0, reserved_bytes=0, used=0;
   int operation=0;
   // Consumable on the calling thread's stream, including ordered producer work
-  // that has not completed globally yet. Other streams require completion.
+  // that has not completed globally yet. Independent streams require completion;
+  // native engines additionally order all submissions through their own fence.
   std::function<bool()> ready=[] { return true; };
   ~PrefixEntry();
 };
@@ -99,8 +100,12 @@ void prefix_recurrent_commit(const PackedInput&,const at::Tensor& qkv,
 
 class PrefixCache {
 public:
+  // EngineOrdered requires GPU ordering between every run submission. Host
+  // serialization alone is insufficient; independent callers retain events.
+  enum class StreamOrder { Independent, EngineOrdered };
   struct Stats { uint64_t hits=0, misses=0, reused_tokens=0, admissions=0, evictions=0, bypasses=0; };
-  explicit PrefixCache(uint64_t bytes,int64_t max_prefix=8192,size_t entries=64,size_t admission_uses=1);
+  explicit PrefixCache(uint64_t bytes,int64_t max_prefix=8192,size_t entries=64,size_t admission_uses=1,
+    StreamOrder order=StreamOrder::Independent);
   ~PrefixCache();
   at::Tensor run(const Model&,const PackedInput&,int operation,CudaGraphCache* fallback=nullptr);
   void clear();
@@ -120,6 +125,7 @@ private:
   struct Recent { PrefixFingerprint key; size_t uses=0; };
   std::array<Recent,64> recent{};
   size_t recent_next=0, admission_uses;
+  bool ordered_submissions;
   bool admit(const PrefixIdentity&,int operation);
 };
 }

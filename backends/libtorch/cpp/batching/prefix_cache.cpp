@@ -274,8 +274,8 @@ void prefix_recurrent_commit(const PackedInput& input,const at::Tensor& qkv,
     input.prefix->checkpoint(row,layer,buffers.checkpoints[slot],history);
   }
 }
-PrefixCache::PrefixCache(uint64_t bytes,int64_t max_prefix,size_t count,size_t uses)
-  :limit(bytes),maximum(max_prefix),capacity(count),admission_uses(uses) {
+PrefixCache::PrefixCache(uint64_t bytes,int64_t max_prefix,size_t count,size_t uses,StreamOrder order)
+  :limit(bytes),maximum(max_prefix),capacity(count),admission_uses(uses),ordered_submissions(order==StreamOrder::EngineOrdered) {
   TORCH_CHECK(maximum>0&&capacity>0&&uses>0,"Invalid prefix cache bounds");
   linear=std::make_unique<PrefixLinearPlans>();
 }
@@ -502,7 +502,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     auto result=graphs&&has_hit&&!model.prefix_checkpoint_only()?graphs->forward(model,input,operation):run(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
     std::shared_ptr<at::cuda::CUDAEvent> event;
-    if(admitting&&input.ids.is_cuda()){event=std::make_shared<at::cuda::CUDAEvent>();event->record(at::cuda::getCurrentCUDAStream(input.ids.device().index()));}
+    // Native engine submission fences already cover snapshot writes and result
+    // staging. Independent caches still need per-publication completion events.
+    if(admitting&&input.ids.is_cuda()&&!ordered_submissions){event=std::make_shared<at::cuda::CUDAEvent>();event->record(at::cuda::getCurrentCUDAStream(input.ids.device().index()));}
 #endif
     for(auto& entry:context.writers)if(entry&&entry->output.defined()&&int64_t(entry->layers.size())==model.prefix_layers()) {
       budget->reserved_bytes-=entry->reserved_bytes;entry->reserved_bytes=0;

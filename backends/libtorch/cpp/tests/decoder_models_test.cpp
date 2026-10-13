@@ -388,7 +388,11 @@ void cache_stream_test(Model& model,PackedInput input) {
   const bool incomplete=!proof.query();
   std::jthread release([&]{std::this_thread::sleep_for(std::chrono::milliseconds(50));gate.open();});
   TORCH_CHECK(incomplete,"Fixture did not retain pending producer work");
-  delayed.delay=false;auto resumed=pending.run(delayed,input,0);
+  delayed.delay=false;
+  {c10::cuda::CUDAStreamGuard guard(consumer);auto unrelated=pending.run(delayed,input,0);
+   TORCH_CHECK(pending.stats().hits==0,"Independent consumer reused an unordered pending snapshot");
+   consumer.synchronize();TORCH_CHECK(at::allclose(unrelated,expected,.01,.02),"Independent pending fallback changed outputs");}
+  auto resumed=pending.run(delayed,input,0);
   TORCH_CHECK(pending.stats().hits==input.batch,"Pending producer-stream state was recomputed");
   producer.synchronize();
   TORCH_CHECK(at::allclose(resumed,expected,.01,.02),"Producer-stream pending reuse changed outputs");
@@ -437,7 +441,7 @@ void native_engine_stream_test(const c10::Device& device) {
   } gate(producer);
   C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
   at::cuda::CUDAEvent blocked;blocked.record(producer);
-  std::jthread watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return gate.open.load();});gate.release();});
+  std::jthread watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::seconds(2),[&]{return gate.open.load();});gate.release();});
   OutputOwner first,second;
   {c10::cuda::CUDAStreamGuard guard(producer);first.value=submit(a);}
   at::cuda::CUDAEvent consumed;
@@ -452,6 +456,25 @@ void native_engine_stream_test(const c10::Device& device) {
   }
   tei_output_destroy(first.value);first.value=nullptr;
   tei_output_destroy(second.value);second.value=nullptr;
+  if(caching) {
+   TORCH_CHECK(tei_prefix_cache_clear(handle)==0,tei_error());
+   {c10::cuda::CUDAStreamGuard guard(producer);OutputOwner observe{submit(a)};TORCH_CHECK(tei_output_wait(observe.value),tei_error());}
+   gate.open.store(false);
+   C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
+   at::cuda::CUDAEvent unpublished;unpublished.record(producer);
+   std::jthread release_pending([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::seconds(2),[&]{return gate.open.load();});gate.release();});
+   OutputOwner produced,resumed;uint64_t before[7],after[7];
+   {c10::cuda::CUDAStreamGuard guard(producer);produced.value=submit(a);}
+   TORCH_CHECK(tei_prefix_cache_stats(handle,before,7)==0&&before[6]>0,"Pending native fixture did not admit a snapshot");
+   {c10::cuda::CUDAStreamGuard guard(consumer);resumed.value=submit(a);}
+   TORCH_CHECK(tei_prefix_cache_stats(handle,after,7)==0,tei_error());
+   const bool was_pending=!unpublished.query();gate.release();release_pending.join();
+   for(auto output:{produced.value,resumed.value}) {
+    auto data=tei_output_wait(output);TORCH_CHECK(data&&std::equal(data,data+16,expected_a.begin()),"Ordered pending native reuse changed result bits");
+   }
+   TORCH_CHECK(was_pending,"Native snapshot fixture did not retain pending producer work");
+   TORCH_CHECK(after[0]==before[0]+1&&after[2]==before[2]+4,"Ordered native stream recomputed a pending snapshot");
+  }
   // Stage replacement weights before blocking the producer. Ready must wait
   // for an old-model submission, then publish initialization on its new stream.
   for(const auto& [key,value]:tensors)TORCH_CHECK(tei_weight(handle,key.c_str(),
@@ -460,14 +483,16 @@ void native_engine_stream_test(const c10::Device& device) {
   gate.open.store(false);
   C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
   at::cuda::CUDAEvent reloading;reloading.record(producer);
-  std::jthread reload_watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return gate.open.load();});gate.release();});
+  std::jthread reload_watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::seconds(2),[&]{return gate.open.load();});gate.release();});
   OutputOwner previous;
   {c10::cuda::CUDAStreamGuard guard(producer);previous.value=submit(a);}
   const bool reload_pending=!reloading.query();
   auto reload=std::async(std::launch::async,[handle]{return tei_ready(handle);});
   const auto reload_status=reload.wait_for(std::chrono::milliseconds(10));
   gate.release();reload_watchdog.join();
-  TORCH_CHECK(reload_pending&&reload_status==std::future_status::timeout&&reload.get()==0,"Ready did not drain pending old-model work");
+  const auto reload_result=reload.get();
+  std::cout<<"reload proof: pending="<<reload_pending<<" wait_status="<<int(reload_status)<<" result="<<reload_result<<std::endl;
+  TORCH_CHECK(reload_pending&&reload_status==std::future_status::timeout&&reload_result==0,"Ready did not drain pending old-model work");
   const auto prior=tei_output_wait(previous.value);
   TORCH_CHECK(prior&&std::equal(prior,prior+16,expected_a.begin()),"Ready invalidated a deferred result from the old model");
   TORCH_CHECK(tei_graph_count(handle)==0,"Ready retained disabled CUDA graphs");
@@ -480,7 +505,7 @@ void native_engine_stream_test(const c10::Device& device) {
   gate.open.store(false);
   C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* pointer){static_cast<Gate*>(pointer)->open.wait(false);},&gate));
   at::cuda::CUDAEvent retiring;retiring.record(producer);
-  std::jthread retire_watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::milliseconds(500),[&]{return gate.open.load();});gate.release();});
+  std::jthread retire_watchdog([&]{std::unique_lock lock(gate.mutex);gate.changed.wait_for(lock,std::chrono::seconds(2),[&]{return gate.open.load();});gate.release();});
   OutputOwner survivor;
   {c10::cuda::CUDAStreamGuard guard(producer);survivor.value=submit(a);}
   const bool retiring_pending=!retiring.query();
