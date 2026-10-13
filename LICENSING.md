@@ -6,6 +6,52 @@ licensors, effective date, and retained independent licenses. INFOIL is a
 custom source-available license with use restrictions; it is not an
 unrestricted open-source license.
 
+## Proposed successor: fixed provider list (not adopted)
+
+The [Token Service Elastic License draft](docs/licensing/TSEL-1.0-DRAFT.txt)
+proposes replacing the general provider category with an exhaustive list.
+It is a custom license, not Elastic License 2.0. INFOIL 1.0 remains in force;
+this proposal does not relicense existing contributions or replace its grants.
+
+The [OpenRouter snapshot](docs/licensing/openrouter-providers-2026-10-13.json)
+records 93 public-directory entries retrieved on 2026-10-13, of which 88 are
+explicitly listed in the draft. Azure, Amazon Bedrock, Baseten, Google Vertex,
+and Google AI Studio are excluded under the approved-provider exceptions;
+Oracle Cloud is also expressly permitted but was absent from the directory.
+The API returned 19 additional entries not shown in the public directory,
+including a test-like `FakeProvider`; those entries are recorded for comparison
+and do not automatically enter the restriction list. OpenRouter changes do
+not alter the fixed list attached to this proposed version.
+
+The proposal allows unlisted providers and private hardware, without revenue
+tests. It preserves noncommercial research on listed capacity and targets
+employees only when acting for a listed provider toward a prohibited
+deployment. Its rewrite condition covers manual work, coding agents, and
+contractors or subprocessors using covered materials or their implementation
+design to prepare a replacement for a listed provider's commercial service
+or another prohibited deployment, including ports to C or Go.
+
+| Scenario | Proposed treatment, if adopted |
+| --- | --- |
+| Commercial use on private hardware or an unlisted provider | Permitted. |
+| Noncommercial research on Modal or Together capacity | Permitted. |
+| Commercial endpoint on a listed provider, including private GPU-hour billing | Restricted. |
+| Independent personal research by a listed provider's employee | Permitted; employment alone is not a ban. |
+| Employee or contractor adapting the software for a listed provider's prohibited deployment | Restricted, including before deployment. |
+| Manual, agent, or subprocessor rewrite using the covered design to prepare a competing listed-provider service | Restricted, even if rewritten in C or Go. |
+| NVIDIA hardware, Hugging Face model downloads, or Cloudflare DNS without execution on a listed service | Not restricted merely because of the supplier. |
+| Anthropic-operated Claude Platform on AWS | Listed; using AWS underneath does not make Anthropic's service an AWS exception. |
+| Baseten actually operates a deployment on capacity it leases from a listed provider | Permitted under the named-provider exception. |
+
+The rewrite condition is a proposed restriction on use of licensed material,
+not a claim that copyright covers every similar design. Copyright does not
+protect general ideas, program logic, or algorithms, and independent grants
+and nonwaivable rights remain available. See the
+[U.S. Copyright Office's computer-program guidance](https://www.copyright.gov/register/tx-programs.html).
+The draft also preserves the existing same-license distribution and source
+requirements. Adoption requires a new scope notice and permission from the
+applicable rights holders; repository push access alone does not supply it.
+
 ## Adoption and existing rights
 
 - **Licensor:** Infinity Core Contributors, meaning each copyright holder or

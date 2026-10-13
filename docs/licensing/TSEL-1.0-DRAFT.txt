@@ -1,0 +1,223 @@
+TOKEN SERVICE ELASTIC LICENSE
+TSEL 1.0 -- DRAFT, NOT ADOPTED
+
+Proposed licensor: Infinity Core Contributors, meaning each rights holder
+or authorized licensor for its own contributions. This is a custom license,
+not Elastic License 2.0 and not issued or endorsed by Elastic.
+
+This proposal grants no new rights and does not replace INFOIL 1.0. Adoption
+requires an express notice identifying the covered material, authorized
+licensors, effective date, and first covered release or full commit.
+
+1. PERMISSIONS AND SCOPE
+
+Exercising these permissions means accepting these terms. You means the
+person or entity exercising them, including through an intermediary.
+Subject to these terms, each contributor grants a worldwide, royalty-free
+license for the duration of its rights to use, copy, modify, and distribute
+its covered contributions in source or compiled form. Personal, research,
+educational, and commercial uses are permitted except as restricted below.
+Software means only the code and documentation identified in the adoption
+notice and modifications of that covered material.
+
+Previous Apache, INFOIL, and other grants remain available for the material
+they cover. Inherited code, dependencies, model weights, and other separately
+licensed material retain their own terms. This license grants no ownership
+of outputs, no trademarks, and no right to relicense others' contributions.
+
+2. FIXED PROVIDER LIST
+
+Listed Provider means an operator of a business or service expressly named
+in Appendix A, identified by its OpenRouter provider identifier. Renaming
+the same operator or continuing the named service under a successor does
+not remove that identification. Unrelated businesses of an acquirer are
+not automatically included. The list is exhaustive for this version:
+there is no revenue threshold or general token-serving-business test.
+Changes to OpenRouter, a website, or a later license do not change this list.
+
+Microsoft Azure, Amazon Web Services, Baseten, Google Cloud / Google AI
+Studio, and Oracle Cloud are permitted providers. Private hardware and
+unlisted providers are also permitted. A listed provider's own service
+does not become permitted merely by using one of those clouds underneath.
+
+3. RESTRICTED DEPLOYMENTS AND RESEARCH EXCEPTION
+
+You must not commercially execute or deploy the Software on computing
+capacity supplied as a service by a Listed Provider, or operate it as part
+of a Listed Provider's commercial hosting or inference service. This covers
+private and public endpoints, one or many customers, dedicated and shared
+machines, and token, request, GPU-hour, subscription, or bundled billing.
+Resellers and routing through another company do not remove the restriction.
+
+You must not develop, test, adapt, or arrange the Software on behalf of a
+Listed Provider with the aim of enabling such a deployment. This applies
+to employees, contractors, agents, and subprocessors acting for it, not to
+someone's independent personal activities merely because of employment.
+
+Noncommercial research, education, and personal experimentation may run
+on any provider, including listed providers. Research salaries, academic
+grants, and paying for generic compute alone do not defeat this exception.
+Commercial product development, business operations, service development,
+and work intended to enable a prohibited deployment are not noncommercial
+research, even before revenue. A provider may supply generic infrastructure
+for permitted research; the customer's research purpose does not permit
+the provider to sell a managed Software-based inference service.
+
+An expressly named permitted provider in Section 2 may operate a deployment
+on underlying capacity leased from a listed provider, including a
+Baseten-operated deployment, when it actually controls and manages serving.
+Merely routing traffic, relabeling, or handling billing is insufficient.
+Storage, source/model downloads, DNS, network transit, hardware manufacture,
+and unrelated API calls alone are not execution on a listed provider.
+
+4. REWRITES AND INDIRECT USE
+
+As a condition of these permissions, You agree not to use the covered
+source, documentation, or implementation design obtained from them to
+perform, direct, commission, or assist a port, rewrite, reconstruction,
+or substitute implementation for a Listed Provider's commercial service
+or with the aim of enabling a deployment prohibited by Section 3.
+
+This includes work done by You personally, employees, coding agents,
+models, contractors, subprocessors, or other intermediaries; use of
+intermediate summaries or design specifications; and rewrites in C, Go,
+or any other language. The restriction applies during preparation and
+development, whether or not the replacement is ultimately deployed.
+Changing language, names, or implementation does not remove this condition.
+
+This is a condition on use of the licensed materials, not a claim of
+copyright in general ideas or algorithms. It does not restrict independent
+development without use of those materials, rights under an independent
+license, or rights that applicable law does not permit restricting.
+
+5. DISTRIBUTION AND CONTRIBUTIONS
+
+On distribution, retain this license including Appendix A, the adoption
+notice, and applicable third-party notices; identify changes prominently;
+and license covered modifications to recipients under these same terms.
+Provide the corresponding editable source and build/install instructions
+with each source or binary distribution, or a no-charge download maintained
+for at least three years after the last corresponding distribution.
+Credentials, customer data, separately licensed model weights, independent
+applications, and generally available tools need not be included.
+
+Private modifications and network access alone do not require publication.
+Applications merely calling the Software's API may keep their own licenses.
+Contributions intentionally submitted for inclusion are offered under this
+version unless another arrangement is expressly accepted. Ownership stays
+with each contributor; additional permissions require authorization from
+holders of all applicable rights. Adoption does not itself authorize
+relicensing contributions previously offered only under INFOIL 1.0.
+
+6. PATENTS, TERMINATION, AND LIABILITY
+
+Each contributor licenses patent claims it controls necessarily practiced
+by its contribution, alone or in the submitted combination, to make, use,
+sell, offer for sale, and import the Software for permitted purposes. This
+grant ends if You bring a patent claim alleging the Software infringes.
+
+Copyright permissions under this license terminate upon breach and are
+reinstated for a first breach if cured within thirty days after You learn
+of it. Later reinstatement requires the affected rights holders' permission.
+Compliant recipients
+retain their grants. As far as law permits, the Software is supplied as is,
+without warranties, and contributors are not liable for resulting losses.
+Unenforceable provisions do not invalidate independently operable terms.
+No future version automatically changes rights granted under this version.
+
+APPENDIX A -- EXHAUSTIVE RESTRICTED PROVIDERS
+
+Snapshot source: https://openrouter.ai/providers
+Provider identifiers: https://openrouter.ai/api/v1/providers
+Retrieved: 2026-10-13 UTC. The names below, not the live websites, control.
+Identifiers disambiguate service names; they are not a ban on unrelated
+software projects, purchased hardware, or independently licensed models.
+
+- AionLabs (aion-labs)
+- AkashML (akashml)
+- Alibaba Cloud Int. (alibaba)
+- Anthropic (anthropic)
+- Arcee AI (arcee-ai)
+- AssemblyAI (assemblyai)
+- AtlasCloud (atlas-cloud)
+- Baidu Qianfan (baidu)
+- Black Forest Labs (black-forest-labs)
+- Cerebras (cerebras)
+- Chutes (chutes)
+- Claude Platform on AWS (claude-on-aws)
+- Cloudflare (cloudflare)
+- Cohere (cohere)
+- CoreWeave (coreweave)
+- Crusoe (crusoe)
+- Darkbloom (darkbloom)
+- Decart (decart)
+- Deepgram (deepgram)
+- DeepInfra (deepinfra)
+- DeepSeek (deepseek)
+- DekaLLM (dekallm)
+- DigitalOcean (digitalocean)
+- ElevenLabs (elevenlabs)
+- Fireworks (fireworks)
+- Fish Audio (fish-audio)
+- Friendli (friendli)
+- GMICloud (gmicloud)
+- Groq (groq)
+- HeyGen (heygen)
+- Inception (inception)
+- Inceptron (inceptron)
+- inference.net (inference-net)
+- io.net (io-net)
+- Ionstream (ionstream)
+- Krea (krea)
+- Liquid (liquid)
+- Makora (makora)
+- Mancer (mancer)
+- MARA (mara)
+- Meta (meta)
+- MiniMax (minimax)
+- Mistral (mistral)
+- Modal (modal)
+- ModelRun [by Modular] (modelrun)
+- Moonshot AI (moonshotai)
+- Morph (morph)
+- NEAR AI (near-ai)
+- Nebius Token Factory (nebius)
+- Nex AGI (nex-agi)
+- NextBit (nextbit)
+- NovitaAI (novita)
+- NVIDIA (nvidia)
+- Open Inference (open-inference)
+- OpenAI (openai)
+- Parasail (parasail)
+- Perceptron (perceptron)
+- Perplexity (perplexity)
+- Phala (phala)
+- Poolside (poolside)
+- Prime Intellect (primeintellect)
+- Recraft (recraft)
+- Reka AI (reka)
+- Relace (relace)
+- Respan (respan)
+- Runway (runway)
+- Sail Research (sail-research)
+- Sakana (sakana)
+- SambaNova (sambanova)
+- ScaleDown (scaledown)
+- Seed (seed)
+- SiliconFlow (siliconflow)
+- Sourceful (sourceful)
+- SpaceXAI (xai)
+- StepFun (stepfun)
+- StreamLake (streamlake)
+- Tencent Cloud (tencent)
+- Tenstorrent (tenstorrent)
+- Thinking Machines (thinkingmachines)
+- Together (together)
+- TypeSafe (typesafe)
+- Unbiased (unbiased)
+- Upstage (upstage)
+- Venice (venice)
+- Voyage AI by MongoDB (voyageai)
+- Wafer (wafer)
+- Xiaomi (xiaomi)
+- Z.ai (z-ai)
