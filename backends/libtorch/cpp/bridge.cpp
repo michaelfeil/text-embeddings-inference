@@ -364,8 +364,14 @@ int32_t tei_weight(void* handle, const char* name, const uint8_t* data,
         || key.ends_with(".lconv1d.depthwise_conv1d.weight"));
     auto target_dtype = key.ends_with(".A_log") || key.ends_with(".dt_bias") || fp32_audio_filter ? at::kFloat : model.dtype;
     const auto family = model.options.string("model_type");
-    if ((key.starts_with("model.visual.") || key.starts_with("visual.")) && family.starts_with("qwen3_5")) target_dtype = at::kHalf;
-    if(key.starts_with("__tei_decision.")&&model.options.string("_decision.kind")=="pplx")target_dtype=at::kBFloat16;
+    if ((key.starts_with("model.visual.") || key.starts_with("visual.")) && family.starts_with("qwen3_5")) {
+      target_dtype = model.options.string("_decision.kind")=="d3" ? at::kBFloat16 : at::kHalf;
+    }
+    if(key.starts_with("__tei_decision.")) {
+      auto kind=model.options.string("_decision.kind");
+      if(kind=="pplx")target_dtype=at::kBFloat16;
+      if(kind=="d3")target_dtype=at::kFloat;
+    }
     TORCH_CHECK(model.weights.emplace(name, tensor.to(model.device, target_dtype)).second,
                 "Duplicate weight: ", name);
   });

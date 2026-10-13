@@ -122,6 +122,10 @@ pub async fn run(
     let onejev = matches!(decision_protocol, Some(DecisionProtocol::Onejev));
     let pplx = matches!(decision_protocol, Some(DecisionProtocol::Pplx));
     let d3 = matches!(decision_protocol, Some(DecisionProtocol::D3));
+    anyhow::ensure!(
+        !d3 || backend_kind == infinity_v3_backend::BackendKind::Libtorch,
+        "D3 requires --backend libtorch"
+    );
     let decoder_decision = rune || onejev || clef || pplx || d3;
     let readout = model_root.join("decision_config.json").exists();
     anyhow::ensure!(
@@ -471,6 +475,11 @@ pub async fn run(
             resolve_dtype(dtype, model_dtype, &config.model_type)
         }
     };
+
+    anyhow::ensure!(
+        !d3 || dtype == DType::Bfloat16,
+        "D3 requires --dtype bfloat16 for its backbone (the readout remains FP32)"
+    );
 
     // Create backend
     let devices = replicas::resolve_devices(

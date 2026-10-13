@@ -313,7 +313,6 @@ pub struct Qwen35Model {
     linear_output_projection: Option<Linear>,
     decision_head: Option<Tensor>,
     readout: Option<Linear>,
-    readout_dtype: DType,
     clef: Option<super::clef::JointSchemaHead>,
     vision: Option<super::qwen35_vision::Qwen35Vision>,
     cos_cache: Tensor,
@@ -386,7 +385,6 @@ impl Qwen35Model {
             linear_output_projection: None,
             decision_head,
             readout: None,
-            readout_dtype: DType::BF16,
             clef: None,
             vision: None,
             cos_cache,
@@ -397,21 +395,15 @@ impl Qwen35Model {
             span: tracing::span!(tracing::Level::TRACE, "qwen35"),
         })
     }
-    pub fn with_readout(
-        mut self,
-        path: &std::path::Path,
-        config: &Qwen35Config,
-        model_vb: VarBuilder,
-    ) -> Result<Self> {
+    pub fn with_readout(mut self, path: &std::path::Path, config: &Qwen35Config) -> Result<Self> {
         let readout_config = ReadoutConfig::from_slice(
             &std::fs::read(path.join("decision_config.json")).map_err(candle::Error::wrap)?,
         )?;
         self.set_readout_attention_mode(readout_config.attention_mode);
-        self.readout_dtype = readout_config.readout_dtype.dtype();
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(
                 &[path.join("readout.safetensors")],
-                self.readout_dtype,
+                DType::BF16,
                 &self.device,
             )?
         };
@@ -420,17 +412,6 @@ impl Qwen35Model {
             None,
             None,
         ));
-        if readout_config.format_id.as_deref() == Some("d3-code-readout-v1") {
-            let vision = config
-                .vision()
-                .ok_or_else(|| candle::Error::Msg("D3 requires a vision configuration".into()))?;
-            self.vision = Some(super::qwen35_vision::Qwen35Vision::load_dtype(
-                model_vb,
-                vision,
-                config.text(),
-                DType::BF16,
-            )?);
-        }
         Ok(self)
     }
 
@@ -665,9 +646,9 @@ impl Model for Qwen35Model {
                     .collect::<Vec<_>>(),
                 &self.device,
             )?;
-            // Preserve the checkpoint's readout precision independently of its BF16 backbone.
+            // Match upstream's BF16 readout, then promote logits for calibration.
             let logits = readout
-                .forward(&index_select(&states, &indices, 0)?.to_dtype(self.readout_dtype)?)?
+                .forward(&index_select(&states, &indices, 0)?)?
                 .to_dtype(DType::F32)?
                 .to_vec2::<f32>()?;
             return inputs
@@ -683,9 +664,7 @@ impl Model for Qwen35Model {
                             token_ids.len()
                         }
                         DecisionInput::Warmup => 1,
-                        _ => candle::bail!(
-                            "Decision readout requires contiguous readout-row metadata"
-                        ),
+                        _ => candle::bail!("Pplx requires contiguous readout-row metadata"),
                     };
                     Ok(DecisionOutput {
                         logits: logits[..count].to_vec(),
@@ -845,29 +824,6 @@ mod radix_tests {
             .max_all()?
             .to_scalar::<f32>()?;
         assert!(error <= 0.02, "hybrid model changed by {error}");
-        Ok(())
-    }
-
-    #[test]
-    fn fp32_readout_preserves_weights_and_promotes_bf16_states() -> Result<()> {
-        let device = Device::Cpu;
-        let weights = Tensor::new(&[[1.003f32, 1.011]], &device)?;
-        let states = Tensor::new(&[[1f32, 1.]], &device)?.to_dtype(DType::BF16)?;
-        let readout = Linear::new(weights, None, None);
-        let output = readout
-            .forward(&states.to_dtype(DType::F32)?)?
-            .to_vec2::<f32>()?;
-        assert!((output[0][0] - 2.014).abs() < 1e-6);
-        let rounded = Linear::new(
-            Tensor::new(&[[1.003f32, 1.011]], &device)?
-                .to_dtype(DType::BF16)?
-                .to_dtype(DType::F32)?,
-            None,
-            None,
-        )
-        .forward(&states.to_dtype(DType::F32)?)?
-        .to_vec2::<f32>()?;
-        assert!((output[0][0] - rounded[0][0]).abs() > 1e-3);
         Ok(())
     }
 

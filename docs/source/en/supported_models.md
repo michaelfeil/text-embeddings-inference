@@ -203,7 +203,7 @@ not pixel-identical. Qwen3-VL currently disables RadixMLP and rejects BF16.
 
 ## D3 decision model
 
-`vllm-sr/d3` supports text/JSON, images, and video on the Candle CUDA BF16
+`vllm-sr/d3` supports text/JSON, images, and video on the LibTorch BF16
 backend with the `d3` decision protocol. The `d3` model alias selects that
 protocol automatically. Its full-attention layers are noncausal; linear
 attention stays causal and the decision readout runs in FP32. See the README's

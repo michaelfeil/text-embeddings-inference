@@ -65,4 +65,23 @@ void clef_test(){Input in;Options cfg,backbone;cfg.values={{"hidden_size","16"},
  std::cout<<"Clef lexical prior/span means, routing/field decoder, variable option counts and sequence isolation passed\n";
 }
 }
-int main(){c10::InferenceMode inference;at::set_num_threads(1);options_test();laya_test();clef_test();}
+void d3_test(){
+ Input in;Options cfg,backbone;
+ cfg.values={{"format_id","d3-code-readout-v1"},{"prompt","d3"},{"pooling","last"},{"attention_mode","noncausal_full_attention"},{"readout_dtype","float32"}};
+ backbone.values={{"model_type","qwen3_5"},{"hidden_size","16"}};
+ Weights readout;readout["weight"]=at::sin(at::arange(255*16).view({255,16}).to(at::kFloat)*.017);
+ auto hidden=(at::cos(at::arange(80).view({5,16}).to(at::kFloat)*.13)).to(at::kBFloat16);
+ auto head=create_decision_head("d3",cfg,backbone,readout,{});
+ DecisionRequest first{DecisionRequest::Kind::OptionTokens},second{DecisionRequest::Kind::Warmup};first.token_ids={0,1,2};
+ auto result=head->forward(hidden,in.input,{first,second});
+ auto full=at::linear(hidden[2].to(at::kFloat).unsqueeze(0),readout["weight"]);
+ close(result[0].logits,full.narrow(1,0,3).flatten());
+ close(result[1].logits,at::linear(hidden[4].to(at::kFloat).unsqueeze(0),readout["weight"]).narrow(1,0,1).flatten());
+ auto bf16=at::linear(hidden[2].unsqueeze(0),readout["weight"].to(at::kBFloat16)).narrow(1,0,3).flatten();
+ TORCH_CHECK((result[0].logits-bf16.to(at::kFloat)).abs().max().item<float>()>1e-4,"D3 precision fixture must distinguish FP32 from BF16 readout");
+ first.token_ids={1,0};reject([&]{head->output_count(first);});
+ for(const auto&entry:std::vector<std::pair<std::string,std::string>>{{"pooling","mean"},{"attention_mode","causal"},{"readout_dtype","bfloat16"},{"prompt","pplx"}}){auto bad=cfg;bad.values[entry.first]=entry.second;reject([&]{create_decision_head("d3",bad,backbone,readout,{});});}
+ readout["weight"]=readout["weight"].to(at::kBFloat16);reject([&]{create_decision_head("d3",cfg,backbone,readout,{});});
+ std::cout<<"D3 FP32 full readout, last-token selection, warmup and checkpoint validation passed\n";
+}
+int main(){c10::InferenceMode inference;at::set_num_threads(1);options_test();d3_test();laya_test();clef_test();}

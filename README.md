@@ -1018,12 +1018,13 @@ Image/video inputs are not supported by this protocol yet.
 ### D3 typed multimodal decisions
 
 `vllm-sr/d3` serves choice, noul and score questions on `/v1/systemone` using the
-Candle CUDA backend in BF16. Both `--model-id d3` and `--model-id vllm-sr/d3`
+LibTorch backend in BF16. Both `--model-id d3` and `--model-id vllm-sr/d3`
 select the native D3 protocol automatically. For a local checkpoint, pass
 `--decision-protocol d3` explicitly:
 
 ```bash
-infinity_v3 --model-id vllm-sr/d3 --dtype bfloat16 --device-id 0
+infinity_v3 --backend libtorch --torch-device cuda \
+  --model-id vllm-sr/d3 --dtype bfloat16 --device-id 0
 ```
 
 D3 uses its checkpoint chat template, noncausal full-attention layers, native

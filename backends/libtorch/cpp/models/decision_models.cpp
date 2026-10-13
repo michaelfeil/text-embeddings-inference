@@ -76,11 +76,11 @@ void validate(const at::Tensor& hidden,const PackedInput& input,const std::vecto
  for(int64_t i=0;i<input.batch;++i)TORCH_CHECK(input.offsets[i+1]>input.offsets[i],"Typed decisions require nonempty sequences");
 }
 struct OptionHead final:DecisionHead {
- at::Tensor weights;bool external,qwen;double cap;
+ at::Tensor weights;bool external,qwen,d3;double cap;
  OptionHead(const std::string& kind,const Options& cfg,const Weights& head,const Weights& backbone)
-  :weights(kind=="pplx"?weight(head,"weight"):lexical(cfg,backbone)),external(kind=="pplx"),qwen(cfg.string("model_type").rfind("qwen",0)==0),cap(cfg.real("final_logit_softcapping",cfg.real("text_config.final_logit_softcapping",0))) {
+  :weights((kind=="pplx"||kind=="d3")?weight(head,"weight"):lexical(cfg,backbone)),external(kind=="pplx"||kind=="d3"),qwen(cfg.string("model_type").rfind("qwen",0)==0),d3(kind=="d3"),cap(cfg.real("final_logit_softcapping",cfg.real("text_config.final_logit_softcapping",0))) {
   TORCH_CHECK(weights.dim()==2&&(!external||weights.size(0)==255),"Invalid decision readout weight geometry");
-  if(external)TORCH_CHECK(weights.scalar_type()==at::kBFloat16,"Pplx readout must be loaded as BF16");
+  if(external)TORCH_CHECK(weights.scalar_type()==(d3?at::kFloat:at::kBFloat16),"Decision readout precision does not match its checkpoint contract");
  }
  int64_t output_count(const DecisionRequest& request)const override{
   if(request.kind==DecisionRequest::Kind::Warmup)return 1;
@@ -97,7 +97,8 @@ struct OptionHead final:DecisionHead {
    auto last=hidden.select(0,input.offsets[i+1]-1).unsqueeze(0);
    auto index=at::tensor(ids,hidden.options().dtype(at::kLong));auto selected=weights.index_select(0,index);
    at::Tensor logits;
-   if(external)logits=at::linear(last.to(at::kBFloat16),selected);
+   if(d3)logits=at::linear(last.to(at::kFloat),weights).index_select(1,index);
+   else if(external)logits=at::linear(last.to(at::kBFloat16),selected);
    else if(qwen)logits=at::linear(last.to(at::kFloat),selected.to(at::kFloat));
    else {logits=at::linear(last,selected);if(cap>0)logits=at::tanh(logits/cap)*cap;}
    result.push_back({logits.flatten().to(at::kFloat),at::ones({},hidden.options().dtype(at::kFloat))});
@@ -199,6 +200,12 @@ std::unique_ptr<DecisionHead> create_decision_head(const std::string&kind,const 
  auto hidden=backbone.integer("hidden_size",backbone.integer("text_config.hidden_size",0));TORCH_CHECK(hidden>0,"Decision backbone hidden_size is missing");
  if(kind=="laya")return std::make_unique<LayaHead>(head,weights,hidden);
  if(kind=="clef")return std::make_unique<ClefHead>(head,backbone,weights,backbone_weights,hidden);
+ if(kind=="d3"){
+  TORCH_CHECK(head.string("format_id")=="d3-code-readout-v1" && head.string("prompt")=="d3","Unknown D3 readout format");
+  TORCH_CHECK(head.string("pooling")=="last" && head.string("attention_mode")=="noncausal_full_attention" && head.string("readout_dtype")=="float32","D3 requires last-token pooling, noncausal full attention and FP32 readout");
+  TORCH_CHECK(backbone.string("model_type")=="qwen3_5" || backbone.string("model_type")=="qwen3_5_text","D3 requires the dense Qwen3.5 backbone");
+  return std::make_unique<OptionHead>(kind,backbone,weights,backbone_weights);
+ }
  if(kind=="pplx"){
   TORCH_CHECK(head.string("pooling","last")=="last","Pplx requires last-token pooling");
   auto mode=head.string("attention_mode","causal");TORCH_CHECK(mode=="causal"||mode=="noncausal_full_attention","Unknown Pplx attention mode");

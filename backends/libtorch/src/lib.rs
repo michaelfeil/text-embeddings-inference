@@ -482,13 +482,19 @@ impl LibtorchBackend {
             let (kind, config) = if laya {
                 ("laya", read_config("rl_agent_config.json")?)
             } else if path.join("decision_config.json").exists() {
-                ("pplx", read_config("decision_config.json")?)
+                let config = read_config("decision_config.json")?;
+                let kind = if config["format_id"] == "d3-code-readout-v1" {
+                    "d3"
+                } else {
+                    "pplx"
+                };
+                (kind, config)
             } else if path.join("joint_head_config.json").exists() {
                 ("clef", read_config("joint_head_config.json")?)
             } else {
                 ("option_tokens", serde_json::json!({}))
             };
-            if kind == "pplx" {
+            if matches!(kind, "pplx" | "d3") {
                 options["_decision_attention_mode"] = config
                     .get("attention_mode")
                     .cloned()
@@ -906,7 +912,7 @@ impl LibtorchBackend {
             .map(|file| (file, String::new()))
             .collect::<Vec<_>>();
         if let Some(kind) = decision_kind {
-            if kind == "pplx" {
+            if matches!(kind, "pplx" | "d3") {
                 files.push(("readout.safetensors".into(), "__tei_decision.".into()));
             }
             if kind == "clef" {
