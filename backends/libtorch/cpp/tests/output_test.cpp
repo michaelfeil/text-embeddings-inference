@@ -1,12 +1,66 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "batching/output.h"
+#include "bridge.h"
 #include "batching/cuda_graph.h"
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <iostream>
 #include <utility>
+
+// Exercise the production C ABI catch and error-unwind path with a real CUDA
+// allocator rejection. The large payload is never transferred or read.
+void native_allocator_error_test(const at::Device& device) {
+  TeiConfig cfg{16,2,2,24,32,32,1,1e-6,0};
+  std::unique_ptr<void,decltype(&tei_destroy)> engine(tei_create(&cfg,device.str().c_str(),1),tei_destroy);
+  TORCH_CHECK(engine,tei_error());
+  for(const auto& [key,value]:std::initializer_list<std::pair<const char*,const char*>>{
+      {"model_type","qwen3"},{"hidden_size","16"},{"num_attention_heads","2"},
+      {"num_key_value_heads","1"},{"head_dim","8"},{"intermediate_size","24"},
+      {"num_hidden_layers","2"},{"vocab_size","32"},{"max_position_embeddings","32"},
+      {"hidden_act","silu"},{"rms_norm_eps","0.000001"}})
+    TORCH_CHECK(tei_option(engine.get(),key,value)==0,tei_error());
+  auto weight=[&](const std::string& key,std::initializer_list<int64_t> shape,bool norm=false) {
+    int64_t count=1;for(auto n:shape)count*=n;
+    float offset=0;for(auto c:key)offset+=c;
+    auto value=(at::sin(at::arange(count,at::TensorOptions().dtype(at::kFloat))*.13+offset*.01)*.15).view(at::IntArrayRef(shape));
+    if(norm)value+=1;
+    TORCH_CHECK(tei_weight(engine.get(),key.c_str(),reinterpret_cast<const uint8_t*>(value.const_data_ptr()),
+      value.sizes().data(),value.dim(),0)==0,tei_error());
+  };
+  weight("model.embed_tokens.weight",{32,16});weight("model.norm.weight",{16},true);
+  for(int layer=0;layer<2;++layer) {
+    auto root="model.layers."+std::to_string(layer)+".";
+    weight(root+"input_layernorm.weight",{16},true);weight(root+"post_attention_layernorm.weight",{16},true);
+    weight(root+"self_attn.q_proj.weight",{16,16});weight(root+"self_attn.k_proj.weight",{8,16});
+    weight(root+"self_attn.v_proj.weight",{8,16});weight(root+"self_attn.o_proj.weight",{16,16});
+    weight(root+"self_attn.q_norm.weight",{8},true);weight(root+"self_attn.k_norm.weight",{8},true);
+    weight(root+"mlp.gate_proj.weight",{24,16});weight(root+"mlp.up_proj.weight",{24,16});weight(root+"mlp.down_proj.weight",{16,24});
+  }
+  TORCH_CHECK(tei_ready(engine.get())==0,tei_error());
+  int64_t ids[]={3,4,5,6},types[4]{},positions[]={0,1,2,3},row=0;int32_t offsets[]={0,4};
+  auto valid=[&] {
+    std::unique_ptr<void,decltype(&tei_output_destroy)> output(tei_forward_submit(engine.get(),ids,types,positions,
+      offsets,1,4,0,&row,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(output,tei_error());const auto* values=tei_output_wait(output.get());TORCH_CHECK(values,tei_error());
+    for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(values[i]),"Allocator failure corrupted valid response");
+    TORCH_CHECK(tei_last_error_kind()==0,"Valid result retained allocator error kind");
+  };
+  valid();C10_CUDA_CHECK(cudaDeviceSynchronize());
+  const double original=c10::cuda::CUDACachingAllocator::getMemoryFraction(device.index());
+  size_t free=0,total=0;C10_CUDA_CHECK(cudaMemGetInfo(&free,&total));
+  const auto reserved=c10::cuda::CUDACachingAllocator::getDeviceStats(device.index()).reserved_bytes[0].current;
+  c10::cuda::CUDACachingAllocator::setMemoryFraction(double(reserved+(1<<20))/total,device.index());
+  try {
+    const auto* unread=reinterpret_cast<const int64_t*>(uintptr_t(1));int32_t huge[]={0,4000000};
+    std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),unread,unread,
+      unread,huge,1,4000000,0,nullptr,0,&row,1,64000000,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(!rejected&&tei_last_error_kind()==3,"Actual allocator OOM was not classified as recoverable memory pressure");
+  } catch (...) {c10::cuda::CUDACachingAllocator::setMemoryFraction(original,device.index());throw;}
+  c10::cuda::CUDACachingAllocator::setMemoryFraction(original,device.index());valid();
+}
 
 class Model final : public tei::Model {
 public:
@@ -155,6 +209,7 @@ int main() {
     { tei::OutputLease recovered(pressured, device, 8); recovered.allocate();
       recovered.copy(at::full({8}, 11, at::TensorOptions().device(device)), 0); recovered.record();
       TORCH_CHECK(recovered.wait()[7] == 11, "Device allocation failure poisoned subsequent submission"); }
+    native_allocator_error_test(device);
     std::cout << "output staging, overlap, graph eviction, alternation, reuse and cancellation passed\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

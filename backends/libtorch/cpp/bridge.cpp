@@ -42,6 +42,11 @@
 namespace {
 thread_local std::string error;
 thread_local int32_t error_kind=0;
+thread_local const char* error_fallback=nullptr;
+void set_error(int32_t kind,const char* message) noexcept {
+  error_kind=kind;
+  try { error=message; } catch (...) { error_fallback="Native error message unavailable under memory pressure"; }
+}
 std::once_flag precision_initialized;
 void initialize_precision() {
   std::call_once(precision_initialized, [] {
@@ -332,15 +337,17 @@ std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,
  }return result;
 }
 template<class F> int32_t checked(F&& f) {
-  error_kind=0;error.clear();
+  error_kind=0;error_fallback=nullptr;error.clear();
   try { c10::InferenceMode guard; f(); return 0; }
-  catch (const tei::MemoryAdmissionError& ex) { error_kind=2;error=ex.what();return -1; }
-  catch (const std::exception& ex) { error_kind=1;error = ex.what(); return -1; }
-  catch (...) { error_kind=1;error = "Unknown native exception"; return -1; }
+  catch (const tei::MemoryAdmissionError& ex) { set_error(2,ex.what());return -1; }
+  catch (const c10::OutOfMemoryError& ex) { set_error(3,ex.what());return -1; }
+  catch (const std::bad_alloc& ex) { set_error(3,ex.what());return -1; }
+  catch (const std::exception& ex) { set_error(1,ex.what()); return -1; }
+  catch (...) { set_error(1,"Unknown native exception"); return -1; }
 }
 }
 extern "C" {
-const char* tei_error() { return error.c_str(); }
+const char* tei_error() { return error_fallback?error_fallback:error.c_str(); }
 int32_t tei_last_error_kind() { return error_kind; }
 int64_t tei_device_count(const char* name) {
   int64_t count = -1;

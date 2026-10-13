@@ -47,7 +47,8 @@ struct TeiDecision {
 extern "C" {
 const char* tei_error();
 // Thread-local status of the last fallible call: 0 success, 1 other error,
-// 2 request memory admission rejection. Read immediately on the calling thread.
+// 2 memory admission rejection, 3 recoverable allocator OOM. Read immediately
+// on the calling thread. Other device failures retain kind 1.
 int32_t tei_last_error_kind();
 int64_t tei_device_count(const char* device);
 void* tei_create(const TeiConfig*, const char* device, int32_t dtype);
