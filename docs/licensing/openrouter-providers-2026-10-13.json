@@ -4,9 +4,9 @@
   "directory_url": "https://openrouter.ai/providers",
   "provider_metadata_url": "https://openrouter.ai/api/v1/providers",
   "directory_provider_count": 93,
-  "restricted_provider_count": 88,
-  "permitted_directory_provider_count": 5,
-  "selection_rule": "Every provider in the retrieved public directory except the previously approved Azure, AWS, Baseten, Google Cloud / Google AI Studio, and Oracle Cloud providers. Oracle Cloud was not in this directory. The public directory controls membership; the API only resolves identifiers and operator references.",
+  "restricted_provider_count": 89,
+  "permitted_directory_provider_count": 4,
+  "selection_rule": "Every provider entry in the retrieved public directory except Azure, Baseten, Google Vertex, and Google AI Studio. General AWS infrastructure such as EC2 and Oracle Cloud remain permitted; Amazon Bedrock is expressly restricted as a platform for commercial deployment. The public directory controls membership; the API only resolves identifiers and operator references.",
   "claude_on_aws_note": "This entry points to Anthropic commercial terms and represents an Anthropic-operated service, not generic AWS capacity. It is included alongside Anthropic. AWS capacity remains expressly permitted.",
   "providers": [
     {
@@ -39,7 +39,7 @@
       "slug": "amazon-bedrock",
       "terms_of_service_url": "https://aws.amazon.com/service-terms/",
       "privacy_policy_url": "https://aws.amazon.com/privacy",
-      "treatment": "permitted"
+      "treatment": "restricted"
     },
     {
       "directory_name": "Anthropic",
@@ -832,5 +832,6 @@
       "slug": "switchpoint"
     }
   ],
-  "fixed_list_note": "Only the names in the draft Appendix A are restricted. API-only entries and future OpenRouter additions are not automatically included. No revenue test or automatic expansion applies."
+  "fixed_list_note": "Only the platforms named in the draft Appendix A are restricted for commercial deployment, including deployment by their customers. API-only entries and future OpenRouter additions are not automatically included. No revenue test or automatic expansion applies.",
+  "aws_scope_note": "The Amazon Bedrock entry restricts that platform, not AWS infrastructure generally. The platform ban applies both to customers deploying Infinity there and to the platform operator; the noncommercial research exception remains available."
 }
