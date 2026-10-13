@@ -477,18 +477,20 @@ void suffix_graph_test(Model& model,const PackedInput& original) {
  auto input=original;
  auto set=[&](const at::Tensor& ids){input.host_ids=ids;input.host_types=original.types.cpu();input.host_positions=original.positions.cpu();input.ids=ids.to(original.ids.device());};
  set(a);cache.run(model,input,0,&graphs);set(b);cache.run(model,input,0,&graphs);
- for(int step=0;step<6;++step) {
+ // Repeat each parent before changing it: replay must preserve already-bound
+ // immutable state, rebind another parent, and retire weak owners after clear.
+ for(int step=0;step<8;++step) {
   if(step==4) {
    cache.clear();TORCH_CHECK(cache.bytes()==0,"Graph templates retained resident prefix owners after clear");
    set(a);cache.run(model,input,0,&graphs);set(b);cache.run(model,input,0,&graphs);
   }
-  auto ids=(step%2?b:a).clone();
+  auto ids=((step/2)%2?b:a).clone();
   for(int64_t row=0;row<input.batch;++row)ids[input.offsets[row+1]-1]=10+step;
   set(ids);auto expected=model.forward(input),actual=cache.run(model,input,0,&graphs);
   TORCH_CHECK(at::allclose(actual,expected,.01,.02),"Suffix graph retained another parent's KV or output values");
   actual.zero_();
  }
- auto stats=graphs.stats();TORCH_CHECK(stats.prefix_captures==1&&stats.prefix_hits>=5,"Changing parents or cache clear invalidated a reusable suffix shader");
+ auto stats=graphs.stats();TORCH_CHECK(stats.prefix_captures==1&&stats.prefix_hits>=7,"Changing parents or cache clear invalidated a reusable suffix shader");
  TORCH_CHECK(cache.bytes()<=16<<20,"Suffix graph publication exceeded the resident snapshot budget");
  PrefixCache constrained(16<<20,64,8);CudaGraphCache undersized(4,64,1,1,8);
  set(a);constrained.run(model,input,0,&undersized);

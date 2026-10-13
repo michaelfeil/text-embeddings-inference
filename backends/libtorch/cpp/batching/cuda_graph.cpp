@@ -32,6 +32,10 @@ struct CudaGraphCache::Impl {
     std::vector<int32_t> original_offsets;
     PackedInput original;
     std::unique_ptr<PrefixContext> prefix;
+    // Resident snapshots are immutable. Remember the last copied owner without
+    // extending its cache lifetime; address equality after weak locking cannot
+    // confuse a retired owner with a new allocation at the same address.
+    std::vector<std::weak_ptr<PrefixEntry>> parents;
     at::Tensor output;
     std::unique_ptr<at::cuda::CUDAGraph> graph;
     std::list<std::string>::iterator lru;
@@ -172,6 +176,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
       graph_input_copies(entry.original,input.prefix->original,targets,sources);
       for(size_t row=0;row<entry.prefix->readers.size();++row)if(entry.prefix->hits[row]) {
         const auto& actual=input.prefix->readers[row];const auto& owned=entry.prefix->readers[row];
+        if(entry.parents[row].lock()==actual)continue;
+        entry.parents[row].reset();
         targets.push_back(owned->output);sources.push_back(actual->output.narrow(0,0,entry.prefix->hits[row]));
         for(const auto& [layer,state]:owned->layers) {
           const auto& fresh=actual->layers.at(layer);
@@ -181,6 +187,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
       }
     }
     tensor_copies(targets,sources);
+    if(entry.prefix)for(size_t row=0;row<entry.parents.size();++row)
+      entry.parents[row]=input.prefix->readers[row];
     entry.graph->replay();
     if(entry.prefix) {
       ++impl->counters.prefix_hits;input.prefix->publish_graph(*entry.prefix);
@@ -226,6 +234,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
           state.key.narrow(0,0,original.hits[row]).clone(),state.value.narrow(0,0,original.hits[row]).clone(),{}, {}};
       }
       entry->prefix->readers.push_back(std::move(owned));
+      entry->parents.push_back(original.readers[row]);
     }
     entry->input.prefix=entry->prefix.get();
   }

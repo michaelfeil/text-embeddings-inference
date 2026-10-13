@@ -33,6 +33,24 @@ static void cached_suffix_spans(const c10::Device& device) {
   std::cout<<"Matched-operand cached suffix attention preserves original BF16 arithmetic\n";
 }
 
+static void single_query_tiles(const c10::Device& device) {
+  auto options=at::TensorOptions().device(device).dtype(at::kBFloat16);
+  const std::vector<int32_t> offsets{0,65,193,706,2754},queries{0,1,2,3,4};
+  auto cumulative=at::tensor(offsets,options.dtype(at::kInt));
+  auto suffix_cu=at::tensor(queries,options.dtype(at::kInt));
+  auto selected=at::tensor(std::vector<int64_t>{64,192,705,2753},options.dtype(at::kLong));
+  for(int seed=0;seed<16;++seed)for(int64_t kvheads:{2,8}) {
+    auto generator=at::detail::createCPUGenerator(1000+seed);
+    auto operands=at::randn({2754,16+2*kvheads,128},generator,at::kFloat).to(options);
+    auto q=operands.narrow(1,0,16),k=operands.narrow(1,16,kvheads),v=operands.narrow(1,16+kvheads,kvheads);
+    auto reference=tei::torch_flash_fma(q,k,v,cumulative,2048,1./std::sqrt(128.),true);
+    auto actual=tei::torch_flash_fma_varlen(q.index_select(0,selected),k,v,suffix_cu,cumulative,1,2048,1./std::sqrt(128.),true);
+    TORCH_CHECK(at::equal(actual,reference.index_select(0,selected)),
+      "Single-query tile changed original BF16 arithmetic seed=",seed," kvheads=",kvheads);
+  }
+  std::cout<<"Single-query BF16 ragged/GQA tiles match full-context outputs bitwise\n";
+}
+
 static void default_torch_suffix_spans(const c10::Device& device) {
   constexpr int64_t total=2048;
   for(int64_t dim:{64,128})for(auto dtype:{at::kBFloat16,at::kHalf}) {
@@ -194,6 +212,7 @@ int main(int argc,char** argv) {
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   media_spans(device);
   cached_suffix_spans(device);
+  single_query_tiles(device);
   default_torch_suffix_spans(device);
   cudnn_cached_suffix(device);
   at::manual_seed(9917);at::set_num_threads(1);
