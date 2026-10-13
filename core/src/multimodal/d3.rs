@@ -304,16 +304,56 @@ impl D3MediaProcessor {
             .and_then(|(a, b)| Some(a.parse::<f64>().ok()? / b.parse::<f64>().ok()?))
             .filter(|fps| fps.is_finite() && (0.1..=1000.).contains(fps))
             .unwrap_or(24.);
-        let duration = stream["duration"]
+        let _duration = stream["duration"]
             .as_str()
             .or(metadata["format"]["duration"].as_str())
             .and_then(|s| s.parse::<f64>().ok())
             .filter(|v| v.is_finite() && *v > 0. && *v <= 300.)
             .ok_or_else(|| invalid("D3 video requires a valid duration of at most 300 seconds"))?;
-        let total = stream["nb_frames"]
+        let total = match stream["nb_frames"]
             .as_str()
             .and_then(|v| v.parse::<usize>().ok())
-            .unwrap_or((duration * fps).round() as usize);
+        {
+            Some(total) => total,
+            None => {
+                // Container duration and average FPS do not determine a VFR frame count.
+                // Decode only after validating geometry and reserving decoder memory above;
+                // the enclosing preparation timeout and kill_on_drop also cover this pass.
+                let output = Command::new("ffprobe")
+                    .args([
+                        "-v",
+                        "error",
+                        "-protocol_whitelist",
+                        "file,pipe",
+                        "-f",
+                        format,
+                        "-threads",
+                        "1",
+                        "-select_streams",
+                        "v:0",
+                        "-count_frames",
+                        "-show_entries",
+                        "stream=nb_read_frames",
+                        "-of",
+                        "json",
+                    ])
+                    .arg(&path)
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true)
+                    .output()
+                    .await
+                    .map_err(|_| invalid("D3 video frame counting requires ffprobe"))?;
+                if !output.status.success() {
+                    return Err(invalid("Video frame counting failed"));
+                }
+                let counted: serde_json::Value = serde_json::from_slice(&output.stdout)
+                    .map_err(|_| invalid("Invalid video frame count"))?;
+                counted["streams"][0]["nb_read_frames"]
+                    .as_str()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .ok_or_else(|| invalid("Video frame count is unavailable"))?
+            }
+        };
         if total == 0 || total as f64 / fps > 300. {
             return Err(invalid("Video contains no frames"));
         }
@@ -543,6 +583,72 @@ fn pair_patches(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    #[ignore = "requires ffmpeg and ffprobe"]
+    async fn video_sampling_counts_frames_when_container_metadata_has_none() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(
+            root.path().join("preprocessor_config.json"),
+            r#"{"patch_size":16,"temporal_patch_size":2,"merge_size":2,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5]}"#,
+        )
+        .unwrap();
+        let path = root.path().join("variable.mkv");
+        assert!(Command::new("ffmpeg")
+            .args([
+                "-nostdin",
+                "-v",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                "testsrc2=size=32x32:rate=2:duration=2",
+                "-vf",
+                "setpts=2*PTS",
+                "-vsync",
+                "0",
+                "-threads",
+                "1",
+                "-c:v",
+                "ffv1",
+            ])
+            .arg(&path)
+            .status()
+            .await
+            .unwrap()
+            .success());
+        // Four actual frames, but duration (3.5 seconds) * nominal FPS (2) estimates seven.
+        let output = Command::new("ffprobe")
+            .args([
+                "-v",
+                "error",
+                "-show_entries",
+                "stream=nb_frames,avg_frame_rate:format=duration",
+                "-of",
+                "json",
+            ])
+            .arg(&path)
+            .output()
+            .await
+            .unwrap();
+        assert!(output.status.success());
+        let metadata: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert!(metadata["streams"][0]["nb_frames"].is_null());
+        assert_eq!(metadata["streams"][0]["avg_frame_rate"], "2/1");
+        assert_eq!(metadata["format"]["duration"], "3.500000");
+        let processor = D3MediaProcessor::load(root.path(), MultimodalConfig::default()).unwrap();
+        let (frames, indices, fps, reservations) = processor
+            .decode_video(&std::fs::read(path).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(fps, 2.);
+        assert_eq!(indices, vec![0, 1, 2, 3]);
+        for index in indices {
+            let frame = frames.path().join(format!("frame-{index:08}.png"));
+            assert_eq!(image::open(frame).unwrap().to_rgb8().dimensions(), (32, 32));
+        }
+        assert!(!reservations.is_empty());
+    }
+
     #[test]
     fn media_transfer_retains_output_and_releases_only_scratch() {
         let budget = MediaBudget::new(4096).unwrap();
