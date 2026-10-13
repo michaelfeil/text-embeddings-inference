@@ -1,5 +1,5 @@
-INFINITY SOURCE-AVAILABLE LICENSE
-ISAL 1.0 -- DRAFT, NOT ADOPTED
+Infinity License 1.0 for Commercial Use
+DRAFT -- NOT ADOPTED
 License author: Michael Feil
 Licensors: Infinity Core Contributors, each for rights they own or control.
 

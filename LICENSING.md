@@ -6,10 +6,10 @@ licensors, effective date, and retained independent licenses. INFOIL is a
 custom source-available license with use restrictions; it is not an
 unrestricted open-source license.
 
-## Proposed successor: Infinity Source-Available License 1.0 (not adopted)
+## Proposed successor: Infinity License 1.0 for Commercial Use (not adopted)
 
-The [Infinity Source-Available License 1.0 draft](docs/licensing/ISAL-1.0-DRAFT.txt)
-(ISAL), written by **Michael Feil**, is a custom source-available license.
+The [Infinity License 1.0 for Commercial Use draft](docs/licensing/Infinity-License-1.0-for-Commercial-Use-DRAFT.txt),
+written by **Michael Feil**, is a custom source-available license.
 The proposed licensors remain **Infinity Core Contributors**.
 INFOIL 1.0 remains the adopted license; this draft grants no new permissions.
 
