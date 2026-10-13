@@ -40,6 +40,30 @@ template<class T> void verify(at::ScalarType dtype) {
   }
 }
 void verify_half_overflow() {
+  // The Half reduction overflows, and Kahan recomputation loses the first
+  // small term when the large terms cancel. The exact mean is 2^-14 / 5,
+  // which rounds to Half subnormal bits 205 rather than zero.
+  auto cancelling=at::tensor({1.f/16384.f,65504.f,-65504.f,65504.f,-65504.f},
+    at::kFloat).to(at::kHalf).view({5,1}).to(at::kCUDA);
+  auto cancelling_spans=at::tensor({0,5},at::kInt).view({1,2}).to(at::kCUDA);
+  auto cancelling_cumulative=at::tensor({0,5},at::kInt).to(at::kCUDA);
+  for(const auto& result:{tei::packed_mean_pool(cancelling,cancelling_spans).cpu(),
+                          tei::packed_mean_pool_cumulative(cancelling,cancelling_cumulative).cpu()})
+    TORCH_CHECK(result.const_data_ptr<at::Half>()[0].x==205,
+      "Finite overflow cancellation must retain a nonzero Half subnormal mean");
+  // Even F32 Neumaier loses this residual in its correction accumulator.
+  // The exact mean .0625 / 131073 rounds to Half subnormal bits 8.
+  auto long_cancelling=at::empty({131073,1},at::TensorOptions().dtype(at::kHalf));
+  long_cancelling[0].fill_(.0625);
+  long_cancelling.narrow(0,1,65536).fill_(65504.);
+  long_cancelling.narrow(0,65537,65536).fill_(-65504.);
+  long_cancelling=long_cancelling.to(at::kCUDA);
+  auto cancelled_spans=at::tensor({0,131073},at::kInt).view({1,2}).to(at::kCUDA);
+  auto cancelled_cumulative=at::tensor({0,131073},at::kInt).to(at::kCUDA);
+  for(const auto& result:{tei::packed_mean_pool(long_cancelling,cancelled_spans).cpu(),
+                          tei::packed_mean_pool_cumulative(long_cancelling,cancelled_cumulative).cpu()})
+    TORCH_CHECK(result.const_data_ptr<at::Half>()[0].x==8,
+      "Long finite cancellation must retain its Half subnormal mean");
   constexpr int64_t length=2048,width=8;
   auto input=at::empty({length,width},at::TensorOptions().dtype(at::kHalf));
   auto* values=input.data_ptr<at::Half>();

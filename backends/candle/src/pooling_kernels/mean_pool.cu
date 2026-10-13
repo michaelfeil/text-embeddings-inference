@@ -9,24 +9,28 @@ __device__ T packed_mean_finite_fallback(const T*, uint32_t, uint32_t,
 }
 
 // Keep every finite Half result's historical rounding. Only a reduction that
-// overflows on finite input is reevaluated in F32 before the final Half cast.
+// overflows on finite input is reevaluated before the final Half cast.
 template <>
 __device__ __half packed_mean_finite_fallback(const __half* input, uint32_t start,
     uint32_t length, uint32_t width, uint32_t feature, __half original) {
     if (isfinite(__half2float(original))) return original;
-    float sum = 0.f, correction = 0.f;
+    double sum = 0., correction = 0.;
     for (uint64_t row = 0; row < length; ++row) {
-        const float value = __half2float(input[(uint64_t(start) + row) * width + feature]);
+        const double value = __half2float(input[(uint64_t(start) + row) * width + feature]);
         // Genuine nonfinite hidden states keep their original propagation.
         if (!isfinite(value)) return original;
-        // Compensation also keeps long spans near Half's largest finite
-        // value from drifting above it before the final cast.
-        const float adjusted = __fsub_rn(value, correction);
-        const float next = __fadd_rn(sum, adjusted);
-        correction = __fsub_rn(__fsub_rn(next, sum), adjusted);
+        // Neumaier compensation retains small terms even when a larger next
+        // operand cancels the running sum. Kahan can lose that residual.
+        // F64 keeps the correction itself from losing a residual during long
+        // mixed-sign spans; F32 Neumaier alone can still round it away.
+        const double next = __dadd_rn(sum, value);
+        const double error = fabs(sum) >= fabs(value)
+            ? __dadd_rn(__dsub_rn(sum, next), value)
+            : __dadd_rn(__dsub_rn(value, next), sum);
+        correction = __dadd_rn(correction, error);
         sum = next;
     }
-    return __float2half_rn(__fdiv_rn(sum, float(length)));
+    return __double2half(__ddiv_rn(__dadd_rn(sum, correction), double(length)));
 }
 
 // Match Candle fast_sum's dtype, strided partial sums and halving tree exactly.
