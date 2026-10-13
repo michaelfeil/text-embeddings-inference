@@ -144,6 +144,8 @@ if(TEI_BUILD_NATIVE_TESTS)
     target_link_libraries(fp8_linear_test PRIVATE CUDA::cublasLt)
     target_link_libraries(decoder_fp8_test PRIVATE CUDA::cublasLt)
     target_link_libraries(fast_kernels_test PRIVATE CUDA::cublasLt)
+    set_tests_properties(cuda_graph_cuda PROPERTIES
+      ENVIRONMENT "TORCH_CUBLAS_WORKSPACE_CACHE=1")
     set_tests_properties(fast_kernels_cuda PROPERTIES
       ENVIRONMENT "TORCH_BLAS_PREFER_CUBLASLT=1;CUBLASLT_WORKSPACE_SIZE=32768")
     target_link_libraries(decoder_norm_test PRIVATE CUDA::cublasLt)

@@ -163,7 +163,8 @@ private-pool reserved segments plus static CUDA input buffers, cumulatively even
 after eviction. An oversized trial capture stops further captures, so the bound
 can overshoot by one trial pool. These budgets bound graph admission, not total
 model/allocator memory or CUDA graph executable metadata. Eviction reclaims only
-the retired private pool; live output tensors keep their storage. Capture streams
+the retired private pool; live output tensors keep their storage. Pools retained
+by live outputs are retried before later requests allocate. Capture streams
 are reused only after their previous graph is destroyed, with a separate stream
 for each live graph and at most one additional trial stream per device. No global
 allocator cleanup runs per request. Set entries or attempts to zero to disable capture.

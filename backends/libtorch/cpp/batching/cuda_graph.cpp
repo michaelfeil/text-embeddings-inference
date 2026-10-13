@@ -41,6 +41,16 @@ struct CudaGraphCache::Impl {
   // Reuse retired lanes, but never share a lane between live graphs: graph
   // destruction clears cuBLAS workspaces associated with its capture stream.
   std::unordered_map<c10::DeviceIndex,std::vector<c10::cuda::CUDAStream>> capture_streams;
+  std::vector<c10::MempoolId_t> retired_pools;
+  void reclaim_retired() {
+    for(auto pool=retired_pools.begin();pool!=retired_pools.end();) {
+      c10::cuda::CUDACachingAllocator::emptyCache(*pool);
+      bool retained=false;
+      for(const auto& segment:c10::cuda::CUDACachingAllocator::snapshot(*pool,false).segments)
+        if(segment.owner_private_pool_id==*pool){retained=true;break;}
+      if(retained)++pool;else pool=retired_pools.erase(pool);
+    }
+  }
 #endif
   Impl(size_t count,int64_t tokens,size_t uses,uint64_t bytes,size_t captures)
     :limit(count),max_tokens(tokens),reuse(uses),max_captures(captures),max_bytes(bytes) {
@@ -67,6 +77,9 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   auto input=original;
   c10::cuda::OptionalCUDAGuard device;
   if(input.ids.is_cuda())device.set_device(input.ids.device());
+  // Outputs can outlive eviction. Retry their retired pools before the next
+  // request allocates, so dropping the last output also releases reservation.
+  if(!impl->retired_pools.empty())impl->reclaim_retired();
   model.prepare_input(input);
   // Pool reservation accounting requires the native caching allocator.
   if(c10::cuda::CUDACachingAllocator::name()!="native")return run(input);
@@ -241,7 +254,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     // Reclaim only this retired private pool, preserving eager caches and live
     // graph pools. Live output tensors continue to own their storage.
     TORCH_CHECK(retired_pool.first||retired_pool.second,"Missing retired graph pool");
-    c10::cuda::CUDACachingAllocator::emptyCache(retired_pool);
+    impl->retired_pools.push_back(retired_pool);
+    impl->reclaim_retired();
   }
   ++impl->counters.captures;impl->counters.live_bytes+=entry->bytes;
   impl->counters.admitted_bytes+=entry->bytes;
