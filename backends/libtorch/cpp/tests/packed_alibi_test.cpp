@@ -7,8 +7,19 @@
 #include <iostream>
 #include <vector>
 #include <cmath>
+void overflowing_bias_storage_test() {
+  const auto huge=std::numeric_limits<int64_t>::max()/128;
+  // A zero-stride CPU view describes huge geometry using one actual scalar.
+  auto q=at::zeros({1}).as_strided({huge,2,1},{0,0,0});
+  tei::PackedInput input;input.batch=1;input.max_sequence=huge;
+  bool sequence_rejected=false,alibi_rejected=false;
+  try { tei::packed_sequence_bias(q,input); } catch(const c10::Error&) { sequence_rejected=true; }
+  try { tei::packed_alibi_bias(q,input,at::ones({2})); } catch(const c10::Error&) { alibi_rejected=true; }
+  TORCH_CHECK(sequence_rejected&&alibi_rejected,"Overflowing attention geometry reached allocation");
+}
 int main(int argc, char** argv) {
   c10::InferenceMode guard;
+  overflowing_bias_storage_test();
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   at::manual_seed(2718);
   for(auto dtype: {at::kHalf,at::kBFloat16}) for(auto lengths: {std::vector<int>{3,13,7},std::vector<int>{13,3,7},std::vector<int>{33},std::vector<int>{128,128,128,128},std::vector<int>{32,64,96,128,160,192,224,256}}) {
