@@ -2108,8 +2108,7 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     info(
     title = "infinity_v3",
     license(
-    name = "Infinity License 1.0 for Commercial Use OR PolyForm Noncommercial 1.0.0 (see scope and retained licenses)",
-    url = "https://github.com/michaelfeil/text-embeddings-inference/blob/mf/faster-tei/LICENSE"
+    name = "Infinity License 1.0 for Commercial Use OR PolyForm Noncommercial 1.0.0 (see scope and retained licenses)"
     )
     )
     )]
