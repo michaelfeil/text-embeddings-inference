@@ -1072,14 +1072,10 @@ environment:
 python scripts/d3-reference.py --checkpoint /path/to/d3 \
   --output /tmp/d3-reference --device cuda:0
 ```
-Set `D3_CHECKPOINT_DIR` and
-`D3_REFERENCE_DIR` to those directories and run the ignored
-`native_template_and_token_ids_match_upstream` and
-`images_and_video_match_upstream_preprocessing` router tests. The generated
-media test compares native token IDs, RoPE positions, and FP32 patch pixels.
-HTTP callers requesting JSON should send `Accept: application/json`.
-
-To compare HTTP answers as well, set `D3_HTTP_URL` to a local D3
-`/v1/systemone` endpoint and run `deployed_checkpoint_matches_upstream_answers`
-with `--ignored`. This smoke check permits small BF16 kernel differences;
-it does not establish bitwise parity or benchmark-wide accuracy.
+Set `D3_REFERENCE_DIR` to the output directory and `D3_HTTP_URL` to a local D3
+`/v1/systemone` endpoint. Run the single ignored
+`deployed_checkpoint_matches_upstream_answers` router test with `--ignored` to
+compare text, image, video, and mixed-media answers. This smoke check permits
+small BF16 kernel differences; it does not establish bitwise parity or
+benchmark-wide accuracy. HTTP callers requesting JSON should send
+`Accept: application/json`.

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Generate native D3 text/image/video fixtures for the Rust checkpoint tests.
+"""Generate D3 requests and upstream answers for the HTTP smoke test.
 
 Requires the downloaded vllm-sr/d3 repository and its published Python dependencies
-(including accelerate and opencv-python-headless). Large pixel arrays stay in the
-output directory, outside the source tree.
+(including accelerate and opencv-python-headless). Generated files stay outside
+the source tree.
 """
 import argparse
 import base64
@@ -22,7 +22,6 @@ def main():
     output = args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
     sys.path.insert(0, str(checkpoint))
-    import torch
     from d3_runtime import D3
 
     route = {"type": "choice", "instructions": "Which team should handle this request?",
@@ -48,34 +47,6 @@ def main():
     model = D3(checkpoint, device=args.device, batch_size=1)
     for name, request in cases.items():
         prepared = model.prepare(**request)
-        text_encoding = model.processor.tokenizer(
-            next(iter(prepared.texts.values())), add_special_tokens=False
-        )
-        metadata = {"input_ids": text_encoding["input_ids"]}
-        encoded = None
-        if prepared.videos:
-            image_texts = [model.processor.replace_image_token(prepared.media, image_idx=i) for i in range(len(prepared.images))]
-            expanded = [model.processor.get_text_with_replacements([text], image_texts, prepared.video_texts)[0][0]
-                        for text in prepared.texts.values()]
-            encoded = model.processor.tokenizer([expanded[0]], add_special_tokens=False, return_tensors="pt")
-            pixels = prepared.media["pixel_values_videos"]
-            if prepared.images:
-                pixels = torch.cat([prepared.media["pixel_values"], pixels])
-            image_grid = prepared.media.get("image_grid_thw")
-            video_grid = prepared.media["video_grid_thw"]
-        elif prepared.images:
-            encoded = model.processor(text=[next(iter(prepared.texts.values()))], images=prepared.images,
-                                      return_tensors="pt", add_special_tokens=False)
-            pixels = encoded["pixel_values"]
-            image_grid, video_grid = encoded["image_grid_thw"], None
-        if encoded is not None:
-            pixels.float().cpu().numpy().tofile(output / f"{name}-pixels.f32")
-            types = torch.as_tensor(model.processor.create_mm_token_type_ids(encoded["input_ids"].tolist()))
-            positions, _ = model.backbone.get_rope_index(encoded["input_ids"], image_grid_thw=image_grid,
-                                                        video_grid_thw=video_grid, attention_mask=encoded["attention_mask"],
-                                                        mm_token_type_ids=types)
-            metadata = {"input_ids": encoded["input_ids"][0].tolist(), "position_ids": positions[:, 0].tolist()}
-        (output / f"{name}-preprocessing.json").write_text(json.dumps(metadata))
         result = model.respond(prepared, *model.run(prepared))
         wire = dict(request)
         for field, mime in [("images", "image/png"), ("videos", "video/mp4")]:
