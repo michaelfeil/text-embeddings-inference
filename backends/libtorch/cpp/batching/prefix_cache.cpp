@@ -1,4 +1,5 @@
 #include "batching/prefix_cache.h"
+#include "batching/cuda_graph.h"
 #include "batching/prefix_lookup.h"
 #include "batching/radix.h"
 #include "models/model.h"
@@ -208,13 +209,23 @@ void prefix_recurrent_commit(const PackedInput& input,const at::Tensor& qkv,
     input.prefix->checkpoint(row,layer,buffers.checkpoints[slot],history);
   }
 }
-PrefixCache::PrefixCache(uint64_t bytes,int64_t max_prefix,size_t count)
-  :limit(bytes),maximum(max_prefix),capacity(count) {
-  TORCH_CHECK(maximum>0&&capacity>0,"Invalid prefix cache bounds");
+PrefixCache::PrefixCache(uint64_t bytes,int64_t max_prefix,size_t count,size_t uses)
+  :limit(bytes),maximum(max_prefix),capacity(count),admission_uses(uses) {
+  TORCH_CHECK(maximum>0&&capacity>0&&uses>0,"Invalid prefix cache bounds");
   linear=std::make_unique<PrefixLinearPlans>();
 }
 PrefixCache::~PrefixCache()=default;
-void PrefixCache::clear() {std::lock_guard guard(mutex);entries.clear();linear->clear();}
+void PrefixCache::clear() {std::lock_guard guard(mutex);entries.clear();linear->clear();recent={};recent_next=0;}
+bool PrefixCache::admit(const PrefixIdentity& identity,int operation) {
+  if(admission_uses==1)return true;
+  auto key=prefix_admission_fingerprint(identity,operation);
+  for(auto& observed:recent)if(observed.uses&&observed.key==key) {
+    if(observed.uses<admission_uses)++observed.uses;
+    return observed.uses>=admission_uses;
+  }
+  recent[recent_next]={key,1};recent_next=(recent_next+1)%recent.size();
+  return false;
+}
 PrefixCache::Stats PrefixCache::stats() const {std::lock_guard guard(mutex);return counters;}
 uint64_t PrefixCache::bytes() const {std::lock_guard guard(mutex);return budget->live_bytes;}
 static PrefixIdentity identity(const PackedInput& input,int64_t row) {
@@ -253,10 +264,11 @@ static PrefixIdentity identity(const PackedInput& input,int64_t row) {
   }
   return key;
 }
-at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int operation) {
+at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int operation,CudaGraphCache* graphs) {
   std::lock_guard guard(mutex);
   auto run=[&](const PackedInput& input){return operation?model.predict(input,operation==2):model.forward(input);};
-  if(!limit||!model.supports_prefix_cache(operation)||!original.audios.empty()) {++counters.bypasses;return run(original);}
+  auto fallback=[&]{return graphs?graphs->forward(model,original,operation):run(original);};
+  if(!limit||!model.supports_prefix_cache(operation)||!original.audios.empty()) {++counters.bypasses;return fallback();}
   try {
   const auto& global=at::globalContext();
   decltype(math_policy) policy={int64_t(global.allowTF32CuBLAS()),int64_t(global.allowFP16ReductionCuBLAS()),
@@ -281,7 +293,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   policy[cudnn_policy+1]=global.benchmarkCuDNN();
   policy[cudnn_policy+2]=global.benchmarkLimitCuDNN();
   if(model_epoch!=model.prefix_namespace()||math_policy!=policy) {
-    entries.clear();linear->clear();model_epoch=model.prefix_namespace();math_policy=policy;
+    entries.clear();linear->clear();recent={};recent_next=0;model_epoch=model.prefix_namespace();math_policy=policy;
   }
   TORCH_CHECK(original.batch>0&&original.offsets&&original.offsets[0]==0
     &&original.offsets[original.batch]==original.ids.numel(),"Invalid full prefix-cache input boundaries");
@@ -294,11 +306,41 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   host.positions=original.host_positions.defined()?original.host_positions:original.positions.cpu();
   if(original.multimodal_positions.defined())host.multimodal_positions=original.host_multimodal_positions.defined()
     ?original.host_multimodal_positions:original.multimodal_positions.cpu();
+  std::vector<PrefixIdentity> identities;identities.reserve(original.batch);
+  for(int64_t row=0;row<original.batch;++row)identities.push_back(identity(host,row));
+  if(operation==0&&!model.prefix_checkpoint_only()) {
+    std::vector<std::shared_ptr<PrefixEntry>> complete;complete.reserve(original.batch);
+    const auto compact=original.compact_ids.defined()?original.compact_ids.numel():0;
+    for(const auto& key:identities) {
+      auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& entry) {
+        return entry->operation==operation&&entry->batch_max_sequence==original.max_sequence
+          &&entry->compact_tokens==compact&&entry->batch_offsets.size()==size_t(original.batch+1)
+          &&std::equal(entry->batch_offsets.begin(),entry->batch_offsets.end(),original.offsets)
+          &&prefix_same(key,entry->identity)&&entry->ready();
+      });
+      if(found==entries.end())break;
+      complete.push_back(*found);
+    }
+    if(complete.size()==size_t(original.batch)) {
+      std::vector<at::Tensor> outputs;outputs.reserve(complete.size());
+      for(auto& entry:complete) {
+        ++counters.hits;counters.reused_tokens+=entry->identity.tokens.size();entry->used=++clock;
+#ifdef TEI_TORCH_CUDA_KERNELS
+        if(original.ids.is_cuda())c10::cuda::CUDACachingAllocator::recordStream(entry->output.storage().data_ptr(),
+          at::cuda::getCurrentCUDAStream(original.ids.get_device()));
+#endif
+        outputs.push_back(entry->output);
+      }
+      // Return fresh storage: a caller may mutate its result, and another stream
+      // may clear/evict the immutable source as soon as this submission returns.
+      return outputs.size()==1?outputs[0].clone():at::cat(outputs,0);
+    }
+  }
   PrefixContext context{original,{}, {}, {}, {},limit,budget};context.offsets={0};
   context.linear=linear.get();
   std::vector<at::Tensor> ids,positions,types,axes;std::vector<int64_t> original_rows;
   for(int64_t row=0;row<original.batch;++row) {
-    auto key=identity(host,row);
+    auto key=std::move(identities[row]);
     auto found=prefix_lookup(key,entries,operation,std::min<int64_t>(maximum,key.tokens.size()-1),model.prefix_checkpoint_only());
     auto best=found.length;auto source=std::move(found.entry);
     if(best){++counters.hits;counters.reused_tokens+=best;source->used=++clock;}else ++counters.misses;
@@ -329,12 +371,16 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     key.media.shrink_to_fit();
     key.fingerprints.resize(std::min(key.fingerprints.size(),key.tokens.size()/prefix_block_tokens));
     bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation&&prefix_same(key,entry->identity);});
-    if(retained>best&&!resident_exact) {
+    if(retained>best&&!resident_exact&&admit(key,operation)) {
       prefix_fingerprints(key,retained);key.fingerprints.shrink_to_fit();
       uint64_t metadata=sizeof(PrefixEntry)+key.tokens.capacity()*sizeof(PrefixToken)+key.media.capacity()*sizeof(PrefixMedia)
         +key.fingerprints.capacity()*sizeof(PrefixFingerprint);
       for(const auto& media:key.media)metadata+=media.layout.capacity()*sizeof(int64_t)+media.content.capacity();
       writer=std::make_shared<PrefixEntry>();writer->identity=std::move(key);writer->operation=operation;writer->used=++clock;
+      writer->batch_offsets.assign(original.offsets,original.offsets+original.batch+1);
+      metadata+=writer->batch_offsets.capacity()*sizeof(int32_t);
+      writer->batch_max_sequence=original.max_sequence;
+      writer->compact_tokens=original.compact_ids.defined()?original.compact_ids.numel():0;
       writer->bytes=metadata;
     }
     context.writers.push_back(std::move(writer));
@@ -366,7 +412,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     budget->live_bytes+=writer->bytes;budget->reserved_bytes+=reservation;++admitting;
   }
   if(!admitting&&std::none_of(context.hits.begin(),context.hits.end(),[](auto hit){return hit!=0;})) {
-    ++counters.bypasses;return run(original);
+    ++counters.bypasses;return fallback();
   }
   PackedInput input=original;
   // Cold capture keeps the caller's original metadata and device buffers.

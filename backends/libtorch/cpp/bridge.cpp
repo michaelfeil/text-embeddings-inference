@@ -131,7 +131,7 @@ struct Engine {
     auto cache_bytes=options.integer("_prefix_cache_max_bytes",0);
     auto cache_tokens=options.integer("_prefix_cache_max_tokens",8192),cache_entries=options.integer("_prefix_cache_entries",64);
     TORCH_CHECK(cache_bytes>=0&&cache_tokens>0&&cache_entries>0,"Invalid prefix cache bounds");
-    if(cache_bytes)prefix=std::make_unique<tei::PrefixCache>(cache_bytes,cache_tokens,cache_entries);
+    if(cache_bytes)prefix=std::make_unique<tei::PrefixCache>(cache_bytes,cache_tokens,cache_entries,2);
     TORCH_CHECK(model->output_width() > 0, "Model must declare a positive output width");
     dense->output_width(options.string("_pooling") == "splade" ? config.vocab : model->output_width());
     media_graphs=options.boolean("_media_cuda_graphs",false);
@@ -436,9 +436,9 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
   attach_radix(engine,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix);
   const bool cached=!engine.prefix_probe&&engine.prefix&&engine.model->supports_prefix_cache(0)
     &&std::none_of(converted.begin(),converted.end(),[](const auto& request){return request.kind==tei::DecisionRequest::Kind::Warmup;});
-  const bool use_graph=!cached&&engine.graphs&&engine.graph_policy_ready()&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
-  if(!use_graph)engine.model->prepare_input(packed);
-  auto hidden=cached?engine.prefix->run(*engine.model,packed,0):use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
+  const bool use_graph=engine.graphs&&engine.graph_policy_ready()&&(engine.media_graphs||(!image_count&&!audio_count&&!media_positions));
+  if(cached||!use_graph)engine.model->prepare_input(packed);
+  auto hidden=cached?engine.prefix->run(*engine.model,packed,0,use_graph?engine.graphs.get():nullptr):use_graph?engine.graphs->forward(*engine.model,packed):engine.model->forward(packed);
   auto results=engine.decision->forward(hidden,packed,converted);TORCH_CHECK(results.size()==size_t(batch),"Decision head output count mismatch");
   std::vector<at::Tensor> values;for(size_t i=0;i<results.size();++i){TORCH_CHECK(results[i].logits.numel()==engine.decision->output_count(converted[i]),"Decision head output width mismatch");values.push_back(results[i].logits.flatten());}
   std::vector<at::Tensor> action_values;for(const auto& result:results)action_values.push_back(result.action_probability);
@@ -479,9 +479,9 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
     attach_radix(model,packed,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audio_count,radix,completion);
     const int operation=pool>=4?(pool==5?2:1):0;
     const bool cached=!model.prefix_probe&&model.prefix&&model.model->supports_prefix_cache(operation);
-    const bool graph_eligible = !cached && model.graphs && model.graph_policy_ready() && (model.media_graphs || (!image_count && !audio_count && !media_positions));
-    if(!graph_eligible)model.model->prepare_input(packed);
-    auto h = cached ? model.prefix->run(*model.model,packed,operation) : graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
+    const bool graph_eligible = model.graphs && model.graph_policy_ready() && (model.media_graphs || (!image_count && !audio_count && !media_positions));
+    if(cached||!graph_eligible)model.model->prepare_input(packed);
+    auto h = cached ? model.prefix->run(*model.model,packed,operation,graph_eligible?model.graphs.get():nullptr) : graph_eligible ? model.graphs->forward(*model.model, packed, pool >= 4 ? (pool == 5 ? 2 : 1) : 0)
       : pool >= 4 ? model.model->predict(packed, pool == 5) : model.model->forward(packed);
     // Project only requested real token spans once. Offsets below preserve
     // caller order, repeated requests and mixed pooled/raw output semantics.

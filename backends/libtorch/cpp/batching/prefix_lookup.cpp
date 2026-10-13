@@ -8,6 +8,14 @@
 #include "vendor/xxhash/xxhash.h"
 
 namespace tei {
+PrefixFingerprint prefix_admission_fingerprint(const PrefixIdentity& key,int operation) {
+  // Collisions only permit a capture; retained identities still compare exactly.
+  // Observe common causal stems rather than requiring an identical changing tail.
+  auto count=std::min<size_t>(prefix_block_tokens,key.tokens.size());
+  auto hash=XXH3_128bits_withSeed(key.tokens.data(),count*sizeof(PrefixToken),
+    uint64_t(operation)*2+uint64_t(key.image_context));
+  return {hash.low64,hash.high64};
+}
 void prefix_fingerprints(PrefixIdentity& key,int64_t tokens) {
   auto count=std::min<int64_t>(tokens,key.tokens.size())/prefix_block_tokens;
   if(int64_t(key.fingerprints.size())>count)key.fingerprints.resize(count);

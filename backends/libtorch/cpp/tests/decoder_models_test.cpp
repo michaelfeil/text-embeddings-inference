@@ -5,8 +5,12 @@
 // Native packed decoder regression tests; no Python runtime or padded tokens.
 #include "models/decoder_models.h"
 #include "batching/radix.h"
+#include "batching/cuda_graph.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
+#include <atomic>
+#include <barrier>
+#include <thread>
 #include <ATen/Parallel.h>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include <ATen/CPUGeneratorImpl.h>
@@ -15,7 +19,6 @@
 #include <ATen/detail/CUDAHooksInterface.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <chrono>
-#include <thread>
 #endif
 using namespace tei;
 namespace {
@@ -114,13 +117,14 @@ void cached_decoder_test(Model& model) {
 }
 void cache_admission_test(Model& model) {
  struct Observed final:Model {
-  Model& inner;mutable bool capturing=false;bool fail=false;
+  Model& inner;mutable bool capturing=false;mutable size_t calls=0;bool fail=false;
   explicit Observed(Model& model):inner(model) {}
   void ready() override {}
   bool supports_prefix_cache(int operation) const override {return inner.supports_prefix_cache(operation);}
   int64_t prefix_layers() const override {return inner.prefix_layers();}
   uint64_t prefix_payload_bytes(int64_t tokens) const override {return inner.prefix_payload_bytes(tokens);}
   at::Tensor forward(const PackedInput& input) const override {
+   ++calls;
    capturing=input.prefix&&std::any_of(input.prefix->writers.begin(),input.prefix->writers.end(),[](const auto& writer){return bool(writer);});
    auto result=inner.forward(input);TORCH_CHECK(!fail,"Injected failure after snapshot creation");return result;
   }
@@ -192,6 +196,59 @@ void cache_admission_test(Model& model) {
  };
  extended(5);auto reused=measure.stats().reused_tokens;extended(6);
  TORCH_CHECK(measure.stats().reused_tokens-reused==5,"Capacity-one cache did not advance its retained prefix");
+ // Production admission does not capture one-off inputs. Exact full results
+ // avoid the backbone but still own writable output storage independently.
+ ends[1]=4;input.ids=at::tensor({3,4,5,6},options);input.types=at::zeros_like(input.ids);
+ input.positions=at::arange(4,options);input.cumulative=at::tensor(ends,options.dtype(at::kInt));input.max_sequence=4;
+ PrefixCache delayed(1<<20,64,8,2);CudaGraphCache graphs;
+ check_close(delayed.run(observed,input,0,&graphs),reference);
+ TORCH_CHECK(!observed.capturing&&delayed.bytes()==0,"First observation captured a one-off prefix");
+ check_close(delayed.run(observed,input,0,&graphs),reference);
+ TORCH_CHECK(observed.capturing&&delayed.bytes()>0,"Repeated causal stem was never admitted");
+ auto before_complete=observed.calls;
+ auto owned=delayed.run(observed,input,0,&graphs);check_close(owned,reference);owned.zero_();
+ check_close(delayed.run(observed,input,0,&graphs),reference);
+ TORCH_CHECK(observed.calls==before_complete,"Exact complete input reran the backbone");
+ input.max_sequence=5;check_close(delayed.run(observed,input,0,&graphs),reference);
+ TORCH_CHECK(observed.calls==before_complete+1,"Complete-result reuse ignored original attention geometry");
+ delayed.clear();input.max_sequence=4;
+ for(int64_t token=8;token<24;++token) {
+  input.ids=at::tensor(std::vector<int64_t>{token,4,5,6},options);
+  check_close(delayed.run(observed,input,0,&graphs),model.forward(input));
+ }
+ TORCH_CHECK(delayed.bytes()==0&&delayed.stats().admissions==1,"One-off churn consumed cache tensor storage");
+}
+void cache_concurrency_test(Model& model) {
+ auto options=at::TensorOptions().dtype(at::kLong);
+ std::vector<at::Tensor> references;
+ for(int64_t token=3;token<12;++token)references.push_back(run(model,{token,4,5,6},{0,4}));
+ PrefixCache cache(1<<20,64,1);std::barrier start(3);
+ std::exception_ptr failure;std::mutex errors;
+ auto save_failure=[&]{std::lock_guard lock(errors);if(!failure)failure=std::current_exception();};
+ auto worker=[&](int shift) {
+  c10::InferenceMode inference;start.arrive_and_wait();
+  try {
+   std::vector<int32_t> offsets={0,4};
+   for(int i=0;i<200;++i) {
+    const auto token=3+(i/3+shift)%9;
+    PackedInput input{at::tensor(std::vector<int64_t>{token,4,5,6},options),at::zeros({4},options),
+     at::arange(4,options),at::tensor(offsets,options.dtype(at::kInt)),offsets.data(),1,4};
+    auto value=cache.run(model,input,0);check_close(value,references[token-3]);
+    value.fill_(123); // Mutating caller storage must never change a cache reader.
+   }
+  }catch(...){save_failure();}
+ };
+ std::jthread first(worker,0),second(worker,4);
+ std::jthread maintenance([&] {
+  c10::InferenceMode inference;start.arrive_and_wait();
+  try {for(int i=0;i<600;++i) {
+   if(i%7==0)cache.clear();
+   TORCH_CHECK(cache.bytes()<=1<<20,"Concurrent clear/stats exceeded the cache budget");
+   static_cast<void>(cache.stats());std::this_thread::yield();
+  }}catch(...){save_failure();}
+ });
+ first.join();second.join();maintenance.join();if(failure)std::rethrow_exception(failure);
+ cache.clear();TORCH_CHECK(cache.bytes()==0,"Concurrent readers retained cleared cache storage");
 }
 #ifdef TEI_TORCH_CUDA_KERNELS
 void cache_cold_maximum_test(const c10::Device& device) {
@@ -369,6 +426,8 @@ void probe_cache_test() {
  auto forward=[&]{TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,1,3,2,selection,1,nullptr,0,
   result,16,nullptr,nullptr,0,nullptr,0)==0,tei_error());};
  uint64_t before[7],after[7];forward();
+ TORCH_CHECK(tei_prefix_cache_stats(handle,before,7)==0&&before[3]==0,"One-off user input bypassed admission policy");
+ forward();
  TORCH_CHECK(tei_prefix_cache_stats(handle,before,7)==0&&before[3]==1,"User request did not fill prefix cache");
  TORCH_CHECK(tei_prefix_cache_set_probe(handle,1)==0,"Probe begin did not return prior flag");forward();
  TORCH_CHECK(tei_prefix_cache_stats(handle,after,7)==0,tei_error());
@@ -411,7 +470,7 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
   TORCH_CHECK(!model->supports_prefix_cache(1),"Backbone without a score head advertised classifier cache support");
   radix_decoder_test(*model);
   cached_decoder_test(*model);
-  if(std::string(family)=="qwen3")cache_admission_test(*model);
+  if(std::string(family)=="qwen3") {cache_admission_test(*model);cache_concurrency_test(*model);}
   if(argc>1) {
    auto gpu_cfg=cfg;gpu_cfg.values["num_attention_heads"]="2";gpu_cfg.values["num_key_value_heads"]="1";gpu_cfg.values["head_dim"]="8";
    auto gpu_weights=w;

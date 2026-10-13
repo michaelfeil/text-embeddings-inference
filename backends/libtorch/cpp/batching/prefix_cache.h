@@ -10,6 +10,7 @@
 namespace tei {
 class Model;
 class PrefixLinearPlans;
+class CudaGraphCache;
 // Prepared identity, scoped to one loaded engine and execution operation.
 struct PrefixToken {
   std::array<int64_t,6> values{};
@@ -39,6 +40,9 @@ struct PrefixLayer {
 struct PrefixBudget { uint64_t live_bytes=0, reserved_bytes=0; };
 struct PrefixEntry {
   PrefixIdentity identity;
+  // Full-result reuse retains the original projection/attention batch recipe.
+  std::vector<int32_t> batch_offsets;
+  int64_t batch_max_sequence=0, compact_tokens=0;
   std::map<int64_t,PrefixLayer> layers;
   at::Tensor output;
   std::shared_ptr<PrefixBudget> budget;
@@ -84,9 +88,9 @@ void prefix_recurrent_commit(const PackedInput&,const at::Tensor& qkv,
 class PrefixCache {
 public:
   struct Stats { uint64_t hits=0, misses=0, reused_tokens=0, admissions=0, evictions=0, bypasses=0; };
-  explicit PrefixCache(uint64_t bytes,int64_t max_prefix=8192,size_t entries=64);
+  explicit PrefixCache(uint64_t bytes,int64_t max_prefix=8192,size_t entries=64,size_t admission_uses=1);
   ~PrefixCache();
-  at::Tensor run(const Model&,const PackedInput&,int operation);
+  at::Tensor run(const Model&,const PackedInput&,int operation,CudaGraphCache* fallback=nullptr);
   void clear();
   Stats stats() const;
   uint64_t bytes() const;
@@ -101,5 +105,9 @@ private:
   uint64_t model_epoch=0;
   std::array<int64_t,22+at::num_sdp_backends> math_policy{};
   std::unique_ptr<PrefixLinearPlans> linear;
+  struct Recent { PrefixFingerprint key; size_t uses=0; };
+  std::array<Recent,64> recent{};
+  size_t recent_next=0, admission_uses;
+  bool admit(const PrefixIdentity&,int operation);
 };
 }
