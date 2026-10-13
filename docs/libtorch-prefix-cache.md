@@ -1,6 +1,6 @@
 # Experimental LibTorch prefix cache
 
-The native backend can retain transformer prefix state between requests. It is disabled by default while learned-model numerical and performance qualification is being completed. The implementation covers the currently supported causal decoder families; support follows the loaded operation's actual attention policy.
+The native backend can retain transformer prefix state between requests. It is disabled by default; enable it after numerical and performance controls for your deployment. The implementation covers the currently supported causal decoder families; support follows the loaded operation's actual attention policy.
 
 ## Configuration
 
@@ -56,13 +56,13 @@ For default Torch global attention with head64 or head128, a single remaining qu
 
 [Native cache design references](libtorch-cache-references.md) compare mistral.rs, SGLang, llama.cpp and FlashInfer and describe the C++ ownership boundary and next integration steps.
 
-The first implementation assembles contiguous prefix/suffix KV rather than using paged attention. Sliding-window layers currently retain the whole admitted prefix and apply the original window mask. Cached execution uses the eager path; CUDA graphs continue to serve eligible uncached operations. Future paged and graph integration must preserve the same identity and ownership contracts.
+The first implementation assembles contiguous prefix/suffix KV rather than using paged attention. Sliding-window layers currently retain the whole admitted prefix and apply the original window mask. Requests routed through the manager use eager execution, including misses; existing graph dispatch remains for operations that bypass the manager. Future paged and graph integration must preserve the same identity and ownership contracts.
 
 Optional cuDNN execution keeps the original packed query geometry and causal provider. Cached query rows use discarded zero placeholders; only real suffix rows are returned. This repeats full attention work, while QKV and MLP computation still skip the prefix. Dense suffix attention with an explicit bias was mathematically equivalent but changed trained logits, so it is not used. Matched-operand single/mixed-batch controls and learned Qwen2 classification/last/mean controls match exactly at the tested lengths. The replay buffers are temporary execution storage, separate from the resident cache budget.
 
 Gemma4 image support continues to follow the existing vision implementation. Checkpoints requiring clipped vision linears remain unsupported before cache lookup; enabling persistence does not override their model configuration.
 
-Functional CPU/CUDA controls are necessary but do not establish learned-model equivalence. Qualification also compares cache-off, cold fill and warm/partial reuse on real checkpoints, including full vectors and trained logits. Timing evidence must distinguish backend inference from HTTP/tokenization, and short-prefix or churn regressions require separate attention. Keep the cache disabled in production until those gates are complete.
+Functional CPU/CUDA controls are necessary but do not establish learned-model equivalence. Qualification also compares cache-off, cold fill and warm/partial reuse on real checkpoints, including full vectors and trained logits. Timing evidence must distinguish backend inference from HTTP/tokenization, and short-prefix or churn regressions require separate attention. Production deployments should qualify their actual model, provider and request distribution before enabling the cache.
 
 Current H100/Torch 2.14.1 controls match exactly for the tested Qwen3 BF16, FP16 and dynamic MLP FP8 checkpoint at128/512/2048, its mixed/raw/mean/changing-tail requests, and the tested Skywork scalar classifier. Qwen2 BF16 classifier logits and complete last-token/mean vectors match at128/512/2048 on cold fill and exact-input reuse. Additional learned controls match for TinyLlama BF16, E5-Mistral FP16, Qwen3 MoE BF16 and Qwen3.5 dense/MoE BF16 at128/512/2048, and the Gemma4 MoE classifier at32/128/512/2048. These are numerical controls on specific checkpoints, not a complete family/dtype/task or end-to-end performance qualification.
 
@@ -76,6 +76,6 @@ Gemma4 E2B dense and Qwen3.5 dense option-token controls match complete hidden v
 
 Qwen3, Qwen3.5 dense and Gemma4 E2B also match cache-off results for the tested growing requests, mixed batches, mean pooling and complete raw token outputs, both with and without RadixMLP. Gemma4's cached dense Radix projection fallback uses the same logical projection planner as its ordinary cached path; a513-token continuation trace matches all536 captured stages. These controls establish the tested combinations rather than every supported shape or dtype.
 
-A prepared-token H100/Qwen3 BF16 eager run measured about7.1ms without caching versus4.3ms for a repeated2048-token input. Short inputs and unique-request churn still incur overhead; copy cleanup reduced measured churn from about2.74ms to2.5ms, compared with about1.97ms without caching. These are single-series backend measurements; HTTP, tokenization and model loading are excluded, and small timing differences require balanced repetition.
+Three alternating off/on prepared-token H100/Qwen3 BF16 eager runs measured p50 ranges of7.13-7.18ms without caching versus4.27-4.33ms for a repeated2048-token input. Short8/32/128-token requests measured about1.99-2.12ms off versus2.26-2.38ms on; unique128-token churn measured1.98-2.00ms off versus2.55-2.66ms on. The512-token on results varied2.68-3.77ms versus2.74-2.78ms off, so that shape does not establish a stable gain. Complete cold/warm/churn outputs match exactly. Each hot run has100 samples; churn has128 measured requests after32 discarded calls. These are shared-machine backend measurements; HTTP, tokenization and model loading are excluded.
 
 Qualification is specific to the recorded checkpoints, providers, dtypes and shapes. Other combinations still need deployment-specific numerical and performance controls.
