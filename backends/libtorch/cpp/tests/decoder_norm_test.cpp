@@ -3,10 +3,26 @@
 #include "kernels/decoder_packed_readout.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
+#include <limits>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <utility>
 namespace {
+void verify_subnormal_router(const c10::Device& device) {
+ auto host=at::full({1,128},-100.f,at::TensorOptions().dtype(at::kFloat));
+ auto* logits=host.mutable_data_ptr<float>();logits[0]=0.f;
+ for(int rank=0;rank<7;++rank)logits[127-rank]=-90.f-rank;
+ auto probabilities=tei::decoder_half_moe_probabilities(host.to(device));
+ auto observed=probabilities.cpu();const auto* values=observed.const_data_ptr<float>();
+ for(int expert=121;expert<128;++expert)
+  TORCH_CHECK(values[expert]>0.f&&values[expert]<std::numeric_limits<float>::min(),
+    "Exact MoE softmax must retain subnormal expert probabilities");
+ auto ids=at::argsort(probabilities,true,-1,true).narrow(-1,0,8).cpu();
+ const auto* selected=ids.const_data_ptr<int64_t>();
+ TORCH_CHECK(selected[0]==0,"MoE maximum expert changed");
+ for(int rank=1;rank<8;++rank)
+  TORCH_CHECK(selected[rank]==128-rank,"Subnormal router probabilities changed top8 expert order");
+}
 bool fail_cached_matmul=false;
 int cached_matmul_calls=0;
 int64_t expected_live_bytes_at_fallback=-1;
@@ -37,6 +53,7 @@ Tensor probe_cache_linear(const Tensor& x,const Tensor& weight) {
 int main(int argc,char** argv) {
  c10::InferenceMode inference;at::manual_seed(43);
  auto options=at::TensorOptions().dtype(at::kBFloat16).device(c10::Device(argc>1?argv[1]:"cuda:0"));
+ verify_subnormal_router(options.device());
  for(int64_t width:{896,1024,2048,3072,4096}) {
  for(int64_t rows:{1,7,257}) {
   auto x=(at::rand({rows,width},options)-.5),r=(at::rand_like(x)-.5),w=at::ones({width},options);

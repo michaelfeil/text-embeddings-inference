@@ -25,6 +25,10 @@ install(DIRECTORY ../../../LICENSES/ DESTINATION share/licenses/tei_torch/LICENS
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
+  # The exact router keeps F32 subnormals; RMS kernels retain their old flags.
+  target_sources(tei_torch PRIVATE kernels/decoder_half_moe.cu)
+  set_source_files_properties(kernels/decoder_half_moe.cu PROPERTIES
+    COMPILE_OPTIONS "--ftz=false;--prec-div=true;--prec-sqrt=true;--expt-relaxed-constexpr")
   target_sources(tei_torch PRIVATE kernels/gemma_score.cu)
   set_source_files_properties(kernels/gemma_score.cu PROPERTIES
     COMPILE_OPTIONS "--fmad=false;--prec-div=true;--prec-sqrt=true;--expt-relaxed-constexpr")
