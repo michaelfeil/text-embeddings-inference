@@ -1,138 +1,100 @@
 TOKEN SERVICE ELASTIC LICENSE
 TSEL 1.0 -- DRAFT, NOT ADOPTED
+License author: Michael Feil
+Licensors: Infinity Core Contributors, each for rights they own or control.
 
-Proposed licensor: Infinity Core Contributors, meaning each rights holder
-or authorized licensor for its own contributions. This is a custom license,
-not Elastic License 2.0 and not issued or endorsed by Elastic.
+This custom license is not Elastic License 2.0 or endorsed by Elastic.
+INFOIL 1.0 remains effective. Adoption requires an authorized notice naming
+the covered code, licensors, effective date, and first release or commit.
 
-This proposal grants no new rights and does not replace INFOIL 1.0. Adoption
-requires an express notice identifying the covered material, authorized
-licensors, effective date, and first covered release or full commit.
+1. PERMISSION
 
-MAIN RULE: You may not deploy Infinity for commercial use on a platform
-listed in Appendix A. The noncommercial research exception is in Section 3.
+By accepting these terms, you may use, copy, modify, and distribute the
+covered code and documentation, including modifications and binaries,
+worldwide and without royalties for the duration of the contributors'
+rights. Each contributor grants only rights they control. Existing Apache,
+INFOIL, and third-party grants remain intact. No ownership, trademarks, or
+rights over model weights or outputs are transferred.
 
-1. PERMISSIONS AND SCOPE
+2. COMMERCIAL PLATFORM BLACKLIST
 
-Exercising these permissions means accepting these terms. You means the
-person or entity exercising them, including through an intermediary.
-Subject to these terms, each contributor grants a worldwide, royalty-free
-license for the duration of its rights to use, copy, modify, and distribute
-its covered contributions in source or compiled form. Personal, research,
-educational, and commercial uses are permitted except as restricted below.
-Software means only the code and documentation identified in the adoption
-notice and modifications of that covered material.
+You must not deploy or run the software commercially on the platforms
+listed in Appendix A, their rented capacity, or as part of their services.
+This applies to operators and customers, including private endpoints,
+rented GPUs, and single-customer deployments, regardless of billing unit.
+Commercial use includes business operations and product or service
+development, even before revenue.
 
-Previous Apache, INFOIL, and other grants remain available for the material
-they cover. Inherited code, dependencies, model weights, and other separately
-licensed material retain their own terms. This license grants no ownership
-of outputs, no trademarks, and no right to relicense others' contributions.
+The list covers each named operator's hosting and compute platforms. Amazon
+Bedrock alone is listed, not AWS generally. AWS infrastructure (such as
+EC2), Microsoft Azure, Baseten, Google Cloud / AI Studio, Oracle Cloud,
+private hardware, and unlisted platforms are allowed. Listing follows a
+renamed operator or continuing service, not an acquirer's unrelated
+businesses. The list is fixed: no revenue test or automatic additions
+apply.
 
-2. PLATFORM BLACKLIST FOR COMMERCIAL USE
+The named permitted providers may operate their own deployments on hardware
+leased from listed operators if they actually manage serving. This does not
+permit deployment inside a listed service, including Bedrock. Routing,
+reselling, or relabeling cannot bypass the ban. Buying hardware,
+downloading models, storage, DNS, transit, and unrelated API calls alone
+are not deployment.
 
-Listed Platform means the hosting, inference, and compute platforms and
-rented capacity of an operator expressly identified in Appendix A by its
-OpenRouter provider identifier. The Amazon Bedrock entry covers that
-platform only, not AWS infrastructure generally. Renaming or continuing
-the same operator or platform under a successor does not remove its
-identification. Unrelated businesses of an acquirer are not included.
-The list is exhaustive: there is no revenue or token-serving-business test.
-Changes to OpenRouter, a website, or a later license do not change this list.
+3. NONCOMMERCIAL EXCEPTION
 
-Microsoft Azure, general AWS infrastructure such as EC2, Baseten, Google
-Cloud / Google AI Studio, and Oracle Cloud are permitted. Private hardware
-and unlisted platforms are also permitted. The AWS infrastructure exception
-does not include Amazon Bedrock. A Listed Platform does not become permitted
-because it runs on an allowed cloud or is purchased through its marketplace.
+Noncommercial research, education, and personal experimentation are allowed
+on every platform. Research salaries, academic grants, or paying for
+generic compute alone do not make research commercial. Developing a
+business or prohibited deployment is not research under this exception. A
+research customer does not exempt a provider's paid software-based
+inference service.
 
-3. RESTRICTED DEPLOYMENTS AND RESEARCH EXCEPTION
+4. NO REWRITES FOR PROHIBITED DEPLOYMENTS
 
-You must not execute, deploy, host, or operate the Software for commercial
-use on a Listed Platform or its computing capacity, or as part of that
-platform's service. This applies to every customer and operator, including
-an ordinary business running its own application or private endpoint.
-Private and public endpoints, one or many customers, dedicated machines,
-rented GPUs, and serverless deployments are covered regardless of token,
-request, GPU-hour, subscription, or bundled billing. Resellers and routing
-through another company do not remove the restriction.
+You must not use the covered source, documentation, or design obtained from
+them to create, commission, or assist a replacement for a listed platform's
+commercial service or another prohibited deployment. This includes manual
+rewrites, coding agents, contractors, subprocessors, intermediate design
+specifications, and ports to C, Go, or any language, even before
+deployment.
 
-You must not develop, test, adapt, or arrange the Software on behalf of a
-Listed Platform's operator with the aim of enabling such a deployment.
-This applies to employees, contractors, agents, and subprocessors acting
-for it, not to independent personal activities merely because of employment.
+Employees and others acting for an operator also must not develop, test, or
+adapt the software toward a prohibited deployment. Employment alone does
+not restrict independent personal projects. General ideas, algorithms,
+independent development without these materials, independently licensed
+rights, and nonwaivable legal rights remain unaffected.
 
-Noncommercial research, education, and personal experimentation may run
-on any platform, including Listed Platforms. Research salaries, academic
-grants, and paying for generic compute alone do not defeat this exception.
-Commercial product development, business operations, service development,
-and work intended to enable a prohibited deployment are not noncommercial
-research, even before revenue. A provider may supply generic infrastructure
-for permitted research; the customer's research purpose does not permit
-the provider to sell a managed Software-based inference service.
+5. SHARING AND CONTRIBUTIONS
 
-An expressly named permitted provider in Section 2 may operate its own
-deployment on underlying capacity leased from a Listed Platform's operator,
-including a Baseten-operated deployment, when it actually controls serving.
-This does not permit operation of or deployment within a Listed Platform's
-service, including Amazon Bedrock. Merely routing traffic, relabeling, or
-handling billing is insufficient.
-Storage, source/model downloads, DNS, network transit, hardware manufacture,
-and unrelated API calls alone are not execution on a Listed Platform.
-
-4. REWRITES AND INDIRECT USE
-
-As a condition of these permissions, You agree not to use the covered
-source, documentation, or implementation design obtained from them to
-perform, direct, commission, or assist a port, rewrite, reconstruction,
-or substitute implementation for a Listed Platform's commercial service
-or with the aim of enabling a deployment prohibited by Section 3.
-
-This includes work done by You personally, employees, coding agents,
-models, contractors, subprocessors, or other intermediaries; use of
-intermediate summaries or design specifications; and rewrites in C, Go,
-or any other language. The restriction applies during preparation and
-development, whether or not the replacement is ultimately deployed.
-Changing language, names, or implementation does not remove this condition.
-
-This is a condition on use of the licensed materials, not a claim of
-copyright in general ideas or algorithms. It does not restrict independent
-development without use of those materials, rights under an independent
-license, or rights that applicable law does not permit restricting.
-
-5. DISTRIBUTION AND CONTRIBUTIONS
-
-On distribution, retain this license including Appendix A, the adoption
-notice, and applicable third-party notices; identify changes prominently;
-and license covered modifications to recipients under these same terms.
-Provide the corresponding editable source and build/install instructions
-with each source or binary distribution, or a no-charge download maintained
+Distributions must retain this license, Appendix A, the adoption notice,
+and third-party notices; identify changes; and offer covered modifications
+under these same terms. Supply editable source and build/install
+instructions with the distribution, or through a free download available
 for at least three years after the last corresponding distribution.
-Credentials, customer data, separately licensed model weights, independent
-applications, and generally available tools need not be included.
+Credentials, customer data, separately licensed weights, independent
+applications, and standard tools are excluded from that source obligation.
 
 Private modifications and network access alone do not require publication.
-Applications merely calling the Software's API may keep their own licenses.
-Contributions intentionally submitted for inclusion are offered under this
-version unless another arrangement is expressly accepted. Ownership stays
-with each contributor; additional permissions require authorization from
-holders of all applicable rights. Adoption does not itself authorize
-relicensing contributions previously offered only under INFOIL 1.0.
+API clients may retain their own licenses. Contributions intentionally
+submitted for inclusion use these terms unless otherwise agreed; ownership
+stays with contributors. Relicensing or exceptions require the applicable
+rights holders' authorization, including for existing INFOIL-only
+contributions.
 
 6. PATENTS, TERMINATION, AND LIABILITY
 
-Each contributor licenses patent claims it controls necessarily practiced
-by its contribution, alone or in the submitted combination, to make, use,
-sell, offer for sale, and import the Software for permitted purposes. This
-grant ends if You bring a patent claim alleging the Software infringes.
+Contributors license controlled patent claims necessarily practiced by
+their contributions, alone or in their submitted combination, to make, use,
+sell, offer for sale, and import the software for permitted uses. This
+patent grant ends if you bring a patent claim alleging the software
+infringes.
 
-Copyright permissions under this license terminate upon breach and are
-reinstated for a first breach if cured within thirty days after You learn
-of it. Later reinstatement requires the affected rights holders' permission.
-Compliant recipients retain their grants. As far as law permits, the
-Software is supplied as is, without warranties, and contributors are not
-liable for resulting losses.
-Unenforceable provisions do not invalidate independently operable terms.
-No future version automatically changes rights granted under this version.
+Copyright permissions terminate on breach. A first breach cured within 30
+days of learning of it restores them; later reinstatement requires the
+affected rights holders' permission. Compliant recipients retain rights. To
+the extent law permits, the software is provided as is, without warranty,
+and contributors are not liable for resulting losses. Unenforceable terms
+do not invalidate the rest. Later versions do not change existing grants.
 
 APPENDIX A -- EXHAUSTIVE PLATFORMS PROHIBITED FOR COMMERCIAL DEPLOYMENT
 

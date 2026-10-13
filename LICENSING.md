@@ -8,56 +8,39 @@ unrestricted open-source license.
 
 ## Proposed successor: platform blacklist for commercial use (not adopted)
 
-The [Token Service Elastic License draft](docs/licensing/TSEL-1.0-DRAFT.txt)
-proposes a simple rule: **you may not deploy Infinity for commercial use on
-the listed platforms**, whether you are the platform operator or its customer.
-It is a custom license, not Elastic License 2.0. INFOIL 1.0 remains in force;
-this proposal does not relicense existing contributions or replace its grants.
+The [Token Service Elastic License draft](docs/licensing/TSEL-1.0-DRAFT.txt),
+written by **Michael Feil**, has one central rule: **you may not deploy
+Infinity commercially on the listed platforms**, whether you are the
+platform operator or its customer. It is a custom license, not Elastic
+License 2.0. The proposed licensors remain **Infinity Core Contributors**.
+INFOIL 1.0 remains the adopted license; this draft grants no new permissions.
 
-The [OpenRouter snapshot](docs/licensing/openrouter-providers-2026-10-13.json)
-records 93 public-directory entries retrieved on 2026-10-13, of which 89 are
-explicitly listed in the draft. Azure, Baseten, Google Vertex,
-and Google AI Studio are excluded under the approved-provider exceptions;
-Oracle Cloud is also expressly permitted but was absent from the directory.
-General AWS infrastructure such as EC2 is permitted; **Amazon Bedrock is
-explicitly prohibited for commercial deployment**. A listed service does not
-become permitted merely because it runs on AWS or another allowed cloud.
-The API returned 19 additional entries not shown in the public directory,
-including a test-like `FakeProvider`; those entries are recorded for comparison
-and do not automatically enter the restriction list. OpenRouter changes do
-not alter the fixed list attached to this proposed version.
-
-The proposal allows unlisted platforms and private hardware, without revenue
-tests. It preserves noncommercial research on listed capacity and targets
-employees only when acting for a listed platform's operator toward a prohibited
-deployment. Its rewrite condition covers manual work, coding agents, and
-contractors or subprocessors using covered materials or their implementation
-design to prepare a replacement for a listed platform's commercial service
-or another prohibited deployment, including ports to C or Go.
-
-| Scenario | Proposed treatment, if adopted |
+| Use | Proposed rule |
 | --- | --- |
-| Commercial use on private hardware or an unlisted provider | Permitted. |
-| Commercial Infinity deployment directly on AWS EC2 | Permitted. |
-| Commercial Infinity deployment within or as part of Amazon Bedrock | Restricted; AWS infrastructure permission does not cover Bedrock. |
-| Noncommercial research on Modal or Together capacity | Permitted. |
-| Commercial endpoint on a listed provider, including private GPU-hour billing | Restricted. |
-| Ordinary company deploying its own private application on Modal or Together | Restricted for commercial use, even if it does not sell inference. |
-| Independent personal research by a listed provider's employee | Permitted; employment alone is not a ban. |
-| Employee or contractor adapting the software for a listed provider's prohibited deployment | Restricted, including before deployment. |
-| Manual, agent, or subprocessor rewrite using the covered design to prepare a competing listed-provider service | Restricted, even if rewritten in C or Go. |
-| NVIDIA hardware, Hugging Face model downloads, or Cloudflare DNS without execution on a listed service | Not restricted merely because of the supplier. |
-| Anthropic-operated Claude Platform on AWS | Listed; using AWS underneath does not make Anthropic's service an AWS exception. |
-| Baseten actually operates its own deployment on capacity leased from a listed platform's operator | Permitted under the infrastructure exception; running inside the listed platform's service is still restricted. |
+| Commercial deployment on a listed platform, including private endpoints and rented GPUs | Prohibited. |
+| Ordinary AWS infrastructure such as EC2 | Allowed; **Amazon Bedrock is separately prohibited** for commercial deployment. |
+| Private hardware or unlisted platforms | Allowed. |
+| Noncommercial research, education, and personal experimentation | Allowed on every platform. |
+| Employee or contractor preparing a listed platform's prohibited deployment | Prohibited; employment alone does not restrict personal projects. |
+| Manual, agent, or subprocessor rewrite using covered code, documentation, or derived design for a prohibited deployment | Prohibited, including C/Go ports before deployment. |
 
-The rewrite condition is a proposed restriction on use of licensed material,
-not a claim that copyright covers every similar design. Copyright does not
-protect general ideas, program logic, or algorithms, and independent grants
-and nonwaivable rights remain available. See the
-[U.S. Copyright Office's computer-program guidance](https://www.copyright.gov/register/tx-programs.html).
-The draft also preserves the existing same-license distribution and source
-requirements. Adoption requires a new scope notice and permission from the
-applicable rights holders; repository push access alone does not supply it.
+The [fixed OpenRouter snapshot](docs/licensing/openrouter-providers-2026-10-13.json)
+accounts for all 93 directory entries retrieved on 2026-10-13: 89 listed and
+four excluded (Azure, Baseten, Google Vertex, Google AI Studio). Oracle
+Cloud is also permitted. The snapshot explains the API-only entries and
+each inclusion or exclusion; future OpenRouter changes do not alter the list.
+
+Named permitted providers may run their own deployments on leased hardware
+when they actually manage serving, including Baseten deployments. Routing
+through them does not permit deployment inside a listed platform's service.
+Buying NVIDIA hardware, downloading models, or using DNS alone is not
+platform deployment.
+
+Redistributions retain the same license and corresponding source. Existing
+grants and third-party rights remain intact; adoption needs authorization
+from the applicable rights holders and an adoption notice. The rewrite
+condition concerns licensed materials; it does not claim ownership of
+[general ideas or algorithms](https://www.copyright.gov/register/tx-programs.html).
 
 ## Adoption and existing rights
 
