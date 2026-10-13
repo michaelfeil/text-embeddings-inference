@@ -184,7 +184,7 @@ void admission_test() {
  PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,3},options.dtype(at::kInt)),offsets.data(),1,3};
  for(int repeat=0;repeat<4;++repeat)
   TORCH_CHECK(at::equal(tiny_budget.forward(model,input),model.forward(input)),"Budget fallback changed output");
- TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==1,"Oversized pools repeatedly captured");
+ TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==0,"Oversized inputs allocated a graph pool");
 }
 int main(){c10::InferenceMode guard;admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
