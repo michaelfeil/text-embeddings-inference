@@ -592,6 +592,9 @@ struct Encoder final : Model {
   }
   at::Tensor root_linear(const at::Tensor& h, const std::string& n) const {
     auto b = weights.find(n + ".bias");
+    if (exact_cpu_half)
+      return modern_cpu::linear(h, weight(weights, n + ".weight"),
+        b == weights.end() ? at::Tensor() : b->second);
     return at::linear(h, weight(weights, n + ".weight"), b == weights.end() ? at::Tensor() : b->second);
   }
   at::Tensor token_scores(const at::Tensor& h) const override {
