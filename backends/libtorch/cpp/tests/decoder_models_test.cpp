@@ -1,11 +1,89 @@
 // Native packed decoder regression tests; no Python runtime or padded tokens.
 #include "models/decoder_models.h"
 #include "batching/radix.h"
+#include "batching/input_validation.h"
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <ATen/Parallel.h>
 using namespace tei;
 namespace {
+void input_descriptor_test() {
+ int64_t data[64]{};int32_t offsets[]={0,32,64};float payload=0;uint8_t mask=1;
+ TeiImage image{};image.pixels=&payload;image.rows=32;image.patch_dim=1536;
+ image.grid[0]=2;image.grid[1]=image.grid[2]=4;image.merge_size=2;image.token_start=4;image.token_count=8;
+ TeiAudio audio{&payload,&mask,4,128,2,1};
+ auto validate=[&](const TeiImage* images,size_t ni,const TeiAudio* audios,size_t na,int64_t maximum=32) {
+  return validate_input_descriptors(data,data,data,offsets,2,maximum,nullptr,images,ni,audios,na);
+ };
+ TORCH_CHECK(validate(&image,1,&audio,1)==64,"Valid temporal image/audio descriptors rejected");
+ // max_sequence is an upper bound, not a padded input or required exact length.
+ TORCH_CHECK(validate(nullptr,0,nullptr,0,64)==64,"Valid maximum sequence upper bound rejected");
+ auto rejects=[&](auto call,const char* message) {
+  bool failed=false;try{call();}catch(const c10::Error&){failed=true;}
+  TORCH_CHECK(failed,message);
+ };
+ rejects([&]{validate(nullptr,1,nullptr,0);},"Null counted image array accepted");
+ rejects([&]{validate(nullptr,0,nullptr,1);},"Null counted audio array accepted");
+ rejects([&]{validate(nullptr,0,nullptr,0,31);},"Undersized max_sequence accepted");
+ rejects([&]{validate(nullptr,0,nullptr,0,65);},"Maximum sequence beyond packed token count accepted");
+ int64_t selection[]={1,0,1};
+ TORCH_CHECK(validate_output_indices(offsets,2,selection,3,selection,3)==96,
+   "Repeated output selection rejected");
+ TORCH_CHECK(expected_output_elements(3,96,16,16)==1584,"Output element count changed");
+ rejects([&]{validate_output_indices(offsets,2,nullptr,1,nullptr,0);},"Null pooled indices accepted");
+ rejects([&]{validate_output_indices(offsets,2,nullptr,0,nullptr,1);},"Null raw indices accepted");
+ int64_t invalid=-1;
+ rejects([&]{validate_output_indices(offsets,2,&invalid,1,nullptr,0);},"Negative output index accepted");
+ invalid=2;
+ rejects([&]{validate_output_indices(offsets,2,nullptr,0,&invalid,1);},"Out-of-bounds output index accepted");
+ rejects([&]{expected_output_elements(std::numeric_limits<size_t>::max(),0,16,16);},
+   "Overflowing output element count accepted");
+ auto bad=image;bad.rows=std::numeric_limits<int64_t>::max();bad.grid[0]=bad.rows;
+ rejects([&]{validate(&bad,1,nullptr,0);},"Overflowing image grid accepted");
+ bad=image;bad.patch_dim=std::numeric_limits<int64_t>::max();
+ rejects([&]{validate(&bad,1,nullptr,0);},"Overflowing image payload accepted");
+ bad=image;bad.token_start=30;
+ rejects([&]{validate(&bad,1,nullptr,0);},"Cross-sequence image span accepted");
+ bad=image;bad.pixels=nullptr;
+ rejects([&]{validate(&bad,1,nullptr,0);},"Null image pixels accepted");
+ auto bad_audio=audio;bad_audio.frames=-1;
+ rejects([&]{validate(nullptr,0,&bad_audio,1);},"Negative audio frames accepted");
+ bad_audio=audio;bad_audio.mask=nullptr;
+ rejects([&]{validate(nullptr,0,&bad_audio,1);},"Null audio mask accepted");
+ TeiImage gemma=image;gemma.rows=36;gemma.patch_dim=768;gemma.grid[0]=1;gemma.grid[1]=gemma.grid[2]=6;
+ gemma.merge_size=3;gemma.token_start=40;gemma.token_count=4;gemma.sequence_start=32;
+ TORCH_CHECK(validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&gemma,1,nullptr,0,true)==64,
+   "Valid Gemma pooled image rejected");
+ auto wrong_sequence=gemma;wrong_sequence.sequence_start=0;
+ rejects([&]{validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&wrong_sequence,1,nullptr,0,true);},
+   "Gemma image admitted keys from another packed sequence");
+ wrong_sequence.sequence_start=33;
+ rejects([&]{validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&wrong_sequence,1,nullptr,0,true);},
+   "Gemma image accepted a non-boundary sequence start");
+ auto second_row=image;second_row.token_start=40;second_row.sequence_start=32;
+ TORCH_CHECK(validate(&second_row,1,nullptr,0)==64,"Valid second-row temporal image rejected");
+ second_row.sequence_start=0;
+ rejects([&]{validate(&second_row,1,nullptr,0);},"Temporal image accepted another sequence start");
+ rejects([&]{validate_input_descriptors(data,data,data,offsets,2,32,nullptr,&image,1,nullptr,0,true);},
+   "Multiple-frame Gemma image accepted");
+ // Exercise the actual native bridge before model creation/any tensor upload.
+ TeiConfig cfg{16,4,1,24,32,64,2,1e-5,0};auto handle=tei_create(&cfg,"cpu",0);TORCH_CHECK(handle,tei_error());
+ auto code=tei_forward(handle,data,data,data,offsets,2,32,0,nullptr,0,nullptr,0,nullptr,0,nullptr,nullptr,1,nullptr,0);
+ TORCH_CHECK(code!=0&&std::string(tei_error()).find("counted image")!=std::string::npos,
+   "Native bridge did not reject malformed media before upload/model access");
+ auto pending=tei_forward_submit(handle,data,data,data,offsets,2,32,0,nullptr,0,nullptr,0,
+   std::numeric_limits<size_t>::max(),nullptr,nullptr,1,nullptr,0,nullptr);
+ TORCH_CHECK(!pending&&std::string(tei_error()).find("counted image")!=std::string::npos,
+   "Deferred bridge did not validate descriptors before output allocation");
+ code=tei_forward(handle,data,data,data,offsets,2,32,0,nullptr,1,nullptr,0,nullptr,0,nullptr,nullptr,0,nullptr,0);
+ TORCH_CHECK(code!=0&&std::string(tei_error()).find("counted pooled")!=std::string::npos,
+   "Native bridge did not reject missing output indices before model access");
+ pending=tei_forward_submit(handle,data,data,data,offsets,2,32,0,nullptr,0,&invalid,1,
+   std::numeric_limits<size_t>::max(),nullptr,nullptr,0,nullptr,0,nullptr);
+ TORCH_CHECK(!pending&&std::string(tei_error()).find("raw output index")!=std::string::npos,
+   "Deferred bridge did not reject output indices before output allocation");
+ tei_destroy(handle);
+}
 Options config(const std::string& family, bool moe = false) {
   Options cfg;
   cfg.values = {{"model_type",family},{"hidden_size","16"},{"num_attention_heads","4"},
@@ -39,6 +117,33 @@ Weights weights(const Options& cfg, bool fused = false) {
     }
   }
   return w;
+}
+void output_capacity_bridge_test() {
+ auto cfg=config("qwen3");auto w=weights(cfg);
+ TeiConfig native_cfg{16,4,2,24,32,32,1,1e-6,0};
+ auto handle=tei_create(&native_cfg,"cpu",0);TORCH_CHECK(handle,tei_error());
+ for(const auto& [key,value]:cfg.values)TORCH_CHECK(tei_option(handle,key.c_str(),value.c_str())==0,tei_error());
+ for(const auto& [key,value]:w)
+  TORCH_CHECK(tei_weight(handle,key.c_str(),reinterpret_cast<const uint8_t*>(value.const_data_ptr()),
+    value.sizes().data(),value.dim(),0)==0,tei_error());
+ TORCH_CHECK(tei_ready(handle)==0,tei_error());
+ int64_t ids[]={3,4,5,6},types[4]{},positions[]={0,1,0,1},pooled=0;int32_t cumulative[]={0,2,4};
+ for(const auto capacity:{size_t(17),std::numeric_limits<size_t>::max()}) {
+  auto pending=tei_forward_submit(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+    capacity,nullptr,nullptr,0,nullptr,0,nullptr);
+  TORCH_CHECK(!pending&&std::string(tei_error()).find("Deferred output capacity must exactly")!=std::string::npos,
+    "Deferred spare capacity reached CUDA/output allocation");
+ }
+ auto pending=tei_forward_submit(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   16,nullptr,nullptr,0,nullptr,0,nullptr);
+ TORCH_CHECK(!pending&&std::string(tei_error()).find("Deferred output requires CUDA")!=std::string::npos,
+   "Exact deferred capacity failed metadata validation");
+ float output[20];std::fill_n(output,20,std::numeric_limits<float>::quiet_NaN());
+ TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,nullptr,0,nullptr,0)==0,tei_error());
+ for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(output[i]),"Valid response failed after capacity rejection");
+ for(int i=16;i<20;++i)TORCH_CHECK(std::isnan(output[i]),"Synchronous spare capacity was overwritten");
+ tei_destroy(handle);
 }
 at::Tensor run(Model& model, std::vector<int64_t> ids, std::vector<int32_t> offsets) {
   std::vector<int64_t> positions;
@@ -86,6 +191,8 @@ void multimodal_test(){
 }
 }
 int main(){c10::InferenceMode inference;at::set_num_threads(1);
+ output_capacity_bridge_test();
+ input_descriptor_test();
  {
   // Preselected, non-normalized FP32 routes preserve learned expert scales
   // and their accumulation dtype, including a different activation callback.
