@@ -546,7 +546,8 @@ static void encoder_rotary_dispatch(const at::Tensor& q,const at::Tensor& k,cons
   const bool narrow=count<=UINT32_MAX && uint64_t(q.size(0))*q.stride(0)<=UINT32_MAX &&
     uint64_t(k.size(0))*k.stride(0)<=UINT32_MAX && uint64_t(cosine.numel())<=UINT32_MAX;
   const auto aligned=[](const at::Tensor& t){return reinterpret_cast<uintptr_t>(t.const_data_ptr())%4==0;};
-  const bool pairs=(q.scalar_type()==at::kHalf || q.scalar_type()==at::kBFloat16) && cosine.size(-1)%2==0 &&
+  const bool pairs=(q.scalar_type()==at::kHalf || q.scalar_type()==at::kBFloat16) &&
+    q.size(2)%2==0 && cosine.size(-1)%2==0 &&
     q.stride(0)%2==0 && k.stride(0)%2==0 && aligned(q)&&aligned(k)&&aligned(cosine)&&aligned(sine);
 #define TEI_ENCODER_PAIRS(T,I,P) encoder_rotary_pairs_kernel<T,I,P><<<(count/2+255)/256,256,0,stream>>>(reinterpret_cast<T*>(q.mutable_data_ptr()),reinterpret_cast<T*>(k.mutable_data_ptr()),reinterpret_cast<const T*>(cosine.const_data_ptr()),reinterpret_cast<const T*>(sine.const_data_ptr()),I(q.size(1)),I(k.size(1)),I(q.stride(0)/2),I(k.stride(0)/2),I(q.size(0)),I(q.size(2)/2),I(cosine.size(-1)/2),indexed?positions.const_data_ptr<int64_t>():nullptr,I(cosine.size(0)))
 #define TEI_ENCODER_PAIRS_WIDTH(T) if(indexed){if(narrow){TEI_ENCODER_PAIRS(T,uint32_t,true);}else{TEI_ENCODER_PAIRS(T,uint64_t,true);}}else{if(narrow){TEI_ENCODER_PAIRS(T,uint32_t,false);}else{TEI_ENCODER_PAIRS(T,uint64_t,false);}}

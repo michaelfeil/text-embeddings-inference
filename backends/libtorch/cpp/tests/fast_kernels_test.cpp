@@ -205,6 +205,21 @@ int main(){c10::InferenceMode guard;
    TORCH_CHECK(at::equal(actual_indexed.view(at::kByte),expected_indexed.view(at::kByte)),
      "Indexed rotary differs IEEE bits on repeated/irregular positions or overwrites V");
    // Pitched GQA heads, incomplete launch blocks and partial-rotary fallback.
+   // An even token pitch does not imply an even head pitch. Odd-width heads
+   // must preserve their unrotated tail and every subsequent head's origin.
+   for(int dim:{65,67})for(int offset:{0,1})for(bool indexed:{false,true}) {
+    auto storage=at::randn({17*8*dim+offset},opts);
+    auto packed=storage.narrow(0,offset,17*8*dim).view({17,8,dim});
+    auto original=packed.clone(),qs=packed.narrow(1,0,4),ks=packed.narrow(1,4,2);
+    auto angle=at::randn({17,1,32},opts),c=at::cos(angle),s=at::sin(angle);
+    auto positions=at::arange(17,opts.dtype(at::kLong)).flip({0});
+    auto expected=tei::fused_rotary(qs,ks,indexed?c.index_select(0,positions):c,
+      indexed?s.index_select(0,positions):s,true);
+    if(indexed)tei::encoder_rotary_indexed_inplace(qs,ks,c.squeeze(1),s.squeeze(1),positions);
+    else tei::encoder_rotary_inplace(qs,ks,c,s);
+    TORCH_CHECK(at::equal(qs,expected.first)&&at::equal(ks,expected.second),"Odd-width rotary changed head offsets or tail lanes");
+    TORCH_CHECK(at::equal(packed.narrow(1,6,2),original.narrow(1,6,2)),"Odd-width rotary overwrote V");
+   }
    for(int dim:{64,128,256})for(bool partial:{false,true})for(bool contract:{false,true}) {
     auto packed=at::randn({17,16,dim},opts),original=packed.clone();
     auto qs=packed.narrow(1,0,12),ks=packed.narrow(1,12,2);
