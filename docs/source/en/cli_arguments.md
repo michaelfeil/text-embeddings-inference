@@ -61,7 +61,7 @@ Options:
           [possible values: auto, float16, float32, bfloat16]
 
       --backend <BACKEND>
-          Inference runtime (requires the matching Cargo feature)
+          Inference runtime (requires the matching Cargo feature). Candle is deprecated; use libtorch for supported models
 
           [env: INFINITY_BACKEND=]
           [default: candle]

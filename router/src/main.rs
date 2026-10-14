@@ -140,7 +140,7 @@ struct Args {
     )]
     dtype: Vec<DType>,
 
-    /// Inference runtime (requires the matching Cargo feature).
+    /// Inference runtime (requires the matching Cargo feature). Candle is deprecated; use libtorch for supported models.
     #[clap(
         long,
         env = "INFINITY_BACKEND",

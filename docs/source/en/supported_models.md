@@ -16,6 +16,11 @@ rendered properly in your Markdown viewer.
 
 # Supported models and hardware
 
+The Candle backend is deprecated. For models supported by the native LibTorch
+backend, select `--backend libtorch` or `INFINITY_BACKEND=libtorch` with a build
+that includes the `libtorch` feature. Existing Candle deployments emit a startup
+deprecation warning.
+
 We are continually expanding our support for other model types and plan to include them in future updates.
 
 ## Supported embeddings models

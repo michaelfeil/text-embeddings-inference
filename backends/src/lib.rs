@@ -207,6 +207,12 @@ impl Backend {
         kind: BackendKind,
         torch_device: TorchDevice,
     ) -> Result<Self, BackendError> {
+        if kind == BackendKind::Candle {
+            tracing::warn!(
+                model = %model_path.display(),
+                "Candle backend is deprecated; use --backend libtorch for supported models"
+            );
+        }
         let (backend_sender, backend_receiver) = mpsc::channel(8);
 
         let backend = init_backend(

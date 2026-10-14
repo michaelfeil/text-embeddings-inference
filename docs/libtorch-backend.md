@@ -1,5 +1,8 @@
 # Experimental native LibTorch backend
 
+Candle is deprecated. Use `--backend libtorch` or `INFINITY_BACKEND=libtorch`
+for models supported here, with a build that includes the `libtorch` feature.
+
 LibTorch 2.14.1 runs alongside Candle as an optional inference runtime. Rust owns
 model configuration, checkpoint loading, batch validation and infinity_v3 integration;
 a small C ABI bridge runs the model with the PyTorch C++ tensor API. Python is
