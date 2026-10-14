@@ -36,6 +36,21 @@ int main(int argc,char** argv) {
     auto loader=source;return create_qwen35(options,loader,device,dtype);
   };
   auto model=build(cfg,weights,c10::Device("cpu"),at::kFloat);model->ready();
+  TORCH_CHECK(model->transient_memory_profile()->recurrent_heads==1,
+    "Mixed Qwen3.5 attention must retain its actual recurrent state estimate");
+  auto full_cfg=cfg;full_cfg.values["layer_types.0"]="full_attention";
+  auto full_weights=weights;
+  for(const auto& [name,value]:weights) {
+    const std::string from="model.layers.1.self_attn.";
+    if(name.rfind(from,0)==0)
+      full_weights["model.layers.0.self_attn."+name.substr(from.size())]=value.clone();
+  }
+  auto full_model=build(full_cfg,full_weights,c10::Device("cpu"),at::kFloat);
+  TORCH_CHECK(full_model->transient_memory_profile()->recurrent_heads==0,
+    "Full-attention Qwen3.5 must not charge unused DeltaNet metadata before ready");
+  full_model->ready();
+  TORCH_CHECK(full_model->transient_memory_profile()->recurrent_heads==0,
+    "Full-attention Qwen3.5 must not charge unused DeltaNet metadata after ready");
   std::vector<int32_t> offsets={0,3,5},one={0,3},two={0,2};
   auto make=[](const std::vector<int64_t>& ids,const std::vector<int32_t>& ends) {
     auto tokens=at::from_blob(const_cast<int64_t*>(ids.data()),{static_cast<int64_t>(ids.size())},at::TensorOptions().dtype(at::kLong)).clone();
@@ -46,6 +61,8 @@ int main(int argc,char** argv) {
     auto cu=at::from_blob(const_cast<int32_t*>(ends.data()),{static_cast<int64_t>(ends.size())},at::TensorOptions().dtype(at::kInt)).clone();
     return PackedInput{tokens,at::zeros_like(tokens),pos,cu,ends.data(),static_cast<int64_t>(ends.size()-1),max};
   };
+  TORCH_CHECK(at::isfinite(full_model->forward(make({1,2,3,4,5},offsets))).all().item<bool>(),
+    "Full-attention Qwen3.5 profile must preserve valid packed inference");
   auto output=model->forward(make({1,2,3,4,5},offsets));
   auto independent=at::cat({model->forward(make({1,2,3},one)),model->forward(make({4,5},two))},0);
   Weights owned_loader;
