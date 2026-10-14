@@ -2331,7 +2331,7 @@ fn api_doc() -> utoipa::openapi::OpenApi {
     components(
     schemas(
     super::systemone::SystemOneRequest,
-    super::systemone::wire::SystemOneState,
+    super::systemone::SystemOneState,
     infinity_v3_core::input::ModelInput,
     infinity_v3_core::input::MessageInput,
     infinity_v3_core::input::Message,

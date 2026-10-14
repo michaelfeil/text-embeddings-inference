@@ -25,7 +25,7 @@ mod tests {
             .unwrap()
             .iter()
             .any(|key| key == "model"));
-        let (_, state) = super::super::systemone::wire::SystemOneState::schema();
+        let (_, state) = super::super::systemone::SystemOneState::schema();
         let state = serde_json::to_value(state).unwrap();
         let checked_in: serde_json::Value =
             serde_json::from_str(include_str!("../../../docs/openapi.json")).unwrap();

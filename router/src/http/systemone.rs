@@ -8,7 +8,7 @@ use axum::{
 use infinity_v3_backend::{DecisionInput, DecisionOutput};
 use infinity_v3_core::input::ModelInput;
 use infinity_v3_core::{infer::Infer, tokenization::ValidEncoding};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 use serde_json::{json, Map, Value};
 use std::{
     collections::{HashMap, HashSet},
@@ -18,10 +18,42 @@ use std::{
 };
 use tokenizers::Tokenizer;
 
+/// Text or structured JSON data. Objects containing `messages` are reserved for
+/// Infinity's native conversation extension and validated as `MessageInput`.
+#[derive(Deserialize, utoipa::ToSchema)]
+#[serde(untagged)]
+#[allow(dead_code)] // Documents the wire shape; adapters continue using ModelInput.
+pub enum SystemOneState {
+    Text(String),
+    Object(Map<String, Value>),
+    Array(Vec<Value>),
+}
+
+fn deserialize_state<'de, D: Deserializer<'de>>(deserializer: D) -> Result<ModelInput, D::Error> {
+    let value = Value::deserialize(deserializer)?;
+    match value {
+        Value::String(text) => Ok(ModelInput::Text(text)),
+        Value::Object(ref object) if object.contains_key("messages") => {
+            serde_json::from_value(value).map_err(serde::de::Error::custom)
+        }
+        Value::Object(_) | Value::Array(_) => Ok(ModelInput::Text(render(&value))),
+        _ => Err(serde::de::Error::custom(
+            "state must be a string, object or array",
+        )),
+    }
+}
+
+fn instructions(value: Option<&Value>) -> Result<String, String> {
+    match value {
+        Some(value @ (Value::String(_) | Value::Object(_) | Value::Array(_))) => Ok(render(value)),
+        _ => Err("Question instructions must be a string, object or array".into()),
+    }
+}
+
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SystemOneRequest {
-    #[serde(deserialize_with = "wire::deserialize_state")]
+    #[serde(deserialize_with = "deserialize_state")]
     #[schema(value_type = SystemOneState)]
     pub state: ModelInput,
     pub questions: Map<String, Value>,
@@ -45,7 +77,6 @@ mod d3;
 mod onejev;
 mod pplx;
 mod rune;
-pub mod wire;
 
 pub enum SystemOne {
     Laya(Laya),
@@ -258,7 +289,7 @@ impl Laya {
                     "noul" => 2,
                     _ => return Err("Question type must be choice, score, or noul".into()),
                 };
-                let instructions = wire::instructions(q.get("instructions"))?;
+                let instructions = instructions(q.get("instructions"))?;
                 if kind != "noul" && q.get("labels").is_some() {
                     return Err("labels is only supported for noul".into());
                 }
@@ -835,6 +866,59 @@ pub(crate) async fn systemone_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn request(state: Value) -> Result<SystemOneRequest, serde_json::Error> {
+        serde_json::from_value(json!({"state":state,"questions":{}}))
+    }
+
+    #[test]
+    fn structured_state_is_rendered_without_changing_text_or_order() {
+        for state in [
+            json!("hello"),
+            json!({"z":"a,b:c","a":["é",false]}),
+            json!([1,{"text":"hello"}]),
+        ] {
+            let expected = render(&state);
+            let parsed = request(state).unwrap();
+            assert!(matches!(parsed.state, ModelInput::Text(text) if text == expected));
+            assert!(parsed.model.is_none());
+        }
+        for state in [Value::Null, json!(true), json!(42)] {
+            assert!(request(state).is_err());
+        }
+    }
+
+    #[test]
+    fn native_messages_are_never_silently_flattened() {
+        assert!(matches!(
+            request(json!({"messages":[{"role":"user","content":"hello"}]}))
+                .unwrap()
+                .state,
+            ModelInput::Messages(_)
+        ));
+        for state in [
+            json!({"messages":"bad"}),
+            json!({"messages":[{"role":"invalid","content":"hello"}]}),
+            json!({"messages":[],"extra":true}),
+        ] {
+            assert!(request(state).is_err());
+        }
+    }
+
+    #[test]
+    fn structured_instructions_reject_invalid_scalars() {
+        for value in [
+            json!("question"),
+            json!({"question":"Which?","context":[1,2]}),
+            json!(["Which?",{"context":true}]),
+        ] {
+            assert_eq!(instructions(Some(&value)).unwrap(), render(&value));
+        }
+        for value in [Value::Null, json!(true), json!(1)] {
+            assert!(instructions(Some(&value)).is_err());
+        }
+        assert!(instructions(None).is_err());
+    }
 
     fn service() -> Laya {
         use tokenizers::models::wordlevel::WordLevel;
