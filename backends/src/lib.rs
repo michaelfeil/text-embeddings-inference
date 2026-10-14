@@ -308,6 +308,23 @@ impl Backend {
     }
 
     #[instrument(skip(self))]
+    /// Stop the native model worker and drain deferred completions before returning.
+    pub async fn shutdown(&self) {
+        let _guard = self._backend_thread.shutdown.lock().await;
+        if self._backend_thread.handle.lock().unwrap().is_none() {
+            return;
+        }
+        let _ = self.backend_sender.send(BackendCommand::Shutdown).await;
+        let handle = self._backend_thread.handle.lock().unwrap().take();
+        if let Some(handle) = handle {
+            match tokio::task::spawn_blocking(move || handle.join()).await {
+                Ok(Ok(())) => {}
+                _ => tracing::error!("Native backend worker failed during shutdown"),
+            }
+        }
+    }
+
+    #[instrument(skip(self))]
     pub async fn health(&self) -> Result<(), BackendError> {
         if *self.health_receiver.borrow() {
             // The backend is healthy. Only do a basic health check by calling the
@@ -690,7 +707,10 @@ fn deliver<T: Send + 'static>(
 }
 
 #[derive(Debug)]
-struct BackendThread(Option<JoinHandle<()>>);
+struct BackendThread {
+    handle: std::sync::Mutex<Option<JoinHandle<()>>>,
+    shutdown: tokio::sync::Mutex<()>,
+}
 
 impl BackendThread {
     fn new(
@@ -703,6 +723,7 @@ impl BackendThread {
             while let Some(cmd) = backend_receiver.blocking_recv() {
                 let start = Instant::now();
                 match cmd {
+                    BackendCommand::Shutdown => break,
                     BackendCommand::Decide(batch, inputs, span, sender) => {
                         let _span = span.entered();
                         let result = backend.decide(batch, inputs);
@@ -743,17 +764,25 @@ impl BackendThread {
             // Join/drain completion before destroying the model and its graph cache.
             drop(completion);
         });
-        Self(Some(handle))
+        Self {
+            handle: std::sync::Mutex::new(Some(handle)),
+            shutdown: tokio::sync::Mutex::new(()),
+        }
     }
 }
 
 impl Drop for BackendThread {
     fn drop(&mut self) {
-        self.0.take().unwrap().join().unwrap();
+        if let Some(handle) = self.handle.get_mut().unwrap().take() {
+            if handle.join().is_err() {
+                tracing::error!("Native backend worker panicked");
+            }
+        }
     }
 }
 
 enum BackendCommand {
+    Shutdown,
     Decide(
         Batch,
         Vec<DecisionInput>,
@@ -1053,6 +1082,12 @@ mod completion_tests {
         gate: Arc<Mutex<std::sync::mpsc::Receiver<Result<(), BackendError>>>>,
         started: std::sync::mpsc::Sender<()>,
         completed: Arc<AtomicUsize>,
+        dropped: Arc<AtomicUsize>,
+    }
+    impl Drop for DeferredBackend {
+        fn drop(&mut self) {
+            self.dropped.fetch_add(1, Ordering::SeqCst);
+        }
     }
     impl CoreBackend for DeferredBackend {
         fn health(&self) -> Result<(), BackendError> {
@@ -1180,10 +1215,12 @@ mod completion_tests {
         let (gate, wait) = std::sync::mpsc::channel();
         let (started, start) = std::sync::mpsc::channel();
         let completed = Arc::new(AtomicUsize::new(0));
+        let dropped = Arc::new(AtomicUsize::new(0));
         let backend = Box::new(DeferredBackend {
             gate: Arc::new(Mutex::new(wait)),
             started,
             completed: completed.clone(),
+            dropped: dropped.clone(),
         });
         let (commands, receiver) = mpsc::channel(8);
         let (health, _) = watch::channel(false);
@@ -1227,8 +1264,12 @@ mod completion_tests {
         ));
         start.recv_timeout(Duration::from_secs(5)).unwrap();
         gate.send(Ok(())).unwrap();
-        drop(commands);
+        // Explicit shutdown must drain completions and drop model resources even
+        // while callers retain command senders.
+        commands.blocking_send(BackendCommand::Shutdown).unwrap();
         drop(worker);
+        assert!(commands.is_closed());
+        assert_eq!(dropped.load(Ordering::SeqCst), 1);
         assert_eq!(completed.load(Ordering::SeqCst), 3);
     }
 }

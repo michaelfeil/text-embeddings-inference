@@ -303,6 +303,8 @@ impl From<TruncationDirection> for tokenizers::TruncationDirection {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct PredictRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: PredictInput,
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
@@ -322,7 +324,7 @@ pub(crate) struct ClassifyRequest {
     pub input: Option<EmbeddingInput>,
     #[serde(default, deserialize_with = "present_input")]
     pub messages: Option<Vec<Message>>,
-    /// Advisory model name; this server serves one deployed model.
+    /// Served model name; required for multi-model deployments.
     #[allow(dead_code)]
     pub model: Option<String>,
     #[allow(dead_code)]
@@ -392,6 +394,7 @@ impl ClassifyRequest {
             _ => (),
         }
         Ok(PredictRequest {
+            model: None,
             inputs,
             truncate: self.truncate,
             truncation_direction: self.truncation_direction,
@@ -439,6 +442,8 @@ pub(crate) struct ClassifyErrorResponse {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct PredictTokensRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: Vec<String>,
     #[schema(default = "false", example = "false", nullable = true)]
     pub truncate: Option<bool>,
@@ -472,6 +477,8 @@ pub(crate) enum PredictResponse {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct RerankRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     #[schema(example = "What is Deep Learning?")]
     pub query: String,
     #[schema(example = json!(["Deep Learning is ..."]))]
@@ -728,6 +735,8 @@ pub(crate) struct SimilarityParameters {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct SimilarityRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: SimilarityInput,
     /// Additional inference parameters for Sentence Similarity
     #[schema(default = "null", example = "null", nullable = true)]
@@ -740,6 +749,8 @@ pub(crate) struct SimilarityResponse(pub Vec<f32>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: EmbeddingInput,
 
     #[serde(default)]
@@ -782,6 +793,8 @@ pub(crate) struct EmbedResponse(pub Vec<Vec<f32>>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedSparseRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: EmbeddingInput,
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
@@ -813,6 +826,8 @@ pub(crate) struct EmbedSparseResponse(pub Vec<Vec<SparseValue>>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct EmbedAllRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: EmbeddingInput,
     #[serde(default)]
     #[schema(default = "false", example = "false", nullable = true)]
@@ -854,6 +869,8 @@ pub(crate) enum TokenizeInput {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct TokenizeRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub inputs: TokenizeInput,
     #[serde(default = "default_add_special_tokens")]
     #[schema(default = "true", example = "true")]
@@ -902,6 +919,8 @@ pub(crate) enum InputIds {
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct DecodeRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub ids: InputIds,
     #[serde(default = "default_skip_special_tokens")]
     #[schema(default = "true", example = "true")]
@@ -918,6 +937,8 @@ pub(crate) struct DecodeResponse(pub Vec<String>);
 
 #[derive(Deserialize, ToSchema)]
 pub(crate) struct VertexRequest {
+    /// Served model name; required for multi-model deployments.
+    pub model: Option<String>,
     pub instances: Vec<serde_json::Value>,
 }
 
@@ -1207,5 +1228,66 @@ mod classify_request_tests {
         ] {
             assert!(parse(value.clone()).is_err(), "{value}");
         }
+    }
+}
+
+impl super::model_routing::RequestedModel for PredictRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for PredictTokensRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for RerankRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for SimilarityRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for EmbedRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for EmbedSparseRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for EmbedAllRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for TokenizeRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for DecodeRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for VertexRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for ClassifyRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
+    }
+}
+impl super::model_routing::RequestedModel for OpenAICompatRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
     }
 }

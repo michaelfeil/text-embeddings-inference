@@ -20,6 +20,7 @@ pub const DEFAULT_TOKENIZATION_QUEUE_CAPACITY: usize = 1024;
 /// Validation
 #[derive(Debug, Clone)]
 pub struct Tokenization {
+    workers: Arc<TokenizerWorkers>,
     multimodal: Option<crate::multimodal::Qwen3VlProcessor>,
     embedding_gemma2: Option<crate::multimodal::EmbeddingGemma2Processor>,
     token_input_vocab_size: Option<usize>,
@@ -39,7 +40,29 @@ pub struct SimpleToken {
     pub stop: Option<usize>,
 }
 
+#[derive(Debug)]
+struct TokenizerWorkers {
+    sender: async_channel::Sender<QueuedTokenizerRequest>,
+    supervisor: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+impl Drop for TokenizerWorkers {
+    fn drop(&mut self) {
+        self.sender.close();
+        if let Some(handle) = self.supervisor.get_mut().unwrap().take() {
+            let _ = handle.join();
+        }
+    }
+}
+
 impl Tokenization {
+    pub async fn shutdown(&self) {
+        self.sender.close();
+        let handle = self.workers.supervisor.lock().unwrap().take();
+        if let Some(handle) = handle {
+            let _ = tokio::task::spawn_blocking(move || handle.join()).await;
+        }
+    }
+
     pub fn new(
         workers: usize,
         tokenizer: Tokenizer,
@@ -85,7 +108,8 @@ impl Tokenization {
 
         // Spawn a background thread that creates all workers
         // since tokenizer.clone() require 0.2s.
-        std::thread::spawn(move || {
+        let supervisor = std::thread::spawn(move || {
+            let mut handles = Vec::with_capacity(workers);
             let fast_tokenizer = crate::fast_tokenization::load(&tokenizer).map(Arc::new);
             for _ in 0..workers {
                 let chat = chat.clone();
@@ -94,7 +118,7 @@ impl Tokenization {
                 let receiver_clone = receiver.clone();
                 let default_prompt_clone = default_prompt.clone();
                 let prompts_clone = prompts.clone();
-                std::thread::spawn(move || {
+                handles.push(std::thread::spawn(move || {
                     tokenizer_worker(
                         tokenizer_clone,
                         fast_tokenizer,
@@ -105,11 +129,18 @@ impl Tokenization {
                         receiver_clone,
                         chat,
                     )
-                });
+                }));
+            }
+            for handle in handles {
+                let _ = handle.join();
             }
         });
 
         Self {
+            workers: Arc::new(TokenizerWorkers {
+                sender: sender.clone(),
+                supervisor: std::sync::Mutex::new(Some(supervisor)),
+            }),
             sender,
             multimodal: None,
             embedding_gemma2: None,
@@ -1010,6 +1041,10 @@ mod fast_embedding_tests {
             token_input_vocab_size: None,
             max_input_length: 16,
             position_offset: 0,
+            workers: Arc::new(TokenizerWorkers {
+                sender: sender.clone(),
+                supervisor: std::sync::Mutex::new(None),
+            }),
             sender,
         };
         let budget = Arc::new(tokio::sync::Semaphore::new(1));

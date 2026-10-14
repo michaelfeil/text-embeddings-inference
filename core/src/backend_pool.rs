@@ -30,6 +30,7 @@ impl State {
 
 #[derive(Debug)]
 struct Inner {
+    model_name: metrics::SharedString,
     backends: Vec<Backend>,
     state: Mutex<State>,
     changed: watch::Sender<()>,
@@ -37,9 +38,11 @@ struct Inner {
 
 impl Inner {
     fn signal(&self, state: &State) {
-        metrics::gauge!("infinity_backend_replicas_healthy").set(state.healthy() as f64);
-        metrics::gauge!("infinity_backend_replicas_total").set(state.replicas.len() as f64);
-        metrics::gauge!("infinity_backend_replicas_running")
+        metrics::gauge!("infinity_backend_replicas_healthy", "model" => self.model_name.clone())
+            .set(state.healthy() as f64);
+        metrics::gauge!("infinity_backend_replicas_total", "model" => self.model_name.clone())
+            .set(state.replicas.len() as f64);
+        metrics::gauge!("infinity_backend_replicas_running", "model" => self.model_name.clone())
             .set(state.replicas.iter().filter(|r| r.busy).count() as f64);
         self.changed.send_replace(());
     }
@@ -55,6 +58,10 @@ pub struct BackendPool {
 
 impl BackendPool {
     pub fn new(backends: Vec<Backend>) -> Result<Self, BackendError> {
+        Self::new_named(backends, String::new())
+    }
+
+    pub fn new_named(backends: Vec<Backend>, model_name: String) -> Result<Self, BackendError> {
         let first = backends.first().ok_or_else(|| {
             BackendError::Start("At least one backend replica is required".into())
         })?;
@@ -70,6 +77,7 @@ impl BackendPool {
             max_batch_size: backends.iter().filter_map(|b| b.max_batch_size).min(),
             model_type: first.model_type.clone(),
             inner: Arc::new(Inner {
+                model_name: model_name.into(),
                 state: Mutex::new(State {
                     replicas: backends
                         .iter()
@@ -90,6 +98,10 @@ impl BackendPool {
         Ok(result)
     }
 
+    pub fn model_label(&self) -> metrics::SharedString {
+        self.inner.model_name.clone()
+    }
+
     pub fn len(&self) -> usize {
         self.inner.backends.len()
     }
@@ -102,6 +114,13 @@ impl BackendPool {
     }
     pub fn is_closed(&self) -> bool {
         self.inner.state.lock().unwrap().closed
+    }
+
+    pub async fn shutdown(&self) {
+        self.close();
+        for backend in &self.inner.backends {
+            backend.shutdown().await;
+        }
     }
 
     pub fn close(&self) {
@@ -137,7 +156,7 @@ impl BackendPool {
                     let id = state.idle.remove(position).unwrap();
                     state.replicas[id].busy = true;
                     self.inner.signal(&state);
-                    metrics::histogram!("infinity_pipeline_pool_wait_duration")
+                    metrics::histogram!("infinity_pipeline_pool_wait_duration", "model" => self.inner.model_name.clone())
                         .record(start.elapsed().as_secs_f64());
                     return Ok(Execution {
                         pool: self.clone(),
@@ -154,8 +173,7 @@ impl BackendPool {
     }
 
     pub fn observe_preparation(&self, duration: Duration) {
-        metrics::histogram!("infinity_pipeline_preparation_duration")
-            .record(duration.as_secs_f64());
+        metrics::histogram!("infinity_pipeline_preparation_duration", "model" => self.inner.model_name.clone()).record(duration.as_secs_f64());
     }
 
     pub async fn health(&self) -> Result<(), BackendError> {
@@ -310,7 +328,7 @@ impl Execution {
     }
 
     fn started(&self) {
-        metrics::histogram!("infinity_replica_dispatch_delay_duration", "replica" => self.id.to_string())
+        metrics::histogram!("infinity_replica_dispatch_delay_duration", "model" => self.pool.inner.model_name.clone(), "replica" => self.id.to_string())
             .record(self.reserved_at.elapsed().as_secs_f64());
     }
 
@@ -332,7 +350,7 @@ impl Execution {
             r.healthy = false;
         }
         if let Ok((_, duration)) = result {
-            metrics::counter!("infinity_replica_tokens", "replica" => self.id.to_string())
+            metrics::counter!("infinity_replica_tokens", "model" => self.pool.inner.model_name.clone(), "replica" => self.id.to_string())
                 .increment(tokens as u64);
             if !duration.is_zero() {
                 r.batches += 1;
@@ -349,9 +367,9 @@ impl Execution {
                         "Replica inference throughput (latest batch)"
                     );
                 }
-                metrics::histogram!("infinity_replica_inference_duration", "replica" => self.id.to_string())
+                metrics::histogram!("infinity_replica_inference_duration", "model" => self.pool.inner.model_name.clone(), "replica" => self.id.to_string())
                     .record(duration.as_secs_f64());
-                metrics::counter!("infinity_replica_batches", "replica" => self.id.to_string())
+                metrics::counter!("infinity_replica_batches", "model" => self.pool.inner.model_name.clone(), "replica" => self.id.to_string())
                     .increment(1);
             }
             if !self.released && !state.closed {
@@ -398,6 +416,7 @@ mod completion_tests {
     fn execution() -> Execution {
         let pool = BackendPool {
             inner: Arc::new(Inner {
+                model_name: "test".into(),
                 backends: vec![],
                 state: Mutex::new(State {
                     replicas: vec![Replica {

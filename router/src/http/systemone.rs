@@ -575,12 +575,34 @@ fn error(status: StatusCode, message: impl ToString) -> ApiError {
               (status = 422, description = "Invalid question or token budget"),
               (status = 429, description = "Server overloaded")))]
 pub async fn systemone(
+    super::model_routing::RoutedJson { runtime, value }: super::model_routing::RoutedJson<Value>,
+) -> axum::response::Response {
+    use axum::response::IntoResponse;
+    let result = systemone_inner(
+        Extension(runtime.infer.clone()),
+        Extension(runtime.info.clone()),
+        Extension(runtime.systemone.clone()),
+        Json(value),
+    )
+    .await;
+    match result {
+        Ok((headers, Json(mut value))) => {
+            if runtime.named {
+                value["model"] = json!(runtime.info.model_id);
+            }
+            (headers, Json(value)).into_response()
+        }
+        Err(error) => error.into_response(),
+    }
+}
+
+pub(crate) async fn systemone_inner(
     Extension(infer): Extension<Infer>,
     Extension(info): Extension<crate::Info>,
     Extension(service): Extension<Option<Arc<SystemOne>>>,
     Json(raw_request): Json<Value>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
-    metrics::counter!("infinity_request_count", "method" => "systemone").increment(1);
+    metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let service = service.ok_or_else(|| {
         error(
             StatusCode::BAD_REQUEST,
@@ -614,7 +636,7 @@ pub async fn systemone(
     let _permit = infer
         .try_acquire_permit()
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
-    metrics::counter!("infinity_systemone_count").increment(1);
+    metrics::counter!("infinity_systemone_count", "model" => info.model_id.clone()).increment(1);
     let start = Instant::now();
     // Validate and tokenize questions before fetching media, off the async executor.
     let worker = service.clone();
@@ -748,8 +770,8 @@ pub async fn systemone(
         queue,
         inference,
     );
-    metadata.record_metrics();
-    metrics::counter!("infinity_request_success", "method" => "systemone").increment(1);
+    metadata.record_metrics(&info.model_id);
+    metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let answers = if matches!(service.as_ref(), SystemOne::Clef(_)) {
         answers
             .into_iter()
@@ -1001,5 +1023,11 @@ mod tests {
         request["max_len"] = json!(8);
         assert!(service.prepare(serde_json::from_value(request)?).is_err());
         Ok(())
+    }
+}
+
+impl super::model_routing::RequestedModel for SystemOneRequest {
+    fn requested_model(&self) -> Result<Option<&str>, String> {
+        Ok(self.model.as_deref())
     }
 }
