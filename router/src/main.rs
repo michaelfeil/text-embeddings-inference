@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{CommandFactory, FromArgMatches, Parser};
 use infinity_v3_backend::DType;
 use opentelemetry::global;
@@ -281,7 +281,7 @@ struct Args {
     ///
     /// The argument '--default-prompt <DEFAULT_PROMPT>' cannot be used with
     /// '--default-prompt-name <DEFAULT_PROMPT_NAME>`
-    #[clap(long, env = "INFINITY_DEFAULT_PROMPT", value_parser = optional_string, value_delimiter = ';')]
+    #[clap(long, env = "INFINITY_DEFAULT_PROMPT", value_parser = optional_string)]
     default_prompt: Vec<Optional<String>>,
 
     /// Optionally, define the path to the Dense module required for some embedding models.
@@ -482,10 +482,26 @@ fn command_with_environment() -> clap::Command {
     command
 }
 
+fn args_from_matches(matches: &clap::ArgMatches) -> Result<Args> {
+    let mut args = Args::from_arg_matches(matches)?;
+    if matches.value_source("default_prompt") == Some(clap::parser::ValueSource::EnvVariable) {
+        if let Some(Optional(Some(value))) = args.default_prompt.first() {
+            if value.trim_start().starts_with('[') {
+                args.default_prompt = serde_json::from_str::<Vec<Option<String>>>(value)
+                    .context("Default prompt ENV list must be a JSON array of strings or null")?
+                    .into_iter()
+                    .map(Optional)
+                    .collect();
+            }
+        }
+    }
+    Ok(args)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Pattern match configuration
-    let args = Args::from_arg_matches(&command_with_environment().get_matches())?;
+    let args = args_from_matches(&command_with_environment().get_matches())?;
 
     // Initialize logging and telemetry
     let global_tracer = infinity_v3_router::init_logging(
@@ -587,9 +603,64 @@ mod tests {
         .models()
         .unwrap();
         assert!(legacy[0].auto_truncate && legacy[0].enable_fp8_dynamic);
+        for ids in ["a", "a;b"] {
+            let matches = Args::command()
+                .try_get_matches_from([
+                    "infinity_v3",
+                    "--model-id",
+                    ids,
+                    "--default-prompt",
+                    "Represent this; retrieve it",
+                ])
+                .unwrap();
+            let models = args_from_matches(&matches).unwrap().models().unwrap();
+            assert!(models.iter().all(
+                |model| model.default_prompt.as_deref() == Some("Represent this; retrieve it")
+            ));
+        }
+        let matches = Args::command()
+            .try_get_matches_from([
+                "infinity_v3",
+                "--model-id",
+                "a;b",
+                "--default-prompt",
+                "first; prompt",
+                "--default-prompt",
+                "second; prompt",
+            ])
+            .unwrap();
+        let models = args_from_matches(&matches).unwrap().models().unwrap();
+        assert_eq!(models[0].default_prompt.as_deref(), Some("first; prompt"));
+        assert_eq!(models[1].default_prompt.as_deref(), Some("second; prompt"));
         let mismatch =
             Args::try_parse_from(["infinity_v3", "--model-id", "a;b;c", "--device-id", "0;1"])
                 .unwrap();
         assert!(mismatch.models().is_err());
+        // This binary has one test, so environment changes do not race other tests.
+        let original_prompt = std::env::var_os("INFINITY_DEFAULT_PROMPT");
+        std::env::set_var("INFINITY_DEFAULT_PROMPT", r#"["first; prompt",null]"#);
+        let matches = Args::command()
+            .try_get_matches_from(["infinity_v3", "--model-id", "a;b"])
+            .unwrap();
+        let models = args_from_matches(&matches).unwrap().models().unwrap();
+        assert_eq!(models[0].default_prompt.as_deref(), Some("first; prompt"));
+        assert_eq!(models[1].default_prompt, None);
+        let matches = Args::command()
+            .try_get_matches_from([
+                "infinity_v3",
+                "--model-id",
+                "a;b",
+                "--default-prompt",
+                "[literal; prompt]",
+            ])
+            .unwrap();
+        let models = args_from_matches(&matches).unwrap().models().unwrap();
+        assert!(models
+            .iter()
+            .all(|model| model.default_prompt.as_deref() == Some("[literal; prompt]")));
+        match original_prompt {
+            Some(value) => std::env::set_var("INFINITY_DEFAULT_PROMPT", value),
+            None => std::env::remove_var("INFINITY_DEFAULT_PROMPT"),
+        }
     }
 }

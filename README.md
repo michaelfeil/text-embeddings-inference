@@ -110,6 +110,11 @@ model, in model-ID order. Semicolons separate model entries; commas within a
 Mismatched option counts, duplicate served names, conflicting per-model settings,
 and invalid device assignments are rejected before downloading weights.
 
+Prompt text preserves literal semicolons. Repeat `--default-prompt` for per-model
+prompts; `INFINITY_DEFAULT_PROMPT` accepts a single literal prompt or a JSON array,
+for example `'["Represent this; retrieve it", null]'`. Use `null` for no prompt.
+CLI prompt values always remain literal, including text starting with `[`.
+
 Every CLI option has an `INFINITY_*` environment variable. Legacy unprefixed
 variables remain accepted when the corresponding prefixed variable is absent.
 An explicit CLI option replaces that option's ENV value as a whole.

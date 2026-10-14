@@ -266,3 +266,8 @@ Options:
   -V, --version
           Print version
 ```
+
+Prompt text preserves literal semicolons. Repeat `--default-prompt` for per-model
+prompts. `INFINITY_DEFAULT_PROMPT` accepts a literal prompt or a JSON array such
+as `'["Represent this; retrieve it", null]'`; `null` disables a model's prompt.
+Use a repeated CLI flag for literal text starting with `[`.
