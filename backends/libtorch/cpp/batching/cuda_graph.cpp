@@ -161,8 +161,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     remaining-=bytes;return true;
   };
   bool inputs_fit=fits(input.ids)&&fits(input.types)&&fits(input.positions)&&fits(input.cumulative);
-  for(const auto& image:input.images)
-    inputs_fit=inputs_fit&&fits(image.prepared_features.defined()?image.prepared_features:image.pixels);
+  std::unordered_set<const at::TensorImpl*> fitted_images;
+  for(const auto& image:input.images) {
+    const auto& payload=image.prepared_features.defined()?image.prepared_features:image.pixels;
+    if(fitted_images.insert(payload.unsafeGetTensorImpl()).second)inputs_fit=inputs_fit&&fits(payload);
+  }
   for(const auto& audio:input.audios)
     inputs_fit=inputs_fit&&fits(audio.features)&&fits(audio.validity)&&fits(audio.selected_frames);
   inputs_fit=inputs_fit&&fits(input.multimodal_positions)&&fits(input.compact_ids)

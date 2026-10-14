@@ -195,7 +195,7 @@ size_t validate_request_input(Engine& model,const int64_t* ids,const int64_t* ty
    media_positions,images,image_count,audios,audio_count,gemma);
  const auto image_dtype=family.starts_with("qwen3_5")?at::kHalf:model.dtype;
  return tei::validate_input_upload_budget(tokens,batch,media_positions,images,image_count,audios,audio_count,
-   radix,c10::elementSize(image_dtype),input_upload_limit(model),gemma);
+   radix,c10::elementSize(image_dtype),input_upload_limit(model),gemma,model.options.string("_decision.kind")=="d3");
 }
 void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,int32_t pool,

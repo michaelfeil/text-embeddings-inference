@@ -7,6 +7,17 @@
 #include <algorithm>
 
 namespace tei {
+// Native images are contiguous F32 matrices. Admission and the upload cache
+// must identify their storage/layout without reading any pixel values.
+struct ImageUploadLayout {
+ const void* data;at::ScalarType dtype;
+ int64_t rows,columns,row_stride,column_stride;
+ bool operator==(const ImageUploadLayout&) const=default;
+};
+inline ImageUploadLayout image_upload_layout(const at::Tensor& host) {
+ TORCH_CHECK(host.dim()==2,"Native image upload requires a matrix");
+ return {host.const_data_ptr(),host.scalar_type(),host.size(0),host.size(1),host.stride(0),host.stride(1)};
+}
 // Gemma normalizes F32 pixels first; D3 must never round through FP16.
 inline at::Tensor upload_image_pixels(const at::Tensor& pixels, const c10::Device& device,
  at::ScalarType dtype, std::string_view family, bool d3) {
@@ -24,7 +35,9 @@ class RequestImageUploads {
  template<class Upload> at::Tensor get(const at::Tensor& host,Upload&& upload) {
   auto& matches=entries[host.const_data_ptr()];
   for(const auto& entry:matches)
-   if(entry.host.scalar_type()==host.scalar_type()&&entry.host.sizes()==host.sizes()&&entry.host.strides()==host.strides())return entry.uploaded;
+   if(host.dim()==2&&entry.host.dim()==2?
+      image_upload_layout(entry.host)==image_upload_layout(host):
+      entry.host.scalar_type()==host.scalar_type()&&entry.host.sizes()==host.sizes()&&entry.host.strides()==host.strides())return entry.uploaded;
   auto result=upload();matches.push_back({host,result});return result;
  }
 };

@@ -392,5 +392,16 @@ int main(){c10::InferenceMode guard;admission_test();retired_output_pool_test();
  TORCH_CHECK(at::equal(shared_cache.forward(shared_media,distinct).clone(),shared_media.forward(distinct)),"Distinct media replay retained stale pixels");
  shared.images[1].grid_thw[1]++;
  TORCH_CHECK(at::equal(shared_cache.forward(shared_media,shared).clone(),shared_media.forward(shared))&&shared_cache.size()==3,"Shared pixel identity hid distinct image layout");
+ // A shared 40 MiB image fits a 64 MiB graph budget; two independent copies do not.
+ auto budget_shared=input;budget_shared.audios.clear();budget_shared.multimodal_positions=at::Tensor();
+ auto budget_pixels=at::ones({1024,10240},options.dtype(at::kFloat));
+ budget_shared.images={{budget_pixels,{1,2,2},2,0,1,0},{budget_pixels,{1,2,2},2,1,1,0}};
+ CudaGraphCache alias_budget(1,8,1,64ULL<<20);
+ TORCH_CHECK(at::equal(alias_budget.forward(shared_media,budget_shared).clone(),shared_media.forward(budget_shared)),"Shared near-budget capture changed outputs");
+ TORCH_CHECK(alias_budget.size()==1&&alias_budget.stats().attempts==1,"Shared image preflight charged duplicate clones");
+ auto budget_distinct=budget_shared;budget_distinct.images[1].pixels=budget_pixels.clone();
+ CudaGraphCache distinct_budget(1,8,1,64ULL<<20);
+ TORCH_CHECK(at::equal(distinct_budget.forward(shared_media,budget_distinct).clone(),shared_media.forward(budget_distinct)),"Distinct near-budget fallback changed outputs");
+ TORCH_CHECK(distinct_budget.size()==0&&distinct_budget.stats().attempts==0,"Distinct images bypassed preflight budget");
  std::cout<<"CUDA graph dynamic inputs, exact sequence keys, bounded eviction and eager fallback passed\n";
 }

@@ -116,7 +116,8 @@ struct InputUploadBudget {
 };
 inline size_t validate_input_upload_budget(int64_t tokens,int64_t batch,bool media_positions,
     const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,
-    const TeiRadix* radix,size_t image_element_size,size_t limit,bool normalize_images=false) {
+    const TeiRadix* radix,size_t image_element_size,size_t limit,bool normalize_images=false,
+    bool deduplicate_images=false) {
   TORCH_CHECK(limit>0,"Native input upload budget must be positive");
   InputUploadBudget budget{limit};
   auto add=[&](size_t count,size_t width){budget.add(count,width);};
@@ -124,8 +125,18 @@ inline size_t validate_input_upload_budget(int64_t tokens,int64_t batch,bool med
   if(media_positions)add(tokens,3*sizeof(int64_t));
   // push_back vectors can briefly retain old and replacement capacities.
   add(image_count,3*sizeof(ImageInput));add(audio_count,3*sizeof(AudioInput));
+  std::vector<ImageUploadLayout> charged_images;
+  if(deduplicate_images) {
+    add(image_count,3*sizeof(ImageUploadLayout)); // Admission and request-local cache bookkeeping.
+    charged_images.reserve(image_count);
+  }
   for(size_t i=0;i<image_count;++i) {
     const auto count=input_product(images[i].rows,images[i].patch_dim,"image payload");
+    if(deduplicate_images) {
+      const ImageUploadLayout key{images[i].pixels,at::kFloat,images[i].rows,images[i].patch_dim,images[i].patch_dim,1};
+      if(std::find(charged_images.begin(),charged_images.end(),key)!=charged_images.end())continue;
+      charged_images.push_back(key);
+    }
     add(count,sizeof(float));
     if(normalize_images)add(count,2*sizeof(float));
     if(image_element_size!=sizeof(float))add(count,image_element_size);

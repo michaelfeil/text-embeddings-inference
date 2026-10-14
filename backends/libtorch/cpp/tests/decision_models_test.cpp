@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "models/decision_models.h"
+#include "batching/input_validation.h"
 #include <c10/core/InferenceMode.h>
 #include <ATen/Parallel.h>
 #include <iostream>
@@ -79,6 +80,21 @@ void d3_test(){
  TORCH_CHECK(upload_calls==1&&first_upload.unsafeGetTensorImpl()==second_upload.unsafeGetTensorImpl(),"Shared D3 pixels uploaded once per request");
  auto reshaped=pixels.view({2,2});uploads.get(reshaped,[&]{++upload_calls;return reshaped.to(at::kBFloat16);});
  TORCH_CHECK(upload_calls==2,"Distinct host layout incorrectly reused upload");
+ uploads.get(reshaped,[&]{++upload_calls;return reshaped.to(at::kBFloat16);});
+ TORCH_CHECK(upload_calls==2,"Matrix upload identity differs from admission identity");
+ auto transposed=reshaped.transpose(0,1);uploads.get(transposed,[&]{++upload_calls;return transposed.to(at::kBFloat16);});
+ TORCH_CHECK(upload_calls==3,"Distinct matrix strides incorrectly reused upload");
+ // Admission reads descriptors only, even before the caller's pixels are readable.
+ TeiImage aliases[2]{};for(auto& image:aliases){image.pixels=reinterpret_cast<const float*>(uintptr_t(4096));image.rows=16;image.patch_dim=16;}
+ auto admitted=[&](size_t limit,bool dedup){return validate_input_upload_budget(2,2,false,aliases,2,nullptr,0,nullptr,2,limit,false,dedup);};
+ const auto shared_bytes=admitted(1<<20,true);
+ TORCH_CHECK(admitted(shared_bytes,true)==shared_bytes,"Shared uploads rejected at their exact byte budget");
+ reject([&]{admitted(shared_bytes-1,true);});
+ reject([&]{admitted(shared_bytes,false);}); // Non-D3 uploads remain distinct.
+ aliases[1].pixels=reinterpret_cast<const float*>(uintptr_t(8192));
+ reject([&]{admitted(shared_bytes,true);});
+ aliases[1].pixels=aliases[0].pixels;aliases[1].rows=32;aliases[1].patch_dim=8;
+ reject([&]{admitted(shared_bytes,true);}); // Same pointer/count, different matrix layout.
  int vision_calls=0;
  ImageInput first_image{first_upload,{1,2,2},2,1,1,0};auto next_question=first_image;next_question.token_start=9;next_question.sequence_start=8;
  RequestImageFeatures features({first_image,next_question});
