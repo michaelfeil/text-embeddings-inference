@@ -931,8 +931,8 @@ async fn rerank_inner(
             let local_infer = infer.clone();
             let local_batch_counter = batch_counter.clone();
             futures.push(rerank_inner(
-                req.query.clone(),
-                text.clone(),
+                super::memory::copy_input(&req.query)?,
+                super::memory::copy_input(text)?,
                 truncate,
                 local_infer.0,
                 local_batch_counter,
@@ -949,13 +949,13 @@ async fn rerank_inner(
         let mut total_inference_time = 0;
         let mut total_compute_tokens = 0;
 
-        for (index, r) in results.into_iter().enumerate() {
+        for (index, (r, original_text)) in results.into_iter().zip(req.texts).enumerate() {
             total_compute_tokens += r.0;
             total_tokenization_time += r.1.as_nanos() as u64;
             total_queue_time += r.2.as_nanos() as u64;
             total_inference_time += r.3.as_nanos() as u64;
             let text = if req.return_text {
-                Some(req.texts[index].clone())
+                Some(original_text)
             } else {
                 None
             };
