@@ -28,7 +28,8 @@ effect for the material and rights they cover. Retained attribution is in
 
 The server command is `infinity_v3`; shared Rust packages use the `infinity_v3-`
 prefix. LibTorch keeps its existing package name, source imports, and native
-symbols. Existing `TEI_*` environment variables remain supported.
+symbols and `TEI_TORCH_*` environment variables. The queue's early-dispatch
+override is `INFINITY_EARLY_DISPATCH_TOKENS`.
 
 ## Table of contents
 
