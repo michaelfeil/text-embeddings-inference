@@ -39,6 +39,14 @@ static void compare(PrefixIdentity key,const std::vector<std::shared_ptr<PrefixE
   check(bool(result.entry)==bool(expected),"Fingerprint lookup returned an invalid reader");
   if(result.entry)check(reference(key,result.entry->identity,limit)==expected,
     "Fingerprint lookup selected a non-matching identity");
+  for(auto mask:{~uint64_t{0},uint64_t{0}}) {
+    PrefixIndex index(mask);for(const auto& e:entries)index.insert(e,false);
+    auto indexed=index.lookup(key,entries,operation,limit,checkpoint,nullptr);
+    check(indexed.length==expected&&bool(indexed.entry)==bool(expected),
+      "Position index changed longest ready prefix, including forced collisions");
+    if(indexed.entry)check(reference(key,indexed.entry->identity,limit)==expected,
+      "Position index selected a non-matching reader");
+  }
 }
 int main() {
   auto key=identity(257);prefix_fingerprints(key,128);auto first=key.fingerprints;
@@ -132,5 +140,53 @@ int main() {
   auto unrelated=identity(192);unrelated.tokens[0].values[0]=-1;int probes=0;
   bad->ready=[&]{++probes;return true;};prefix_lookup(unrelated,{bad},0,191,false);
   check(probes==0,"Unrelated identity unnecessarily queried GPU readiness");
+  // Related questions share the same role header; deepest positional buckets
+  // must distinguish them, refine partial blocks and preserve insertion ties.
+  std::vector<std::shared_ptr<PrefixEntry>> questions;
+  PrefixIndex position;
+  for(int row=0;row<2048;++row) {
+    auto question=identity(12);question.tokens[8].values[0]=10000+row;
+    auto saved=entry(question);questions.push_back(saved);position.insert(saved,false);
+    check(saved.use_count()==2,"Position index retained ownership of a resident snapshot");
+  }
+  auto request=questions[1777]->identity;request.tokens[11].values[3]^=9;
+  auto selected=position.lookup(request,questions,0,12,false,nullptr);
+  check(selected.entry==questions[1777]&&selected.length==11,
+    "Shared-role position index did not refine the matching partial block");
+  check(position.possible(request.tokens[0],0,false,nullptr),"First-token index lost a resident candidate");
+  check(position.exact(questions[1777]->identity,0,nullptr,true)==questions[1777],"Exact index lost the trained readout snapshot");
+  auto held=questions[1777];position.erase(*held,false);questions.erase(questions.begin()+1777);
+  selected=position.lookup(request,questions,0,12,false,nullptr);
+  check(selected.length==8&&selected.entry==questions.front(),"Eviction left a stale indexed reader or changed the first tie");
+  check(!position.exact(held->identity,0,nullptr,false)&&held.use_count()==1,
+    "Evicted index retained the held reader or returned its complete output");
+  held.reset();
+  auto other_operation=request;other_operation.rotary_context=true;
+  check(!position.lookup(other_operation,questions,0,30,false,nullptr).entry,
+    "Position index crossed rotary presence");
+  check(!position.lookup(request,questions,1,30,false,nullptr).entry,"Position index crossed operations");
+  // The highest matching bucket may contain only pending work. A shorter ready
+  // prefix must remain eligible, even with every digest deliberately colliding.
+  for(auto mask:{~uint64_t{0},uint64_t{0}}) {
+    PrefixIndex pending(mask);auto ready_short=entry(identity(8)),pending_long=entry(identity(31),0,false);
+    std::vector<std::shared_ptr<PrefixEntry>> values={ready_short,pending_long};
+    for(const auto& e:values)pending.insert(e,false);
+    auto query=identity(32);auto read=pending.lookup(query,values,0,31,false,nullptr);
+    check(read.entry==ready_short&&read.length==8,"Pending deepest bucket hid a ready shorter prefix");
+    pending_long->ready=[] {return true;};read=pending.lookup(query,values,0,31,false,nullptr);
+    check(read.entry==pending_long&&read.length==31,"Position index cached stale readiness");
+  }
+  // Geometry namespaces compare offsets exactly; an incompatible long reader
+  // cannot hide a compatible short one or issue a readiness query.
+  PrefixIndex geometry;auto valid=entry(identity(8)),invalid=entry(identity(31));
+  valid->batch_offsets=ends;invalid->batch_offsets=ends;
+  valid->batch_max_sequence=192;invalid->batch_max_sequence=193;
+  int invalid_queries=0;invalid->ready=[&]{++invalid_queries;return true;};
+  geometry.insert(valid,true);geometry.insert(invalid,true);
+  auto geometry_key=identity(32);
+  selected=geometry.lookup(geometry_key,{valid,invalid},0,31,false,&layout);
+  check(selected.entry==valid&&selected.length==8&&invalid_queries==0,"Position index crossed saved CUDA geometry");
+  for(const auto& e:questions)position.erase(*e,false);
+  check(!position.possible(request.tokens[0],0,false,nullptr),"Evicting the registry left stale position buckets");
   std::cout<<"Prefix lookup: scalar equivalence, media boundaries, checkpoint/readiness, collisions and eviction-independent readers passed\n";
 }

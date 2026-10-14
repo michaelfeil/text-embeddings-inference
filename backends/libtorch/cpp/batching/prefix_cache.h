@@ -6,13 +6,13 @@
 #include <map>
 #include <memory>
 #include <mutex>
-#include <functional>
 #include <vector>
 
 namespace tei {
 class Model;
 class PrefixLinearPlans;
 class CudaGraphCache;
+class PrefixIndex;
 // Prepared identity, scoped to one loaded engine and execution operation.
 struct PrefixToken {
   std::array<int64_t,6> values{};
@@ -126,6 +126,8 @@ private:
   size_t capacity;
   std::shared_ptr<PrefixBudget> budget=std::make_shared<PrefixBudget>();
   std::vector<std::shared_ptr<PrefixEntry>> entries;
+  std::unique_ptr<PrefixIndex> index;
+  static constexpr size_t index_minimum=256;
   Stats counters;
   uint64_t model_epoch=0;
   MathPolicy math_policy{};

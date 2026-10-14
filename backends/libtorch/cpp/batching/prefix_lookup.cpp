@@ -1,8 +1,10 @@
 #include "batching/prefix_lookup.h"
+#include "models/model.h"
 #include <algorithm>
 #include <cstring>
 #include <limits>
 #include <type_traits>
+#include <unordered_map>
 #define XXH_INLINE_ALL
 #define XXH_NAMESPACE tei_prefix_
 #include "vendor/xxhash/xxhash.h"
@@ -169,5 +171,163 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
     }
   }
   return best;
+}
+
+struct PrefixIndex::Impl {
+  static constexpr int64_t stride=8;
+  static constexpr int64_t short_positions=16;
+  static int64_t endpoint(int64_t tokens) {
+    return tokens<=short_positions?tokens:short_positions+(tokens-short_positions)/stride*stride;
+  }
+  struct Scope {
+    int operation=0;
+    bool rotary=false,layout=false;
+    int64_t maximum=0,compact=0;
+    std::vector<int32_t> offsets;
+    bool operator==(const Scope&) const=default;
+  };
+  struct ScopeHash {
+    size_t operator()(const Scope& scope) const {
+      std::array<int64_t,5> values={scope.operation,scope.rotary,scope.layout,scope.maximum,scope.compact};
+      auto seed=XXH3_64bits(values.data(),sizeof(values));
+      return XXH3_64bits_withSeed(scope.offsets.data(),scope.offsets.size()*sizeof(int32_t),seed);
+    }
+  };
+  struct Key {
+    int64_t position=0;
+    PrefixFingerprint hash;
+    bool operator==(const Key&) const=default;
+  };
+  struct KeyHash {
+    size_t operator()(const Key& key) const {
+      return key.hash.low^(key.hash.high<<1)^uint64_t(key.position)*0x9e3779b97f4a7c15ULL;
+    }
+  };
+  using Bucket=std::vector<std::weak_ptr<PrefixEntry>>;
+  struct Table {
+    std::unordered_map<Key,Bucket,KeyHash> prefixes,exact;
+    std::map<int64_t,size_t> depths;
+  };
+  std::unordered_map<Scope,Table,ScopeHash> tables;
+  size_t unsupported=0;
+  uint64_t mask;
+  explicit Impl(uint64_t mask):mask(mask) {}
+  static bool supported(const PrefixEntry& entry) {
+    return !entry.identity.image_context&&entry.identity.media.empty()&&!entry.identity.tokens.empty();
+  }
+  static Scope scope(int operation,bool rotary,const PackedInput* layout) {
+    Scope result;result.operation=operation;result.rotary=rotary;result.layout=layout;
+    if(layout) {
+      result.maximum=layout->max_sequence;
+      result.compact=layout->compact_ids.defined()?layout->compact_ids.numel():0;
+      result.offsets.assign(layout->offsets,layout->offsets+layout->batch+1);
+    }
+    return result;
+  }
+  static Scope scope(const PrefixEntry& entry,bool layout) {
+    Scope result;result.operation=entry.operation;result.rotary=entry.identity.rotary_context;result.layout=layout;
+    if(layout) {
+      result.maximum=entry.batch_max_sequence;result.compact=entry.compact_tokens;result.offsets=entry.batch_offsets;
+    }
+    return result;
+  }
+  PrefixFingerprint fingerprint(const void* data,size_t size) const {
+    auto hash=XXH3_128bits(data,size);return {hash.low64&mask,hash.high64&mask};
+  }
+  std::vector<Key> prefixes(const PrefixIdentity& identity,int64_t limit) const {
+    std::vector<Key> result;
+    const auto small=std::min(limit,short_positions);
+    const auto blocks=(limit-small)/stride;result.reserve(small+blocks);
+    // The first short question often diverges immediately after an eight-token
+    // role header. Index those positions individually, avoiding a large scan
+    // of twelve-token questions that otherwise all share the same block hash.
+    for(int64_t position=1;position<=small;++position)
+      result.push_back({position,fingerprint(identity.tokens.data(),position*sizeof(PrefixToken))});
+    auto parent=result.back().hash;
+    std::array<uint8_t,sizeof(PrefixFingerprint)+stride*sizeof(PrefixToken)> bytes;
+    for(int64_t block=0;block<blocks;++block) {
+      std::memcpy(bytes.data(),&parent,sizeof(parent));
+      std::memcpy(bytes.data()+sizeof(parent),identity.tokens.data()+small+block*stride,stride*sizeof(PrefixToken));
+      parent=fingerprint(bytes.data(),bytes.size());result.push_back({small+(block+1)*stride,parent});
+    }
+    return result;
+  }
+  Key exact_key(const PrefixIdentity& identity) const {
+    return {int64_t(identity.tokens.size()),fingerprint(identity.tokens.data(),identity.tokens.size()*sizeof(PrefixToken))};
+  }
+};
+PrefixIndex::PrefixIndex(uint64_t mask):impl(std::make_unique<Impl>(mask)) {}
+PrefixIndex::~PrefixIndex()=default;
+bool PrefixIndex::usable() const {return !impl->unsupported;}
+uint64_t PrefixIndex::storage_bytes(int64_t tokens) {
+  // Bound bucket capacity, weak references, hash nodes/buckets and the geometry
+  // namespace against the resident budget, including the complete-key index.
+  auto positions=std::min(tokens,Impl::short_positions)+std::max<int64_t>(0,tokens-Impl::short_positions)/Impl::stride;
+  return prefix_storage_sum(256,prefix_storage_bytes(positions+1,128,1));
+}
+void PrefixIndex::insert(const std::shared_ptr<PrefixEntry>& entry,bool layout) {
+  if(!Impl::supported(*entry)){++impl->unsupported;return;}
+  auto& table=impl->tables[Impl::scope(*entry,layout)];
+  for(const auto& key:impl->prefixes(entry->identity,entry->identity.tokens.size()))table.prefixes[key].push_back(entry);
+  table.exact[impl->exact_key(entry->identity)].push_back(entry);
+  ++table.depths[Impl::endpoint(entry->identity.tokens.size())];
+}
+void PrefixIndex::erase(const PrefixEntry& entry,bool layout) {
+  if(!Impl::supported(entry)){--impl->unsupported;return;}
+  auto found=impl->tables.find(Impl::scope(entry,layout));if(found==impl->tables.end())return;
+  auto& table=found->second;
+  auto remove=[&](auto& map,const auto& key) {
+    auto bucket=map.find(key);if(bucket==map.end())return;
+    auto& values=bucket->second;
+    values.erase(std::remove_if(values.begin(),values.end(),[&](const auto& value){
+      auto reader=value.lock();return !reader||reader.get()==&entry;
+    }),values.end());
+    if(values.empty())map.erase(bucket);
+  };
+  for(const auto& key:impl->prefixes(entry.identity,entry.identity.tokens.size()))remove(table.prefixes,key);
+  remove(table.exact,impl->exact_key(entry.identity));
+  auto depth=table.depths.find(Impl::endpoint(entry.identity.tokens.size()));
+  if(--depth->second==0)table.depths.erase(depth);
+  if(table.depths.empty())impl->tables.erase(found);
+}
+bool PrefixIndex::possible(const PrefixToken& token,int operation,bool rotary,const PackedInput* layout) const {
+  if(!usable())return true;
+  auto table=impl->tables.find(Impl::scope(operation,rotary,layout));
+  return table!=impl->tables.end()&&table->second.prefixes.contains({1,impl->fingerprint(&token,sizeof(token))});
+}
+std::shared_ptr<PrefixEntry> PrefixIndex::exact(const PrefixIdentity& key,int operation,const PackedInput* layout,bool ready) const {
+  if(!usable()||key.image_context||!key.media.empty()||key.tokens.empty())return {};
+  auto table=impl->tables.find(Impl::scope(operation,key.rotary_context,layout));if(table==impl->tables.end())return {};
+  auto found=table->second.exact.find(impl->exact_key(key));if(found==table->second.exact.end())return {};
+  for(const auto& weak:found->second)if(auto entry=weak.lock();entry&&prefix_same(key,entry->identity)
+    &&(!layout||prefix_batch_compatible(*entry,*layout))&&(!ready||entry->ready()))return entry;
+  return {};
+}
+PrefixLookup PrefixIndex::lookup(PrefixIdentity& key,const std::vector<std::shared_ptr<PrefixEntry>>& entries,
+  int operation,int64_t limit,bool checkpoint,const PackedInput* layout) const {
+  if(!usable()||checkpoint||key.image_context||!key.media.empty())return prefix_lookup(key,entries,operation,limit,checkpoint,layout);
+  limit=std::min<int64_t>(limit,key.tokens.size());if(limit<=0)return {};
+  auto table=impl->tables.find(Impl::scope(operation,key.rotary_context,layout));if(table==impl->tables.end())return {};
+  const auto& values=table->second;
+  auto hashes=impl->prefixes(key,std::min(limit,values.depths.rbegin()->first));
+  // All ancestors of a genuine match are present. Hash collisions can only
+  // overestimate the deepest matching position; exact checking below detects
+  // that case and restores the full scalar-equivalent search.
+  int64_t low=-1,high=hashes.size()-1;
+  while(low<high) {
+    const auto middle=(low+high+1)/2;
+    if(values.prefixes.contains(hashes[middle]))low=middle;else high=middle-1;
+  }
+  if(low<0)return {};
+  const auto& bucket=values.prefixes.at(hashes[low]);PrefixLookup best;
+  for(const auto& weak:bucket)if(auto entry=weak.lock();entry&&(!layout||prefix_batch_compatible(*entry,*layout))) {
+    auto common=prefix_common(key,entry->identity,limit);
+    if(common>best.length&&entry->ready())best={std::move(entry),common,false};
+    if(best.length==limit)break;
+  }
+  if(best.length>=hashes[low].position)return best;
+  // Pending candidates, expired borrowed entries or a colliding digest may
+  // hide a shorter ready reader. Never turn advisory indexing into a miss.
+  auto result=prefix_lookup(key,entries,operation,limit,false,layout);result.collision_fallback=true;return result;
 }
 }

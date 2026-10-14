@@ -354,6 +354,7 @@ PrefixCache::PrefixCache(uint64_t bytes,int64_t max_prefix,size_t count,size_t u
 }
 PrefixCache::~PrefixCache()=default;
 void PrefixCache::reset_observations() {
+  index.reset();
   recent={};recent_next=0;
   boundaries.clear();boundary_clock=0;
   if(short_recent){for(auto& depth:short_recent->depths)depth.clear();short_recent->clock=0;}
@@ -508,6 +509,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   // cannot be repaired by selecting the current recipe only for suffix rows.
   // Require the same geometry until cross-shape providers are qualified.
   const auto* reuse_layout=original.ids.is_cuda()?&original:nullptr;
+  // Small registries retain the cheap exact scan. Build the positional index
+  // only after enough resident entries make repeated scans expensive.
+  const auto* resident=index&&index->usable()&&entries.size()>=index_minimum?index.get():nullptr;
   const bool short_policy=admission_uses>1&&original.images.empty()&&!model.prefix_checkpoint_only();
   std::vector<int64_t> observed;
   if(admission_uses>1&&original.images.empty()) {
@@ -518,7 +522,8 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     bool candidate=false;
     for(int64_t row=0;!entries.empty()&&row<original.batch&&!candidate;++row) {
       auto first=tokens.token(original.offsets[row]);
-      candidate=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
+      candidate=resident?resident->possible(first,operation,original.multimodal_positions.defined(),reuse_layout)
+        :std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
         &&!entry->identity.image_context&&!entry->identity.tokens.empty()&&entry->identity.tokens.front()==first
         &&entry->identity.rotary_context==original.multimodal_positions.defined()
         &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout));});
@@ -548,12 +553,19 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   if((operation==0||operation==1)&&!model.prefix_checkpoint_only()) {
     std::vector<std::shared_ptr<PrefixEntry>> complete;complete.reserve(original.batch);
     for(const auto& key:identities) {
-      auto found=std::find_if(entries.begin(),entries.end(),[&](const auto& entry) {
-        return entry->operation==operation&&prefix_batch_compatible(*entry,original)
-          &&prefix_same(key,entry->identity)&&entry->ready();
-      });
-      if(found==entries.end())break;
-      complete.push_back(*found);
+      std::shared_ptr<PrefixEntry> found;
+      if(resident&&!key.image_context&&key.media.empty()) {
+        found=resident->exact(key,operation,reuse_layout,true);
+        if(found&&!prefix_batch_compatible(*found,original))found.reset();
+      } else {
+        auto match=std::find_if(entries.begin(),entries.end(),[&](const auto& entry) {
+          return entry->operation==operation&&prefix_batch_compatible(*entry,original)
+            &&prefix_same(key,entry->identity)&&entry->ready();
+        });
+        if(match!=entries.end())found=*match;
+      }
+      if(!found)break;
+      complete.push_back(std::move(found));
     }
     if(complete.size()==size_t(original.batch)) {
       std::vector<at::Tensor> outputs;outputs.reserve(complete.size());
@@ -592,7 +604,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   std::vector<at::Tensor> ids,positions,types,axes;std::vector<int64_t> original_rows;
   for(int64_t row=0;row<original.batch;++row) {
     auto key=std::move(identities[row]);
-    auto found=prefix_lookup(key,entries,operation,std::min<int64_t>(maximum,key.tokens.size()-1),model.prefix_checkpoint_only(),reuse_layout);
+    const auto bound=std::min<int64_t>(maximum,key.tokens.size()-1);
+    auto found=resident?resident->lookup(key,entries,operation,bound,model.prefix_checkpoint_only(),reuse_layout)
+      :prefix_lookup(key,entries,operation,bound,model.prefix_checkpoint_only(),reuse_layout);
     auto best=found.length;auto source=std::move(found.entry);
     if(best){++counters.hits;counters.reused_tokens+=best;source->used=++clock;}else ++counters.misses;
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -630,8 +644,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     key.media.erase(std::remove_if(key.media.begin(),key.media.end(),[&](const auto& media){return media.start>=retained;}),key.media.end());
     key.media.shrink_to_fit();
     key.fingerprints.resize(std::min(key.fingerprints.size(),key.tokens.size()/prefix_block_tokens));
-    bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
-      &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout))&&prefix_same(key,entry->identity);});
+    bool resident_exact=resident&&!key.image_context&&key.media.empty()?bool(resident->exact(key,operation,reuse_layout,false))
+      :std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
+        &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout))&&prefix_same(key,entry->identity);});
     if(short_policy&&!resident_exact)resident_exact=std::any_of(context.writers.begin(),context.writers.end(),
       [&](const auto& earlier){return earlier&&prefix_same(key,earlier->identity);});
     if(retained>best&&!resident_exact&&(short_policy||(observed.empty()?admit(key,operation):observed[row]))) {
@@ -642,6 +657,8 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       writer=std::make_shared<PrefixEntry>();writer->identity=std::move(key);writer->operation=operation;writer->used=++clock;
       writer->batch_offsets.assign(original.offsets,original.offsets+original.batch+1);
       metadata+=writer->batch_offsets.capacity()*sizeof(int32_t);
+      if(capacity>=index_minimum)metadata=prefix_storage_sum(metadata,prefix_storage_sum(PrefixIndex::storage_bytes(retained),
+        writer->batch_offsets.capacity()*sizeof(int32_t)));
       writer->batch_max_sequence=original.max_sequence;
       writer->compact_tokens=original.compact_ids.defined()?original.compact_ids.numel():0;
       writer->bytes=metadata;
@@ -668,6 +685,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         if(!fits())break;
         victim=std::min_element(entries.begin(),entries.end(),[](const auto& a,const auto& b){return a->used<b->used;});
       }
+      if(index)index->erase(**victim,reuse_layout);
       entries.erase(victim);++counters.evictions;
     }
     if(!fits()||entries.size()+admitting>=capacity) {writer.reset();continue;}
@@ -741,9 +759,20 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         entry->ready=[event,producer]{return at::cuda::getCurrentCUDAStream(producer.device_index())==producer||event->query();};
       }
 #endif
-      entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& old){return old->operation==operation
-        &&(!reuse_layout||prefix_batch_compatible(*old,*reuse_layout))&&prefix_same(old->identity,entry->identity);}),entries.end());
-      if(entries.size()<capacity){entries.push_back(entry);++counters.admissions;}
+      entries.erase(std::remove_if(entries.begin(),entries.end(),[&](const auto& old){
+        const bool duplicate=old->operation==operation&&(!reuse_layout||prefix_batch_compatible(*old,*reuse_layout))
+          &&prefix_same(old->identity,entry->identity);
+        if(duplicate&&index)index->erase(*old,reuse_layout);
+        return duplicate;
+      }),entries.end());
+      if(entries.size()<capacity) {
+        entries.push_back(entry);++counters.admissions;
+        if(index)index->insert(entry,reuse_layout);
+        else if(entries.size()>=index_minimum) {
+          index=std::make_unique<PrefixIndex>();
+          for(const auto& old:entries)index->insert(old,reuse_layout);
+        }
+      }
     }
     return result;
   } catch(...) {entries.clear();linear->clear();reset_observations();throw;}

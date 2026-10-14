@@ -283,19 +283,26 @@ void cache_admission_test(Model& model) {
 void cache_concurrency_test(Model& model) {
  auto options=at::TensorOptions().dtype(at::kLong);
  std::vector<at::Tensor> references;
- for(int64_t token=3;token<12;++token)references.push_back(run(model,{3,4,5,6,7,8,9,10,token,12,13,14},{0,12}));
- PrefixCache cache(1<<20,64,1,2);std::barrier start(3);
+ for(int64_t topic=0;topic<320;++topic)references.push_back(run(model,{3,4,5,6,7,8,9,10,3+topic%24,3+topic/24,13,14},{0,12}));
+ PrefixCache cache(2<<20,64,512,2);std::vector<int32_t> ends={0,12};
+ auto input_for=[&](int topic) {
+  return PackedInput{at::tensor(std::vector<int64_t>{3,4,5,6,7,8,9,10,3+topic%24,3+topic/24,13,14},options),at::zeros({12},options),
+    at::arange(12,options),at::tensor(ends,options.dtype(at::kInt)),ends.data(),1,12};
+ };
+ // Populate enough related questions to activate the resident index before
+ // racing lookup, caller mutation and clear. Admission itself is also guarded.
+ for(int topic=0;topic<320;++topic)for(int repeat=0;repeat<3;++repeat)
+  check_close(cache.run(model,input_for(topic),0),references[topic]);
+ TORCH_CHECK(cache.stats().admissions>=320,"Concurrency fixture never populated the resident position index");
+ std::barrier start(3);
  std::exception_ptr failure;std::mutex errors;
  auto save_failure=[&]{std::lock_guard lock(errors);if(!failure)failure=std::current_exception();};
  auto worker=[&](int shift) {
   c10::InferenceMode inference;start.arrive_and_wait();
   try {
-   std::vector<int32_t> offsets={0,12};
    for(int i=0;i<200;++i) {
-    const auto token=3+(i/3+shift)%9;
-    PackedInput input{at::tensor(std::vector<int64_t>{3,4,5,6,7,8,9,10,token,12,13,14},options),at::zeros({12},options),
-     at::arange(12,options),at::tensor(offsets,options.dtype(at::kInt)),offsets.data(),1,12};
-    auto value=cache.run(model,input,0);check_close(value,references[token-3]);
+    const auto topic=(i/3+shift)%320;
+    auto value=cache.run(model,input_for(topic),0);check_close(value,references[topic]);
     value.fill_(123); // Mutating caller storage must never change a cache reader.
    }
   }catch(...){save_failure();}
@@ -305,7 +312,7 @@ void cache_concurrency_test(Model& model) {
   c10::InferenceMode inference;start.arrive_and_wait();
   try {for(int i=0;i<600;++i) {
    if(i%7==0)cache.clear();
-   TORCH_CHECK(cache.bytes()<=1<<20,"Concurrent clear/stats exceeded the cache budget");
+   TORCH_CHECK(cache.bytes()<=2<<20,"Concurrent clear/stats exceeded the cache budget");
    static_cast<void>(cache.stats());std::this_thread::yield();
   }}catch(...){save_failure();}
  });
@@ -313,6 +320,101 @@ void cache_concurrency_test(Model& model) {
  cache.clear();TORCH_CHECK(cache.bytes()==0,"Concurrent readers retained cleared cache storage");
 }
 #ifdef TEI_TORCH_CUDA_KERNELS
+void indexed_stream_test(const c10::Device& device) {
+ struct Rows final:Model {
+  void ready() override{}
+  bool supports_prefix_cache(int operation)const override{return operation==0;}
+  int64_t prefix_layers()const override{return 1;}
+  uint64_t prefix_payload_bytes(int64_t n)const override{return n*3*sizeof(float);}
+  at::Tensor forward(const PackedInput& input)const override {
+   auto rows=input.ids.to(at::kFloat).unsqueeze(1);
+   if(input.prefix)input.prefix->attention(0,rows.unsqueeze(1),rows.unsqueeze(1));
+   return prefix_restore(input,rows);
+  }
+ } model;
+ const auto publisher=c10::cuda::getStreamFromPool(false,device.index());
+ c10::cuda::CUDAStreamGuard publication(publisher);
+ PrefixCache cache(4<<20,12,512);std::vector<int32_t> ends={0,32};
+ auto host=at::TensorOptions().dtype(at::kLong);
+ auto input_for=[&](int topic,int document) {
+  auto ids=at::arange(32,host);ids.index_put_({8},10000+topic);ids.narrow(0,12,20).add_(document*100);
+  auto positions=at::arange(32,host),types=at::zeros({32},host);
+  PackedInput input{ids.to(device),types.to(device),positions.to(device),at::tensor(ends,host.dtype(at::kInt)).to(device),ends.data(),1,32};
+  input.host_ids=ids;input.host_positions=positions;input.host_types=types;return input;
+ };
+ for(int topic=0;topic<320;++topic)cache.run(model,input_for(topic,0),0);
+ TORCH_CHECK(cache.stats().admissions==320,"CUDA fixture never activated the short-question position index");
+ at::cuda::getCurrentCUDAStream(device.index()).synchronize();
+ {
+  std::vector<at::Tensor> scratch;
+  for(int i=0;i<1400;++i)scratch.push_back(at::empty({12,1,1},host.device(device).dtype(at::kFloat)).fill_(0));
+  publisher.synchronize();
+ }
+ auto first=c10::cuda::getStreamFromPool(false,device.index()),second=c10::cuda::getStreamFromPool(false,device.index());
+ std::vector<PackedInput> requests;
+ for(int request=0;request<48;++request) {
+  c10::cuda::CUDAStreamGuard stream(request%2?first:second);
+  requests.push_back(input_for((request*37)%320,request+1));
+ }
+ // Warm the consuming-stream allocator and boundary shape before deliberately
+ // blocking one stream, so a fresh synchronizing allocation cannot open it.
+ for(auto stream:{first,second}) {
+  c10::cuda::CUDAStreamGuard guard(stream);cache.run(model,requests.front(),0).fill_(0);
+  std::vector<at::Tensor> large;
+  for(int i=0;i<32;++i)large.push_back(at::empty({320,12,3},host.device(device).dtype(at::kFloat)).fill_(0));
+  std::vector<at::Tensor> scratch;
+  for(int i=0;i<1000;++i)scratch.push_back(at::empty({512},host.device(device).dtype(at::kByte)));
+  stream.synchronize();
+ }
+ const auto before=cache.stats().reused_tokens;
+ struct Gate {
+  std::atomic<bool> released=false;c10::cuda::CUDAStream stream;
+  explicit Gate(c10::cuda::CUDAStream stream):stream(stream){}
+  void open(){released.store(true);released.notify_all();}
+  ~Gate(){open();stream.synchronize();}
+ } gate(first);
+ std::jthread watchdog([&](std::stop_token stop){
+  // Instrumented allocator churn can exceed the ordinary three-second gate.
+  for(int i=0;i<3000&&!stop.stop_requested()&&!gate.released.load();++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  if(!stop.stop_requested()&&!gate.released.load()){std::cerr<<"Indexed stream watchdog released pending work\n";gate.open();}
+ });
+ at::cuda::CUDAEvent proof;
+ {
+  c10::cuda::CUDAStreamGuard guard(first);
+  C10_CUDA_CHECK(cudaLaunchHostFunc(first.stream(),[](void* p){static_cast<Gate*>(p)->released.wait(false);},&gate));
+  proof.record(first);
+ }
+ std::vector<at::Tensor> outputs,expected;
+ for(int request=0;request<48;++request) {
+  c10::cuda::CUDAStreamGuard stream(request%2?first:second);
+  const auto& input=requests[request];
+  auto result=cache.run(model,input,0);
+  TORCH_CHECK(!proof.query(),"Indexed request ",request," drained pending work");
+  outputs.push_back(result);expected.push_back(input.host_ids.to(at::kFloat).unsqueeze(1));
+  if(request==0){result.fill_(123);expected.back().fill_(123);}
+ }
+ TORCH_CHECK(cache.stats().reused_tokens-before==48*12,"CUDA short questions fell back to their common role header");
+ TORCH_CHECK(!proof.query(),"Indexed fixture lost its genuinely pending reader");
+ // Pending readers must survive index destruction and allocator churn on both
+ // consuming streams. The index itself must not retain the retired snapshots.
+ cache.clear();TORCH_CHECK(cache.bytes()==0,"Clearing the index retained charged snapshots");
+ TORCH_CHECK(!proof.query(),"Clearing the index drained pending work");
+ std::vector<at::Tensor> retired;
+ for(int i=0;i<1400;++i)retired.push_back(at::empty({12,1,1},host.device(device).dtype(at::kFloat)).fill_(999));
+ TORCH_CHECK(!proof.query(),"Publisher allocation drained pending work");
+ at::cuda::CUDAEvent poisoned;poisoned.record(publisher);
+ // Event polling verifies the poison writes without the sanitizer's
+ // stream-synchronize flush waiting for unrelated deliberately blocked work.
+ while(!poisoned.query()&&!gate.released.load())std::this_thread::sleep_for(std::chrono::milliseconds(1));
+ TORCH_CHECK(poisoned.query()&&!proof.query(),"Publisher poison did not finish with the reader still pending");
+ for(auto stream:{first,second}) {
+  c10::cuda::CUDAStreamGuard guard(stream);
+  for(int i=0;i<32;++i)at::empty({320,12,3},host.device(device).dtype(at::kFloat)).fill_(999);
+ }
+ TORCH_CHECK(!proof.query(),"Index clear or allocator churn drained the pending reader");
+ gate.open();first.synchronize();second.synchronize();watchdog.request_stop();watchdog.join();
+ for(size_t i=0;i<outputs.size();++i)TORCH_CHECK(at::equal(outputs[i].cpu(),expected[i]),"Indexed reader changed after clear, mutation or stream retirement");
+}
 void cache_cold_maximum_test(const c10::Device& device) {
  const auto major=at::cuda::getDeviceProperties(device.index())->major;
  if((major!=9&&major!=10)||at::detail::getCUDAHooks().versionRuntimeCuDNN()<91800)return;
@@ -836,6 +938,7 @@ void probe_cache_test() {
 int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(1);
 #ifdef TEI_TORCH_CUDA_KERNELS
  if(argc>1&&std::string(argv[1])=="boundary-cuda"){cumulative_stream_test(c10::Device("cuda:0"));return 0;}
+ if(argc>1&&std::string(argv[1])=="index-cuda"){indexed_stream_test(c10::Device("cuda:0"));return 0;}
 #endif
  {
   // Preselected, non-normalized FP32 routes preserve learned expert scales
@@ -906,7 +1009,7 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
     at::tensor({0,1,2,0,1,2,3},opts),at::tensor(ends,opts.dtype(at::kInt)),ends.data(),2,4};
    check_prefix_cache(*gpu,input,0,.01,.02);
 #ifdef TEI_TORCH_CUDA_KERNELS
-   if(std::string(family)=="qwen3") {cumulative_stream_test(c10::Device(argv[1]));cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
+   if(std::string(family)=="qwen3") {indexed_stream_test(c10::Device(argv[1]));cumulative_stream_test(c10::Device(argv[1]));cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
    if(std::string(family)=="qwen2")cache_cold_maximum_test(c10::Device(argv[1]));
 #endif
   }
