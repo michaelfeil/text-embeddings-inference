@@ -131,6 +131,7 @@ if(INFINITY_BUILD_NATIVE_TESTS)
     # disabled: CPU fixtures can still link against a CUDA-enabled library.
     target_compile_definitions(gemma_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
     target_compile_definitions(qwen3_vl_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
+    target_compile_definitions(qwen35_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
   endif()
   if(TARGET torch_cuda AND INFINITY_RUN_CUDA_TESTS)
     foreach(test output bert_private_flash qwen35_reference fp8_linear decoder_fp8 fast_kernels encoder_activation encoder_norm decoder_norm cuda_graph gemma_vision_kernels gemma_rotary packed_pool packed_alibi packed_relative_bias moe_kernels moe_cuda_graph torch_flash_fma)
