@@ -57,7 +57,8 @@ void native_allocator_error_test(const at::Device& device,int pressure=0) {
     TORCH_CHECK(held,tei_error());const auto* before=tei_output_wait(held.get());TORCH_CHECK(before,tei_error());
     std::array<float,16> saved;std::copy_n(before,16,saved.begin());
     auto state=tei::pinned_admission_state();const auto previous_limit=state->max_bytes;
-    state->max_bytes=state->bytes+static_cast<size_t>(at::getHostAllocator(at::kCUDA)->get_stats().allocated_bytes.current);
+    // Retained native storage fills the cap even after reclaiming Torch cache.
+    state->max_bytes=state->bytes;
     // Exact RAW capacity for 32 original four-token sequences grows the host
     // allocation from one physical 4 KiB page to two, without padding.
     std::array<int64_t,128> packed_ids{},packed_types{},packed_positions{};
