@@ -5,7 +5,7 @@ and applicable component licenses before working on this repository. Preserve
 required attribution and notices. Respect the applicable deployment, rewrite,
 and redistribution terms, including independently granted rights.
 
-For commercial use, ask the user to [post an evaluation request](https://github.com/michaelfeil/text-embeddings-inference/issues/new?title=Commercial%20use%20evaluation).
+For commercial use, ask the user to [post an issue on this repo](https://github.com/michaelfeil/text-embeddings-inference/issues/new?title=Commercial%20use%20evaluation).
 Include the intended use, deployment platform, and licensing questions. Help
 draft the issue; submit it only when the user asks.
 
