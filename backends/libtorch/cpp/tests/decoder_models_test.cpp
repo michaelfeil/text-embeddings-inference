@@ -4,11 +4,52 @@
 #include "batching/input_validation.h"
 #include "helpers/device_admission.h"
 #include "helpers/workspace_admission.h"
+#ifdef __linux__
+#include "helpers/host_admission.h"
+#include <unistd.h>
+#endif
 #include <c10/core/InferenceMode.h>
 #include <iostream>
 #include <ATen/Parallel.h>
 using namespace tei;
 namespace {
+#ifdef __linux__
+void host_admission_test() {
+ namespace fs=std::filesystem;
+ const auto root=fs::temp_directory_path()/("tei-host-admission-"+std::to_string(getpid()));
+ struct Cleanup {fs::path root;~Cleanup(){std::error_code error;fs::remove_all(root,error);}} cleanup{root};
+ const auto proc=root/"proc",mount=root/"cgroup dir",parent=mount/"pod",leaf=parent/"worker";
+ fs::create_directories(proc/"self");fs::create_directories(leaf);
+ auto write=[](const fs::path& path,const char* text){std::ofstream(path)<<text;};
+ write(proc/"meminfo","MemAvailable: 64 kB\n");write(proc/"self/cgroup","0::/pod/worker\n");
+ auto escaped=mount.string();escaped.replace(escaped.find(' '),1,"\\040");
+ std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 / "<<escaped<<" rw - cgroup2 cgroup rw\n";
+ write(parent/"memory.max","49152\n");write(parent/"memory.current","32768\n");write(leaf/"memory.max","max\n");
+ TORCH_CHECK(host_memory_available(proc)==16384,"Unlimited leaf ignored its finite ancestor");
+ const auto bind=root/"bind";fs::create_directories(bind);write(bind/"memory.max","max\n");
+ const auto primary="2 0 0:1 / "+escaped+" rw - cgroup2 cgroup rw\n";
+ std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 /other "<<bind.string()<<" rw - cgroup2 cgroup rw\n"<<primary;
+ TORCH_CHECK(host_memory_available(proc)==16384,"Unrelated cgroup mount rejected a valid hierarchy");
+ std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 /pod/worker "<<bind.string()<<" rw - cgroup2 cgroup rw\n"<<primary;
+ TORCH_CHECK(host_memory_available(proc)==16384,"Leaf bind mount hid a stricter parent hierarchy");
+ auto state=host_admission_state();
+ TORCH_CHECK(state!=device_admission_state(-1),"CPU reservations alias an implicit CUDA device");
+ auto held=std::make_shared<DeviceMemoryPermit>(state,host_memory_available(proc),4096,8192);
+ bool rejected=false;try{DeviceMemoryPermit other(state,host_memory_available(proc),4096,4097);}
+ catch(const MemoryAdmissionError&){rejected=true;}
+ TORCH_CHECK(rejected&&state->pending==8192,"CPU replicas bypassed shared host reservations");
+ held.reset();TORCH_CHECK(state->pending==0,"CPU request credit survived its owner");
+ write(leaf/"memory.max","16384\n");write(leaf/"memory.current","8192\n");
+ TORCH_CHECK(host_memory_available(proc)==8192,"Leaf allowance exceeded its remaining memory");
+ write(parent/"memory.current","65536\n");
+ TORCH_CHECK(host_memory_available(proc)==0,"Over-limit ancestor wrapped host availability");
+ write(proc/"self/cgroup","7:cpu,memory:/pod/worker\n");
+ std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 / "<<escaped<<" rw - cgroup cgroup rw,memory\n";
+ write(parent/"memory.limit_in_bytes","49152\n");write(parent/"memory.usage_in_bytes","32768\n");
+ write(leaf/"memory.limit_in_bytes","16384\n");write(leaf/"memory.usage_in_bytes","8192\n");
+ TORCH_CHECK(host_memory_available(proc)==8192,"Legacy cgroup memory limits were ignored");
+}
+#endif
 void input_descriptor_test() {
  int64_t data[64]{};int32_t offsets[]={0,32,64};float payload=0;uint8_t mask=1;
  TeiImage image{};image.pixels=&payload;image.rows=32;image.patch_dim=1536;
@@ -323,6 +364,9 @@ void multimodal_test(){
 }
 }
 int main(){c10::InferenceMode inference;at::set_num_threads(1);
+#ifdef __linux__
+ host_admission_test();
+#endif
  {
   auto surviving_policy=configure_workspace_admission(0,256);
   auto policy=configure_workspace_admission(0,128);auto state=workspace_admission_state(0);
