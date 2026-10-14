@@ -28,8 +28,10 @@ effect for the material and rights they cover. Retained attribution is in
 
 The server command is `infinity_v3`; shared Rust packages use the `infinity_v3-`
 prefix. LibTorch keeps its existing package name, source imports, and native
-symbols and `TEI_TORCH_*` environment variables. The queue's early-dispatch
-override is `INFINITY_EARLY_DISPATCH_TOKENS`.
+symbols. Project settings previously named `TEI_*` now use `INFINITY_*`, including
+LibTorch, HTTP memory budgets, test fixtures, and benchmarks. Update deployment
+and test configurations when upgrading; the old environment names are no longer
+read. The queue's early-dispatch override is `INFINITY_EARLY_DISPATCH_TOKENS`.
 
 ## Table of contents
 
@@ -951,8 +953,7 @@ ALiBi, mismatched devices, and builds without FA4 retain the existing attention 
 EmbeddingGemma's dimension 256 remains on FA2. Set `ATTN_BACKEND=fa2` to disable
 FA4, or `ATTN_BACKEND=fa4` to explicitly request the same supported FA4 paths
 (with fallback for unsupported shapes). The environment selection is cached
-on first use; restart the process to change it. FP8 is independently opt-in. The earlier
-`TEI_ATTENTION_BACKEND` and `TEI_PERF_FA4` experimental controls are no longer used.
+on first use; restart the process to change it. FP8 is independently opt-in.
 
 When FA4 is enabled, models using the shared flash-attention dispatcher register
 their variable-length boundaries once per batch. The current native bundles support d64 MHA global

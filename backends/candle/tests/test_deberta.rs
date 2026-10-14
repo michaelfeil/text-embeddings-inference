@@ -6,7 +6,7 @@ use infinity_v3_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
 #[test]
 #[ignore = "requires H100, FA4 DeBERTa AOT bundle, and generated Transformers fixtures"]
 fn packed_deberta_matches_transformers() -> anyhow::Result<()> {
-    let root = std::path::PathBuf::from(std::env::var("TEI_DEBERTA_FIXTURES")?);
+    let root = std::path::PathBuf::from(std::env::var("INFINITY_DEBERTA_FIXTURES")?);
     let mut tested = 0;
     for entry in std::fs::read_dir(root)? {
         let path = entry?.path();

@@ -44,7 +44,7 @@ thread_local std::string error;
 std::once_flag precision_initialized;
 void initialize_precision() {
   std::call_once(precision_initialized, [] {
-    const auto* value = std::getenv("TEI_TORCH_FULL_PRECISION_GEMM");
+    const auto* value = std::getenv("INFINITY_TORCH_FULL_PRECISION_GEMM");
     if (value && (std::strcmp(value, "true") == 0 || std::strcmp(value, "1") == 0)) {
       at::globalContext().setAllowFP16ReductionCuBLAS(false);
       at::globalContext().setAllowBF16ReductionCuBLAS(false);
