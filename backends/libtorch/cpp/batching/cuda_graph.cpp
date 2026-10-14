@@ -82,7 +82,18 @@ struct CudaGraphCache::Impl {
       try { if(resident.second->replay_stream)resident.second->replay_stream->synchronize(); }
       catch(...) { /* A failed device is reported by inference/completion. */ }
     }
-    entries.clear();
+    // A destroyed graph marks its private pool freeable, but does not return
+    // its reserved segments to CUDA. Reclaim each pool after dropping its
+    // graph/static tensors; held output tensors keep their storage alive.
+    while(!entries.empty()) {
+      const auto resident=entries.begin();
+      const auto pool=resident->second->graph->pool();
+      entries.erase(resident);
+      try { c10::cuda::CUDACachingAllocator::emptyCache(pool); }
+      catch(...) { /* Cleanup must not throw from model destruction. */ }
+    }
+    try { reclaim_retired(); }
+    catch(...) { /* A failed device is reported by inference/completion. */ }
   }
 #endif
   Impl(size_t count,int64_t tokens,size_t uses,uint64_t bytes,size_t captures)
