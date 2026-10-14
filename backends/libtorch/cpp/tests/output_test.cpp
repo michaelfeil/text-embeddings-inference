@@ -12,7 +12,8 @@
 
 // Exercise the production C ABI catch and error-unwind path with a real CUDA
 // allocator rejection. The large payload is never transferred or read.
-void native_allocator_error_test(const at::Device& device,bool bounded_staging=false) {
+void native_allocator_error_test(const at::Device& device,int pressure=0) {
+  const bool bounded_staging=pressure==1;
   TeiConfig cfg{16,2,2,24,32,32,1,1e-6,0};
   std::unique_ptr<void,decltype(&tei_destroy)> engine(tei_create(&cfg,device.str().c_str(),1),tei_destroy);
   TORCH_CHECK(engine,tei_error());
@@ -50,6 +51,24 @@ void native_allocator_error_test(const at::Device& device,bool bounded_staging=f
     TORCH_CHECK(tei_last_error_kind()==0,"Valid result retained allocator error kind");
   };
   valid();
+  if(pressure==2) {
+    std::unique_ptr<void,decltype(&tei_output_destroy)> held(tei_forward_submit(engine.get(),ids,types,positions,
+      offsets,1,4,0,&row,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(held,tei_error());const auto* before=tei_output_wait(held.get());TORCH_CHECK(before,tei_error());
+    std::array<float,16> saved;std::copy_n(before,16,saved.begin());
+    auto state=tei::pinned_admission_state();const auto previous_limit=state->max_bytes;
+    state->max_bytes=state->bytes+static_cast<size_t>(at::getHostAllocator(at::kCUDA)->get_stats().allocated_bytes.current);
+    try {
+      std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),ids,types,positions,
+        offsets,1,4,0,&row,1,nullptr,0,8192,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+      TORCH_CHECK(!rejected&&tei_last_error_kind()==2&&std::string(tei_error()).find("Process native pinned staging")!=std::string::npos,
+        "Process pinned saturation lost its recoverable admission classification");
+      const auto* after=tei_output_wait(held.get());TORCH_CHECK(after,tei_error());
+      for(size_t i=0;i<saved.size();++i)TORCH_CHECK(after[i]==saved[i],"Pinned rejection corrupted a pending result");
+      held.reset();valid();
+    } catch(...) {state->max_bytes=previous_limit;throw;}
+    state->max_bytes=previous_limit;return;
+  }
   if(bounded_staging) {
     std::unique_ptr<void,decltype(&tei_output_destroy)> held(tei_forward_submit(engine.get(),ids,types,positions,
       offsets,1,4,0,&row,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
@@ -298,6 +317,7 @@ int main() {
       TORCH_CHECK(recovered.wait()[7] == 11, "Device allocation failure poisoned subsequent submission"); }
     native_allocator_error_test(device);
     native_allocator_error_test(device,true);
+    native_allocator_error_test(device,2);
     std::cout << "output staging, overlap, graph eviction, alternation, reuse and cancellation passed\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
