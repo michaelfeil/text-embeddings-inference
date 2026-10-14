@@ -1,10 +1,12 @@
 #pragma once
 #include "batching/prefix_cache.h"
+#include <span>
 
 namespace tei {
 constexpr int64_t prefix_block_tokens=64;
 void prefix_fingerprints(PrefixIdentity&,int64_t tokens);
 PrefixFingerprint prefix_admission_fingerprint(const PrefixIdentity&,int operation);
+PrefixFingerprint prefix_admission_fingerprint(std::span<const PrefixToken>,int operation,bool image_context);
 int64_t prefix_common(const PrefixIdentity&,const PrefixIdentity&,int64_t limit);
 bool prefix_same(const PrefixIdentity&,const PrefixIdentity&);
 struct PrefixLookup {

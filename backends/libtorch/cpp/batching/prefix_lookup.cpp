@@ -9,11 +9,14 @@
 
 namespace tei {
 PrefixFingerprint prefix_admission_fingerprint(const PrefixIdentity& key,int operation) {
+  return prefix_admission_fingerprint(key.tokens,operation,key.image_context);
+}
+PrefixFingerprint prefix_admission_fingerprint(std::span<const PrefixToken> tokens,int operation,bool image_context) {
   // Collisions only permit a capture; retained identities still compare exactly.
   // Observe common causal stems rather than requiring an identical changing tail.
-  auto count=std::min<size_t>(prefix_block_tokens,key.tokens.size());
-  auto hash=XXH3_128bits_withSeed(key.tokens.data(),count*sizeof(PrefixToken),
-    uint64_t(operation)*2+uint64_t(key.image_context));
+  auto count=std::min<size_t>(prefix_block_tokens,tokens.size());
+  auto hash=XXH3_128bits_withSeed(tokens.data(),count*sizeof(PrefixToken),
+    uint64_t(operation)*2+uint64_t(image_context));
   return {hash.low64,hash.high64};
 }
 void prefix_fingerprints(PrefixIdentity& key,int64_t tokens) {

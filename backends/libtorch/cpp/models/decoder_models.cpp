@@ -557,10 +557,15 @@ public:
   at::Tensor classify_hidden(const PackedInput& input,const at::Tensor& hidden_states) const override {
     const auto& logical=prefix_logical_input(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if((dtype==at::kBFloat16||qwen_half_exact)&&family=="qwen2"&&hidden==896&&head_dim==64&&hidden_states.is_cuda()) {
+    if(hidden_states.is_cuda()&&hidden_states.dim()==2&&hidden_states.is_contiguous()
+      &&(hidden_states.scalar_type()==at::kBFloat16||hidden_states.scalar_type()==at::kHalf||hidden_states.scalar_type()==at::kFloat)
+      &&logical.ids.device()==hidden_states.device()&&logical.ids.scalar_type()==at::kLong
+      &&logical.ids.dim()==1&&logical.ids.is_contiguous()
+      &&logical.cumulative.device()==hidden_states.device()&&logical.cumulative.scalar_type()==at::kInt
+      &&logical.cumulative.is_contiguous()) {
       TORCH_CHECK(hidden_states.size(-1)==score.size(1),"Classifier backbone output projection has incompatible width");
-      return at::linear(qwen2_packed_classifier_rows(hidden_states,logical.ids,logical.cumulative,
-        logical.batch,options.integer("pad_token_id",-1)),score,score_bias);
+      return at::linear(decoder_packed_classifier_rows(hidden_states,logical.ids,logical.cumulative,
+        logical.batch,options.integer("pad_token_id",-1),options.values.count("pad_token_id")!=0),score,score_bias);
     }
 #endif
     auto starts=logical.cumulative.narrow(0,0,logical.batch).to(at::kLong);

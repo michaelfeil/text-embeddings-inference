@@ -283,7 +283,10 @@ PrefixCache::~PrefixCache()=default;
 void PrefixCache::clear() {std::lock_guard guard(mutex);entries.clear();linear->clear();recent={};recent_next=0;}
 bool PrefixCache::admit(const PrefixIdentity& identity,int operation) {
   if(admission_uses==1)return true;
-  auto key=prefix_admission_fingerprint(identity,operation);
+  return admit(prefix_admission_fingerprint(identity,operation));
+}
+bool PrefixCache::admit(PrefixFingerprint key) {
+  if(admission_uses==1)return true;
   for(auto& observed:recent)if(observed.uses&&observed.key==key) {
     if(observed.uses<admission_uses)++observed.uses;
     return observed.uses>=admission_uses;
@@ -293,25 +296,34 @@ bool PrefixCache::admit(const PrefixIdentity& identity,int operation) {
 }
 PrefixCache::Stats PrefixCache::stats() const {std::lock_guard guard(mutex);return counters;}
 uint64_t PrefixCache::bytes() const {std::lock_guard guard(mutex);return budget->live_bytes;}
-static PrefixIdentity identity(const PackedInput& input,int64_t row) {
-  const auto& ids=input.ids;const auto& positions=input.positions;const auto& types=input.types;
-  const auto& axes=input.multimodal_positions;
-  for(const auto& values:{ids,positions,types})TORCH_CHECK(values.device().is_cpu()
-    &&values.scalar_type()==at::kLong&&values.is_contiguous()&&values.dim()==1
-    &&values.numel()==ids.numel(),"Invalid host prefix identity metadata");
-  if(axes.defined())TORCH_CHECK(axes.device().is_cpu()&&axes.scalar_type()==at::kLong
-    &&axes.is_contiguous()&&axes.sizes()==at::IntArrayRef({3,ids.numel()}),"Invalid host prefix rotary axes");
-  auto token_ids=ids.const_data_ptr<int64_t>(),token_positions=positions.const_data_ptr<int64_t>(),token_types=types.const_data_ptr<int64_t>();
-  const auto* rotary=axes.defined()?axes.const_data_ptr<int64_t>():nullptr;
+struct HostPrefixTokens {
+  const int64_t *ids,*positions,*types,*rotary;
+  int64_t total;
+  explicit HostPrefixTokens(const PackedInput& input,int64_t expected):total(input.ids.numel()) {
+    TORCH_CHECK(total==expected,"Host prefix IDs must match packed token count");
+    const auto& axes=input.multimodal_positions;
+    for(const auto& values:{input.ids,input.positions,input.types})TORCH_CHECK(values.device().is_cpu()
+      &&values.scalar_type()==at::kLong&&values.is_contiguous()&&values.dim()==1
+      &&values.numel()==total,"Invalid host prefix identity metadata");
+    if(axes.defined())TORCH_CHECK(axes.device().is_cpu()&&axes.scalar_type()==at::kLong
+      &&axes.is_contiguous()&&axes.sizes()==at::IntArrayRef({3,total}),"Invalid host prefix rotary axes");
+    ids=input.ids.const_data_ptr<int64_t>();positions=input.positions.const_data_ptr<int64_t>();types=input.types.const_data_ptr<int64_t>();
+    rotary=axes.defined()?axes.const_data_ptr<int64_t>():nullptr;
+  }
+  PrefixToken token(int64_t index) const {
+    PrefixToken value;value.values={ids[index],positions[index],types[index],0,0,0};
+    if(rotary)for(int i=0;i<3;++i)value.values[3+i]=rotary[i*total+index];
+    return value;
+  }
+};
+static PrefixIdentity identity(const PackedInput& input,int64_t row,const HostPrefixTokens& host) {
   auto start=input.offsets[row],end=input.offsets[row+1];PrefixIdentity key;
   // Image processing can select a residual path for every row in a batch,
   // including text-only rows. Keep that execution context in their identity.
   key.image_context=!input.images.empty();
   key.tokens.reserve(end-start);
   for(int64_t t=start;t<end;++t) {
-    PrefixToken token;token.values={token_ids[t],token_positions[t],token_types[t],0,0,0};
-    if(rotary)for(int i=0;i<3;++i)token.values[3+i]=rotary[i*ids.numel()+t];
-    key.tokens.push_back(token);
+    key.tokens.push_back(host.token(t));
   }
   for(const auto& image:input.images)if(image.token_start>=start&&image.token_start<end) {
     PrefixMedia media;media.start=image.token_start-start;media.count=image.token_count;
@@ -352,12 +364,41 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   host.positions=original.host_positions.defined()?original.host_positions:original.positions.cpu();
   if(original.multimodal_positions.defined())host.multimodal_positions=original.host_multimodal_positions.defined()
     ?original.host_multimodal_positions:original.multimodal_positions.cpu();
-  std::vector<PrefixIdentity> identities;identities.reserve(original.batch);
-  for(int64_t row=0;row<original.batch;++row)identities.push_back(identity(host,row));
+  HostPrefixTokens tokens(host,original.ids.numel());
   // CUDA recipes can depend on the complete packed geometry. Old prefix rows
   // cannot be repaired by selecting the current recipe only for suffix rows.
   // Require the same geometry until cross-shape providers are qualified.
   const auto* reuse_layout=original.ids.is_cuda()?&original:nullptr;
+  std::vector<uint8_t> observed;
+  if(admission_uses>1&&original.images.empty()) {
+    // A first-token mismatch proves that no resident prefix can be consumed.
+    // Observe only the bounded stem before allocating complete identities or
+    // suffix metadata. Keep each row's decision so a mixed batch is observed
+    // exactly once, even when another row permits snapshot capture.
+    bool candidate=false;
+    for(int64_t row=0;!entries.empty()&&row<original.batch&&!candidate;++row) {
+      auto first=tokens.token(original.offsets[row]);
+      candidate=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
+        &&!entry->identity.image_context&&!entry->identity.tokens.empty()&&entry->identity.tokens.front()==first
+        &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout));});
+    }
+    if(!candidate) {
+      observed.resize(original.batch);std::array<PrefixToken,prefix_block_tokens> stem;
+      for(int64_t row=0;row<original.batch;++row) {
+        auto length=original.offsets[row+1]-original.offsets[row];
+        auto retained=std::min<int64_t>(maximum,length-(model.prefix_checkpoint_only()?1:0));
+        if(model.prefix_checkpoint_only()&&retained>=64)retained=retained/64*64;
+        const auto count=std::min<int64_t>(retained,prefix_block_tokens);
+        for(int64_t t=0;t<count;++t)stem[t]=tokens.token(original.offsets[row]+t);
+        if(count)observed[row]=admit(prefix_admission_fingerprint({stem.data(),size_t(count)},operation,false));
+      }
+      if(std::none_of(observed.begin(),observed.end(),[](auto value){return value!=0;})) {
+        counters.misses+=original.batch;++counters.bypasses;return fallback();
+      }
+    }
+  }
+  std::vector<PrefixIdentity> identities;identities.reserve(original.batch);
+  for(int64_t row=0;row<original.batch;++row)identities.push_back(identity(host,row,tokens));
   if((operation==0||operation==1)&&!model.prefix_checkpoint_only()) {
     std::vector<std::shared_ptr<PrefixEntry>> complete;complete.reserve(original.batch);
     for(const auto& key:identities) {
@@ -435,7 +476,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     key.fingerprints.resize(std::min(key.fingerprints.size(),key.tokens.size()/prefix_block_tokens));
     bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
       &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout))&&prefix_same(key,entry->identity);});
-    if(retained>best&&!resident_exact&&admit(key,operation)) {
+    if(retained>best&&!resident_exact&&(observed.empty()?admit(key,operation):observed[row])) {
       prefix_fingerprints(key,retained);key.fingerprints.shrink_to_fit();
       uint64_t metadata=sizeof(PrefixEntry)+key.tokens.capacity()*sizeof(PrefixToken)+key.media.capacity()*sizeof(PrefixMedia)
         +key.fingerprints.capacity()*sizeof(PrefixFingerprint);

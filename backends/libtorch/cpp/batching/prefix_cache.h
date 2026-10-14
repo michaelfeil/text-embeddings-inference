@@ -127,5 +127,6 @@ private:
   size_t recent_next=0, admission_uses;
   bool ordered_submissions;
   bool admit(const PrefixIdentity&,int operation);
+  bool admit(PrefixFingerprint);
 };
 }

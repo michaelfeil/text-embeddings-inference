@@ -218,6 +218,22 @@ void cache_admission_test(Model& model) {
   check_close(delayed.run(observed,input,0,&graphs),model.forward(input));
  }
  TORCH_CHECK(delayed.bytes()==0&&delayed.stats().admissions==1,"One-off churn consumed cache tensor storage");
+ // Mixed observation counts are per row: permitting capture of warmed A must
+ // not observe first-seen B twice and admit both on this same request.
+ PrefixCache mixed(1<<20,64,8,2);
+ input.ids=at::tensor({3,4,5,6},options);mixed.run(observed,input,0);
+ std::vector<int32_t> mixed_ends={0,4,8};
+ PackedInput batch{at::tensor({3,4,5,6,9,4,5,6},options),at::zeros({8},options),
+  at::tensor({0,1,2,3,0,1,2,3},options),at::tensor(mixed_ends,options.dtype(at::kInt)),mixed_ends.data(),2,4};
+ check_close(mixed.run(observed,batch,0),model.forward(batch));
+ TORCH_CHECK(mixed.stats().admissions==1,"Mixed batch admitted a first-seen row");
+ input.ids=at::tensor({9,4,5,6},options);mixed.run(observed,input,0);
+ TORCH_CHECK(mixed.stats().admissions==2,"Mixed first observation was lost");
+ auto malformed=input;
+ malformed.host_ids=input.ids.narrow(0,0,3);malformed.host_types=input.types.narrow(0,0,3);
+ malformed.host_positions=input.positions.narrow(0,0,3);
+ bool invalid_host=false;try{mixed.run(observed,malformed,0);}catch(const c10::Error&){invalid_host=true;}
+ TORCH_CHECK(invalid_host&&mixed.bytes()==0,"Invalid borrowed host length reached prefix lookup");
 }
 void cache_concurrency_test(Model& model) {
  auto options=at::TensorOptions().dtype(at::kLong);
@@ -401,10 +417,16 @@ void cache_stream_test(Model& model,PackedInput input) {
 void native_engine_stream_test(const c10::Device& device) {
  auto producer=c10::cuda::getStreamFromPool(false,device.index());
  auto consumer=c10::cuda::getStreamFromPool(false,device.index());
- for(bool caching:{false,true}) {
+ for(int pool:{2,4})for(bool caching:{false,true}) {
   auto cfg=config("qwen3");cfg.values["num_attention_heads"]="2";
   cfg.values["num_key_value_heads"]="1";cfg.values["head_dim"]="8";
   auto tensors=weights(cfg);
+  const int width=pool==4?3:16;
+  if(pool==4) {
+   cfg.values["architectures.0"]="Qwen3ForSequenceClassification";cfg.values["num_labels"]="3";cfg.values["pad_token_id"]="0";
+   tensors["score.weight"]=at::arange(48,at::kFloat).view({3,16})*.013;
+   tensors["score.bias"]=at::tensor({.1f,-.2f,.3f});
+  }
   for(auto& [name,value]:tensors)if(name.ends_with("q_norm.weight")||name.ends_with("k_norm.weight"))value=value.repeat({2});
   TeiConfig shape{16,2,2,24,32,32,1,1e-6,3};
   auto handle=tei_create(&shape,device.str().c_str(),2);TORCH_CHECK(handle,tei_error());
@@ -412,22 +434,23 @@ void native_engine_stream_test(const c10::Device& device) {
   for(const auto& [key,value]:cfg.values)TORCH_CHECK(tei_option(handle,key.c_str(),value.c_str())==0,tei_error());
   TORCH_CHECK(tei_option(handle,"_cuda_graphs","true")==0,tei_error());
   TORCH_CHECK(tei_option(handle,"_cuda_graph_reuse","1")==0,tei_error());
-  if(caching)TORCH_CHECK(tei_option(handle,"_prefix_cache_max_bytes","1048576")==0,tei_error());
+  if(caching)TORCH_CHECK(tei_option(handle,"_prefix_cache_max_bytes","1048576")==0
+    &&tei_option(handle,"_prefix_cache_entries","1")==0,tei_error());
   for(const auto& [key,value]:tensors)TORCH_CHECK(tei_weight(handle,key.c_str(),
    reinterpret_cast<const uint8_t*>(value.const_data_ptr()),value.sizes().data(),value.dim(),0)==0,tei_error());
   TORCH_CHECK(tei_ready(handle)==0,tei_error());
   std::array<int64_t,4> a={3,4,5,6},b={7,4,5,8},types{},positions={0,1,2,3};
   int32_t ends[]={0,4};int64_t selected[]={0};
   auto submit=[&](const auto& ids) {
-   auto output=tei_forward_submit(handle,ids.data(),types.data(),positions.data(),ends,1,4,2,selected,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr);
+   auto output=tei_forward_submit(handle,ids.data(),types.data(),positions.data(),ends,1,4,pool,selected,1,nullptr,0,width,nullptr,nullptr,0,nullptr,0,nullptr);
    TORCH_CHECK(output,tei_error());return output;
   };
   struct OutputOwner{void* value=nullptr;~OutputOwner(){if(value)tei_output_destroy(value);}};
-  std::array<float,16> expected_a{},expected_b{};
+  std::vector<float> expected_a(width),expected_b(width);
   auto warm=[&](const auto& ids,auto& expected,c10::cuda::CUDAStream stream) {
    c10::cuda::CUDAStreamGuard guard(stream);
    for(int i=0;i<4;++i) {OutputOwner output{submit(ids)};auto data=tei_output_wait(output.value);
-    TORCH_CHECK(data,tei_error());std::copy(data,data+16,expected.begin());}
+    TORCH_CHECK(data,tei_error());std::copy(data,data+width,expected.begin());}
   };
   warm(a,expected_a,producer);warm(b,expected_b,consumer);
   TORCH_CHECK(expected_a!=expected_b,"Stream fixture cannot distinguish its two requests");
@@ -448,14 +471,54 @@ void native_engine_stream_test(const c10::Device& device) {
   {c10::cuda::CUDAStreamGuard guard(consumer);second.value=submit(b);consumed.record(consumer);}
   std::this_thread::sleep_for(std::chrono::milliseconds(10));
   const bool pending=!blocked.query(),ordered=!consumed.query();gate.release();watchdog.join();
+  std::cout<<"submission proof: pool="<<pool<<" cache="<<caching<<" pending="<<pending<<" ordered="<<ordered<<std::endl;
   TORCH_CHECK(pending,"Native stream fixture did not retain queued producer work");
   TORCH_CHECK(ordered,"A different stream bypassed native submission ordering");
   for(auto pair:{std::pair{first.value,&expected_a},std::pair{second.value,&expected_b}}) {
    auto data=tei_output_wait(pair.first);TORCH_CHECK(data,tei_error());
-   TORCH_CHECK(std::equal(data,data+16,pair.second->begin()),"Cross-stream replay overwrote a deferred native result");
+   TORCH_CHECK(std::equal(data,data+width,pair.second->begin()),"Cross-stream replay overwrote a deferred native result");
   }
   tei_output_destroy(first.value);first.value=nullptr;
   tei_output_destroy(second.value);second.value=nullptr;
+  {
+   // Move completion to another CPU thread, alternate GPU streams and retire
+   // readers only before reusing their A/B slot. Clear/one-entry eviction and
+   // cancellation run while the other lease can still own queued output.
+   std::array<OutputOwner,2> pending;
+   std::array<const std::vector<float>*,2> expected{};
+   auto collect=[&](int slot,bool cancel=false) {
+    if(!pending[slot].value)return;
+    if(!cancel) {
+     auto value=pending[slot].value;
+     auto data=std::async(std::launch::async,[value]{auto result=tei_output_wait(value);TORCH_CHECK(result,tei_error());return result;}).get();
+     TORCH_CHECK(std::equal(data,data+width,expected[slot]->begin()),"Native classifier/embedding stress changed a deferred result");
+    }
+    tei_output_destroy(pending[slot].value);pending[slot].value=nullptr;
+   };
+   for(int step=0;step<96;++step) {
+    const auto slot=step%2;collect(slot,step%13==0);
+    if(step%17==0)TORCH_CHECK(tei_prefix_cache_clear(handle)==0,tei_error());
+    const bool use_b=(step/3)%2;
+    c10::cuda::CUDAStreamGuard guard(step%2?consumer:producer);
+    pending[slot].value=submit(use_b?b:a);expected[slot]=use_b?&expected_b:&expected_a;
+   }
+   collect(0);collect(1);
+   if(caching) {
+    uint64_t stats[7];TORCH_CHECK(tei_prefix_cache_stats(handle,stats,7)==0&&stats[4]>0,
+     "One-entry native stress never evicted a snapshot");
+   }
+   {
+    c10::cuda::CUDAStreamGuard guard(consumer);
+    OutputOwner invalid{tei_forward_submit(handle,a.data(),types.data(),positions.data(),ends,1,4,pool,
+      selected,1,nullptr,0,0,nullptr,nullptr,0,nullptr,0,nullptr)};
+    TORCH_CHECK(!invalid.value,"Undersized deferred output unexpectedly succeeded");
+   }
+   {
+    c10::cuda::CUDAStreamGuard guard(producer);OutputOwner recovered{submit(a)};
+    auto data=tei_output_wait(recovered.value);
+    TORCH_CHECK(data&&std::equal(data,data+width,expected_a.begin()),"Recoverable submission error contaminated the next stream's result");
+   }
+  }
   if(caching) {
    TORCH_CHECK(tei_prefix_cache_clear(handle)==0,tei_error());
    {c10::cuda::CUDAStreamGuard guard(producer);OutputOwner observe{submit(a)};TORCH_CHECK(tei_output_wait(observe.value),tei_error());}
@@ -470,7 +533,7 @@ void native_engine_stream_test(const c10::Device& device) {
    TORCH_CHECK(tei_prefix_cache_stats(handle,after,7)==0,tei_error());
    const bool was_pending=!unpublished.query();gate.release();release_pending.join();
    for(auto output:{produced.value,resumed.value}) {
-    auto data=tei_output_wait(output);TORCH_CHECK(data&&std::equal(data,data+16,expected_a.begin()),"Ordered pending native reuse changed result bits");
+    auto data=tei_output_wait(output);TORCH_CHECK(data&&std::equal(data,data+width,expected_a.begin()),"Ordered pending native reuse changed result bits");
    }
    TORCH_CHECK(was_pending,"Native snapshot fixture did not retain pending producer work");
    TORCH_CHECK(after[0]==before[0]+1&&after[2]==before[2]+4,"Ordered native stream recomputed a pending snapshot");
@@ -494,11 +557,11 @@ void native_engine_stream_test(const c10::Device& device) {
   std::cout<<"reload proof: pending="<<reload_pending<<" wait_status="<<int(reload_status)<<" result="<<reload_result<<std::endl;
   TORCH_CHECK(reload_pending&&reload_status==std::future_status::timeout&&reload_result==0,"Ready did not drain pending old-model work");
   const auto prior=tei_output_wait(previous.value);
-  TORCH_CHECK(prior&&std::equal(prior,prior+16,expected_a.begin()),"Ready invalidated a deferred result from the old model");
+  TORCH_CHECK(prior&&std::equal(prior,prior+width,expected_a.begin()),"Ready invalidated a deferred result from the old model");
   TORCH_CHECK(tei_graph_count(handle)==0,"Ready retained disabled CUDA graphs");
   {c10::cuda::CUDAStreamGuard guard(consumer);OutputOwner fresh{submit(b)};auto data=tei_output_wait(fresh.value);
-   TORCH_CHECK(data&&std::equal(data,data+16,expected_b.begin()),"Ready did not order initialization before the next stream's inference");}
-  TORCH_CHECK(std::equal(prior,prior+16,expected_a.begin()),"New-model inference overwrote a retained old-model result");
+   TORCH_CHECK(data&&std::equal(data,data+width,expected_b.begin()),"Ready did not order initialization before the next stream's inference");}
+  TORCH_CHECK(std::equal(prior,prior+width,expected_a.begin()),"New-model inference overwrote a retained old-model result");
   tei_output_destroy(previous.value);previous.value=nullptr;
   // Destruction must drain a genuinely pending submission, and the lease still
   // owns its host result afterward. No engine calls start after destruction.
@@ -515,9 +578,9 @@ void native_engine_stream_test(const c10::Device& device) {
   TORCH_CHECK(retiring_pending,"Destruction fixture did not retain queued GPU work");
   TORCH_CHECK(retiring_status==std::future_status::timeout,"Engine destruction released a pending submission");
   const auto saved=tei_output_wait(survivor.value);
-  TORCH_CHECK(saved&&std::equal(saved,saved+16,expected_a.begin()),"Engine destruction invalidated an owned output lease");
+  TORCH_CHECK(saved&&std::equal(saved,saved+width,expected_a.begin()),"Engine destruction invalidated an owned output lease");
  }
- std::cout<<"native stream ordering, pending engine retirement and independent deferred leases passed (cache off/on)\n";
+ std::cout<<"native stream ordering, pending engine retirement and independent deferred leases passed (cache off/on; embedding/classifier)\n";
 }
 void suffix_graph_test(Model& model,const PackedInput& original) {
  PrefixCache cache(16<<20,64,8);CudaGraphCache graphs(4,64,1,64<<20,8);
@@ -688,12 +751,18 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
     gpu_tensors["score.weight"]=at::arange(48,at::kFloat).view({3,16})*.013;
     gpu_tensors["score.bias"]=at::tensor({.1f,-.2f,.3f});
     for(auto& [name,value]:gpu_tensors)value=value.to(c10::Device(argv[1]),at::kBFloat16);
+    auto no_pad_tensors=gpu_tensors;
     auto gpu=create_decoder(gpu_cfg,gpu_tensors,c10::Device(argv[1]),at::kBFloat16);gpu->ready();
     auto device_input=input;
     device_input.ids=input.ids.to(c10::Device(argv[1]));device_input.types=input.types.to(c10::Device(argv[1]));
     device_input.positions=input.positions.to(c10::Device(argv[1]));device_input.cumulative=input.cumulative.to(c10::Device(argv[1]));
     check_complete_classifier_cache(*gpu,device_input);
     device_input.ids=all_pad.ids.to(c10::Device(argv[1]));check_complete_classifier_cache(*gpu,device_input);
+    auto no_pad_cfg=gpu_cfg;no_pad_cfg.values.erase("pad_token_id");
+    auto no_pad=create_decoder(no_pad_cfg,no_pad_tensors,c10::Device(argv[1]),at::kBFloat16);no_pad->ready();
+    auto integer_ids=device_input;integer_ids.ids=device_input.ids.to(at::kInt);
+    TORCH_CHECK(at::equal(no_pad->predict(device_input,false),no_pad->predict(integer_ids,false)),
+      "Packed selector rejected or changed valid INT32 token IDs without PAD configuration");
   }
  }
  for(auto family:{"llama","mistral","qwen2","qwen3","qwen3_moe"}){
