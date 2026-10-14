@@ -1,4 +1,5 @@
 //! Exact segmented prompt encoding for Cloudflare's joint schema head.
+use super::super::result_value::{AnswerError, ResultValue};
 use super::{Question, SystemOneRequest};
 use infinity_v3_backend::{ClefField, DecisionInput, DecisionOutput};
 use infinity_v3_core::{
@@ -253,8 +254,17 @@ fn render(v: &Value) -> String {
         _ => sorted(v).to_string(),
     }
 }
-pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Value, String> {
-    let mut answers = Map::new();
+pub(super) fn answer(
+    question: &Question,
+    output: DecisionOutput,
+) -> Result<ResultValue, AnswerError> {
+    let mut answers = ResultValue::object(
+        question
+            .criteria
+            .as_array()
+            .ok_or("Invalid Clef descriptors")?
+            .len(),
+    )?;
     let mut offset = 0;
     for descriptor in question
         .criteria
@@ -274,7 +284,8 @@ pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Valu
             return Err("Nonfinite Clef logits".into());
         }
         let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
-        let mut p: Vec<_> = logits.iter().map(|&v| (v as f64 - max).exp()).collect();
+        let mut p = super::super::result_storage::vector(logits.len())?;
+        p.extend(logits.iter().map(|&v| (v as f64 - max).exp()));
         let sum: f64 = p.iter().sum();
         for v in &mut p {
             *v /= sum;
@@ -283,26 +294,46 @@ pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Valu
             .iter()
             .enumerate()
             .fold(0, |best, (i, &v)| if v > p[best] { i } else { best });
-        let probabilities: Map<_, _> = labels
-            .iter()
-            .zip(&p)
-            .map(|(k, &p)| (k.as_str().unwrap().to_string(), json!(super::round(p))))
-            .collect();
+        let mut probabilities = ResultValue::object(labels.len())?;
+        for (label, p) in labels.iter().zip(&p) {
+            probabilities.put(
+                label.as_str().unwrap(),
+                ResultValue::number(super::round(*p)),
+            )?;
+        }
         let answer = match descriptor["type"].as_str().unwrap() {
-            "noul" => json!({"type":"noul","noul":super::round(p[0])}),
-            "choice" => {
-                json!({"type":"choice","choice":labels[best],"confidence":super::round(p[best]),"probabilities":probabilities})
-            }
-            _ => {
-                json!({"type":"score","score":super::round(p.iter().enumerate().map(|(i,p)|i as f64*p).sum()),"confidence":super::round(p[best]),"probabilities":probabilities,"legend":descriptor["criteria"].as_array().unwrap().iter().enumerate().map(|(i,v)|(i.to_string(),v.clone())).collect::<Map<_,_>>()})
-            }
+            "noul" => ResultValue::fields([
+                ("type", ResultValue::string("noul")?),
+                ("noul", ResultValue::number(super::round(p[0]))),
+            ])?,
+            "choice" => ResultValue::fields([
+                ("type", ResultValue::string("choice")?),
+                ("choice", ResultValue::copy(&labels[best])?),
+                ("confidence", ResultValue::number(super::round(p[best]))),
+                ("probabilities", probabilities),
+            ])?,
+            _ => ResultValue::fields([
+                ("type", ResultValue::string("score")?),
+                (
+                    "score",
+                    ResultValue::number(super::round(
+                        p.iter().enumerate().map(|(i, p)| i as f64 * p).sum(),
+                    )),
+                ),
+                ("confidence", ResultValue::number(super::round(p[best]))),
+                ("probabilities", probabilities),
+                (
+                    "legend",
+                    ResultValue::legend(descriptor["criteria"].as_array().unwrap())?,
+                ),
+            ])?,
         };
-        answers.insert(descriptor["id"].as_str().unwrap().into(), answer);
+        answers.put(descriptor["id"].as_str().unwrap(), answer)?;
     }
     if offset != output.logits.len() {
         return Err("Unexpected Clef logit count".into());
     }
-    Ok(Value::Object(answers))
+    Ok(answers)
 }
 
 #[cfg(test)]

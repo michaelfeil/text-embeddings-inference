@@ -694,7 +694,9 @@ async fn predict_tokens_inner(
             _ => panic!(),
         };
 
-        let mut predictions = Vec::with_capacity(batch_size);
+        let mut predictions = super::result_storage::vector(batch_size)
+            .map_err(TextEmbeddingsError::from)
+            .map_err(ErrorResponse::from)?;
         let mut total_tokenization_time = 0;
         let mut total_queue_time = 0;
         let mut total_inference_time = 0;
@@ -707,7 +709,10 @@ async fn predict_tokens_inner(
             total_inference_time += response.metadata.inference.as_nanos() as u64;
             let token_predictions = response.results;
 
-            let mut token_predictions_result = Vec::with_capacity(token_predictions.len());
+            let mut token_predictions_result =
+                super::result_storage::vector(token_predictions.len())
+                    .map_err(TextEmbeddingsError::from)
+                    .map_err(ErrorResponse::from)?;
             for (token, token_id, scores, start, end) in token_predictions {
                 // Check for NaN scores
                 if scores.iter().any(|s| s.is_nan()) {
@@ -720,16 +725,41 @@ async fn predict_tokens_inner(
                     ));
                 }
 
-                // Create results dictionary with labels and scores
-                let mut results = std::collections::HashMap::new();
-                for (i, s) in scores.into_iter().enumerate() {
+                // Sort aliases by label and original class index without allocating
+                // sort scratch; retain the last class score for duplicate labels.
+                let mut indexed =
+                    super::result_storage::vector::<(String, f32, usize)>(scores.len())
+                        .map_err(TextEmbeddingsError::from)
+                        .map_err(ErrorResponse::from)?;
+                for (index, score) in scores.into_iter().enumerate() {
+                    let key = super::result_storage::index(index)
+                        .map_err(TextEmbeddingsError::from)
+                        .map_err(ErrorResponse::from)?;
                     let label = id2label
-                        .get(&i.to_string())
-                        .expect("id2label missing label for score index. This is a bug.")
-                        .clone();
-
-                    results.insert(label, s);
+                        .get(&key)
+                        .expect("id2label missing label for score index. This is a bug.");
+                    indexed.push((
+                        super::result_storage::string(label)
+                            .map_err(TextEmbeddingsError::from)
+                            .map_err(ErrorResponse::from)?,
+                        score,
+                        index,
+                    ));
                 }
+                indexed.sort_unstable_by(|a, b| a.0.cmp(&b.0).then_with(|| a.2.cmp(&b.2)));
+                indexed.dedup_by(|later, earlier| {
+                    if later.0 == earlier.0 {
+                        earlier.1 = later.1;
+                        earlier.2 = later.2;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                let mut results = super::result_storage::vector(indexed.len())
+                    .map_err(TextEmbeddingsError::from)
+                    .map_err(ErrorResponse::from)?;
+                results.extend(indexed.into_iter().map(|(label, score, _)| (label, score)));
 
                 token_predictions_result.push(crate::http::types::TokenPrediction {
                     token,
@@ -744,19 +774,17 @@ async fn predict_tokens_inner(
         let batch_size = batch_size as u64;
 
         // Apply aggregation strategy
-        let predictions = predictions
-            .into_iter()
-            .zip(&req.inputs)
-            .map(|(batch_predictions, sentence)| {
-                apply_aggregation(
-                    sentence,
-                    batch_predictions,
-                    &req.aggregation_strategy,
-                    id2label,
-                    &req.ignore_labels,
-                )
-            })
-            .collect();
+        for (batch_predictions, sentence) in predictions.iter_mut().zip(&req.inputs) {
+            *batch_predictions = apply_aggregation(
+                sentence,
+                std::mem::take(batch_predictions),
+                &req.aggregation_strategy,
+                id2label,
+                &req.ignore_labels,
+            )
+            .map_err(TextEmbeddingsError::from)
+            .map_err(ErrorResponse::from)?;
+        }
 
         let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
         counter.increment(1);

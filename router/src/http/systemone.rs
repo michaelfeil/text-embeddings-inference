@@ -1,5 +1,6 @@
 //! Jev typed decisions, submitted to infinity_v3's shared queue and replica pool.
 use super::response_format::Json;
+use super::result_value::{AnswerError, ResultValue};
 use axum::{
     extract::Extension,
     http::{HeaderMap, StatusCode},
@@ -101,7 +102,11 @@ impl SystemOne {
         }
     }
 
-    fn answer(&self, question: &Question, output: DecisionOutput) -> Result<Value, String> {
+    fn answer(
+        &self,
+        question: &Question,
+        output: DecisionOutput,
+    ) -> Result<ResultValue, AnswerError> {
         match self {
             Self::Laya(model) => model.answer(question, output),
             Self::Rune(_) => rune::answer(question, output),
@@ -434,7 +439,11 @@ impl Laya {
             .collect()
     }
 
-    fn answer(&self, question: &Question, output: DecisionOutput) -> Result<Value, String> {
+    fn answer(
+        &self,
+        question: &Question,
+        output: DecisionOutput,
+    ) -> Result<ResultValue, AnswerError> {
         let DecisionInput::Laya { question_type, .. } = &question.input else {
             return Err("Invalid Laya metadata".into());
         };
@@ -468,11 +477,8 @@ impl Laya {
             .iter()
             .copied()
             .fold(f32::NEG_INFINITY, f32::max);
-        let mut p: Vec<f64> = output
-            .logits
-            .iter()
-            .map(|v| (((v - max) / t) as f64).exp())
-            .collect();
+        let mut p = super::result_storage::vector(output.logits.len())?;
+        p.extend(output.logits.iter().map(|v| (((v - max) / t) as f64).exp()));
         let sum: f64 = p.iter().sum();
         for value in &mut p {
             *value /= sum;
@@ -485,39 +491,44 @@ impl Laya {
         } else {
             1.0 + p.iter().map(|v| v * v.max(1e-9).ln()).sum::<f64>() / (k as f64).ln()
         };
-        let mut answer = json!({"type":question.kind,"confidence":round(confidence),"answer_confidence":round(p[best]),"action":{"act_probability":round(output.action_probability as f64)}});
+        let mut answer = ResultValue::object(8)?;
+        answer.put("type", ResultValue::string(&question.kind)?)?;
+        answer.put("confidence", ResultValue::number(round(confidence)))?;
+        answer.put("answer_confidence", ResultValue::number(round(p[best])))?;
+        answer.put(
+            "action",
+            ResultValue::fields([(
+                "act_probability",
+                ResultValue::number(round(output.action_probability as f64)),
+            )])?,
+        )?;
         match question.kind.as_str() {
-            "choice" => {
-                answer["choice"] = json!(question.labels[best]);
-            }
+            "choice" => answer.put("choice", ResultValue::string(&question.labels[best])?)?,
             "score" => {
-                answer["score"] =
-                    json!(round(p.iter().enumerate().map(|(i, p)| i as f64 * p).sum()));
-                answer["legend"] = Value::Object(
-                    question
-                        .criteria
-                        .as_array()
-                        .unwrap()
-                        .iter()
-                        .enumerate()
-                        .map(|(i, v)| (i.to_string(), v.clone()))
-                        .collect(),
-                );
+                answer.put(
+                    "score",
+                    ResultValue::number(round(
+                        p.iter().enumerate().map(|(i, p)| i as f64 * p).sum(),
+                    )),
+                )?;
+                answer.put(
+                    "legend",
+                    ResultValue::legend(question.criteria.as_array().unwrap())?,
+                )?;
             }
             _ => {
-                answer["noul"] = json!(round(p[1]));
-                answer["confidence"] = json!(round(p[best]));
+                answer.put("noul", ResultValue::number(round(p[1])))?;
+                answer.put("confidence", ResultValue::number(round(p[best])))?;
             }
         }
         if question.kind != "noul" {
-            answer["probabilities"] = Value::Object(
-                question
-                    .labels
-                    .iter()
-                    .zip(p)
-                    .map(|(label, p)| (label.clone(), json!(round(p))))
-                    .collect(),
-            );
+            for value in &mut p {
+                *value = round(*value);
+            }
+            answer.put(
+                "probabilities",
+                ResultValue::probabilities(question.labels.iter().map(String::as_str), &p)?,
+            )?;
         }
         Ok(answer)
     }
@@ -588,7 +599,11 @@ pub async fn systemone(
     match result {
         Ok((headers, Json(mut value))) => {
             if runtime.named {
-                value["model"] = json!(runtime.info.model_id);
+                if let Err(failure) = ResultValue::string(&runtime.info.model_id)
+                    .and_then(|model| value.put("model", model))
+                {
+                    return error(StatusCode::TOO_MANY_REQUESTS, failure).into_response();
+                }
             }
             (headers, Json(value)).into_response()
         }
@@ -601,7 +616,7 @@ pub(crate) async fn systemone_inner(
     Extension(info): Extension<crate::Info>,
     Extension(service): Extension<Option<Arc<SystemOne>>>,
     Json(raw_request): Json<Value>,
-) -> Result<(HeaderMap, Json<Value>), ApiError> {
+) -> Result<(HeaderMap, Json<ResultValue>), ApiError> {
     metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let service = service.ok_or_else(|| {
         error(
@@ -748,9 +763,14 @@ pub(crate) async fn systemone_inner(
                     };
                     error(status, e)
                 })?;
-            let answer = service
-                .answer(&question, output.results)
-                .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+            let answer = service.answer(&question, output.results).map_err(|e| {
+                let status = if matches!(e, AnswerError::Memory(_)) {
+                    StatusCode::TOO_MANY_REQUESTS
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                error(status, e)
+            })?;
             Ok::<_, ApiError>((question.id, answer, output.metadata))
         }
     }))
@@ -773,26 +793,43 @@ pub(crate) async fn systemone_inner(
     metadata.record_metrics(&info.model_id);
     metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let answers = if matches!(service.as_ref(), SystemOne::Clef(_)) {
-        answers
-            .into_iter()
-            .next()
-            .unwrap()
-            .1
-            .as_object()
-            .cloned()
-            .ok_or_else(|| error(StatusCode::INTERNAL_SERVER_ERROR, "Invalid joint answers"))?
+        match answers.into_iter().next().unwrap().1 {
+            ResultValue::Object(answers) => ResultValue::Object(answers),
+            _ => {
+                return Err(error(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Invalid joint answers",
+                ));
+            }
+        }
     } else {
-        answers
-            .into_iter()
-            .map(|(id, answer, _)| (id, answer))
-            .collect::<Map<_, _>>()
+        let mut object = ResultValue::object(answers.len())
+            .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
+        for (id, answer, _) in answers {
+            object
+                .put(&id, answer)
+                .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
+        }
+        object
     };
-    Ok((
-        metadata.into(),
-        Json(
-            json!({"model":response_model, "answers": answers, "usage":{"input_tokens":input_tokens,"output_tokens":output_tokens}}),
+    let response = ResultValue::fields([
+        (
+            "model",
+            ResultValue::string(response_model)
+                .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?,
         ),
-    ))
+        ("answers", answers),
+        (
+            "usage",
+            ResultValue::fields([
+                ("input_tokens", ResultValue::integer(input_tokens)),
+                ("output_tokens", ResultValue::integer(output_tokens)),
+            ])
+            .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?,
+        ),
+    ])
+    .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
+    Ok((metadata.into(), Json(response)))
 }
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 //! Perplexity's calibrated 255-option readout on the shared decision queue.
+use super::super::result_value::{AnswerError, ResultValue};
 use super::*;
 use infinity_v3_core::{
     chat::ChatProcessor,
@@ -164,7 +165,7 @@ impl Pplx {
         &self,
         question: &Question,
         mut output: DecisionOutput,
-    ) -> Result<Value, String> {
+    ) -> Result<ResultValue, AnswerError> {
         output
             .logits
             .iter_mut()

@@ -24,7 +24,7 @@ impl ResultPool {
             used: AtomicUsize::new(0),
         }))
     }
-    pub fn reserve(self: &Arc<Self>, bytes: usize) -> Result<ResultLease, BackendError> {
+    fn acquire_bytes(&self, bytes: usize) -> Result<(), BackendError> {
         self.used
             .fetch_update(Ordering::AcqRel, Ordering::Acquire, |used| {
                 used.checked_add(bytes).filter(|next| *next <= self.limit)
@@ -32,6 +32,10 @@ impl ResultPool {
             .map_err(|_| {
                 BackendError::Overloaded("Aggregate host result memory exhausted".into())
             })?;
+        Ok(())
+    }
+    pub fn reserve(self: &Arc<Self>, bytes: usize) -> Result<ResultLease, BackendError> {
+        self.acquire_bytes(bytes)?;
         Ok(ResultLease(Arc::new(Reservation {
             pool: self.clone(),
             bytes,
@@ -153,17 +157,38 @@ impl HasResultMemory for std::vec::IntoIter<crate::DecisionOutput> {
 /// HTTP handoff owner: Core responses retain their own leases; this additional
 /// owner bridges handlers that move plain vectors into wire-format structures.
 #[derive(Debug, Default)]
-pub struct RequestResults(Mutex<Vec<ResultLease>>);
+struct RequestReservations {
+    native: Vec<ResultLease>,
+    // One inline accumulator avoids allocating an Arc and growing the native
+    // lease vector for every derived string, score row, or response field.
+    derived: Option<Reservation>,
+}
+#[derive(Debug, Default)]
+pub struct RequestResults(Mutex<RequestReservations>);
 impl RequestResults {
     pub fn retain(&self, memory: Option<ResultLease>) {
         if let Some(memory) = memory {
-            self.0.lock().unwrap().push(memory);
+            self.0.lock().unwrap().native.push(memory);
         }
     }
     pub fn reserve(&self, bytes: usize) -> Result<(), BackendError> {
-        let reference = self.0.lock().unwrap().first().cloned();
-        if let Some(reference) = reference {
-            self.retain(Some(reference.reserve_more(bytes)?));
+        if bytes == 0 {
+            return Ok(());
+        }
+        let mut reservations = self.0.lock().unwrap();
+        if let Some(derived) = reservations.derived.as_mut() {
+            let total = derived.bytes.checked_add(bytes).ok_or_else(|| {
+                BackendError::Overloaded("Derived result memory size overflow".into())
+            })?;
+            derived.pool.acquire_bytes(bytes)?;
+            derived.bytes = total;
+        } else if let Some(reference) = reservations.native.first().cloned() {
+            reference.0.pool.acquire_bytes(bytes)?;
+            reservations.derived = Some(Reservation {
+                pool: reference.0.pool.clone(),
+                bytes,
+                parent: Some(reference),
+            });
         }
         Ok(())
     }
@@ -200,5 +225,27 @@ mod tests {
         assert_eq!(pool.used(), 0);
         assert!(pool.reserve(96).is_ok());
         assert!(pool.reserve(usize::MAX).is_err());
+        let native = pool.reserve(16).unwrap();
+        let request = Arc::new(RequestResults::default());
+        request.retain(Some(native.clone()));
+        for _ in 0..64 {
+            request.reserve(1).unwrap();
+        }
+        {
+            let state = request.0.lock().unwrap();
+            assert_eq!(state.native.len(), 1);
+            assert_eq!(state.derived.as_ref().unwrap().bytes, 64);
+        }
+        assert!(request.reserve(17).is_err());
+        assert_eq!(pool.used(), 80);
+        assert!(request.reserve(usize::MAX).is_err());
+        assert_eq!(pool.used(), 80);
+        let response = request.clone();
+        drop(native);
+        drop(request);
+        assert_eq!(pool.used(), 80);
+        drop(response);
+        assert_eq!(pool.used(), 0);
+        assert!(pool.reserve(96).is_ok());
     }
 }

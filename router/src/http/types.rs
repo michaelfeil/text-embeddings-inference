@@ -967,7 +967,21 @@ pub(crate) struct TokenPrediction {
     #[schema(example = 5)]
     pub end: Option<usize>,
     #[schema(example = json!({"O": 9.41, "B-MISC": -1.15, "I-MISC": -0.85}))]
-    pub results: std::collections::HashMap<String, f32>,
+    #[schema(value_type = std::collections::HashMap<String, f32>)]
+    #[serde(serialize_with = "serialize_token_scores")]
+    pub results: Vec<(String, f32)>,
+}
+
+fn serialize_token_scores<S: serde::Serializer>(
+    scores: &[(String, f32)],
+    serializer: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::ser::SerializeMap;
+    let mut map = serializer.serialize_map(Some(scores.len()))?;
+    for (label, score) in scores {
+        map.serialize_entry(label, score)?;
+    }
+    map.end()
 }
 
 #[derive(Serialize, ToSchema)]

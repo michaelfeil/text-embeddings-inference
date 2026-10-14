@@ -150,10 +150,18 @@ retains other failures as fatal. The native output regression exercises an actua
 CUDA allocator rejection followed by a valid response. This establishes that
 recovery path, not recovery from every device fault or avoidance of all OOMs.
 
-This pool covers LibTorch numeric result storage in the serving pipeline. It does
-not bound Candle results, native pinned allocator reservations, parsed request
-objects, NER aggregation strings/maps, decision-derived JSON trees, model memory,
-socket buffers or allocator overhead. The separate HTTP encoded-response budget
+NER label rows, grouping vectors, score scratch and joined words also reserve
+requested storage before fallible allocation. Decision probability buffers and
+owned response trees use the same pool; JSON and MsgPack still expose objects
+with the same fields and last-value behavior for duplicate keys. Derived credits
+accumulate without a new reservation allocation for every label or field. They
+remain charged through the last response owner, including intermediate storage
+already released during conversion, so this policy can reject conservatively.
+
+This pool covers LibTorch numeric results and these HTTP derived results when the
+request carries a native result reservation. It does not bound Candle results,
+native pinned allocator reservations, parsed request objects, async scheduling
+bookkeeping, model memory, socket buffers or allocator overhead. The separate HTTP encoded-response budget
 still applies. This is an allocation-admission limit, not a process RSS ceiling.
 Direct Core consumers must keep response metadata alive with extracted results.
 
