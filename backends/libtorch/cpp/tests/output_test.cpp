@@ -67,7 +67,7 @@ void native_allocator_error_test(const at::Device& device,int pressure=0) {
     packed_offsets.back()=128;
     try {
       std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),packed_ids.data(),packed_types.data(),packed_positions.data(),
-        packed_offsets.data(),32,128,4,nullptr,0,raw_rows.data(),raw_rows.size(),2048,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+        packed_offsets.data(),32,4,0,nullptr,0,raw_rows.data(),raw_rows.size(),2048,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
       TORCH_CHECK(!rejected&&tei_last_error_kind()==2&&std::string(tei_error()).find("Process native pinned staging")!=std::string::npos,
         "Process pinned saturation lost its recoverable admission classification");
       const auto* after=tei_output_wait(held.get());TORCH_CHECK(after,tei_error());
