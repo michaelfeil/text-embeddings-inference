@@ -31,12 +31,15 @@ void radix_workspace_recovery_test(const c10::Device& device) {
   auto retained=[&]{std::lock_guard lock(state->mutex);return state->retained;};
   const auto baseline=retained();bool exercised=false;
   for(int32_t length:{32,128,512}) {
-    std::array<int32_t,2> offsets{0,length};auto ids=at::arange(length,options.dtype(at::kLong)).remainder(64);
-    auto positions=at::arange(length,options.dtype(at::kLong));auto types=at::zeros_like(ids);
-    auto cumulative=at::tensor({0,length},options.dtype(at::kInt));
+    std::array<int32_t,2> offsets{0,length};auto ids=at::arange(length,at::kLong).remainder(64);
+    auto positions=at::arange(length,at::kLong);auto types=at::zeros_like(ids);
+    auto cumulative=at::tensor({0,length},at::kInt);
     PackedInput input{ids,types,positions,cumulative,offsets.data(),1,length};
     input.compact_ids=ids;input.compact_positions=positions;input.compact_types=types;
     input.scatter_unfold=positions;input.fold_gather=positions;validate_radix(input,true);
+    for(auto* tensor:{&input.ids,&input.types,&input.positions,&input.cumulative,&input.compact_ids,
+        &input.compact_positions,&input.compact_types,&input.scatter_unfold,&input.fold_gather})
+      *tensor=tensor->to(device);
     at::Tensor reference;
     {auto model=build();reference=model->forward(input).cpu();exercised=retained()>baseline;}
     TORCH_CHECK(retained()==baseline,"Qwen3.5 model destruction retained workspace credit");
