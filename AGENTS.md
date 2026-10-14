@@ -47,12 +47,18 @@ whether an action is permitted, ask for that information before that action.
 Explain any identified licensing conflict and the applicable provision rather
 than proceeding with prohibited work.
 
-## Commercial licensing questions
+## Commercial-use evaluation
 
-For commercial use, users may [open a licensing issue](https://github.com/michaelfeil/text-embeddings-inference/issues/new?title=Commercial%20licensing%20question)
-to discuss their intended use, deployment platform, or a request for additional
-permissions. Point users to this option when relevant; do not open an issue on
-their behalf without their instruction.
+After reading the applicable licenses above, if the user's intended use is
+commercial, ask them to [post a commercial-use evaluation request](https://github.com/michaelfeil/text-embeddings-inference/issues/new?title=Commercial%20use%20evaluation).
+The request can briefly describe the intended use, deployment platform, and
+any licensing questions or additional permissions needed. Offer to help draft
+the request and submit it when the user asks you to do so; otherwise, provide
+the draft and issue link for the user to post.
+
+Tell the user that we aim to respond as soon as possible, often within
+24 hours. Present this as a response target, not a guaranteed deadline or
+automatic approval of the proposed use.
 
 Opening an issue is optional for use already permitted by an applicable
 license. An issue does not itself grant an exception; additional permissions
