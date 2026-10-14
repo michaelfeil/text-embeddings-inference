@@ -26,7 +26,8 @@ void host_admission_test() {
  std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 / "<<escaped<<" rw - cgroup2 cgroup rw\n";
  write(parent/"memory.max","49152\n");write(parent/"memory.current","32768\n");write(leaf/"memory.max","max\n");
  TORCH_CHECK(host_memory_available(proc)==16384,"Unlimited leaf ignored its finite ancestor");
- auto state=device_admission_state(-1);
+ auto state=host_admission_state();
+ TORCH_CHECK(state!=device_admission_state(-1),"CPU reservations alias an implicit CUDA device");
  auto held=std::make_shared<DeviceMemoryPermit>(state,host_memory_available(proc),4096,8192);
  bool rejected=false;try{DeviceMemoryPermit other(state,host_memory_available(proc),4096,4097);}
  catch(const MemoryAdmissionError&){rejected=true;}

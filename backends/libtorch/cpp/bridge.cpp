@@ -268,7 +268,7 @@ std::shared_ptr<tei::DeviceMemoryPermit> acquire_device_memory(Engine& model,siz
 #endif
 #ifdef __linux__
  if(model.device.is_cpu()) {
-  auto state=tei::device_admission_state(-1);std::lock_guard lock(state->mutex);
+  auto state=tei::host_admission_state();std::lock_guard lock(state->mutex);
   return std::make_shared<tei::DeviceMemoryPermit>(state,tei::host_memory_available(),size_t(headroom),estimate);
  }
 #endif

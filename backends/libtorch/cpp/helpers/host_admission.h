@@ -1,6 +1,6 @@
 // Contribution terms: see LICENSE and LICENSING.md at the repository root.
 #pragma once
-#include "helpers/admission_error.h"
+#include "helpers/device_admission.h"
 #include <algorithm>
 #include <charconv>
 #include <filesystem>
@@ -10,6 +10,9 @@
 #include <sstream>
 
 namespace tei {
+inline std::shared_ptr<DeviceAdmissionState> host_admission_state() {
+  static auto state=std::make_shared<DeviceAdmissionState>();return state;
+}
 inline bool host_controller(const std::string& list,const std::string& controller) {
   return (","+list+",").find(","+controller+",")!=std::string::npos;
 }
