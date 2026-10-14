@@ -26,9 +26,17 @@ Earlier Apache-2.0 and INFOIL grants and third-party licenses remain in
 effect for the material and rights they cover. Retained attribution is in
 [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-The server command is `infinity_v3`; shared Rust packages use the `infinity_v3-`
-prefix. LibTorch keeps its existing package name, source imports, and native
-symbols. Project settings previously named `TEI_*` now use `INFINITY_*`, including
+The server command is `infinity_v3`; the LibTorch Rust package is
+`infinity-backend-libtorch`. Package metadata credits
+`infinity authors`; inherited attribution is recorded in [NOTICE](NOTICE).
+LibTorch's native symbols retain their existing names.
+
+Prometheus metrics use the `infinity_` prefix, including `infinity_embed_duration`
+and `infinity_queue_size`. Update dashboards, alerts, and recording rules that
+query the former `te_` names; those names are no longer emitted. Histogram buckets
+and metric labels retain their existing behavior.
+
+Project settings previously named `TEI_*` now use `INFINITY_*`, including
 LibTorch, HTTP memory budgets, test fixtures, and benchmarks. Update deployment
 and test configurations when upgrading; the old environment names are no longer
 read. The queue's early-dispatch override is `INFINITY_EARLY_DISPATCH_TOKENS`.

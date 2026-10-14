@@ -261,7 +261,7 @@ impl Tokenization {
                 }
             }
             let length = ids.len();
-            metrics::histogram!("te_request_input_length").record(length as f64);
+            metrics::histogram!("infinity_request_input_length").record(length as f64);
             return Ok(ValidEncoding {
                 multimodal: None,
                 input_ids: ids,
@@ -672,7 +672,7 @@ fn encode_input(
             "`inputs` must have less than {max_input_length} tokens. Given: {seq_len}"
         )));
     }
-    let histogram = metrics::histogram!("te_request_input_length");
+    let histogram = metrics::histogram!("infinity_request_input_length");
     histogram.record(seq_len as f64);
     Ok(ValidEncoding {
         multimodal: None,

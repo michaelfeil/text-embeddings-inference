@@ -1,4 +1,5 @@
 //! Compare native backends on the same packed BERT inputs; tokenization/HTTP are excluded.
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -7,7 +8,6 @@ use std::{
 };
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 fn batch(lengths: &[usize], vocab: u32, cls: u32, sep: u32, position_offset: u32) -> Batch {
     let mut input_ids = Vec::new();

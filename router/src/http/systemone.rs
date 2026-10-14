@@ -555,7 +555,7 @@ fn json_text(value: &Value) -> String {
 
 type ApiError = (StatusCode, Json<crate::ErrorResponse>);
 fn error(status: StatusCode, message: impl ToString) -> ApiError {
-    metrics::counter!("te_request_failure", "err" => "systemone").increment(1);
+    metrics::counter!("infinity_request_failure", "err" => "systemone").increment(1);
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => crate::ErrorType::Overloaded,
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => crate::ErrorType::Validation,
@@ -580,7 +580,7 @@ pub async fn systemone(
     Extension(service): Extension<Option<Arc<SystemOne>>>,
     Json(raw_request): Json<Value>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
-    metrics::counter!("te_request_count", "method" => "systemone").increment(1);
+    metrics::counter!("infinity_request_count", "method" => "systemone").increment(1);
     let service = service.ok_or_else(|| {
         error(
             StatusCode::BAD_REQUEST,
@@ -614,7 +614,7 @@ pub async fn systemone(
     let _permit = infer
         .try_acquire_permit()
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
-    metrics::counter!("te_systemone_count").increment(1);
+    metrics::counter!("infinity_systemone_count").increment(1);
     let start = Instant::now();
     // Validate and tokenize questions before fetching media, off the async executor.
     let worker = service.clone();
@@ -749,7 +749,7 @@ pub async fn systemone(
         inference,
     );
     metadata.record_metrics();
-    metrics::counter!("te_request_success", "method" => "systemone").increment(1);
+    metrics::counter!("infinity_request_success", "method" => "systemone").increment(1);
     let answers = if matches!(service.as_ref(), SystemOne::Clef(_)) {
         answers
             .into_iter()

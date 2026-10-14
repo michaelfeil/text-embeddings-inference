@@ -171,10 +171,10 @@ object overhead, Core result vectors, model memory or socket buffers. Untyped
 framework/document format conversion is limited to 2 MiB.
 
 ```bash
-cargo test -p text-embeddings-backend-libtorch --lib
+cargo test -p infinity-backend-libtorch --lib
 
 # Requires a working NVIDIA GPU and the CUDA LibTorch distribution.
-cargo test -p text-embeddings-backend-libtorch \
+cargo test -p infinity-backend-libtorch \
   cuda_varlen_matches_cpu_for_ragged_outputs -- --ignored
 ```
 
@@ -263,7 +263,7 @@ Use an optimized build for both backends:
 ```bash
 CUDA_COMPUTE_CAP=90 CARGO_PROFILE_RELEASE_LTO=false \
   CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-  cargo build --release -p text-embeddings-backend-libtorch \
+  cargo build --release -p infinity-backend-libtorch \
     --features benchmark-cuda --example compare_bert
 
 target/release/examples/compare_bert /path/to/bert-model 100 0 1 > bert-results.json

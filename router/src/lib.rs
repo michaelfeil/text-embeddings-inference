@@ -1055,13 +1055,13 @@ impl ResponseMetadata {
 
     fn record_metrics(&self) {
         // Metrics
-        let histogram = metrics::histogram!("te_request_duration");
+        let histogram = metrics::histogram!("infinity_request_duration");
         histogram.record(self.start_time.elapsed().as_secs_f64());
-        let histogram = metrics::histogram!("te_request_tokenization_duration");
+        let histogram = metrics::histogram!("infinity_request_tokenization_duration");
         histogram.record(self.tokenization_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_request_queue_duration");
+        let histogram = metrics::histogram!("infinity_request_queue_duration");
         histogram.record(self.queue_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_request_inference_duration");
+        let histogram = metrics::histogram!("infinity_request_inference_duration");
         histogram.record(self.inference_time.as_secs_f64());
     }
 }

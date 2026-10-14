@@ -2400,16 +2400,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "infinity-backend-libtorch"
+version = "1.8.18-rc.0"
+dependencies = [
+ "bytemuck",
+ "cmake",
+ "infinity_v3-backend-candle",
+ "infinity_v3-backend-core",
+ "pytorch-reader",
+ "safetensors",
+ "serde",
+ "serde_json",
+ "sha2",
+ "zip 8.6.0",
+]
+
+[[package]]
 name = "infinity_v3-backend"
 version = "1.8.18-rc.0"
 dependencies = [
  "clap",
  "hf-hub",
+ "infinity-backend-libtorch",
  "infinity_v3-backend-candle",
  "infinity_v3-backend-core",
  "serde",
  "serde_json",
- "text-embeddings-backend-libtorch",
  "tokio",
  "tracing",
 ]
@@ -4842,22 +4858,6 @@ dependencies = [
  "once_cell",
  "rustix 1.0.5",
  "windows-sys 0.59.0",
-]
-
-[[package]]
-name = "text-embeddings-backend-libtorch"
-version = "1.8.18-rc.0"
-dependencies = [
- "bytemuck",
- "cmake",
- "infinity_v3-backend-candle",
- "infinity_v3-backend-core",
- "pytorch-reader",
- "safetensors",
- "serde",
- "serde_json",
- "sha2",
- "zip 8.6.0",
 ]
 
 [[package]]

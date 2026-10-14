@@ -1,4 +1,5 @@
 //! Full packed pretrained classifier/SPLADE pipelines; preprocessing is excluded.
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -7,7 +8,6 @@ use std::{
 };
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 fn input(sequences: &[serde_json::Value]) -> Batch {
     let mut ids = Vec::new();

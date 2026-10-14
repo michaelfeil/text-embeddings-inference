@@ -1,5 +1,6 @@
 #![cfg(feature = "benchmark-cuda")]
 //! Compare native backends on the same packed decoder inputs; tokenization/HTTP are excluded.
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -8,7 +9,6 @@ use std::{
 };
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 fn batch(lengths: &[usize], vocab_size: u32, bos: Option<u32>, eos: Option<u32>) -> Batch {
     let mut input_ids = Vec::new();
