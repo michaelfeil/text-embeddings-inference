@@ -1,4 +1,5 @@
 //! Rune's trained text protocol. The model reads only the first option-token logits.
+use super::super::result_value::{AnswerError, ResultValue};
 use super::*;
 
 pub struct Rune {
@@ -320,7 +321,10 @@ fn text(value: &Value) -> Result<String, String> {
         .ok_or_else(|| "Rune instructions and option descriptions must be strings".into())
 }
 
-pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Value, String> {
+pub(super) fn answer(
+    question: &Question,
+    output: DecisionOutput,
+) -> Result<ResultValue, AnswerError> {
     let n = question.labels.len();
     if output.logits.len() != n || n == 0 || output.logits.iter().any(|v| !v.is_finite()) {
         return Err("Model returned invalid option logits".into());
@@ -330,28 +334,33 @@ pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Valu
         .iter()
         .copied()
         .fold(f32::NEG_INFINITY, f32::max) as f64;
-    let mut p = output
-        .logits
-        .iter()
-        .map(|&v| (v as f64 - max).exp())
-        .collect::<Vec<_>>();
+    let mut p = super::super::result_storage::vector(output.logits.len())?;
+    p.extend(output.logits.iter().map(|&v| (v as f64 - max).exp()));
     let sum: f64 = p.iter().sum();
     p.iter_mut().for_each(|v| *v /= sum);
     let mode = p
         .iter()
         .enumerate()
         .fold(0, |best, (i, &v)| if v > p[best] { i } else { best });
-    let probabilities = question
-        .labels
-        .iter()
-        .cloned()
-        .zip(p.iter().copied().map(Value::from))
-        .collect::<Map<_, _>>();
-    Ok(match question.kind.as_str() {
-        "choice" => {
-            json!({"type":"choice", "choice":question.labels[mode], "confidence":if n == 1 {1.0} else {(p[mode] - 1.0 / n as f64) / (1.0 - 1.0 / n as f64)}, "probabilities":probabilities})
-        }
-        "noul" => json!({"type":"noul", "noul":p[1]}),
+    let probabilities = ResultValue::probabilities(question.labels.iter().map(String::as_str), &p)?;
+    match question.kind.as_str() {
+        "choice" => ResultValue::fields([
+            ("type", ResultValue::string("choice")?),
+            ("choice", ResultValue::string(&question.labels[mode])?),
+            (
+                "confidence",
+                ResultValue::number(if n == 1 {
+                    1.0
+                } else {
+                    (p[mode] - 1.0 / n as f64) / (1.0 - 1.0 / n as f64)
+                }),
+            ),
+            ("probabilities", probabilities),
+        ]),
+        "noul" => ResultValue::fields([
+            ("type", ResultValue::string("noul")?),
+            ("noul", ResultValue::number(p[1])),
+        ]),
         "score" => {
             let center = (n - 1) as f64 / 2.0;
             let uniform_mad = (0..n).map(|i| (i as f64 - center).abs()).sum::<f64>() / n as f64;
@@ -365,18 +374,24 @@ pub(super) fn answer(question: &Question, output: DecisionOutput) -> Result<Valu
             } else {
                 (1.0 - distance / uniform_mad).max(0.0)
             };
-            let legend = question
-                .criteria
-                .as_array()
-                .unwrap()
-                .iter()
-                .enumerate()
-                .map(|(i, v)| (i.to_string(), v.clone()))
-                .collect::<Map<_, _>>();
-            json!({"type":"score", "score":p.iter().enumerate().map(|(i,p)| i as f64 * p).sum::<f64>(), "confidence":confidence, "legend":legend, "probabilities":probabilities})
+            ResultValue::fields([
+                ("type", ResultValue::string("score")?),
+                (
+                    "score",
+                    ResultValue::number(
+                        p.iter().enumerate().map(|(i, p)| i as f64 * p).sum::<f64>(),
+                    ),
+                ),
+                ("confidence", ResultValue::number(confidence)),
+                (
+                    "legend",
+                    ResultValue::legend(question.criteria.as_array().unwrap())?,
+                ),
+                ("probabilities", probabilities),
+            ])
         }
-        _ => return Err("Invalid decision type".into()),
-    })
+        _ => Err("Invalid decision type".into()),
+    }
 }
 
 #[cfg(test)]

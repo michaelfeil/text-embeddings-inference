@@ -1,4 +1,5 @@
 //! D3's d3-code-readout-v1 prompt and FP32 probability contract.
+use super::super::result_value::{AnswerError, ResultValue};
 use super::*;
 use infinity_v3_core::chat::ChatProcessor;
 use infinity_v3_core::multimodal::{D3MediaProcessor, PreparedD3Media};
@@ -233,7 +234,7 @@ impl D3 {
         &self,
         question: &Question,
         output: DecisionOutput,
-    ) -> Result<Value, String> {
+    ) -> Result<ResultValue, AnswerError> {
         answer(question, output, self.config.temperature)
     }
 }
@@ -350,7 +351,11 @@ fn question_options(spec: &Value) -> Result<Options, String> {
     Ok((kind.into(), labels, descriptions, criteria))
 }
 
-fn answer(question: &Question, output: DecisionOutput, temperature: f32) -> Result<Value, String> {
+fn answer(
+    question: &Question,
+    output: DecisionOutput,
+    temperature: f32,
+) -> Result<ResultValue, AnswerError> {
     if output.logits.len() != question.labels.len()
         || output.logits.is_empty()
         || output.logits.iter().any(|v| !v.is_finite())
@@ -358,23 +363,18 @@ fn answer(question: &Question, output: DecisionOutput, temperature: f32) -> Resu
         return Err("Model returned invalid D3 option logits".into());
     }
     // Normalize over valid candidates only, in FP32 as in upstream.
-    let logits = output
-        .logits
-        .iter()
-        .map(|v| v / temperature)
-        .collect::<Vec<_>>();
+    let mut logits = super::super::result_storage::vector(output.logits.len())?;
+    logits.extend(output.logits.iter().map(|v| v / temperature));
     let max = logits.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-    let mut p = logits.iter().map(|v| (v - max).exp()).collect::<Vec<_>>();
+    let mut p = super::super::result_storage::vector(logits.len())?;
+    p.extend(logits.iter().map(|v| (v - max).exp()));
     let sum: f32 = p.iter().sum();
     p.iter_mut().for_each(|v| *v /= sum);
     let total: f64 = p.iter().map(|v| *v as f64).sum();
-    let p = p.into_iter().map(|v| v as f64 / total).collect::<Vec<_>>();
-    let probabilities = question
-        .labels
-        .iter()
-        .cloned()
-        .zip(p.iter().copied().map(Value::from))
-        .collect::<Map<_, _>>();
+    let mut probabilities64 = super::super::result_storage::vector(p.len())?;
+    probabilities64.extend(p.into_iter().map(|v| v as f64 / total));
+    let p = probabilities64;
+    let probabilities = ResultValue::probabilities(question.labels.iter().map(String::as_str), &p)?;
     let entropy = -p
         .iter()
         .filter(|&&v| v > 0.)
@@ -385,46 +385,50 @@ fn answer(question: &Question, output: DecisionOutput, temperature: f32) -> Resu
     } else {
         (1. - entropy / (p.len() as f64).ln()).clamp(0., 1.)
     };
-    Ok(match question.kind.as_str() {
-        "noul" => json!({"type":"noul", "noul":p[1]}),
+    match question.kind.as_str() {
+        "noul" => ResultValue::fields([
+            ("type", ResultValue::string("noul")?),
+            ("noul", ResultValue::number(p[1])),
+        ]),
         "choice" => {
             let best = (0..p.len()).fold(0, |best, i| if p[i] > p[best] { i } else { best });
-            json!({"type":"choice", "choice":question.labels[best], "probabilities":probabilities, "confidence":confidence})
+            ResultValue::fields([
+                ("type", ResultValue::string("choice")?),
+                ("choice", ResultValue::string(&question.labels[best])?),
+                ("probabilities", probabilities),
+                ("confidence", ResultValue::number(confidence)),
+            ])
         }
         "score" => {
-            let legend = question
-                .criteria
-                .as_array()
-                .ok_or("Invalid score levels")?
-                .iter()
-                .enumerate()
-                .map(|(i, v)| {
-                    let text = if let Some(text) = v.as_str() {
-                        text.into()
-                    } else {
-                        canonical(v).to_string()
-                    };
-                    (i.to_string(), Value::String(text))
-                })
-                .collect::<Map<_, _>>();
-            json!({"type":"score", "score":p.iter().enumerate().map(|(i,p)| i as f64*p).sum::<f64>(),
-                "probabilities":probabilities, "confidence":confidence, "legend":legend})
+            let values = question.criteria.as_array().ok_or("Invalid score levels")?;
+            let mut legend = ResultValue::object(values.len())?;
+            for (i, v) in values.iter().enumerate() {
+                let text = if let Some(text) = v.as_str() {
+                    super::super::result_storage::string(text)?
+                } else {
+                    {
+                        let mut value = ResultValue::copy(v)?;
+                        value.sort_objects();
+                        value.json_text()?
+                    }
+                };
+                let key = super::super::result_storage::index(i)?;
+                legend.put(&key, ResultValue::String(text))?;
+            }
+            ResultValue::fields([
+                ("type", ResultValue::string("score")?),
+                (
+                    "score",
+                    ResultValue::number(
+                        p.iter().enumerate().map(|(i, p)| i as f64 * p).sum::<f64>(),
+                    ),
+                ),
+                ("probabilities", probabilities),
+                ("confidence", ResultValue::number(confidence)),
+                ("legend", legend),
+            ])
         }
-        _ => return Err("Invalid D3 question type".into()),
-    })
-}
-
-fn canonical(value: &Value) -> Value {
-    match value {
-        Value::Object(obj) => Value::Object(
-            obj.iter()
-                .map(|(k, v)| (k.clone(), canonical(v)))
-                .collect::<std::collections::BTreeMap<_, _>>()
-                .into_iter()
-                .collect(),
-        ),
-        Value::Array(v) => Value::Array(v.iter().map(canonical).collect()),
-        _ => value.clone(),
+        _ => Err("Invalid D3 question type".into()),
     }
 }
 
@@ -637,7 +641,7 @@ mod tests {
                 memory: None,
             };
             compare(
-                &answer(&question(case), output, 1.).unwrap(),
+                &serde_json::to_value(answer(&question(case), output, 1.).unwrap()).unwrap(),
                 &case["answer"],
             );
         }
@@ -689,7 +693,10 @@ mod tests {
             1.,
         )
         .unwrap();
-        compare(&a, &b);
+        compare(
+            &serde_json::to_value(a).unwrap(),
+            &serde_json::to_value(b).unwrap(),
+        );
     }
 }
 

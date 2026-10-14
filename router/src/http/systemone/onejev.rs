@@ -1,4 +1,5 @@
 //! OneJev's qev-labels-v2 text/image protocol, using the shared decision queue.
+use super::super::result_value::{AnswerError, ResultValue};
 use super::*;
 use infinity_v3_core::{
     chat::ChatProcessor,
@@ -337,7 +338,10 @@ fn entry(value: &Value) -> Result<String, String> {
     }
 }
 
-pub(super) fn answer(question: &Question, mut output: DecisionOutput) -> Result<Value, String> {
+pub(super) fn answer(
+    question: &Question,
+    mut output: DecisionOutput,
+) -> Result<ResultValue, AnswerError> {
     // OneJev trains A=yes/B=no; the shared answer formatter expects false/true.
     if question.kind == "noul" && output.logits.len() == 2 {
         output.logits.swap(0, 1);
