@@ -59,7 +59,8 @@ read. The queue's early-dispatch override is `INFINITY_EARLY_DISPATCH_TOKENS`.
     - [Apple M1/M2 Arm](#apple-m1m2-arm64-architectures)
 - [Examples](#examples)
 
-This fork serves inference through HTTP using Candle by default, with an optional
+This fork serves inference through HTTP using the deprecated Candle backend by
+default, with an optional
 [experimental native LibTorch 2.14.1 backend](docs/libtorch-backend.md). The Python
 backend, Intel IPEX/Gaudi images, and public gRPC API have been removed.
 OpenTelemetry export over OTLP/gRPC remains supported.
