@@ -1981,7 +1981,7 @@ async fn vertex_compatibility(
         let local_context = context.clone();
 
         // Rerank is the only payload that can me matched safely
-        if let Ok(instance) = serde_json::from_value::<RerankRequest>(instance.clone()) {
+        if let Ok(instance) = <RerankRequest as serde::Deserialize>::deserialize(&instance) {
             futures.push(rerank_future(local_infer, local_info, local_context, instance).boxed());
             continue;
         }
