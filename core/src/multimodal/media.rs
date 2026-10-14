@@ -10,6 +10,14 @@ use std::{
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
 
 type Result<T> = std::result::Result<T, TextEmbeddingsError>;
+fn allocate_bytes(capacity: usize) -> Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    Ok(bytes)
+}
+
 fn invalid(message: &'static str) -> TextEmbeddingsError {
     TextEmbeddingsError::Tokenizer(message.into())
 }
@@ -184,7 +192,7 @@ impl MediaResolver {
                 "Image exceeds the encoded byte limit".into(),
             ));
         }
-        let mut bytes = Vec::with_capacity(self.max_bytes);
+        let mut bytes = allocate_bytes(self.max_bytes)?;
         while let Some(chunk) = response
             .chunk()
             .await
@@ -225,8 +233,15 @@ fn decode_data_url(source: &str, max_bytes: usize) -> Result<Vec<u8>> {
             "Inline images must be base64 PNG, JPEG, or WebP data URLs",
         ));
     }
-    let bytes = STANDARD
-        .decode(data)
+    // Padding removes at most two bytes from the decoder's capacity estimate.
+    // Reject oversized input before allocating, including invalid base64.
+    let capacity = base64::decoded_len_estimate(data.len());
+    if capacity.saturating_sub(2) > max_bytes {
+        return Err(invalid("Image exceeds the encoded byte limit"));
+    }
+    let mut bytes = allocate_bytes(capacity)?;
+    STANDARD
+        .decode_vec(data, &mut bytes)
         .map_err(|_| invalid("Invalid image base64"))?;
     if bytes.len() > max_bytes {
         return Err(invalid("Image exceeds the encoded byte limit"));
@@ -323,6 +338,16 @@ mod tests {
         );
         assert!(decode_data_url("data:image/png;base64,AQID", 2).is_err());
         assert!(decode_data_url("data:text/plain;base64,AQID", 3).is_err());
+        for (encoded, expected) in [("AQ==", vec![1]), ("AQI=", vec![1, 2])] {
+            let url = format!("data:image/png;base64,{encoded}");
+            assert_eq!(decode_data_url(&url, expected.len()).unwrap(), expected);
+            assert!(decode_data_url(&url, expected.len() - 1).is_err());
+        }
+        assert!(matches!(
+            allocate_bytes(usize::MAX),
+            Err(TextEmbeddingsError::Overloaded(_))
+        ));
+        assert_eq!(allocate_bytes(3).unwrap().len(), 0);
         let budget = MediaBudget::new(2048).unwrap();
         let reservation = budget.reserve(1025).unwrap();
         assert!(matches!(
