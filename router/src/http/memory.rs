@@ -10,7 +10,7 @@ use http_body::{Body as HttpBody, Frame, SizeHint};
 use std::{
     io,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore};
@@ -57,7 +57,7 @@ impl MemoryAdmission {
 }
 struct AdmissionLease {
     _request: OwnedSemaphorePermit,
-    _input: OwnedSemaphorePermit,
+    _input: Mutex<OwnedSemaphorePermit>,
 }
 #[derive(Clone, Copy)]
 pub(crate) enum ErrorShape {
@@ -74,7 +74,7 @@ impl ErrorShape {
         }
     }
 }
-tokio::task_local! { static OUTPUTS: Arc<Semaphore>; static SHAPE: ErrorShape; }
+tokio::task_local! { static OUTPUTS: Arc<Semaphore>; static SHAPE: ErrorShape; static INPUT: Arc<AdmissionLease>; }
 
 fn overloaded(path: &str) -> Response {
     SHAPE.sync_scope(ErrorShape::for_path(path), || {
@@ -120,17 +120,42 @@ pub(crate) async fn admit(
     };
     let lease = Arc::new(AdmissionLease {
         _request: slot,
-        _input: input,
+        _input: Mutex::new(input),
     });
     let shape = ErrorShape::for_path(path);
     let mut response = infinity_v3_core::input_memory::with_input_memory(
         lease.clone(),
-        SHAPE.scope(shape, next.run(request)),
+        INPUT.scope(lease.clone(), SHAPE.scope(shape, next.run(request))),
     )
     .await;
     response.extensions_mut().insert(lease);
     response
 }
+/// Charge request expansion before allocating a duplicate input string. Credits
+/// share the original owner so canceled background work retains both reservations.
+pub(crate) fn copy_input(value: &str) -> Result<String, ErrorResponse> {
+    let failure = || ErrorResponse {
+        error: "HTTP input expansion capacity exhausted".into(),
+        error_type: ErrorType::Overloaded,
+    };
+    if let Ok(lease) = INPUT.try_with(Arc::clone) {
+        let count = u32::try_from(value.len()).map_err(|_| failure())?;
+        let mut input = lease._input.lock().map_err(|_| failure())?;
+        let extra = input
+            .semaphore()
+            .clone()
+            .try_acquire_many_owned(count)
+            .map_err(|_| failure())?;
+        input.merge(extra);
+    }
+    let mut result = String::new();
+    result
+        .try_reserve_exact(value.len())
+        .map_err(|_| failure())?;
+    result.push_str(value);
+    Ok(result)
+}
+
 struct AdmittedBody {
     body: Pin<Box<Body>>,
     lease: Arc<AdmissionLease>,
@@ -288,6 +313,41 @@ mod tests {
     use axum::{routing::post, Router};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn input_expansion_rejects_before_copy_and_survives_background_result() {
+        let requests = Arc::new(Semaphore::new(1));
+        let inputs = Arc::new(Semaphore::new(24));
+        let lease = Arc::new(AdmissionLease {
+            _request: requests.clone().try_acquire_owned().unwrap(),
+            _input: Mutex::new(inputs.clone().try_acquire_many_owned(16).unwrap()),
+        });
+        let (copied, retained) = infinity_v3_core::input_memory::with_input_memory(
+            lease.clone(),
+            INPUT.scope(lease, async {
+                let copied = copy_input("éabcdef").map_err(|error| error.error).unwrap();
+                assert_eq!(copied, "éabcdef");
+                assert_eq!(inputs.available_permits(), 0);
+                assert!(matches!(
+                    copy_input("x").unwrap_err().error_type,
+                    ErrorType::Overloaded
+                ));
+                infinity_v3_core::input_memory::spawn_blocking(move || copied)
+                    .await
+                    .unwrap()
+            }),
+        )
+        .await;
+        assert_eq!(inputs.available_permits(), 0);
+        assert_eq!(requests.available_permits(), 0);
+        drop(copied);
+        assert_eq!(inputs.available_permits(), 0);
+        drop(retained);
+        assert_eq!(inputs.available_permits(), 24);
+        assert_eq!(requests.available_permits(), 1);
+        let healthy = inputs.clone().try_acquire_many_owned(24).unwrap();
+        drop(healthy);
+    }
 
     async fn large_response(
         super::super::response_format::Json(_): super::super::response_format::Json<
