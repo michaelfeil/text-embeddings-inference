@@ -1,7 +1,9 @@
 #include "batching/cuda_graph.h"
+#include "batching/prefix_cache.h"
 #include "batching/radix.h"
 #include "models/decoder_models.h"
 #include "kernels/fast_kernels.h"
+#include "kernels/prefix_state_copy.h"
 #include <ATen/ops/_fused_rms_norm.h>
 #include <ATen/ops/_flash_attention_forward.h>
 #include <c10/core/InferenceMode.h>
@@ -9,6 +11,34 @@
 #include <cuda_runtime_api.h>
 #include <c10/cuda/CUDAGuard.h>
 using namespace tei;
+void prefix_state_copy_test() {
+ std::vector<at::Tensor> targets,sources,expected;
+ const at::ScalarType types[]={at::kByte,at::kShort,at::kFloat,at::kDouble};
+ for(int i=0;i<70;++i) {
+  auto dtype=types[i%4];auto bytes=int64_t(c10::elementSize(dtype));
+  auto width=int64_t(i%5==0?128:129),rows=int64_t(i%3==0?513:7),gap=int64_t(i%4);
+  auto offset=int64_t(i%3)*bytes;
+  auto raw=at::arange(offset+(rows*(width+gap))*bytes,at::TensorOptions().device(at::kCUDA).dtype(at::kLong))
+   .remainder(256).to(at::kByte);
+  auto source=raw.narrow(0,offset,rows*(width+gap)*bytes).view(dtype).view({rows,width+gap}).narrow(1,0,width);
+  // A size-one inner dimension must not invalidate an otherwise packed row.
+  if(i%2)source=source.unsqueeze(1);
+  if(i==69)source=source.narrow(0,0,1).expand(source.sizes());
+  auto target_storage=at::empty({offset+int64_t(source.nbytes())},source.options().dtype(at::kByte));
+  auto target=target_storage.narrow(0,offset,source.nbytes()).view(dtype).view(source.sizes());
+  sources.push_back(source);targets.push_back(target);expected.push_back(source.contiguous().view(at::kByte));
+ }
+ TORCH_CHECK(prefix_state_copies(targets,sources),"Packed and row-strided prefix copies rejected");
+ for(size_t i=0;i<targets.size();++i)
+  TORCH_CHECK(at::equal(targets[i].view(at::kByte),expected[i]),"Prefix state copy changed raw bits or row boundaries");
+ auto first=at::full({4,4},-1,at::TensorOptions().device(at::kCUDA));
+ auto unsupported=at::ones({4,4},first.options()).transpose(0,1);
+ TORCH_CHECK(!prefix_state_copies({first,at::empty_like(first)},{at::zeros_like(first),unsupported})
+  &&at::equal(first,at::full_like(first,-1)),"Rejected copy layout submitted partial work");
+ TORCH_CHECK(!prefix_state_copies({at::Tensor()},{first})&&!prefix_state_copies({}, {first}),"Invalid copy arguments accepted");
+ TORCH_CHECK(!prefix_state_copies({at::empty_like(first)},{at::_neg_view(first)}),"Lazy negative view accepted by raw copy");
+ std::cout<<"Batched prefix state copies preserved raw bits across 70 aligned and strided layouts\n";
+}
 class Dense final:public Model {
 public:
  void ready() override{}
@@ -95,6 +125,72 @@ void radix_graph_test(Model& model) {
  input.scatter_unfold=at::arange(6,options);input.fold_gather=input.scatter_unfold.clone();
  TORCH_CHECK(at::equal(cache.forward(model,input).clone(),model.forward(input)),"Different compact token count reused stale graph");
  TORCH_CHECK(cache.size()==2,"Compact token count missing from radix graph key");
+}
+void full_snapshot_graph_test(Model& inner) {
+ struct Observed final:Model {
+  Model& inner;mutable size_t calls=0,observations=0;
+  explicit Observed(Model& value):inner(value){}
+  void ready() override{}
+  bool supports_prefix_cache(int op)const override{return inner.supports_prefix_cache(op);}
+  int64_t prefix_layers()const override{return inner.prefix_layers();}
+  uint64_t prefix_payload_bytes(int64_t tokens)const override{return inner.prefix_payload_bytes(tokens);}
+  at::Tensor forward(const PackedInput& input)const override{++calls;observations+=bool(input.capture_prefix);return inner.forward(input);}
+ } model(inner);
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ std::vector<int32_t> ends={0,3,7};
+ PackedInput input{at::tensor({3,4,5,6,7,8,9},options),at::zeros({7},options),
+  at::tensor({0,1,2,0,1,2,3},options),at::tensor(ends,options.dtype(at::kInt)),ends.data(),2,4};
+ auto expected=inner.forward(input);
+ CudaGraphCache plain(1,64,1);PrefixCache disabled(0);
+ TORCH_CHECK(at::equal(disabled.run(model,input,0,&plain),expected)&&model.observations==0,
+  "Disabled C++ cache retained full-forward prefix state");
+ CudaGraphCache graphs(4,64,1);graphs.retain_prefix_states();
+ graphs.forward(model,input);auto before=model.calls,attempts=graphs.stats().attempts;
+ PrefixCache cache(1<<20,64,8);
+ auto result=cache.run(model,input,0,&graphs);
+ TORCH_CHECK(at::equal(result,expected)&&model.calls==before,"Warmed full graph admission reran or changed the backbone");
+ TORCH_CHECK(cache.stats().admissions==2&&graphs.stats().attempts==attempts,"Full publication added another graph capture or omitted a row");
+ auto owned=result.clone();result.zero_();
+ input.ids.add_(2);auto changed=inner.forward(input);
+ TORCH_CHECK(at::equal(cache.run(model,input,0,&graphs),changed)&&at::equal(owned,expected),"Full graph replay overwrote an owned snapshot result");
+ TORCH_CHECK(model.calls==before,"Changed full parent forced eager snapshot admission");
+ auto original=input;original.ids=input.ids-2;
+ TORCH_CHECK(at::equal(cache.run(model,original,0,&graphs),expected)&&model.calls==before,
+  "Replaying the full graph changed an earlier resident snapshot");
+ cache.clear();TORCH_CHECK(cache.bytes()==0,"Full graph retained a resident snapshot after clear");
+ TORCH_CHECK(graphs.stats().live_bytes>=inner.prefix_payload_bytes(input.ids.numel()),"Full graph state escaped its storage budget");
+ CudaGraphCache cold(4,64,1);PrefixCache first(1<<20,64,8);
+ before=model.calls;
+ TORCH_CHECK(at::equal(first.run(model,input,0,&cold),changed)&&model.calls==before+1
+  &&cold.stats().attempts==0,"Cold admission added graph warmup/capture instead of one ordinary forward");
+ auto folded=input;folded.ids=at::tensor({3,4,5,3,4,6,7},options);
+ folded.compact_ids=at::tensor({3,4,5,6,7},options);folded.compact_positions=at::tensor({0,1,2,2,3},options);
+ folded.compact_types=at::zeros({5},options);folded.scatter_unfold=at::tensor({0,1,2,0,1,3,4},options);
+ folded.fold_gather=at::tensor({0,1,2,5,6},options);
+ CudaGraphCache radix(4,64,1);radix.retain_prefix_states();radix.forward(model,folded);
+ PrefixCache snapshots(1<<20,64,8);before=model.calls;auto full=inner.forward(folded);
+ TORCH_CHECK(at::equal(snapshots.run(model,folded,0,&radix),full)&&model.calls==before,
+  "Folded full graph admission reran or changed logical rows");
+ auto saved=folded;folded.ids=folded.ids+2;folded.compact_ids=folded.compact_ids+2;
+ TORCH_CHECK(at::equal(snapshots.run(model,folded,0,&radix),inner.forward(folded))
+  &&at::equal(snapshots.run(model,saved,0,&radix),full)&&model.calls==before,
+  "Folded graph publication retained stale maps or shared resident output storage");
+ struct External final:Model {
+  at::Tensor storage=at::ones({1024,8},at::TensorOptions().device(at::kCUDA));
+  void ready()override{}
+  bool supports_prefix_cache(int op)const override{return op==0;}
+  int64_t prefix_layers()const override{return 1;}
+  uint64_t prefix_payload_bytes(int64_t n)const override{return n*8*4*3;}
+  at::Tensor forward(const PackedInput& input)const override {
+   auto rows=storage.narrow(0,0,input.ids.numel());
+   if(input.capture_prefix)prefix_capture_attention(input,0,rows.unsqueeze(1),rows.unsqueeze(1));
+   return prefix_restore(input,rows);
+  }
+ } external;
+ CudaGraphCache budget(4,64,1,16<<10);budget.retain_prefix_states();
+ TORCH_CHECK(at::equal(budget.forward(external,input),external.forward(input))&&budget.size()==0
+  &&budget.stats().attempts==1,"External full-state views escaped whole-storage budget accounting");
+ std::cout<<"Warmed full graph snapshot publication, independent storage and cold fallback passed\n";
 }
 // This copy-only model isolates raw Q/K/V bytes from attention arithmetic.
 // The actual decoder graph above independently covers full/folded semantics.
@@ -212,7 +308,7 @@ void admission_test() {
   TORCH_CHECK(at::equal(tiny_budget.forward(model,input),model.forward(input)),"Budget fallback changed output");
  TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==1,"Oversized pools repeatedly captured");
 }
-int main(){c10::InferenceMode guard;arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
+int main(int argc,char** argv){c10::InferenceMode guard;prefix_state_copy_test();if(argc==2&&std::string(argv[1])=="prefix-copy")return 0;arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);full_snapshot_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);

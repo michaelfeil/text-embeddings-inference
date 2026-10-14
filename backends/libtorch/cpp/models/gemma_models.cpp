@@ -525,6 +525,7 @@ class Gemma final : public Model {
     auto left = layer.sliding ? (causal ? layer.window - 1 : layer.window / 2) : -1;
     auto right = layer.sliding ? (causal ? 0 : layer.window / 2) : -1;
     auto scale = legacy ? 1.0 / std::sqrt(real("query_pre_attn_scalar", layer.dim)) : 1.0;
+    if(input.capture_prefix&&!layer.shared)prefix_capture_attention(input,cache_layer,k,v);
     if(input.prefix) {
       TORCH_CHECK(causal,"Noncausal Gemma cannot reuse prefix state");
       auto output=prefix_attention(q,k,v,input,cache_layer,scale,left,right,true,!layer.shared);

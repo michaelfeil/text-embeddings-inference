@@ -203,6 +203,7 @@ struct Engine {
       // Larger Nomic batches use host-count reference routing and remain eager.
       if(nomic_moe_graphs) max_tokens=std::min<int64_t>(max_tokens,8192);
       graphs=std::make_unique<tei::CudaGraphCache>(entries,max_tokens,reuse,bytes,captures);
+      graphs->retain_prefix_states(bool(prefix));
     }
   }
 };

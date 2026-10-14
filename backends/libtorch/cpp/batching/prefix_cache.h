@@ -81,9 +81,12 @@ struct PrefixContext {
   bool collect_graph=false;
   std::vector<std::map<int64_t,PrefixLayer>> graph_layers;
   std::vector<at::Tensor> graph_outputs;
+  std::map<int64_t,PrefixLayer> graph_packed_layers;
+  at::Tensor graph_hidden;
 };
 const PackedInput& prefix_logical_input(const PackedInput&);
 at::Tensor prefix_restore(const PackedInput&,const at::Tensor&);
+void prefix_capture_attention(const PackedInput&,int64_t layer,const at::Tensor& key,const at::Tensor& value);
 at::Tensor prefix_linear(const at::Tensor&,const at::Tensor&,const at::Tensor&,const PackedInput&);
 at::Tensor prefix_attention(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,
   const PackedInput&,int64_t layer,double scale,int64_t left=-1,int64_t right=-1,

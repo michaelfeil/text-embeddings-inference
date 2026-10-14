@@ -248,8 +248,12 @@ class Decoder final : public Model {
   }
   at::Tensor attend(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input,int64_t layer) const {
     if(input.prefix)return attend_cached(q,k,v,input,layer);
-    if(!radix_enabled(input))return attend_full(q,k,v,input);
+    if(!radix_enabled(input)) {
+      if(input.capture_prefix)prefix_capture_attention(input,layer,k,v);
+      return attend_full(q,k,v,input);
+    }
     auto unfolded=radix_unfold_qkv(q,k,v,input);
+    if(input.capture_prefix)prefix_capture_attention(input,layer,unfolded[1],unfolded[2]);
     auto full=attend_full(unfolded[0],unfolded[1],unfolded[2],input);
     return radix_fold(full,input);
   }

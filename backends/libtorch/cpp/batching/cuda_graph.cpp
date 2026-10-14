@@ -23,7 +23,7 @@ struct CudaGraphCache::Impl {
   size_t reuse, max_captures, consecutive=0;
   uint64_t max_bytes;
   std::string last_shape;
-  bool budget_exhausted=false;
+  bool budget_exhausted=false, retain_prefix=false;
   Stats counters;
 #ifdef TEI_TORCH_CUDA_KERNELS
   struct Entry {
@@ -32,6 +32,7 @@ struct CudaGraphCache::Impl {
     std::vector<int32_t> original_offsets;
     PackedInput original;
     std::unique_ptr<PrefixContext> prefix;
+    std::unique_ptr<PrefixContext> capture;
     // Resident snapshots are immutable. Remember the last copied owner without
     // extending its cache lifetime; address equality after weak locking cannot
     // confuse a retired owner with a new allocation at the same address.
@@ -42,7 +43,7 @@ struct CudaGraphCache::Impl {
     uint64_t bytes=0;
     at::cuda::CUDAEvent consumed;
     bool recorded=false;
-    ~Entry(){if(prefix&&recorded)try{consumed.synchronize();}catch(...) {}}
+    ~Entry(){if((prefix||capture)&&recorded)try{consumed.synchronize();}catch(...) {}}
   };
   std::unordered_map<std::string, std::unique_ptr<Entry>> entries;
   std::list<std::string> lru;
@@ -96,6 +97,7 @@ CudaGraphCache::CudaGraphCache(size_t count,int64_t tokens,size_t uses,uint64_t 
   :impl(std::make_unique<Impl>(count,tokens,uses,bytes,captures)){}
 CudaGraphCache::~CudaGraphCache()=default;
 CudaGraphCache::Stats CudaGraphCache::stats() const { return impl->counters; }
+void CudaGraphCache::retain_prefix_states(bool enabled) {impl->retain_prefix=enabled;}
 size_t CudaGraphCache::size() const {
 #ifdef TEI_TORCH_CUDA_KERNELS
   return impl->entries.size();
@@ -106,7 +108,7 @@ size_t CudaGraphCache::size() const {
 at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original, int operation) {
   return forward(model,original,operation,nullptr);
 }
-at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original,int operation,const MathPolicy* known_policy) {
+at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& original,int operation,const MathPolicy* known_policy,PrefixContext* publish) {
   TORCH_CHECK(operation >= 0 && operation <= 2, "Invalid CUDA graph operation");
   auto run = [&](const PackedInput& input) {
     return operation == 0 ? model.forward(input) : model.predict(input, operation == 2);
@@ -116,11 +118,14 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   c10::cuda::OptionalCUDAGuard device;
   if(input.ids.is_cuda())device.set_device(input.ids.device());
   model.prepare_input(input);
+  auto fallback=[&]{auto eager=input;if(publish)eager.prefix=publish;return run(eager);};
   // Pool reservation accounting requires the native caching allocator.
-  if(c10::cuda::CUDACachingAllocator::name()!="native")return run(input);
+  if(c10::cuda::CUDACachingAllocator::name()!="native")return fallback();
   if(!input.ids.is_cuda()||!impl->limit||input.ids.numel()>impl->max_tokens||input.ids.numel()==0)
-    return run(input);
-  if(input.prefix&&model.prefix_checkpoint_only())return run(input);
+    return fallback();
+  if(input.prefix&&model.prefix_checkpoint_only())return fallback();
+  const bool retain=impl->retain_prefix&&!input.prefix&&model.supports_prefix_cache(operation)
+    &&!model.prefix_checkpoint_only()&&input.audios.empty();
   // Include offsets, max length, device and scalar types: no sequence metadata
   // from one batch can leak into another graph with the same total token count.
   std::ostringstream key;
@@ -162,7 +167,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   tensor_key(value.scatter_unfold);tensor_key(value.fold_gather);
   };
   describe_extras(input);
-  key<<";prefix="<<bool(input.prefix);
+  key<<";prefix="<<bool(input.prefix)<<";retain="<<retain;
   if(input.prefix) {
     const auto& prefix=*input.prefix;
     key<<':'<<prefix.original.max_sequence;
@@ -184,8 +189,10 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   } else {impl->last_shape=id;impl->consecutive=1;}
   auto found=impl->entries.find(id);
   if(found!=impl->entries.end()) {
-    ++impl->counters.hits;
     auto& entry=*found->second;
+    if(publish&&!entry.capture)return fallback();
+    ++impl->counters.hits;
+    try {
     impl->lru.erase(entry.lru);impl->lru.push_front(id);entry.lru=impl->lru.begin();
     std::vector<at::Tensor> targets,sources;graph_input_copies(entry.input,input,targets,sources);
     if(entry.prefix) {
@@ -210,9 +217,22 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
       ++impl->counters.prefix_hits;input.prefix->publish_graph(*entry.prefix);
       auto output=entry.output.clone();entry.consumed.record(c10::cuda::getCurrentCUDAStream(input.ids.get_device()));entry.recorded=true;return output;
     }
+    if(entry.capture) {
+      auto output=entry.output;
+      if(publish){publish->publish_graph(*entry.capture);output=output.clone();}
+      entry.consumed.record(c10::cuda::getCurrentCUDAStream(input.ids.get_device()));entry.recorded=true;
+      return output;
+    }
     return entry.output;
+    }catch(...) {
+      if(entry.prefix||entry.capture)c10::cuda::getCurrentCUDAStream(input.ids.get_device()).synchronize();
+      throw;
+    }
   }
   ++impl->counters.misses;
+  // Admission consumes an already warmed full shader. A missing observer uses
+  // the ordinary eager capture path rather than adding graph capture latency.
+  if(publish)return fallback();
   // Bound private-pool creation, including failed captures. Alternating cold
   // shapes never pass consecutive-use admission.
   if(impl->budget_exhausted || impl->counters.attempts>=impl->max_captures
@@ -234,6 +254,13 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   ++impl->counters.attempts;
   auto entry=std::make_unique<Impl::Entry>();
   entry->input=clone_graph_input(input,entry->offsets);
+  if(retain&&model.prefix_payload_bytes(input.ids.numel())<=impl->max_bytes-impl->counters.admitted_bytes) {
+    entry->capture=std::make_unique<PrefixContext>(PrefixContext{entry->input,entry->offsets,
+      std::vector<int64_t>(input.batch),std::vector<std::shared_ptr<PrefixEntry>>(input.batch),
+      std::vector<std::shared_ptr<PrefixEntry>>(input.batch),0,std::make_shared<PrefixBudget>()});
+    entry->capture->graph_layers.resize(input.batch);entry->capture->graph_outputs.resize(input.batch);
+    entry->input.capture_prefix=entry->capture.get();
+  }
   if(input.prefix) {
     const auto& original=*input.prefix;
     entry->original=clone_graph_input(original.original,entry->original_offsets);
@@ -262,12 +289,21 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     {
       c10::cuda::CUDAStreamGuard stream(capture_stream);
       // Initialize GEMM and attention handles before entering capture.
-      for(int i=0;i<3;++i)entry->output=run(entry->input);
+      auto reset_capture=[&]{if(entry->capture) {
+        for(auto& row:entry->capture->graph_layers)row.clear();
+        for(auto& output:entry->capture->graph_outputs)output=at::Tensor();
+      }};
+      for(int i=0;i<3;++i){reset_capture();entry->output=run(entry->input);}
+      reset_capture();
       if(entry->prefix) {
         // Warmups allocate full K/V arenas. Bind verified parent views directly
         // into them so replay writes only suffix rows, without concatenation.
         for(size_t row=0;row<entry->prefix->readers.size();++row)if(entry->prefix->hits[row]) {
           auto& reader=entry->prefix->readers[row];
+          if(entry->prefix->graph_hidden.defined()) {
+            c10::cuda::CUDACachingAllocator::recordStream(reader->output.storage().data_ptr(),capture_stream);
+            reader->output=entry->prefix->graph_hidden.narrow(0,entry->original.offsets[row],entry->prefix->hits[row]);
+          }
           for(auto& [layer,state]:reader->layers) {
             c10::cuda::CUDACachingAllocator::recordStream(state.key.storage().data_ptr(),capture_stream);
             c10::cuda::CUDACachingAllocator::recordStream(state.value.storage().data_ptr(),capture_stream);
@@ -285,6 +321,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     }
     at::cuda::CUDAEvent warmed;warmed.record(capture_stream);warmed.block(current);
     entry->graph->replay();
+    if(entry->prefix||entry->capture){entry->consumed.record(current);entry->recorded=true;}
   } catch(const std::exception&) {
     // Unsupported operators fall back to eager inference. Capture happens on a
     // dedicated stream so an invalidated capture never touches the caller stream.
@@ -294,17 +331,29 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     // Eager warmups may still use entry storage on the dedicated stream even
     // when capture fails. Complete them before releasing that storage/pool.
     capture_stream.synchronize();
+    current.synchronize();
     entry.reset();
     cudaGetLastError();
     // The lifetime attempt budget also bounds this negative cache.
     impl->failed.insert(id);
     return run(input);
   }
+  if(entry->capture) {
+    bool complete=true;
+    for(size_t row=0;row<entry->capture->graph_layers.size();++row)
+      complete=complete&&int64_t(entry->capture->graph_layers[row].size())==model.prefix_layers()
+        &&entry->capture->graph_outputs[row].defined();
+    if(!complete){current.synchronize();entry->input.capture_prefix=nullptr;entry->capture.reset();}
+  }
   // Charge reserved private-pool segments and static inputs separately.
   // Cumulative admission charges survive eviction: reservation can outlive graphs.
-  for(const auto& segment:c10::cuda::CUDACachingAllocator::snapshot(entry->graph->pool(),false).segments)
+  const auto allocation=c10::cuda::CUDACachingAllocator::snapshot(entry->graph->pool(),false);
+  for(const auto& segment:allocation.segments)
     if(segment.device==input.ids.get_device() && segment.owner_private_pool_id==entry->graph->pool())entry->bytes+=segment.total_size;
-  auto charge=[&](const at::Tensor& t){if(t.defined() && t.is_cuda())entry->bytes+=t.nbytes();};
+  std::unordered_set<const void*> external;
+  auto charge=[&](const at::Tensor& t){if(t.defined() && t.is_cuda()) {
+    entry->bytes+=t.nbytes();external.insert(t.storage().data_ptr().get());
+  }};
   charge(entry->input.ids);charge(entry->input.types);charge(entry->input.positions);charge(entry->input.cumulative);
   for(const auto& image:entry->input.images){charge(image.prepared_features);charge(image.pixels);}
   for(const auto& audio:entry->input.audios){charge(audio.features);charge(audio.validity);charge(audio.selected_frames);}
@@ -316,11 +365,25 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     charge(entry->original.compact_types);charge(entry->original.scatter_unfold);charge(entry->original.fold_gather);
     for(const auto& image:entry->original.images){charge(image.prepared_features);charge(image.pixels);}
     for(const auto& audio:entry->original.audios){charge(audio.features);charge(audio.validity);charge(audio.selected_frames);}
-    for(const auto& reader:entry->prefix->readers)if(reader) {
-      charge(reader->output);
-    }
+    if(entry->prefix->graph_hidden.defined())charge(entry->prefix->graph_hidden);
+    else for(const auto& reader:entry->prefix->readers)if(reader)charge(reader->output);
     for(const auto& row:entry->prefix->graph_layers)
       for(const auto& [layer,state]:row){charge(state.key);charge(state.value);}
+  }
+  if(entry->capture) {
+    // Retained views normally belong to captured private-pool segments, already
+    // charged above. Charge any external backing storage once, including the
+    // whole allocation when a view retains more than its logical slice.
+    auto retained=[&](const at::Tensor& t) {
+      if(!t.defined()||!t.is_cuda())return;
+      const auto pointer=t.storage().data_ptr().get();const auto address=reinterpret_cast<uintptr_t>(pointer);
+      for(const auto& segment:allocation.segments)if(segment.device==input.ids.get_device()
+        &&segment.owner_private_pool_id==entry->graph->pool()&&address>=segment.address
+        &&address-segment.address<segment.total_size)return;
+      if(external.insert(pointer).second)entry->bytes+=t.storage().nbytes();
+    };
+    for(const auto& row:entry->capture->graph_layers)for(const auto& [layer,state]:row){retained(state.key);retained(state.value);}
+    for(const auto& output:entry->capture->graph_outputs)retained(output);
   }
   if(entry->bytes>impl->max_bytes-impl->counters.admitted_bytes) {
     // Allow only one oversized trial; drain replay before pool destruction.
@@ -333,18 +396,25 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     impl->counters.live_bytes-=impl->entries.at(impl->lru.back())->bytes;
     impl->entries.erase(impl->lru.back());impl->lru.pop_back();++impl->counters.evictions;
   }
+  auto result=entry->output;
+  try {
+    if(entry->prefix) {
+      input.prefix->publish_graph(*entry->prefix);result=result.clone();
+      entry->consumed.record(current);entry->recorded=true;
+    }
+  }catch(...) {
+    // Publication may have queued some copies before a later launch/allocation
+    // fails. Drain them before releasing their graph-backed sources.
+    current.synchronize();throw;
+  }
   ++impl->counters.captures;impl->counters.live_bytes+=entry->bytes;
   impl->counters.admitted_bytes+=entry->bytes;
-  auto result=entry->output;
-  if(entry->prefix) {
-    ++impl->counters.prefix_captures;input.prefix->publish_graph(*entry->prefix);result=result.clone();
-    entry->consumed.record(current);entry->recorded=true;
-  }
+  if(entry->prefix)++impl->counters.prefix_captures;
   impl->lru.push_front(id);entry->lru=impl->lru.begin();
   impl->entries.emplace(std::move(id),std::move(entry));
   return result;
 #else
-  auto input=original;model.prepare_input(input);return run(input);
+  auto input=original;model.prepare_input(input);if(publish)input.prefix=publish;return run(input);
 #endif
 }
 }

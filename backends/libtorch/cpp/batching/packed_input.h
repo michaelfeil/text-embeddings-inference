@@ -34,5 +34,8 @@ struct PackedInput {
   // Borrowed full-input host views, valid for this native submission only.
   // Prefix identity must not copy token metadata back from the device.
   at::Tensor host_ids{}, host_types{}, host_positions{}, host_multimodal_positions{}, host_scatter_unfold{};
+  // Read-only full-forward observation during graph capture. This does not
+  // select suffix execution or change the model's projection/attention recipe.
+  PrefixContext* capture_prefix=nullptr;
 };
 }

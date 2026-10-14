@@ -28,7 +28,19 @@ const PackedInput& prefix_logical_input(const PackedInput& input) {
   return input.prefix?input.prefix->original:input;
 }
 at::Tensor prefix_restore(const PackedInput& input,const at::Tensor& hidden) {
+  if(input.capture_prefix)for(int64_t row=0;row<input.batch;++row)
+    input.capture_prefix->graph_outputs[row]=hidden.narrow(0,input.offsets[row],input.offsets[row+1]-input.offsets[row]);
   return input.prefix?input.prefix->restore(hidden):hidden;
+}
+void prefix_capture_attention(const PackedInput& input,int64_t layer,const at::Tensor& key,const at::Tensor& value) {
+  if(!input.capture_prefix)return;
+  TORCH_CHECK(layer>=0&&key.size(0)==input.ids.numel()&&value.size(0)==input.ids.numel(),"Invalid full graph prefix state");
+  for(int64_t row=0;row<input.batch;++row) {
+    auto start=input.offsets[row],length=input.offsets[row+1]-start;
+    auto& layers=input.capture_prefix->graph_layers[row];
+    TORCH_CHECK(!layers.count(layer),"Full graph prefix layer observed more than once");
+    layers.emplace(layer,PrefixLayer{key.narrow(0,start,length),value.narrow(0,start,length),{}, {}});
+  }
 }
 at::Tensor prefix_linear(const at::Tensor& input,const at::Tensor& weight,const at::Tensor& bias,const PackedInput& packed) {
   if(packed.prefix&&packed.prefix->linear)
@@ -70,11 +82,16 @@ PrefixContext::KV PrefixContext::attention(int64_t layer,const at::Tensor& key,c
     int64_t length=offsets[row+1]-offsets[row],full=length+hits[row];
     auto k=key.narrow(0,offsets[row],length),v=value.narrow(0,offsets[row],length);
     if(capture&&collect_graph) {
+      auto& packed=graph_packed_layers[layer];
+      if(!packed.key.defined()) {
+        auto key_shape=k.sizes().vec(),value_shape=v.sizes().vec();
+        key_shape[0]=original.ids.numel();value_shape[0]=original.ids.numel();
+        packed.key=at::empty(key_shape,k.options());packed.value=at::empty(value_shape,v.options());
+      }
       auto& saved=graph_layers[row][layer];
       if(!saved.key.defined()) {
-        auto key_shape=k.sizes().vec(),value_shape=v.sizes().vec();
-        key_shape[0]=full;value_shape[0]=full;
-        saved.key=at::empty(key_shape,k.options());saved.value=at::empty(value_shape,v.options());
+        saved.key=packed.key.narrow(0,original.offsets[row],full);
+        saved.value=packed.value.narrow(0,original.offsets[row],full);
         if(hits[row]) {
           auto old=previous(row,layer);
           TORCH_CHECK(old&&old->key.defined()&&old->key.size(0)>=hits[row],"Missing graph prefix attention state");
@@ -99,6 +116,10 @@ PrefixContext::KV PrefixContext::attention(int64_t layer,const at::Tensor& key,c
   if(capture)for(int64_t row=0;row<original.batch;++row)if(writers[row]) {
     auto saved=int64_t(writers[row]->identity.tokens.size());
     store(row,layer,PrefixLayer{keys[row].narrow(0,0,saved),values[row].narrow(0,0,saved),{}, {}});
+  }
+  if(capture&&collect_graph) {
+    const auto& packed=graph_packed_layers.at(layer);
+    return {packed.key,packed.value,original.cumulative,original.max_sequence};
   }
   // Full K/V boundaries are unchanged by suffix execution. Reuse the existing
   // device metadata instead of synchronizing a host upload at every layer.
@@ -177,6 +198,23 @@ void PrefixContext::checkpoint(int64_t row,int64_t layer,const at::Tensor& state
 }
 at::Tensor PrefixContext::restore(const at::Tensor& suffix) {
   TORCH_CHECK(suffix.dim()==2&&suffix.size(0)==offsets.back(),"Invalid cached suffix output");
+  if(collect_graph) {
+    const bool initialize=!graph_hidden.defined();
+    if(initialize)graph_hidden=at::empty({original.ids.numel(),suffix.size(1)},suffix.options());
+    std::vector<at::Tensor> targets,sources;
+    for(int64_t row=0;row<original.batch;++row) {
+      auto value=graph_hidden.narrow(0,original.offsets[row],original.offsets[row+1]-original.offsets[row]);
+      if(initialize&&hits[row]) {
+        targets.push_back(value.narrow(0,0,hits[row]));sources.push_back(readers[row]->output.narrow(0,0,hits[row]));
+      }
+      auto length=offsets[row+1]-offsets[row];
+      targets.push_back(value.narrow(0,hits[row],length));sources.push_back(suffix.narrow(0,offsets[row],length));
+      graph_outputs[row]=value;
+    }
+    tensor_copies(targets,sources);
+    for(int64_t row=0;row<original.batch;++row)store_output(row,graph_outputs[row]);
+    return graph_hidden;
+  }
   std::vector<at::Tensor> rows;
   for(int64_t row=0;row<original.batch;++row) {
     auto value=suffix.narrow(0,offsets[row],offsets[row+1]-offsets[row]);
@@ -203,7 +241,7 @@ void PrefixContext::publish_graph(const PrefixContext& captured) {
     std::vector<std::pair<int64_t,PrefixLayer>> states;uint64_t payload=0;
     bool packed=true;
     auto account=[&](const at::Tensor& tensor) {
-      packed=packed&&tensor.is_contiguous()&&payload%tensor.element_size()==0;
+      packed=packed&&payload%tensor.element_size()==0;
       payload+=tensor.nbytes();
     };
     for(const auto& [layer,value]:captured.graph_layers[row]) {
@@ -343,6 +381,7 @@ static PrefixIdentity identity(const PackedInput& input,int64_t row,const HostPr
 }
 at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int operation,CudaGraphCache* graphs) {
   std::lock_guard guard(mutex);
+  if(graphs&&limit)graphs->retain_prefix_states();
   const MathPolicy* known_policy=nullptr;
   auto run=[&](const PackedInput& input){return operation?model.predict(input,operation==2):model.forward(input);};
   auto fallback=[&]{return graphs?graphs->forward(model,original,operation,known_policy):run(original);};
@@ -554,7 +593,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   }
   input.prefix=&context;
     const bool has_hit=std::any_of(context.hits.begin(),context.hits.end(),[](auto hit){return hit!=0;});
-    auto result=graphs&&has_hit&&!model.prefix_checkpoint_only()?graphs->forward(model,input,operation):run(input);
+    auto result=graphs&&!model.prefix_checkpoint_only()
+      ?has_hit?graphs->forward(model,input,operation):graphs->forward(model,original,operation,&policy,&context)
+      :run(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
     std::shared_ptr<at::cuda::CUDAEvent> event;
     // Native engine submission fences already cover snapshot writes and result

@@ -52,3 +52,17 @@ Use a flat table with parent-chained block hashes, following [vLLM's identity de
 The current64-token fingerprints refine an incomplete final block by exact comparison. Choose a reuse boundary only when every required full/window/recurrent component is present and ready. A future index must remove lookup references on eviction without releasing storage still pinned by readers. A reserved contiguous hash table and compact entry handles avoid per-token node allocation. If contention appears, shard by well-mixed hash bits; depth can be part of a key, but all requests visit shallow depths and make them poor lock shards. The current engine serializes inference, so sharding has no demonstrated benefit yet.
 
 For RadixMLP, the same parent-chain identity can supply compact node handles during input preparation. Cached state identity and token-local MLP sharing remain distinct: equal suffix tokens with different parents cannot share a cached causal state.
+
+## Dynamo positional lookup
+
+[Dynamo's positional index](https://github.com/ai-dynamo/dynamo/blob/6c661ddfcef2a75c737b996185e52a400f3bcdac/lib/kv-router/src/indexer/positional.rs) probes depths directly and scans skipped windows when candidate workers drop out. The implementation verifies chained sequence hashes even for a single candidate; hashing still costs O(depth). Its count shortcuts require monotonically shrinking worker sets, which sparse eviction can violate.
+
+For this engine, evaluate a reserved flat table keyed by depth and parent-chained fingerprint. Preserve exact verification, alternate collision candidates, original ties and all component coverage. Acquire an owning snapshot before releasing lookup protection. Benchmark against the existing64-entry selector, including insertion, eviction, first-block misses and varied divergence depths. Depth alone is a poor lock shard because every request visits shallow positions.
+
+## Short prefixes and small blocks
+
+The fingerprint stride is distinct from reusable token count and physical GPU page size. Ordinary causal models refine matches token by token; the current cache stores whole snapshots rather than64-token GPU pages. Recurrent boundaries remain subject to available checkpoints.
+
+Eight-token fingerprints deserve consideration for short, branching prefixes. Three pinned CPU rounds of the existing selector, including fresh query hashing and exact verification, measured32-token late-divergence lookup with64 entries at2.04us for stride8 versus3.40us for stride64;128-token lookup measured3.54us versus8.55us. At4096 entries,32-token cases still took about212us with stride8 versus317us with stride64. Smaller hashing strides help, but the scan still scales poorly. These are warm CPU-cache batch means, excluding inference, locking and identity construction. Longer-prefix cases have different tradeoffs.
+
+The larger opportunity is admitting and cheaply reusing many short prefixes. Current admission hashes up to64 tokens, so changing documents after a shared8–32-token query can produce no admissions. A prepared causal-scoring control demonstrates zero natural hits, while explicitly primed snapshots reuse the expected small prefixes with bitwise-equal scores. Future work should separate admission stem length from lookup stride, retain only useful shared blocks, index thousands of prefixes under a byte budget, and avoid spending more on restoration than the computation saved. Physical8-token pages must be qualified against attention kernels and all required state components.
