@@ -3,9 +3,26 @@
 #include "batching/radix.h"
 #include "helpers/workspace_admission.h"
 #include "batching/cuda_graph.h"
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include <ATen/cuda/CUDAContext.h>
+#endif
 #include <iostream>
 using namespace tei;
 void radix_workspace_recovery_test(const c10::Device& device) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+  const auto* properties=at::cuda::getDeviceProperties(device.index());
+  if(properties->major!=9 || properties->minor!=0) {
+    std::cout<<"Qwen3.5 shared workspace fixture skipped: production path requires SM 9.0\n";
+    return;
+  }
+  struct RestoreBlasBackend {
+    at::BlasBackend prior=at::globalContext().blasPreferredBackend();
+    ~RestoreBlasBackend(){at::globalContext().setBlasPreferredBackend(prior);}
+  } restore;
+  at::globalContext().setBlasPreferredBackend(at::BlasBackend::Cublaslt);
+#else
+  return;
+#endif
   Options cfg;cfg.values={{"model_type","qwen3_5_moe"},{"hidden_size","2048"},
     {"num_attention_heads","32"},{"num_key_value_heads","2"},{"head_dim","128"},
     {"num_hidden_layers","1"},{"max_position_embeddings","1024"},
@@ -207,6 +224,9 @@ int main(int argc,char** argv) {
     auto reference=cpu->forward(host).to(at::kFloat),actual=cuda->forward(dev).cpu().to(at::kFloat);
     TORCH_CHECK(at::allclose(reference,actual,.025,.025),"Qwen3.5 native CUDA DeltaNet disagrees with CPU recurrence, maxabs=",(reference-actual).abs().max().item<float>());
     std::cout<<"Qwen3.5 CUDA DeltaNet/CPU reference parity maxabs="<<(reference-actual).abs().max().item<float>()<<"\n";
+    const auto prior_backend=at::globalContext().blasPreferredBackend();
     radix_workspace_recovery_test(device);
+    TORCH_CHECK(at::globalContext().blasPreferredBackend()==prior_backend,
+      "Qwen3.5 workspace fixture did not restore the prior BLAS backend");
   }
 }
