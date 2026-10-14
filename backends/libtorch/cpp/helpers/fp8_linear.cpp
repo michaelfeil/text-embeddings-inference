@@ -1,5 +1,6 @@
 #include "helpers/fp8_linear.h"
 #include "helpers/workspace_admission.h"
+#include "helpers/vendor_error.h"
 #include <ATen/ops/_scaled_mm.h>
 #include <string>
 #include <mutex>
@@ -323,7 +324,9 @@ at::Tensor OrdinaryLinearExecutor::forward(const at::Tensor& x,const at::Tensor&
     output.const_data_ptr(),plan->c,output.mutable_data_ptr(),plan->d,
     &plan->algorithm,workspace_bytes?plan->workspace.mutable_data_ptr():nullptr,
     workspace_bytes,stream.stream());
-  // Preserve ATen’s retry through cuBLAS after any failed cuBLASLt attempt.
+  if(status==CUBLAS_STATUS_ALLOC_FAILED)
+    throw VendorAllocationError{"Ordinary packed projection cublasLtMatmul",static_cast<int32_t>(status)};
+  // Other failed tactics retain ATen's fallback through cuBLAS.
   if(status!=CUBLAS_STATUS_SUCCESS) { plan->rejected=true;return {}; }
   return output;
 #else
