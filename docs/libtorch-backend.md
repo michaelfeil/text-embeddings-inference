@@ -350,11 +350,13 @@ platform-host-page-rounded allocation credit remains owned by the underlying ten
 including idle slots and surviving views; it is returned only after successful
 physical release. Cancellation and partial submission drain the lease's CUDA
 stream before releasing its storage. A failed release keeps its credit charged.
-Admission also counts Torch's current `allocated_bytes`, including cached blocks,
-with a conservative per-block allowance for host page rounding, and reclaims
-completed unused Torch cache blocks before rejecting for pressure.
-This protects native staging allocations; foreign concurrent Torch allocations,
-other host allocations, and driver bookkeeping remain outside this process limit.
+Admission supplements this native bound with an estimate from Torch's observed
+`allocated_bytes` and retained block count, including cached blocks. It allows
+both host-page boundaries for unaligned registered blocks and reclaims completed
+unused cache blocks before rejecting for pressure. These statistics do not expose
+all foreign backing storage, such as unused pinned reserve segments. The guarantee
+covers directly owned native staging; total foreign Torch pins, concurrent foreign
+allocations, other host allocations, and driver bookkeeping remain outside it.
 
 `INFINITY_TORCH_ATTENTION_BIAS_MAX_BYTES` (default 512 MiB, positive) bounds each
 packed attention bias construction. ALiBi admission includes its backing storage

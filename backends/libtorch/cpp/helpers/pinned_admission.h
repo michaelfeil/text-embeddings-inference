@@ -62,17 +62,23 @@ inline size_t pinned_allocation_bytes(size_t bytes, size_t page = pinned_host_pa
               "Native pinned staging capacity overflow");
   return ((std::max(bytes, size_t{1}) + page - 1) / page) * page;
 }
-// Torch reports allocation sizes before platform page rounding. Every retained
-// block can consume up to page-1 additional pinned bytes, including cache blocks.
+// Supplement native admission with observed Torch block statistics. Registered
+// malloc blocks can start inside a host page, so allow both boundary roundings.
+// These statistics do not expose all foreign backing storage (e.g. unused
+// reserve segments); this estimate is not a whole-process physical-pin guarantee.
 inline size_t pinned_cached_bytes(int64_t bytes, int64_t blocks,
                                  size_t page = pinned_host_page_size()) {
   TORCH_CHECK(bytes >= 0 && blocks >= 0 && page > 0,
               "Invalid Torch pinned allocator accounting");
   const auto value = static_cast<uint64_t>(bytes);
   TORCH_CHECK(value <= std::numeric_limits<size_t>::max() &&
-    static_cast<uint64_t>(blocks) <= (std::numeric_limits<size_t>::max() - value) / page,
+    page - 1 <= std::numeric_limits<size_t>::max() / 2,
     "Torch pinned allocator accounting overflow");
-  return static_cast<size_t>(value) + static_cast<size_t>(blocks) * (page - 1);
+  const auto boundaries = 2 * (page - 1);
+  TORCH_CHECK(boundaries == 0 || static_cast<uint64_t>(blocks) <=
+    (std::numeric_limits<size_t>::max() - value) / boundaries,
+    "Torch pinned allocator accounting overflow");
+  return static_cast<size_t>(value) + static_cast<size_t>(blocks) * boundaries;
 }
 #ifdef TEI_TORCH_CUDA_KERNELS
 // This storage does not enter Torch's pinned size-class cache. Its credit stays

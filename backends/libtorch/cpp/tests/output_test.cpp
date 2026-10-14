@@ -3,6 +3,7 @@
 #include "bridge.h"
 #include "batching/cuda_graph.h"
 #include <c10/cuda/CUDACachingAllocator.h>
+#include <c10/cuda/CUDAAllocatorConfig.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
 #include <cmath>
@@ -130,8 +131,8 @@ int main() {
       "4 KiB host page accounting regressed");
     TORCH_CHECK(tei::pinned_allocation_bytes(1,65536)==65536 && tei::pinned_allocation_bytes(65537,65536)==131072,
       "64 KiB host page accounting regressed");
-    TORCH_CHECK(tei::pinned_cached_bytes(8192,2,65536)==8192+2*65535,
-      "Cached Torch block page rounding is not reserved");
+    TORCH_CHECK(tei::pinned_cached_bytes(8192,2,65536)==8192+2*2*65535,
+      "Cached Torch block start/end page rounding is not reserved");
     c10::InferenceMode inference;
     const at::Device device("cuda:0");
     c10::cuda::CUDAGuard guard(device);
@@ -143,6 +144,9 @@ int main() {
     const auto original_pinned_limit = pinned_state->max_bytes;
     TORCH_CHECK(pinned_state->bytes == 0, "Unexpected initial native pinned storage");
     const auto page=tei::pinned_host_page_size();
+    std::cout << "PINNED_ALLOCATOR_SCOPE host_page_bytes=" << page
+      << " host_register=" << c10::cuda::CUDACachingAllocator::CUDAAllocatorConfig::pinned_use_cuda_host_register()
+      << " configured_reserve_MB=" << c10::cuda::CUDACachingAllocator::CUDAAllocatorConfig::pinned_reserve_segment_size_mb() << '\n';
     const auto foreign_stats=host_allocator->get_stats();
     const auto foreign_pins=tei::pinned_cached_bytes(foreign_stats.allocated_bytes.current,foreign_stats.allocations.current);
     pinned_state->max_bytes = foreign_pins + 2*page;
