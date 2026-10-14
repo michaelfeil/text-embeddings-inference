@@ -612,8 +612,7 @@ impl Infer {
         raw_scores: bool,
         _permit: OwnedSemaphorePermit,
         batch_counter: Option<Arc<AtomicUsize>>,
-    ) -> Result<(Vec<TokenPrediction>, usize, Duration, Duration, Duration), TextEmbeddingsError>
-    {
+    ) -> Result<TokenClassificationInferResponse, TextEmbeddingsError> {
         if !self.is_classifier() {
             let counter = metrics::counter!("te_request_failure", "err" => "model_type");
             counter.increment(1);
@@ -718,13 +717,7 @@ impl Infer {
         let histogram = metrics::histogram!("te_predict_inference_duration");
         histogram.record(response.metadata.inference.as_secs_f64());
 
-        Ok((
-            response.results,
-            response.metadata.prompt_tokens,
-            response.metadata.tokenization,
-            response.metadata.queue,
-            response.metadata.inference,
-        ))
+        Ok(response)
     }
 
     #[instrument(skip(self))]
@@ -1068,6 +1061,64 @@ pub struct AllEmbeddingsInferResponse {
 #[cfg(test)]
 mod completion_tests {
     use super::*;
+
+    #[test]
+    fn direct_token_response_owns_results_until_drop() {
+        use infinity_v3_backend::result_memory::{ResultPool, REQUEST_RESULTS};
+        assert!(REQUEST_RESULTS.try_with(|_| ()).is_err());
+        let pool = ResultPool::new(192).unwrap();
+        let deliver = || {
+            let memory = pool.reserve(192)?;
+            let mut outputs = infinity_v3_backend::TokenPredictions::default();
+            outputs.memory = Some(memory);
+            outputs.insert(0, vec![vec![0.25, 0.75]]);
+            let (response_tx, receiver) = oneshot::channel();
+            let entry = Metadata {
+                decision: None,
+                client_batch: None,
+                response_tx,
+                tokenization: Duration::from_micros(7),
+                queue_time: Instant::now(),
+                prompt_tokens: 1,
+                pooling: false,
+                token_classification: true,
+            };
+            send_batch_results(
+                vec![entry],
+                Ok((outputs, Duration::from_millis(1))),
+                |outputs, index, metadata| {
+                    let scores = outputs.remove(&index).unwrap().remove(0);
+                    InferResult::TokenClassification(TokenClassificationInferResponse {
+                        results: vec![make_token_prediction(
+                            0,
+                            scores,
+                            &[10],
+                            &mut ["hello".into()],
+                            &[(0, 5)],
+                        )],
+                        metadata,
+                    })
+                },
+            );
+            let InferResult::TokenClassification(response) =
+                receiver.blocking_recv().unwrap().unwrap()
+            else {
+                panic!("unexpected response type");
+            };
+            Ok::<_, BackendError>(response)
+        };
+        let first = deliver().unwrap();
+        assert_eq!(first.results[0].2, [0.25, 0.75]);
+        assert_eq!(pool.used(), 192);
+        assert!(matches!(deliver(), Err(BackendError::Overloaded(_))));
+        drop(first);
+        assert_eq!(pool.used(), 0);
+        let recovered = deliver().unwrap();
+        assert_eq!(recovered.results[0].0, "hello");
+        assert_eq!(recovered.results[0].2, [0.25, 0.75]);
+        drop(recovered);
+        assert_eq!(pool.used(), 0);
+    }
 
     #[test]
     fn cancellation_after_dispatch_preserves_response_order_and_timing() {
