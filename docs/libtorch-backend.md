@@ -373,6 +373,13 @@ Reservations remain live until GPU completion, including cancellation and
 error cleanup. Synchronous calls drain their stream before releasing admission;
 deferred calls use their existing output completion event and lease.
 
+Linux CPU requests reserve the same tensor estimate across native CPU models in
+the process. Admission uses the smaller of host `MemAvailable` and the remaining
+allowance in every finite memory cgroup ancestor, supporting both cgroup versions.
+The existing device-headroom setting also applies to CPU requests. CPU reservations
+release when synchronous inference finishes or unwinds. Unavailable accounting
+rejects the request with overload while preserving worker health.
+
 This does not control foreign processes or other allocators racing after the
 free-memory query, or establish
 an upper bound on private graph pools, retained vendor workspaces and every

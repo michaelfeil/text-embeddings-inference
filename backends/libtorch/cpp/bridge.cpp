@@ -4,6 +4,9 @@
 #include "batching/radix.h"
 #include "batching/output.h"
 #include "helpers/workspace_admission.h"
+#ifdef __linux__
+#include "helpers/host_admission.h"
+#endif
 #include "models/model.h"
 #include "helpers/options.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
@@ -245,10 +248,10 @@ size_t validate_forward_descriptors(Engine& model,const int64_t* ids,const int64
  return estimate;
 }
 std::shared_ptr<tei::DeviceMemoryPermit> acquire_device_memory(Engine& model,size_t estimate) {
+ const auto headroom=model.options.integer("_device_memory_headroom_bytes",1LL<<30);
+ TORCH_CHECK(headroom>0&&uint64_t(headroom)<=std::numeric_limits<size_t>::max(),"Invalid native device memory headroom");
 #ifdef TEI_TORCH_CUDA_KERNELS
  if(model.device.is_cuda()) {
-  const auto headroom=model.options.integer("_device_memory_headroom_bytes",1LL<<30);
-  TORCH_CHECK(headroom>0&&uint64_t(headroom)<=std::numeric_limits<size_t>::max(),"Invalid native device memory headroom");
   c10::cuda::CUDAGuard guard(model.device);
   auto state=tei::device_admission_state(model.device.index());
   std::lock_guard lock(state->mutex);
@@ -263,6 +266,12 @@ std::shared_ptr<tei::DeviceMemoryPermit> acquire_device_memory(Engine& model,siz
   return std::make_shared<tei::DeviceMemoryPermit>(state,available,size_t(headroom),estimate);
  }
 #endif
+#ifdef __linux__
+ if(model.device.is_cpu()) {
+  auto state=tei::device_admission_state(-1);std::lock_guard lock(state->mutex);
+  return std::make_shared<tei::DeviceMemoryPermit>(state,tei::host_memory_available(),size_t(headroom),estimate);
+ }
+#endif
  return {};
 }
 struct SynchronousMemoryAdmission {
@@ -272,7 +281,7 @@ struct SynchronousMemoryAdmission {
 #endif
  SynchronousMemoryAdmission(Engine& model,size_t bytes):permit(acquire_device_memory(model,bytes)) {
 #ifdef TEI_TORCH_CUDA_KERNELS
-  if(permit)stream=c10::cuda::getCurrentCUDAStream(model.device.index());
+  if(permit&&model.device.is_cuda())stream=c10::cuda::getCurrentCUDAStream(model.device.index());
 #endif
  }
  ~SynchronousMemoryAdmission() {
