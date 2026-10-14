@@ -80,7 +80,7 @@ one backend.
 
 With multiple GPUs, batches have a soft early-dispatch target of 5,000 tokens while
 the queued backlog is below 20,000 tokens per replica. Larger backlogs use the normal
-batch limits. Set `TEI_EARLY_DISPATCH_TOKENS` to override the target, or `0` to disable
+batch limits. Set `INFINITY_EARLY_DISPATCH_TOKENS` to override the target, or `0` to disable
 it. Single-GPU batching keeps its existing behavior unless this variable is set.
 Per-replica batch, token, and inference-duration metrics are exposed on `/metrics`.
 Each replica logs inference throughput every 100 batches.
