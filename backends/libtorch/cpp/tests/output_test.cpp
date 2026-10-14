@@ -59,16 +59,17 @@ void native_allocator_error_test(const at::Device& device,int pressure=0) {
     auto state=tei::pinned_admission_state();const auto previous_limit=state->max_bytes;
     // Retained native storage fills the cap even after reclaiming Torch cache.
     state->max_bytes=state->bytes;
-    // Exact RAW capacity for 32 original four-token sequences grows the host
-    // allocation from one physical 4 KiB page to two, without padding.
-    std::array<int64_t,128> packed_ids{},packed_types{},packed_positions{};
-    std::array<int32_t,33> packed_offsets{};std::array<int64_t,32> raw_rows{};
-    for(int sequence=0;sequence<32;++sequence){raw_rows[sequence]=sequence;packed_offsets[sequence]=4*sequence;
+    // Exact RAW capacity exceeds one platform host page, without padding.
+    const auto sequences=tei::pinned_host_page_size()/(4*16*sizeof(float))+1;
+    TORCH_CHECK(sequences <= static_cast<size_t>(std::numeric_limits<int32_t>::max()/4), "Host page geometry is unrepresentable");
+    std::vector<int64_t> packed_ids(4*sequences),packed_types(4*sequences),packed_positions(4*sequences);
+    std::vector<int32_t> packed_offsets(sequences+1);std::vector<int64_t> raw_rows(sequences);
+    for(size_t sequence=0;sequence<sequences;++sequence){raw_rows[sequence]=sequence;packed_offsets[sequence]=4*sequence;
       for(int token=0;token<4;++token){packed_ids[4*sequence+token]=ids[token];packed_positions[4*sequence+token]=token;}}
-    packed_offsets.back()=128;
+    packed_offsets.back()=4*sequences;
     try {
       std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),packed_ids.data(),packed_types.data(),packed_positions.data(),
-        packed_offsets.data(),32,4,0,nullptr,0,raw_rows.data(),raw_rows.size(),2048,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+        packed_offsets.data(),sequences,4,0,nullptr,0,raw_rows.data(),raw_rows.size(),sequences*4*16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
       TORCH_CHECK(!rejected&&tei_last_error_kind()==2&&std::string(tei_error()).find("Process native pinned staging")!=std::string::npos,
         "Process pinned saturation lost its recoverable admission classification");
       const auto* after=tei_output_wait(held.get());TORCH_CHECK(after,tei_error());
@@ -125,6 +126,12 @@ public:
 };
 int main() {
   try {
+    TORCH_CHECK(tei::pinned_allocation_bytes(1,4096)==4096 && tei::pinned_allocation_bytes(4097,4096)==8192,
+      "4 KiB host page accounting regressed");
+    TORCH_CHECK(tei::pinned_allocation_bytes(1,65536)==65536 && tei::pinned_allocation_bytes(65537,65536)==131072,
+      "64 KiB host page accounting regressed");
+    TORCH_CHECK(tei::pinned_cached_bytes(8192,2,65536)==8192+2*65535,
+      "Cached Torch block page rounding is not reserved");
     c10::InferenceMode inference;
     const at::Device device("cuda:0");
     c10::cuda::CUDAGuard guard(device);
@@ -135,28 +142,30 @@ int main() {
     host_allocator->empty_cache();
     const auto original_pinned_limit = pinned_state->max_bytes;
     TORCH_CHECK(pinned_state->bytes == 0, "Unexpected initial native pinned storage");
-    const auto foreign_pins = static_cast<size_t>(host_allocator->get_stats().allocated_bytes.current);
-    pinned_state->max_bytes = foreign_pins + 8192;
+    const auto page=tei::pinned_host_page_size();
+    const auto foreign_stats=host_allocator->get_stats();
+    const auto foreign_pins=tei::pinned_cached_bytes(foreign_stats.allocated_bytes.current,foreign_stats.allocations.current);
+    pinned_state->max_bytes = foreign_pins + 2*page;
     auto engine_a = std::make_shared<tei::OutputPool>();
     auto engine_b = std::make_shared<tei::OutputPool>();
     for (auto engine : {engine_a, engine_b}) {
       tei::OutputLease lease(engine, device, 1); lease.allocate(); lease.record(); lease.wait();
     }
-    TORCH_CHECK(pinned_state->bytes == 8192 && engine_a->slots[0].host.is_pinned(),
+    TORCH_CHECK(pinned_state->bytes == 2*page && engine_a->slots[0].host.is_pinned(),
                 "Pinned replicas did not share physical staging accounting");
     bool process_rejected = false;
     try { auto engine_c = std::make_shared<tei::OutputPool>();
       tei::OutputLease lease(engine_c, device, 1); lease.allocate(); }
     catch (const tei::MemoryAdmissionError&) { process_rejected = true; }
-    TORCH_CHECK(process_rejected && pinned_state->bytes == 8192,
+    TORCH_CHECK(process_rejected && pinned_state->bytes == 2*page,
                 "Another replica bypassed process pinned admission");
     auto surviving_view = engine_a->slots[0].host.narrow(0, 0, 1);
     engine_a.reset(); engine_b.reset();
-    TORCH_CHECK(pinned_state->bytes == 4096, "Surviving view released pinned storage credit");
+    TORCH_CHECK(pinned_state->bytes == page, "Surviving view released pinned storage credit");
     surviving_view = at::Tensor();
     TORCH_CHECK(pinned_state->bytes == 0, "Last storage reference did not release native pinned memory");
     // Torch's cached physical bytes, not only active bytes, remain charged.
-    auto torch_pin = at::empty({1025}, at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
+    auto torch_pin = at::empty({static_cast<int64_t>(page/sizeof(float)+1)}, at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
     process_rejected = false;
     try { auto blocked = tei::allocate_pinned_staging(1, at::TensorOptions().dtype(at::kFloat)); }
     catch (const tei::MemoryAdmissionError&) { process_rejected = true; }
@@ -164,11 +173,11 @@ int main() {
                 "Native admission ignored active foreign Torch pins");
     torch_pin = at::Tensor();
     const auto cached_pins = host_allocator->get_stats();
-    TORCH_CHECK(cached_pins.allocated_bytes.current >= cached_pins.active_bytes.current + 8192,
+    TORCH_CHECK(cached_pins.allocated_bytes.current >= cached_pins.active_bytes.current + 2*page,
                 "Torch pinned size-class cache fixture was not retained");
-    pinned_state->max_bytes = foreign_pins + 4096;
+    pinned_state->max_bytes = foreign_pins + page;
     auto reclaimed = tei::allocate_pinned_staging(1, at::TensorOptions().dtype(at::kFloat));
-    TORCH_CHECK(pinned_state->bytes == 4096 && host_allocator->get_stats().allocated_bytes.current <= foreign_pins,
+    TORCH_CHECK(pinned_state->bytes == page && host_allocator->get_stats().allocated_bytes.current <= foreign_pins,
                 "Pinned admission did not reclaim completed Torch cache before allocation");
     // Torch cannot register externally owned pins. OutputLease must own them
     // through its stream event rather than relying on Torch's cache lifetime.
