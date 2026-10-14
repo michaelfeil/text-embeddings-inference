@@ -26,6 +26,12 @@ void host_admission_test() {
  std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 / "<<escaped<<" rw - cgroup2 cgroup rw\n";
  write(parent/"memory.max","49152\n");write(parent/"memory.current","32768\n");write(leaf/"memory.max","max\n");
  TORCH_CHECK(host_memory_available(proc)==16384,"Unlimited leaf ignored its finite ancestor");
+ const auto bind=root/"bind";fs::create_directories(bind);write(bind/"memory.max","max\n");
+ const auto primary="2 0 0:1 / "+escaped+" rw - cgroup2 cgroup rw\n";
+ std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 /other "<<bind.string()<<" rw - cgroup2 cgroup rw\n"<<primary;
+ TORCH_CHECK(host_memory_available(proc)==16384,"Unrelated cgroup mount rejected a valid hierarchy");
+ std::ofstream(proc/"self/mountinfo")<<"1 0 0:1 /pod/worker "<<bind.string()<<" rw - cgroup2 cgroup rw\n"<<primary;
+ TORCH_CHECK(host_memory_available(proc)==16384,"Leaf bind mount hid a stricter parent hierarchy");
  auto state=host_admission_state();
  TORCH_CHECK(state!=device_admission_state(-1),"CPU reservations alias an implicit CUDA device");
  auto held=std::make_shared<DeviceMemoryPermit>(state,host_memory_available(proc),4096,8192);

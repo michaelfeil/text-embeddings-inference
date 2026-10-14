@@ -55,7 +55,7 @@ inline size_t host_memory_available(const std::filesystem::path& proc="/proc") {
     if(first==1&&line[0]=='0'&&controllers.empty())membership=line.substr(second+1);
   }
   if(membership.empty())return *available; // No memory cgroup controller.
-  std::ifstream mounts(proc/"self/mountinfo");
+  std::ifstream mounts(proc/"self/mountinfo");bool matched=false;
   while(std::getline(mounts,line)) {
     const auto separator=line.find(" - ");if(separator==std::string::npos)continue;
     std::istringstream tail(line.substr(separator+3));std::string type,source,options;tail>>type>>source>>options;
@@ -65,12 +65,12 @@ inline size_t host_memory_available(const std::filesystem::path& proc="/proc") {
     fs::path boundary=host_mount_path(mount);
     if(boundary.has_relative_path()&&boundary.filename().empty())boundary=boundary.parent_path();
     auto relative=fs::path(membership).lexically_relative(host_mount_path(root));
-    require_memory_admission(!relative.empty()&&*relative.begin()!="..",
-      "Native host cgroup memory hierarchy is unavailable");
+    if(relative.empty()||*relative.begin()=="..")continue;
     auto directory=(boundary/relative).lexically_normal();
     if(directory.has_relative_path()&&directory.filename().empty())directory=directory.parent_path();
     std::error_code status;const auto exists=fs::is_directory(directory,status);
     require_memory_admission(!status&&exists,"Native host cgroup memory hierarchy is unavailable");
+    matched=true;
     for(;;directory=directory.parent_path()) {
       const auto limit=directory/(unified?"memory.max":"memory.limit_in_bytes");
       const auto limited=fs::exists(limit,status);
@@ -85,9 +85,10 @@ inline size_t host_memory_available(const std::filesystem::path& proc="/proc") {
           *available=std::min(*available,*current>=*maximum?size_t(0):*maximum-*current);
         }
       }
-      if(directory==boundary)return *available;
+      if(directory==boundary)break;
     }
   }
-  throw MemoryAdmissionError("Native host cgroup memory mount is unavailable");
+  require_memory_admission(matched,"Native host cgroup memory mount is unavailable");
+  return *available;
 }
 }
