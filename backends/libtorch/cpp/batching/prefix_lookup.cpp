@@ -9,14 +9,14 @@
 
 namespace tei {
 PrefixFingerprint prefix_admission_fingerprint(const PrefixIdentity& key,int operation) {
-  return prefix_admission_fingerprint(key.tokens,operation,key.image_context);
+  return prefix_admission_fingerprint(key.tokens,operation,key.image_context,key.rotary_context);
 }
-PrefixFingerprint prefix_admission_fingerprint(std::span<const PrefixToken> tokens,int operation,bool image_context) {
+PrefixFingerprint prefix_admission_fingerprint(std::span<const PrefixToken> tokens,int operation,bool image_context,bool rotary_context) {
   // Collisions only permit a capture; retained identities still compare exactly.
   // Observe common causal stems rather than requiring an identical changing tail.
   auto count=std::min<size_t>(prefix_block_tokens,tokens.size());
   auto hash=XXH3_128bits_withSeed(tokens.data(),count*sizeof(PrefixToken),
-    uint64_t(operation)*2+uint64_t(image_context));
+    uint64_t(operation)*4+uint64_t(image_context)*2+uint64_t(rotary_context));
   return {hash.low64,hash.high64};
 }
 void prefix_fingerprints(PrefixIdentity& key,int64_t tokens) {
@@ -67,13 +67,13 @@ static int64_t token_common(const PrefixIdentity& a,const PrefixIdentity& b,int6
   return n;
 }
 int64_t prefix_common(const PrefixIdentity& a,const PrefixIdentity& b,int64_t limit) {
-  if(a.image_context!=b.image_context)return 0;
+  if(a.image_context!=b.image_context||a.rotary_context!=b.rotary_context)return 0;
   auto end=std::min<int64_t>({limit,int64_t(a.tokens.size()),int64_t(b.tokens.size())});
   end=media_bound(a,b,end);
   return media_common(a,b,token_common(a,b,0,end));
 }
 bool prefix_same(const PrefixIdentity& a,const PrefixIdentity& b) {
-  if(a.image_context!=b.image_context||a.tokens.size()!=b.tokens.size())return false;
+  if(a.image_context!=b.image_context||a.rotary_context!=b.rotary_context||a.tokens.size()!=b.tokens.size())return false;
   auto blocks=a.tokens.size()/prefix_block_tokens;
   if(blocks&&a.fingerprints.size()>=blocks&&b.fingerprints.size()>=blocks
     &&a.fingerprints[blocks-1]!=b.fingerprints[blocks-1])return false;
@@ -107,7 +107,7 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
   for(const auto& entry:entries) {
     auto end=std::min<int64_t>(limit,entry->identity.tokens.size());
     if((layout&&!prefix_batch_compatible(*entry,*layout))
-      ||entry->operation!=operation||entry->identity.image_context!=key.image_context
+      ||entry->operation!=operation||entry->identity.image_context!=key.image_context||entry->identity.rotary_context!=key.rotary_context
       ||end<=best.length||key.tokens[best.length]!=entry->identity.tokens[best.length])continue;
     end=media_bound(key,entry->identity,end);
     if(end<=best.length)continue;
@@ -124,7 +124,7 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
       if(probe&&int64_t(key.fingerprints.size())>=probe)for(const auto& candidate:entries) {
         const auto& identity=candidate->identity;
         if((layout&&!prefix_batch_compatible(*candidate,*layout))
-          ||candidate->operation!=operation||identity.image_context!=key.image_context
+          ||candidate->operation!=operation||identity.image_context!=key.image_context||identity.rotary_context!=key.rotary_context
           ||int64_t(identity.tokens.size())<limit||int64_t(identity.fingerprints.size())<probe
           ||(checkpoint_only&&int64_t(identity.tokens.size())!=limit)
           ||identity.fingerprints[probe-1]!=key.fingerprints[probe-1]
@@ -137,7 +137,7 @@ PrefixLookup prefix_lookup(PrefixIdentity& key,const std::vector<std::shared_ptr
             if(earlier==candidate)break;
             const auto& prior=earlier->identity;
             if((layout&&!prefix_batch_compatible(*earlier,*layout))
-              ||earlier->operation!=operation||prior.image_context!=key.image_context
+              ||earlier->operation!=operation||prior.image_context!=key.image_context||prior.rotary_context!=key.rotary_context
               ||int64_t(prior.tokens.size())<limit||(checkpoint_only&&int64_t(prior.tokens.size())!=limit))continue;
             if(estimate(key,prior,limit)==limit&&earlier->ready()
               &&prefix_common(key,prior,limit)==limit)return {earlier,limit,false};

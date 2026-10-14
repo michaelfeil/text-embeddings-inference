@@ -360,6 +360,7 @@ static PrefixIdentity identity(const PackedInput& input,int64_t row,const HostPr
   // Image processing can select a residual path for every row in a batch,
   // including text-only rows. Keep that execution context in their identity.
   key.image_context=!input.images.empty();
+  key.rotary_context=input.multimodal_positions.defined();
   key.tokens.reserve(end-start);
   for(int64_t t=start;t<end;++t) {
     key.tokens.push_back(host.token(t));
@@ -420,6 +421,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       auto first=tokens.token(original.offsets[row]);
       candidate=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
         &&!entry->identity.image_context&&!entry->identity.tokens.empty()&&entry->identity.tokens.front()==first
+        &&entry->identity.rotary_context==original.multimodal_positions.defined()
         &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout));});
     }
     if(!candidate) {
@@ -430,7 +432,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         if(model.prefix_checkpoint_only()&&retained>=64)retained=retained/64*64;
         const auto count=std::min<int64_t>(retained,prefix_block_tokens);
         for(int64_t t=0;t<count;++t)stem[t]=tokens.token(original.offsets[row]+t);
-        if(count)observed[row]=admit(prefix_admission_fingerprint({stem.data(),size_t(count)},operation,false));
+        if(count)observed[row]=admit(prefix_admission_fingerprint({stem.data(),size_t(count)},operation,false,original.multimodal_positions.defined()));
       }
       if(std::none_of(observed.begin(),observed.end(),[](auto value){return value!=0;})) {
         counters.misses+=original.batch;++counters.bypasses;return fallback();

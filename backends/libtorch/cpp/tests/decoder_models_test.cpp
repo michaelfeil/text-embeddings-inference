@@ -239,7 +239,7 @@ void cache_concurrency_test(Model& model) {
  auto options=at::TensorOptions().dtype(at::kLong);
  std::vector<at::Tensor> references;
  for(int64_t token=3;token<12;++token)references.push_back(run(model,{token,4,5,6},{0,4}));
- PrefixCache cache(1<<20,64,1);std::barrier start(3);
+ PrefixCache cache(1<<20,64,1,2);std::barrier start(3);
  std::exception_ptr failure;std::mutex errors;
  auto save_failure=[&]{std::lock_guard lock(errors);if(!failure)failure=std::current_exception();};
  auto worker=[&](int shift) {

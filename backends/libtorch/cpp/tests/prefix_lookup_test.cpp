@@ -17,7 +17,7 @@ static auto entry(PrefixIdentity key,int operation=0,bool ready=true) {
 }
 // Original scalar token/media search, independent of the fingerprint ranking.
 static int64_t reference(const PrefixIdentity& a,const PrefixIdentity& b,int64_t limit) {
-  if(a.image_context!=b.image_context)return 0;
+  if(a.image_context!=b.image_context||a.rotary_context!=b.rotary_context)return 0;
   int64_t n=0;
   while(n<limit&&n<int64_t(a.tokens.size())&&n<int64_t(b.tokens.size())&&a.tokens[n]==b.tokens[n])++n;
   for(const auto* key:{&a,&b})for(const auto& media:key->media)if(media.start<n) {
@@ -51,6 +51,7 @@ int main() {
   std::mt19937_64 random(8943);
   for(int trial=0;trial<160;++trial) {
     auto query=identity(128+random()%130);query.image_context=trial%3==0;
+    query.rotary_context=trial%2==0;
     if(query.image_context) {
       PrefixMedia media;media.start=61;media.count=16;media.layout={1,4,4,2};
       media.hashed=trial%2;media.digest[0]=93;media.content={12,44,19};query.media.push_back(media);
@@ -62,6 +63,7 @@ int main() {
       if(!candidate.media.empty()&&row%4==0)candidate.media[0].digest[0]^=1;
       if(!candidate.media.empty()&&row%7==0)candidate.media[0].content.push_back(83);
       if(row%11==0)candidate.image_context=!candidate.image_context;
+      if(row%13==0)candidate.rotary_context=!candidate.rotary_context;
       entries.push_back(entry(std::move(candidate),row%6==0?1:0,row%9!=0));
     }
     entries.push_back(entry(query,0,true));

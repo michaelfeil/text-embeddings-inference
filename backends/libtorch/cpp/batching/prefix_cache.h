@@ -33,6 +33,7 @@ struct PrefixIdentity {
   std::vector<PrefixToken> tokens;
   std::vector<PrefixMedia> media;
   bool image_context=false;
+  bool rotary_context=false;
   std::vector<PrefixFingerprint> fingerprints;
 };
 struct PrefixLayer {

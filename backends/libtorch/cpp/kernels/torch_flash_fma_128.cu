@@ -12,7 +12,7 @@ void launch_128(Flash_fwd_params& params,cudaStream_t stream) {
     if(major==9&&minor==0) {
       // Short suffixes need at most32 query rows. Keep64-key reductions and
       // fused softmax while avoiding the original128-query tile's padding.
-      run_flash_fwd<Flash_fwd_kernel_traits<128,32,64,1,false,false,cutlass::bfloat16_t>,false,true>(params,stream);
+      run_flash_fwd<Flash_fwd_kernel_traits<128,32,64,2,false,false,cutlass::bfloat16_t>,false,true>(params,stream);
       return;
     }
   }
