@@ -229,6 +229,51 @@ void cache_admission_test(Model& model) {
  TORCH_CHECK(mixed.stats().admissions==1,"Mixed batch admitted a first-seen row");
  input.ids=at::tensor({9,4,5,6},options);mixed.run(observed,input,0);
  TORCH_CHECK(mixed.stats().admissions==2,"Mixed first observation was lost");
+ // Changing documents admit their shared stem once; independent full-document
+ // observations still promote complete repeats of interleaved documents.
+ PrefixCache short_stem(1<<20,64,8,2);std::vector<int32_t> short_ends={0,12};
+ PackedInput short_input{at::tensor({3,4,5,6,7,8,9,10,11,12,13,14},options),at::zeros({12},options),
+  at::arange(12,options),at::tensor(short_ends,options.dtype(at::kInt)),short_ends.data(),1,12};
+ check_close(short_stem.run(observed,short_input,0),model.forward(short_input));
+ short_input.ids.index_put_({8},20);
+ check_close(short_stem.run(observed,short_input,0),model.forward(short_input));
+ const auto short_bytes=short_stem.bytes();TORCH_CHECK(short_stem.stats().admissions==1,"Changing document tail hid a repeated short stem");
+ short_input.ids.index_put_({8},21);
+ check_close(short_stem.run(observed,short_input,0),model.forward(short_input));
+ TORCH_CHECK(short_stem.stats().reused_tokens==8&&short_stem.stats().admissions==1&&short_stem.bytes()==short_bytes,
+  "Short stem failed reuse or kept capturing changing tails");
+ short_stem.clear();short_stem.run(observed,short_input,0);
+ TORCH_CHECK(short_stem.bytes()==0&&short_stem.stats().admissions==1,"Clear retained short-stem admission history");
+ PrefixCache typed(1<<20,64,8,2);typed.run(observed,short_input,0);
+ auto changed_type=short_input;changed_type.types=at::ones_like(short_input.types);
+ typed.run(observed,changed_type,0);
+ TORCH_CHECK(typed.bytes()==0,"Short-stem admission ignored token types");
+ typed.run(observed,changed_type,0);
+ TORCH_CHECK(typed.stats().admissions==1,"Repeated typed document was never admitted");
+ std::vector<int32_t> paired_ends={0,12,24};
+ auto pair=short_input;pair.ids=at::cat({short_input.ids,short_input.ids.clone()},0);pair.ids.index_put_({20},22);
+ pair.types=at::zeros({24},options);pair.positions=at::cat({short_input.positions,short_input.positions},0);
+ pair.cumulative=at::tensor(paired_ends,options.dtype(at::kInt));pair.offsets=paired_ends.data();pair.batch=2;
+ PrefixCache paired(1<<20,64,8,2);check_close(paired.run(observed,pair,0),model.forward(pair));
+ TORCH_CHECK(paired.stats().admissions==1,"Identical short stems in one batch duplicated snapshots");
+ check_close(paired.run(observed,pair,0),model.forward(pair));const auto paired_calls=observed.calls;
+ check_close(paired.run(observed,pair,0),model.forward(pair));
+ TORCH_CHECK(observed.calls==paired_calls,"Short-stem history prevented complete repeats of interleaved documents");
+ // Distinct questions may share the same role header. Interleaving them must
+ // retain the longer question prefix, with its own required observation count.
+ PrefixCache questions(1<<20,64,8,3);std::vector<int32_t> question_ends{0,16};
+ auto question=short_input;question.types=at::zeros({16},options);question.positions=at::arange(16,options);
+ question.cumulative=at::tensor(question_ends,options.dtype(at::kInt));question.offsets=question_ends.data();question.max_sequence=16;
+ auto ask=[&](int topic,int document) {
+  question.ids=at::tensor({3,4,5,6,7,8,9,10,topic,topic,topic,topic,document,document,document,document},options);
+  check_close(questions.run(observed,question,0),model.forward(question));
+ };
+ ask(11,16);ask(12,17);ask(11,18);
+ TORCH_CHECK(questions.stats().admissions==1,"Question prefix was admitted without three matching observations");
+ ask(12,19);ask(11,20);
+ TORCH_CHECK(questions.stats().admissions==2,"Interleaved questions lost their longer shared prefix");
+ auto question_reused=questions.stats().reused_tokens;ask(11,21);
+ TORCH_CHECK(questions.stats().reused_tokens-question_reused==12,"Question reused only the common role header");
  auto malformed=input;
  malformed.host_ids=input.ids.narrow(0,0,3);malformed.host_types=input.types.narrow(0,0,3);
  malformed.host_positions=input.positions.narrow(0,0,3);
@@ -238,18 +283,18 @@ void cache_admission_test(Model& model) {
 void cache_concurrency_test(Model& model) {
  auto options=at::TensorOptions().dtype(at::kLong);
  std::vector<at::Tensor> references;
- for(int64_t token=3;token<12;++token)references.push_back(run(model,{token,4,5,6},{0,4}));
+ for(int64_t token=3;token<12;++token)references.push_back(run(model,{3,4,5,6,7,8,9,10,token,12,13,14},{0,12}));
  PrefixCache cache(1<<20,64,1,2);std::barrier start(3);
  std::exception_ptr failure;std::mutex errors;
  auto save_failure=[&]{std::lock_guard lock(errors);if(!failure)failure=std::current_exception();};
  auto worker=[&](int shift) {
   c10::InferenceMode inference;start.arrive_and_wait();
   try {
-   std::vector<int32_t> offsets={0,4};
+   std::vector<int32_t> offsets={0,12};
    for(int i=0;i<200;++i) {
     const auto token=3+(i/3+shift)%9;
-    PackedInput input{at::tensor(std::vector<int64_t>{token,4,5,6},options),at::zeros({4},options),
-     at::arange(4,options),at::tensor(offsets,options.dtype(at::kInt)),offsets.data(),1,4};
+    PackedInput input{at::tensor(std::vector<int64_t>{3,4,5,6,7,8,9,10,token,12,13,14},options),at::zeros({12},options),
+     at::arange(12,options),at::tensor(offsets,options.dtype(at::kInt)),offsets.data(),1,12};
     auto value=cache.run(model,input,0);check_close(value,references[token-3]);
     value.fill_(123); // Mutating caller storage must never change a cache reader.
    }
@@ -345,6 +390,81 @@ void linear_workspace_test(const c10::Device& device) {
  }
  producer.synchronize();
  TORCH_CHECK(at::equal(actual,reference),"Original SGEMM recipe fell back under the Lt workspace cutoff: ",(actual-reference).abs().max().item<float>());
+}
+void cumulative_stream_test(const c10::Device& device) {
+ struct BoundaryReader final:Model {
+  void ready() override{}
+  bool supports_prefix_cache(int op)const override{return op==0;}
+  int64_t prefix_layers()const override{return 1;}
+  uint64_t prefix_payload_bytes(int64_t n)const override{return n*3*sizeof(float);}
+  at::Tensor forward(const PackedInput& input)const override {
+   // A stale boundary becomes an observable value error rather than an
+   // out-of-bounds access, allowing the pending-upload control to fail cleanly.
+   auto delta=input.cumulative.select(0,input.batch).to(at::kFloat)-input.ids.numel();
+   auto rows=input.ids.to(at::kFloat).unsqueeze(1)+delta;
+   if(input.prefix)input.prefix->attention(0,rows.unsqueeze(1),rows.unsqueeze(1));
+   return prefix_restore(input,rows);
+  }
+ } model;
+ PrefixCache cache(1<<20,64,32);std::vector<int32_t> ends{0,32};
+ auto options=at::TensorOptions().device(device).dtype(at::kLong);
+ auto producer=c10::cuda::getStreamFromPool(false,device.index());
+ auto consumer=c10::cuda::getStreamFromPool(false,device.index());
+ auto request=[&](int cut,int tail) {
+  std::vector<int64_t> ids(32);for(int i=0;i<32;++i)ids[i]=i<cut?i:tail;
+  PackedInput input{at::Tensor(),at::Tensor(),at::Tensor(),at::tensor(ends,options.dtype(at::kInt)),ends.data(),1,32};
+  input.host_ids=at::tensor(ids,at::TensorOptions().dtype(at::kLong));
+  input.host_types=at::zeros({32},at::TensorOptions().dtype(at::kLong));
+  input.host_positions=at::arange(32,at::TensorOptions().dtype(at::kLong));
+  input.ids=input.host_ids.to(device);input.types=input.host_types.to(device);input.positions=input.host_positions.to(device);
+  return input;
+ };
+ // Warm both streams and fill five shapes, evicting the 24-row boundary from
+ // the four-slot cache. Every source snapshot is complete before the gate.
+ for(auto stream:{consumer,producer}) {
+  c10::cuda::CUDAStreamGuard guard(stream);
+  cache.run(model,request(32,0),0);
+  int tail=stream==consumer?100:300;
+  for(int cut:{8,16,24,25,26})cache.run(model,request(cut,++tail),0);
+  stream.synchronize();
+ }
+ PackedInput first,second;at::Tensor expected,actual,queued;
+ {
+  c10::cuda::CUDAStreamGuard guard(producer);first=request(8,201);producer.synchronize();
+  // Seed a free allocation on the upload stream with invalid boundaries.
+  auto poison=at::full({2},-777,options.dtype(at::kInt));producer.synchronize();
+ }
+ {c10::cuda::CUDAStreamGuard guard(consumer);second=request(8,202);expected=model.forward(second);consumer.synchronize();}
+ // Preallocate and poison small blocks on both streams so the pending control
+ // neither relies on uninitialized contents nor triggers synchronizing malloc.
+ for(auto stream:{producer,consumer}) {
+  c10::cuda::CUDAStreamGuard guard(stream);std::vector<at::Tensor> scratch;
+  for(int i=0;i<1000;++i)scratch.push_back(at::full({512},255,options.dtype(at::kByte)));
+  stream.synchronize();
+ }
+ struct Gate {
+  std::atomic<bool> released=false;c10::cuda::CUDAStream stream;
+  explicit Gate(c10::cuda::CUDAStream s):stream(s){}
+  void open(){released.store(true);released.notify_all();}
+  ~Gate(){open();stream.synchronize();}
+ } gate(producer);
+ std::jthread watchdog([&](std::stop_token stop){
+  for(int i=0;i<300&&!stop.stop_requested()&&!gate.released.load();++i)std::this_thread::sleep_for(std::chrono::milliseconds(10));
+  if(!stop.stop_requested())gate.open();
+ });
+ at::cuda::CUDAEvent proof;
+ {
+  c10::cuda::CUDAStreamGuard guard(producer);
+  C10_CUDA_CHECK(cudaLaunchHostFunc(producer.stream(),[](void* p){static_cast<Gate*>(p)->released.wait(false);},&gate));
+  proof.record(producer);queued=cache.run(model,first,0);
+  TORCH_CHECK(!proof.query(),"Boundary fixture did not leave its upload pending");
+ }
+ {c10::cuda::CUDAStreamGuard guard(consumer);actual=cache.run(model,second,0);}
+ TORCH_CHECK(!proof.query(),"Boundary fixture lost its pending stream switch");
+ cache.clear();TORCH_CHECK(cache.bytes()==0,"Boundary clear retained charged snapshots");
+ gate.open();consumer.synchronize();producer.synchronize();
+ TORCH_CHECK(at::equal(actual,expected),"Pending boundary upload or clear changed cross-stream values");
+ std::cout<<"Immutable boundary reuse, four-shape eviction, pending upload, stream switch and clear passed\n";
 }
 void cache_stream_test(Model& model,PackedInput input) {
  input.host_ids=input.ids.cpu();input.host_types=input.types.cpu();input.host_positions=input.positions.cpu();
@@ -714,6 +834,9 @@ void probe_cache_test() {
 }
 }
 int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(1);
+#ifdef TEI_TORCH_CUDA_KERNELS
+ if(argc>1&&std::string(argv[1])=="boundary-cuda"){cumulative_stream_test(c10::Device("cuda:0"));return 0;}
+#endif
  {
   // Preselected, non-normalized FP32 routes preserve learned expert scales
   // and their accumulation dtype, including a different activation callback.
@@ -783,7 +906,7 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
     at::tensor({0,1,2,0,1,2,3},opts),at::tensor(ends,opts.dtype(at::kInt)),ends.data(),2,4};
    check_prefix_cache(*gpu,input,0,.01,.02);
 #ifdef TEI_TORCH_CUDA_KERNELS
-   if(std::string(family)=="qwen3") {cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
+   if(std::string(family)=="qwen3") {cumulative_stream_test(c10::Device(argv[1]));cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
    if(std::string(family)=="qwen2")cache_cold_maximum_test(c10::Device(argv[1]));
 #endif
   }

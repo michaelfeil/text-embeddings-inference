@@ -6,6 +6,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <functional>
 #include <vector>
 
 namespace tei {
@@ -131,9 +132,27 @@ private:
   std::unique_ptr<PrefixLinearPlans> linear;
   struct Recent { PrefixFingerprint key; size_t uses=0; };
   std::array<Recent,64> recent{};
+  struct ShortRecent {
+    struct Counter { uint64_t key=0; size_t uses=0; uint64_t used=0; };
+    std::array<std::vector<Counter>,64> depths;
+    size_t cells=64;
+    uint64_t clock=0;
+  };
+  std::unique_ptr<ShortRecent> short_recent;
+  struct Boundaries {
+    std::vector<int32_t> offsets;
+    at::Tensor host,device;
+    std::function<void()> consume;
+    uint64_t used=0;
+  };
+  std::vector<Boundaries> boundaries;
+  uint64_t boundary_clock=0;
   size_t recent_next=0, admission_uses;
   bool ordered_submissions;
   bool admit(const PrefixIdentity&,int operation);
   bool admit(PrefixFingerprint);
+  int64_t observe_text(std::span<const PrefixToken>,int operation,bool rotary_context);
+  void reset_observations();
+  at::Tensor cumulative(const std::vector<int32_t>&,const c10::Device&);
 };
 }

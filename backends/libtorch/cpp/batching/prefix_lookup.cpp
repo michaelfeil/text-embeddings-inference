@@ -19,6 +19,11 @@ PrefixFingerprint prefix_admission_fingerprint(std::span<const PrefixToken> toke
     uint64_t(operation)*4+uint64_t(image_context)*2+uint64_t(rotary_context));
   return {hash.low64,hash.high64};
 }
+uint64_t prefix_admission_step(uint64_t parent,const PrefixToken& token) {
+  // A collision only permits a capture; resident lookup verifies exact tokens.
+  // The previous digest seeds the next token, retaining the whole prefix.
+  return XXH3_64bits_withSeed(token.values.data(),sizeof(token.values),parent);
+}
 void prefix_fingerprints(PrefixIdentity& key,int64_t tokens) {
   auto count=std::min<int64_t>(tokens,key.tokens.size())/prefix_block_tokens;
   if(int64_t(key.fingerprints.size())>count)key.fingerprints.resize(count);

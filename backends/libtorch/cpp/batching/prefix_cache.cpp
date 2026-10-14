@@ -347,9 +347,77 @@ PrefixCache::PrefixCache(uint64_t bytes,int64_t max_prefix,size_t count,size_t u
   :limit(bytes),maximum(max_prefix),capacity(count),admission_uses(uses),ordered_submissions(order==StreamOrder::EngineOrdered) {
   TORCH_CHECK(maximum>0&&capacity>0&&uses>0,"Invalid prefix cache bounds");
   linear=std::make_unique<PrefixLinearPlans>();
+  if(bytes&&uses>1) {
+    short_recent=std::make_unique<ShortRecent>();
+    while(short_recent->cells<std::min<size_t>(count,4096))short_recent->cells*=2;
+  }
 }
 PrefixCache::~PrefixCache()=default;
-void PrefixCache::clear() {std::lock_guard guard(mutex);entries.clear();linear->clear();recent={};recent_next=0;}
+void PrefixCache::reset_observations() {
+  recent={};recent_next=0;
+  boundaries.clear();boundary_clock=0;
+  if(short_recent){for(auto& depth:short_recent->depths)depth.clear();short_recent->clock=0;}
+}
+void PrefixCache::clear() {std::lock_guard guard(mutex);entries.clear();linear->clear();reset_observations();}
+at::Tensor PrefixCache::cumulative(const std::vector<int32_t>& offsets,const c10::Device& device) {
+#ifdef TEI_TORCH_CUDA_KERNELS
+  // Keep at most four immutable shapes, each no larger than the default graph
+  // token bound. Larger requests retain the ordinary per-request allocation.
+  if(device.is_cuda()&&offsets.size()<=4097) {
+    c10::cuda::CUDAGuard guard(device);
+    for(auto& buffer:boundaries)if(buffer.offsets==offsets&&buffer.device.device()==device) {
+      buffer.used=++boundary_clock;buffer.consume();return buffer.device;
+    }
+    Boundaries buffer;buffer.offsets=offsets;buffer.used=++boundary_clock;
+    buffer.host=at::empty({int64_t(offsets.size())},at::TensorOptions().dtype(at::kInt).pinned_memory(true));
+    std::memcpy(buffer.host.mutable_data_ptr(),offsets.data(),offsets.size()*sizeof(int32_t));
+    buffer.device=buffer.host.to(device,true);
+    const auto producer=at::cuda::getCurrentCUDAStream(device.index());
+    std::shared_ptr<at::cuda::CUDAEvent> ready;
+    if(!ordered_submissions){ready=std::make_shared<at::cuda::CUDAEvent>();ready->record(producer);}
+    buffer.consume=[tensor=buffer.device,ready,producer]{
+      const auto stream=at::cuda::getCurrentCUDAStream(producer.device_index());
+      if(stream!=producer) {
+        if(ready)ready->block(stream);
+        c10::cuda::CUDACachingAllocator::recordStream(tensor.storage().data_ptr(),stream);
+      }
+    };
+    if(boundaries.size()==4)boundaries.erase(std::min_element(boundaries.begin(),boundaries.end(),
+      [](const auto& a,const auto& b){return a.used<b.used;}));
+    auto result=buffer.device;boundaries.push_back(std::move(buffer));return result;
+  }
+#endif
+  return at::tensor(offsets,at::TensorOptions().dtype(at::kInt)).to(device);
+}
+int64_t PrefixCache::observe_text(std::span<const PrefixToken> tokens,int operation,bool rotary_context) {
+  TORCH_INTERNAL_ASSERT(short_recent&&tokens.size()>0&&tokens.size()<=64);
+  // Position-first counters preserve interleaved questions under a shared role
+  // header. Each depth has eight-way buckets, bounding an observation to eight
+  // probes instead of comparing every prior document's complete token prefix.
+  auto& state=*short_recent;
+  uint64_t key=0x5354454d434f554eULL+uint64_t(operation)*4+uint64_t(rotary_context);
+  const auto tick=++state.clock;
+  int64_t confirmed=0;
+  for(size_t depth=0;depth<tokens.size();++depth) {
+    key=prefix_admission_step(key,tokens[depth]);
+    auto& table=state.depths[depth];if(table.empty())table.resize(state.cells);
+    const auto bucket=(key&((state.cells/8)-1))*8;
+    ShortRecent::Counter* selected=nullptr;
+    for(size_t way=0;way<8;++way) {
+      auto& cell=table[bucket+way];
+      if(cell.uses&&cell.key==key){selected=&cell;break;}
+      if(!selected||(!cell.uses&&selected->uses)
+        ||(cell.uses&&selected->uses&&cell.used<selected->used))selected=&cell;
+    }
+    if(selected->uses&&selected->key==key) {
+      if(selected->uses<admission_uses)++selected->uses;
+    }else {selected->key=key;selected->uses=1;}
+    selected->used=tick;
+    if(selected->uses>=admission_uses)confirmed=depth+1;
+  }
+  return confirmed>=int64_t(std::min<size_t>(8,tokens.size()))?confirmed:0;
+}
+
 bool PrefixCache::admit(const PrefixIdentity& identity,int operation) {
   if(admission_uses==1)return true;
   return admit(prefix_admission_fingerprint(identity,operation));
@@ -422,7 +490,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   auto policy=execution_math_policy(original.ids.device());
   known_policy=&policy;
   if(model_epoch!=model.prefix_namespace()||math_policy!=policy) {
-    entries.clear();linear->clear();recent={};recent_next=0;model_epoch=model.prefix_namespace();math_policy=policy;
+    entries.clear();linear->clear();reset_observations();model_epoch=model.prefix_namespace();math_policy=policy;
   }
   TORCH_CHECK(original.batch>0&&original.offsets&&original.offsets[0]==0
     &&original.offsets[original.batch]==original.ids.numel(),"Invalid full prefix-cache input boundaries");
@@ -440,7 +508,8 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   // cannot be repaired by selecting the current recipe only for suffix rows.
   // Require the same geometry until cross-shape providers are qualified.
   const auto* reuse_layout=original.ids.is_cuda()?&original:nullptr;
-  std::vector<uint8_t> observed;
+  const bool short_policy=admission_uses>1&&original.images.empty()&&!model.prefix_checkpoint_only();
+  std::vector<int64_t> observed;
   if(admission_uses>1&&original.images.empty()) {
     // A first-token mismatch proves that no resident prefix can be consumed.
     // Observe only the bounded stem before allocating complete identities or
@@ -462,7 +531,12 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         if(model.prefix_checkpoint_only()&&retained>=64)retained=retained/64*64;
         const auto count=std::min<int64_t>(retained,prefix_block_tokens);
         for(int64_t t=0;t<count;++t)stem[t]=tokens.token(original.offsets[row]+t);
-        if(count)observed[row]=admit(prefix_admission_fingerprint({stem.data(),size_t(count)},operation,false,original.multimodal_positions.defined()));
+        if(count) {
+          if(short_policy) {
+            const auto common=observe_text({stem.data(),size_t(count)},operation,original.multimodal_positions.defined());
+            observed[row]=common==64?retained:common;
+          }else observed[row]=admit(prefix_admission_fingerprint({stem.data(),size_t(count)},operation,false,original.multimodal_positions.defined()))?retained:0;
+        }
       }
       if(std::none_of(observed.begin(),observed.end(),[](auto value){return value!=0;})) {
         counters.misses+=original.batch;++counters.bypasses;return fallback();
@@ -546,6 +620,10 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       retained=std::min<int64_t>(maximum,key.tokens.size()-1);
       if(retained>=64)retained=retained/64*64;
     }
+    if(short_policy) {
+      const auto common=observed.empty()?observe_text({key.tokens.data(),size_t(std::min<int64_t>(64,retained))},operation,key.rotary_context):observed[row];
+      if(common<64)retained=std::min(retained,common);
+    }
     for(const auto& media:key.media)if(media.start<retained&&media.start+media.count>retained)retained=media.start;
     key.tokens.resize(retained);
     key.tokens.shrink_to_fit();
@@ -554,7 +632,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
     key.fingerprints.resize(std::min(key.fingerprints.size(),key.tokens.size()/prefix_block_tokens));
     bool resident_exact=std::any_of(entries.begin(),entries.end(),[&](const auto& entry){return entry->operation==operation
       &&(!reuse_layout||prefix_batch_compatible(*entry,*reuse_layout))&&prefix_same(key,entry->identity);});
-    if(retained>best&&!resident_exact&&(observed.empty()?admit(key,operation):observed[row])) {
+    if(short_policy&&!resident_exact)resident_exact=std::any_of(context.writers.begin(),context.writers.end(),
+      [&](const auto& earlier){return earlier&&prefix_same(key,earlier->identity);});
+    if(retained>best&&!resident_exact&&(short_policy||(observed.empty()?admit(key,operation):observed[row]))) {
       prefix_fingerprints(key,retained);key.fingerprints.shrink_to_fit();
       uint64_t metadata=sizeof(PrefixEntry)+key.tokens.capacity()*sizeof(PrefixToken)+key.media.capacity()*sizeof(PrefixMedia)
         +key.fingerprints.capacity()*sizeof(PrefixFingerprint);
@@ -613,7 +693,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       input.positions=positions.size()==1?positions[0]:at::cat(positions);
       input.types=types.size()==1?types[0]:at::cat(types);
     }
-    input.cumulative=at::tensor(context.offsets,at::TensorOptions().dtype(at::kInt)).to(input.ids.device());input.offsets=context.offsets.data();input.max_sequence=0;
+    input.cumulative=cumulative(context.offsets,input.ids.device());input.offsets=context.offsets.data();input.max_sequence=0;
     for(int64_t row=0;row<original.batch;++row)input.max_sequence=std::max<int64_t>(input.max_sequence,context.offsets[row+1]-context.offsets[row]);
     if(!axes.empty())input.multimodal_positions=at::cat(axes,1);
     input.images.clear();
@@ -666,6 +746,6 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       if(entries.size()<capacity){entries.push_back(entry);++counters.admissions;}
     }
     return result;
-  } catch(...) {entries.clear();linear->clear();throw;}
+  } catch(...) {entries.clear();linear->clear();reset_observations();throw;}
 }
 }
