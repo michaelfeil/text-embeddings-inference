@@ -2,6 +2,7 @@ use crate::backend_pool::BackendPool;
 use crate::queue_actor::{prune_canceled_batch, Entry, Metadata, NextBatch, Queue};
 use crate::tokenization::{EncodingInput, RawEncoding, Tokenization};
 use crate::TextEmbeddingsError;
+use infinity_v3_backend::result_memory::{retain_for_request, HasResultMemory, ResultLease};
 use infinity_v3_backend::{Backend, BackendError, Embedding, ModelType};
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
@@ -43,6 +44,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: Some(batch_counter.clone()),
                     response_tx,
                     tokenization,
@@ -59,7 +61,10 @@ impl Infer {
             self.notify_batching_task.notify_one();
         }
         match response_rx.await.map_err(|_| BackendError::Unhealthy)?? {
-            InferResult::Decision(output) => Ok(output),
+            InferResult::Decision(output) => {
+                retain_for_request(output.metadata.memory.clone());
+                Ok(output)
+            }
             _ => Err(BackendError::Inference("Unexpected decision response".into()).into()),
         }
     }
@@ -130,7 +135,7 @@ impl Infer {
             .tokenize(inputs.into(), add_special_tokens, prompt_name)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -147,7 +152,7 @@ impl Infer {
             .decode(ids, skip_special_tokens)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -161,7 +166,7 @@ impl Infer {
             .limit_concurrent_requests
             .try_acquire_owned()
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "overloaded");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "overloaded");
                 counter.increment(1);
                 tracing::error!("{err}");
                 TextEmbeddingsError::from(err)
@@ -191,7 +196,7 @@ impl Infer {
         let start_time = Instant::now();
 
         if self.is_splade() {
-            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "`embed_all` is not available for SPLADE models".to_string();
             tracing::error!("{message}");
@@ -219,14 +224,15 @@ impl Infer {
 
         let total_time = start_time.elapsed();
 
-        metrics::counter!("te_embed_success", "model" => self.model_name.clone()).increment(1);
-        metrics::histogram!("te_embed_duration", "model" => self.model_name.clone())
+        metrics::counter!("infinity_embed_success", "model" => self.model_name.clone())
+            .increment(1);
+        metrics::histogram!("infinity_embed_duration", "model" => self.model_name.clone())
             .record(total_time.as_secs_f64());
-        metrics::histogram!("te_embed_tokenization_duration", "model" => self.model_name.clone())
+        metrics::histogram!("infinity_embed_tokenization_duration", "model" => self.model_name.clone())
             .record(response.metadata.tokenization.as_secs_f64());
-        metrics::histogram!("te_embed_queue_duration", "model" => self.model_name.clone())
+        metrics::histogram!("infinity_embed_queue_duration", "model" => self.model_name.clone())
             .record(response.metadata.queue.as_secs_f64());
-        metrics::histogram!("te_embed_inference_duration", "model" => self.model_name.clone())
+        metrics::histogram!("infinity_embed_inference_duration", "model" => self.model_name.clone())
             .record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -245,7 +251,7 @@ impl Infer {
         let start_time = Instant::now();
 
         if !self.is_splade() {
-            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not an embedding model with SPLADE pooling".to_string();
             tracing::error!("{message}");
@@ -275,18 +281,17 @@ impl Infer {
         let total_time = start_time.elapsed();
 
         // Metrics
-        let counter = metrics::counter!("te_embed_success", "model" => self.model_name.clone());
+        let counter =
+            metrics::counter!("infinity_embed_success", "model" => self.model_name.clone());
         counter.increment(1);
         let histogram =
-            metrics::histogram!("te_embed_duration", "model" => self.model_name.clone());
+            metrics::histogram!("infinity_embed_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_tokenization_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_embed_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_embed_queue_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_embed_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_embed_inference_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_embed_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -308,7 +313,7 @@ impl Infer {
         let start_time = Instant::now();
 
         if self.is_splade() && normalize {
-            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
 
             let message = "`normalize` is not available for SPLADE models".to_string();
@@ -320,7 +325,7 @@ impl Infer {
 
         if let Some(dimensions) = dimensions {
             if dimensions == 0 {
-                metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "validation").increment(1);
+                metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "validation").increment(1);
                 let message = "`dimensions` should be positive".to_string();
                 tracing::error!("{message}");
                 return Err(TextEmbeddingsError::Validation(message));
@@ -346,7 +351,7 @@ impl Infer {
 
         if let Some(mrl_dimensions) = dimensions {
             if mrl_dimensions > response.results.len() {
-                metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "validation").increment(1);
+                metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "validation").increment(1);
 
                 let message =
                     "`dimensions` should be smaller than the maximum embedding dimension."
@@ -381,18 +386,17 @@ impl Infer {
         let total_time = start_time.elapsed();
 
         // Metrics
-        let counter = metrics::counter!("te_embed_success", "model" => self.model_name.clone());
+        let counter =
+            metrics::counter!("infinity_embed_success", "model" => self.model_name.clone());
         counter.increment(1);
         let histogram =
-            metrics::histogram!("te_embed_duration", "model" => self.model_name.clone());
+            metrics::histogram!("infinity_embed_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_embed_tokenization_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_embed_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_embed_queue_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_embed_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_embed_inference_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_embed_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -411,7 +415,7 @@ impl Infer {
         batch_counter: Option<Arc<AtomicUsize>>,
     ) -> Result<InferResult, TextEmbeddingsError> {
         if !matches!(self.backend.model_type, ModelType::Embedding(_)) {
-            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not an embedding model".to_string();
             tracing::error!("{message}");
@@ -420,7 +424,7 @@ impl Infer {
             )));
         }
 
-        let counter = metrics::counter!("te_embed_count", "model" => self.model_name.clone());
+        let counter = metrics::counter!("infinity_embed_count", "model" => self.model_name.clone());
         counter.increment(1);
 
         // Tokenization
@@ -429,7 +433,7 @@ impl Infer {
             .encode_embedding(inputs.into(), truncate, truncation_direction, prompt_name)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 // Failed inputs must finish their part of client-batch preparation too.
@@ -448,6 +452,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: batch_counter.clone(),
                     response_tx,
                     tokenization: start_time.elapsed(),
@@ -476,12 +481,13 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "inference");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "inference");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
             })?;
 
+        response.retain_for_request();
         Ok(response)
     }
 
@@ -496,7 +502,7 @@ impl Infer {
         batch_counter: Option<Arc<AtomicUsize>>,
     ) -> Result<ClassificationInferResponse, TextEmbeddingsError> {
         if !self.is_classifier() {
-            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not a classifier model".to_string();
             return Err(TextEmbeddingsError::Backend(BackendError::Inference(
@@ -505,7 +511,8 @@ impl Infer {
         }
 
         let start_time = Instant::now();
-        let counter = metrics::counter!("te_predict_count", "model" => self.model_name.clone());
+        let counter =
+            metrics::counter!("infinity_predict_count", "model" => self.model_name.clone());
         counter.increment(1);
 
         // Tokenization
@@ -514,7 +521,7 @@ impl Infer {
             .encode(inputs.into(), truncate, truncation_direction, None)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -527,6 +534,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: batch_counter.clone(),
                     response_tx,
                     tokenization: start_time.elapsed(),
@@ -555,12 +563,13 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "inference");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "inference");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
             })?;
 
+        response.retain_for_request();
         let InferResult::Classification(mut response) = response else {
             panic!("unexpected enum variant")
         };
@@ -594,17 +603,17 @@ impl Infer {
         let total_time = start_time.elapsed();
 
         // Metrics
-        let counter = metrics::counter!("te_predict_success", "model" => self.model_name.clone());
+        let counter =
+            metrics::counter!("infinity_predict_success", "model" => self.model_name.clone());
         counter.increment(1);
         let histogram =
-            metrics::histogram!("te_predict_duration", "model" => self.model_name.clone());
+            metrics::histogram!("infinity_predict_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_tokenization_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_predict_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_predict_queue_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_predict_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_inference_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_predict_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
         Ok(response)
@@ -619,10 +628,9 @@ impl Infer {
         raw_scores: bool,
         _permit: OwnedSemaphorePermit,
         batch_counter: Option<Arc<AtomicUsize>>,
-    ) -> Result<(Vec<TokenPrediction>, usize, Duration, Duration, Duration), TextEmbeddingsError>
-    {
+    ) -> Result<TokenClassificationInferResponse, TextEmbeddingsError> {
         if !self.is_classifier() {
-            let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "Model is not a classifier model".to_string();
             return Err(TextEmbeddingsError::Backend(BackendError::Inference(
@@ -631,7 +639,8 @@ impl Infer {
         }
 
         let start_time = Instant::now();
-        let counter = metrics::counter!("te_predict_count", "model" => self.model_name.clone());
+        let counter =
+            metrics::counter!("infinity_predict_count", "model" => self.model_name.clone());
         counter.increment(1);
 
         let encoding = self
@@ -639,7 +648,7 @@ impl Infer {
             .encode(inputs.into(), truncate, truncation_direction, None)
             .await
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "tokenization");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
@@ -650,6 +659,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: batch_counter.clone(),
                     response_tx,
                     tokenization: start_time.elapsed(),
@@ -678,12 +688,13 @@ impl Infer {
                 "Infer batching task dropped the sender without sending a response. This is a bug.",
             )
             .map_err(|err| {
-                let counter = metrics::counter!("te_request_failure", "model" => self.model_name.clone(), "err" => "inference");
+                let counter = metrics::counter!("infinity_request_failure", "model" => self.model_name.clone(), "err" => "inference");
                 counter.increment(1);
                 tracing::error!("{err}");
                 err
             })?;
 
+        response.retain_for_request();
         let InferResult::TokenClassification(mut response) = response else {
             panic!("unexpected enum variant")
         };
@@ -713,26 +724,20 @@ impl Infer {
 
         let total_time = start_time.elapsed();
 
-        let counter = metrics::counter!("te_predict_success", "model" => self.model_name.clone());
+        let counter =
+            metrics::counter!("infinity_predict_success", "model" => self.model_name.clone());
         counter.increment(1);
         let histogram =
-            metrics::histogram!("te_predict_duration", "model" => self.model_name.clone());
+            metrics::histogram!("infinity_predict_duration", "model" => self.model_name.clone());
         histogram.record(total_time.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_tokenization_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_predict_tokenization_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.tokenization.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_predict_queue_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_predict_queue_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.queue.as_secs_f64());
-        let histogram = metrics::histogram!("te_predict_inference_duration", "model" => self.model_name.clone());
+        let histogram = metrics::histogram!("infinity_predict_inference_duration", "model" => self.model_name.clone());
         histogram.record(response.metadata.inference.as_secs_f64());
 
-        Ok((
-            response.results,
-            response.metadata.prompt_tokens,
-            response.metadata.tokenization,
-            response.metadata.queue,
-            response.metadata.inference,
-        ))
+        Ok(response)
     }
 
     #[instrument(skip(self))]
@@ -898,7 +903,27 @@ async fn complete_batch(
             let cumulative_seq_lengths = batch.cumulative_seq_lengths.clone();
             let mut tokens = std::mem::take(&mut batch.tokens);
             let offsets = std::mem::take(&mut batch.offsets);
-            let results = execution.predict_tokens(batch).await;
+            let results =
+                execution
+                    .predict_tokens(batch)
+                    .await
+                    .and_then(|(mut outputs, duration)| {
+                        if let Some(memory) = &outputs.memory {
+                            let rows = outputs
+                                .values()
+                                .try_fold(0usize, |n, rows| n.checked_add(rows.len()))
+                                .ok_or_else(|| {
+                                    BackendError::Inference("Token result count overflow".into())
+                                })?;
+                            let bytes = rows
+                                .checked_mul(std::mem::size_of::<TokenPrediction>())
+                                .ok_or_else(|| {
+                                    BackendError::Inference("Token result memory overflow".into())
+                                })?;
+                            outputs.memory = Some(memory.reserve_more(bytes)?);
+                        }
+                        Ok((outputs, duration))
+                    });
             // Token text/offset construction can be large; retain its blocking worker.
             tokio::task::spawn_blocking(move || {
                 send_batch_results(entries, results, |predictions, index, metadata| {
@@ -964,7 +989,7 @@ async fn complete_batch(
     }
 }
 
-fn send_batch_results<T>(
+fn send_batch_results<T: HasResultMemory>(
     entries: Vec<Metadata>,
     results: Result<(T, Duration), BackendError>,
     mut response: impl FnMut(&mut T, usize, InferMetadata) -> InferResult,
@@ -973,6 +998,7 @@ fn send_batch_results<T>(
         Ok((mut outputs, inference)) => {
             for (index, entry) in entries.into_iter().enumerate() {
                 let metadata = InferMetadata {
+                    memory: outputs.result_memory(),
                     prompt_tokens: entry.prompt_tokens,
                     tokenization: entry.tokenization,
                     queue: entry.queue_time.elapsed().saturating_sub(inference),
@@ -993,6 +1019,7 @@ fn send_batch_results<T>(
 
 #[derive(Debug)]
 pub struct InferMetadata {
+    pub memory: Option<ResultLease>,
     pub prompt_tokens: usize,
     pub tokenization: Duration,
     pub queue: Duration,
@@ -1006,6 +1033,19 @@ pub(crate) enum InferResult {
     TokenClassification(TokenClassificationInferResponse),
     PooledEmbedding(PooledEmbeddingsInferResponse),
     AllEmbedding(AllEmbeddingsInferResponse),
+}
+
+impl InferResult {
+    fn retain_for_request(&self) {
+        let metadata = match self {
+            Self::Decision(r) => &r.metadata,
+            Self::Classification(r) => &r.metadata,
+            Self::TokenClassification(r) => &r.metadata,
+            Self::PooledEmbedding(r) => &r.metadata,
+            Self::AllEmbedding(r) => &r.metadata,
+        };
+        retain_for_request(metadata.memory.clone());
+    }
 }
 
 #[derive(Debug)]
@@ -1064,6 +1104,65 @@ mod completion_tests {
     use super::*;
 
     #[test]
+    fn direct_token_response_owns_results_until_drop() {
+        use infinity_v3_backend::result_memory::{ResultPool, REQUEST_RESULTS};
+        assert!(REQUEST_RESULTS.try_with(|_| ()).is_err());
+        let pool = ResultPool::new(192).unwrap();
+        let deliver = || {
+            let memory = pool.reserve(192)?;
+            let mut outputs = infinity_v3_backend::TokenPredictions::default();
+            outputs.memory = Some(memory);
+            outputs.insert(0, vec![vec![0.25, 0.75]]);
+            let (response_tx, receiver) = oneshot::channel();
+            let entry = Metadata {
+                input_memory: None,
+                decision: None,
+                client_batch: None,
+                response_tx,
+                tokenization: Duration::from_micros(7),
+                queue_time: Instant::now(),
+                prompt_tokens: 1,
+                pooling: false,
+                token_classification: true,
+            };
+            send_batch_results(
+                vec![entry],
+                Ok((outputs, Duration::from_millis(1))),
+                |outputs, index, metadata| {
+                    let scores = outputs.remove(&index).unwrap().remove(0);
+                    InferResult::TokenClassification(TokenClassificationInferResponse {
+                        results: vec![make_token_prediction(
+                            0,
+                            scores,
+                            &[10],
+                            &mut ["hello".into()],
+                            &[(0, 5)],
+                        )],
+                        metadata,
+                    })
+                },
+            );
+            let InferResult::TokenClassification(response) =
+                receiver.blocking_recv().unwrap().unwrap()
+            else {
+                panic!("unexpected response type");
+            };
+            Ok::<_, BackendError>(response)
+        };
+        let first = deliver().unwrap();
+        assert_eq!(first.results[0].2, [0.25, 0.75]);
+        assert_eq!(pool.used(), 192);
+        assert!(matches!(deliver(), Err(BackendError::Overloaded(_))));
+        drop(first);
+        assert_eq!(pool.used(), 0);
+        let recovered = deliver().unwrap();
+        assert_eq!(recovered.results[0].0, "hello");
+        assert_eq!(recovered.results[0].2, [0.25, 0.75]);
+        drop(recovered);
+        assert_eq!(pool.used(), 0);
+    }
+
+    #[test]
     fn cancellation_after_dispatch_preserves_response_order_and_timing() {
         let mut entries = Vec::new();
         let mut receivers = Vec::new();
@@ -1071,6 +1170,7 @@ mod completion_tests {
             let (response_tx, receiver) = oneshot::channel();
             receivers.push(receiver);
             entries.push(Metadata {
+                input_memory: None,
                 decision: None,
                 client_batch: None,
                 response_tx,
@@ -1083,16 +1183,24 @@ mod completion_tests {
         }
         drop(receivers.remove(0));
         let inference = Duration::from_millis(1);
+        let pool = infinity_v3_backend::result_memory::ResultPool::new(96).unwrap();
+        let mut outputs = infinity_v3_backend::Predictions::default();
+        outputs.memory = Some(pool.reserve(96).unwrap());
+        for (index, value) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+            outputs.insert(index, vec![value]);
+        }
         send_batch_results(
             entries,
-            Ok(([vec![1.0], vec![2.0], vec![3.0]].into_iter(), inference)),
-            |outputs, _, metadata| {
+            Ok((outputs, inference)),
+            |outputs, index, metadata| {
                 InferResult::Classification(ClassificationInferResponse {
-                    results: outputs.next().unwrap(),
+                    results: outputs.remove(&index).unwrap(),
                     metadata,
                 })
             },
         );
+        assert_eq!(pool.used(), 96);
+        assert!(pool.reserve(1).is_err());
         for (receiver, expected) in receivers.into_iter().zip([2.0, 3.0]) {
             let InferResult::Classification(response) = receiver.blocking_recv().unwrap().unwrap()
             else {
@@ -1102,7 +1210,10 @@ mod completion_tests {
             assert_eq!(response.metadata.prompt_tokens, expected as usize * 10);
             assert_eq!(response.metadata.tokenization, Duration::from_micros(7));
             assert_eq!(response.metadata.inference, inference);
+            assert_eq!(pool.used(), 96);
         }
+        assert_eq!(pool.used(), 0);
+        assert!(pool.reserve(96).is_ok());
     }
 }
 

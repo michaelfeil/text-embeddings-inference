@@ -1,4 +1,5 @@
 //! Paired trained typed-decision comparison on exact packed token sequences.
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -10,7 +11,6 @@ use text_embeddings_backend_core::{
     AudioFeatures, Backend, Batch, ClefField, DecisionInput, DecisionOutput, ImagePatches,
     ModelType, MultimodalEncoding,
 };
-use text_embeddings_backend_libtorch::LibtorchBackend;
 fn input(sequences: &[serde_json::Value]) -> (Batch, Vec<DecisionInput>) {
     let mut b = Batch {
         input_ids: vec![],

@@ -202,6 +202,7 @@ async fn predict_inner(
     let single = matches!(&req.inputs, PredictInput::Single(_));
     let labels = classifier_labels(&info.model_type)?;
     let (scores, metadata) = run_classification(infer, info, Extension(context), req).await?;
+    reserve_classification_output(&scores, &labels).map_err(ErrorResponse::from)?;
     let predictions = scores
         .into_iter()
         .map(|scores| {
@@ -299,7 +300,7 @@ async fn run_classification(
 
     let (response, metadata) = match req.inputs {
         PredictInput::Single(inputs) => {
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "single");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "single");
             counter.increment(1);
 
             let compute_chars = inputs.count_chars();
@@ -307,7 +308,7 @@ async fn run_classification(
             let (prompt_tokens, tokenization, queue, inference, predictions) =
                 predict_inner(inputs, truncate, infer.0, Some(permit), None).await?;
 
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "single");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "single");
             counter.increment(1);
 
             (
@@ -323,7 +324,7 @@ async fn run_classification(
             )
         }
         PredictInput::Batch(inputs) => {
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             let batch_size = inputs.len();
@@ -343,7 +344,7 @@ async fn run_classification(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -388,7 +389,7 @@ async fn run_classification(
             }
             let batch_size = batch_size as u64;
 
-            let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             (
@@ -468,6 +469,9 @@ async fn classify_inner(
     })?;
     let (scores, metadata) = run_classification(infer, info, context, request)
         .await
+        .map_err(classify_inference_error)?;
+    reserve_classification_output(&scores, &labels)
+        .map_err(ErrorResponse::from)
         .map_err(classify_inference_error)?;
     let response = classification_response(scores, &labels, model, metadata.compute_tokens);
     Ok((HeaderMap::from(metadata), Json(response)))
@@ -633,7 +637,7 @@ async fn predict_tokens_inner(
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
     let (response, metadata) = {
-        let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+        let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
         counter.increment(1);
 
         let batch_size = req.inputs.len();
@@ -647,7 +651,7 @@ async fn predict_tokens_inner(
                 error: message,
                 error_type: ErrorType::Validation,
             };
-            let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+            let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
             counter.increment(1);
             Err(err)?;
         }
@@ -696,11 +700,12 @@ async fn predict_tokens_inner(
         let mut total_inference_time = 0;
         let mut total_compute_tokens = 0;
 
-        for (token_predictions, prompt_tokens, tokenization, queue, inference) in results {
-            total_compute_tokens += prompt_tokens;
-            total_tokenization_time += tokenization.as_nanos() as u64;
-            total_queue_time += queue.as_nanos() as u64;
-            total_inference_time += inference.as_nanos() as u64;
+        for response in results {
+            total_compute_tokens += response.metadata.prompt_tokens;
+            total_tokenization_time += response.metadata.tokenization.as_nanos() as u64;
+            total_queue_time += response.metadata.queue.as_nanos() as u64;
+            total_inference_time += response.metadata.inference.as_nanos() as u64;
+            let token_predictions = response.results;
 
             let mut token_predictions_result = Vec::with_capacity(token_predictions.len());
             for (token, token_id, scores, start, end) in token_predictions {
@@ -753,7 +758,7 @@ async fn predict_tokens_inner(
             })
             .collect();
 
-        let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+        let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
         counter.increment(1);
 
         (
@@ -838,7 +843,7 @@ async fn rerank_inner(
             error: message,
             error_type: ErrorType::Empty,
         };
-        let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+        let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
         counter.increment(1);
         Err(err)?;
     }
@@ -846,7 +851,7 @@ async fn rerank_inner(
     match &info.model_type {
         ModelType::Reranker(_) => Ok(()),
         ModelType::Decision | ModelType::Classifier(_) | ModelType::Embedding(_) => {
-            let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "model_type");
+            let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "model_type");
             counter.increment(1);
             let message = "model is not a re-ranker model".to_string();
             Err(TextEmbeddingsError::Backend(BackendError::Inference(
@@ -893,7 +898,7 @@ async fn rerank_inner(
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
     let (response, metadata) = {
-        let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+        let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
         counter.increment(1);
 
         let batch_size = req.texts.len();
@@ -907,7 +912,7 @@ async fn rerank_inner(
                 error: message,
                 error_type: ErrorType::Validation,
             };
-            let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+            let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
             counter.increment(1);
             Err(err)?;
         }
@@ -973,7 +978,7 @@ async fn rerank_inner(
 
         let batch_size = batch_size as u64;
 
-        let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+        let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
         counter.increment(1);
 
         (
@@ -1050,7 +1055,7 @@ async fn similarity_inner(
             error: message,
             error_type: ErrorType::Empty,
         };
-        let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+        let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
         counter.increment(1);
         Err(err)?;
     }
@@ -1066,7 +1071,7 @@ async fn similarity_inner(
             error: message,
             error_type: ErrorType::Validation,
         };
-        let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+        let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
         counter.increment(1);
         Err(err)?;
     }
@@ -1093,6 +1098,7 @@ async fn similarity_inner(
     let embeddings = embed_response.0 .0;
 
     // Compute cosine
+    reserve_result_allocation::<f32>(batch_size - 1).map_err(ErrorResponse::from)?;
     let distances = (1..batch_size)
         .map(|i| 1.0 - f32::cosine(&embeddings[0], &embeddings[i]).unwrap() as f32)
         .collect();
@@ -1155,7 +1161,7 @@ async fn embed_inner(
 
     let (response, metadata) = match InputBatch::from(req.inputs) {
         InputBatch::Single(input) => {
-            metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
 
@@ -1174,7 +1180,7 @@ async fn embed_inner(
                 .await
                 .map_err(ErrorResponse::from)?;
 
-            metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             (
                 EmbedResponse(vec![response.results]),
@@ -1189,7 +1195,7 @@ async fn embed_inner(
             )
         }
         InputBatch::Batch(inputs) => {
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             if inputs.is_empty() {
@@ -1199,7 +1205,7 @@ async fn embed_inner(
                     error: message,
                     error_type: ErrorType::Empty,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1215,7 +1221,7 @@ async fn embed_inner(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1271,7 +1277,7 @@ async fn embed_inner(
             }
             let batch_size = batch_size as u64;
 
-            let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             (
@@ -1349,20 +1355,21 @@ async fn embed_sparse_inner(
 
     let start_time = Instant::now();
 
-    let sparsify = |values: Vec<f32>| {
+    let sparsify = |values: Vec<f32>| -> Result<Vec<SparseValue>, TextEmbeddingsError> {
+        reserve_result_allocation::<SparseValue>(values.len())?;
         let mut sparse_values = Vec::with_capacity(values.len());
         for (index, value) in values.into_iter().enumerate() {
             if value != 0.0 {
                 sparse_values.push(SparseValue { index, value });
             }
         }
-        sparse_values
+        Ok(sparse_values)
     };
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
     let (response, metadata) = match InputBatch::from(req.inputs) {
         InputBatch::Single(input) => {
-            metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
 
@@ -1379,10 +1386,12 @@ async fn embed_sparse_inner(
                 .await
                 .map_err(ErrorResponse::from)?;
 
-            metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             (
-                EmbedSparseResponse(vec![sparsify(response.results)]),
+                EmbedSparseResponse(vec![
+                    sparsify(response.results).map_err(ErrorResponse::from)?
+                ]),
                 ResponseMetadata::new(
                     compute_chars,
                     response.metadata.prompt_tokens,
@@ -1394,7 +1403,7 @@ async fn embed_sparse_inner(
             )
         }
         InputBatch::Batch(inputs) => {
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             if inputs.is_empty() {
@@ -1404,7 +1413,7 @@ async fn embed_sparse_inner(
                     error: message,
                     error_type: ErrorType::Empty,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1420,7 +1429,7 @@ async fn embed_sparse_inner(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1451,7 +1460,7 @@ async fn embed_sparse_inner(
                             local_batch_counter,
                         )
                         .await?;
-                    Ok((sparsify(response.results), response.metadata))
+                    Ok((sparsify(response.results)?, response.metadata))
                 })
             }
             let results = join_all(futures)
@@ -1475,7 +1484,7 @@ async fn embed_sparse_inner(
             }
             let batch_size = batch_size as u64;
 
-            let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             (
@@ -1558,7 +1567,7 @@ async fn embed_all_inner(
 
     let (response, metadata) = match InputBatch::from(req.inputs) {
         InputBatch::Single(input) => {
-            metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
 
@@ -1575,7 +1584,7 @@ async fn embed_all_inner(
                 .await
                 .map_err(ErrorResponse::from)?;
 
-            metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             (
                 EmbedAllResponse(vec![response.results]),
@@ -1590,7 +1599,7 @@ async fn embed_all_inner(
             )
         }
         InputBatch::Batch(inputs) => {
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             if inputs.is_empty() {
@@ -1600,7 +1609,7 @@ async fn embed_all_inner(
                     error: message,
                     error_type: ErrorType::Empty,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1616,7 +1625,7 @@ async fn embed_all_inner(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1670,7 +1679,7 @@ async fn embed_all_inner(
             }
             let batch_size = batch_size as u64;
 
-            let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             (
@@ -1742,9 +1751,9 @@ async fn openai_embed_inner(
     Json(req): Json<OpenAICompatRequest>,
 ) -> Result<(HeaderMap, Json<OpenAICompatResponse>), (StatusCode, Json<OpenAICompatErrorResponse>)>
 {
-    let encode_embedding = |array: Vec<f32>| {
+    let encode_embedding = |array: Vec<f32>| -> Result<Embedding, ErrorResponse> {
         match req.encoding_format {
-            EncodingFormat::Float => Embedding::Float(array),
+            EncodingFormat::Float => Ok(Embedding::Float(array)),
             EncodingFormat::Base64 => {
                 // Unsafe is fine here since we do not violate memory ownership: bytes
                 // is only used in this scope and we return an owned string
@@ -1752,7 +1761,13 @@ async fn openai_embed_inner(
                     std::slice::from_raw_parts(array.as_ptr() as *const u8, array.len() * 4)
                 };
 
-                Embedding::Base64(BASE64_STANDARD.encode(bytes))
+                let encoded_size = base64::encoded_len(bytes.len(), true).ok_or_else(|| {
+                    ErrorResponse::from(TextEmbeddingsError::Backend(BackendError::Inference(
+                        "Base64 output size overflow".into(),
+                    )))
+                })?;
+                reserve_result_allocation::<u8>(encoded_size).map_err(ErrorResponse::from)?;
+                Ok(Embedding::Base64(BASE64_STANDARD.encode(bytes)))
             }
         }
     };
@@ -1768,7 +1783,7 @@ async fn openai_embed_inner(
 
     let (embeddings, metadata) = match InputBatch::from(req.input) {
         InputBatch::Single(input) => {
-            metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
             let compute_chars = input.count_chars();
 
@@ -1787,9 +1802,9 @@ async fn openai_embed_inner(
                 .await
                 .map_err(ErrorResponse::from)?;
 
-            metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
+            metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "single").increment(1);
 
-            let embedding = encode_embedding(response.results);
+            let embedding = encode_embedding(response.results)?;
             (
                 vec![OpenAICompatEmbedding {
                     object: "embedding",
@@ -1807,7 +1822,7 @@ async fn openai_embed_inner(
             )
         }
         InputBatch::Batch(inputs) => {
-            let counter = metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             if inputs.is_empty() {
@@ -1817,7 +1832,7 @@ async fn openai_embed_inner(
                     error: message,
                     error_type: ErrorType::Empty,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1833,7 +1848,7 @@ async fn openai_embed_inner(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -1884,7 +1899,7 @@ async fn openai_embed_inner(
                 total_queue_time += r.metadata.queue.as_nanos() as u64;
                 total_inference_time += r.metadata.inference.as_nanos() as u64;
                 total_compute_tokens += r.metadata.prompt_tokens;
-                let embedding = encode_embedding(r.results);
+                let embedding = encode_embedding(r.results)?;
                 embeddings.push(OpenAICompatEmbedding {
                     object: "embedding",
                     embedding,
@@ -1893,7 +1908,7 @@ async fn openai_embed_inner(
             }
             let batch_size = batch_size as u64;
 
-            let counter = metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "batch");
+            let counter = metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "batch");
             counter.increment(1);
 
             (
@@ -2006,7 +2021,7 @@ async fn tokenize_inner(
                     error: message,
                     error_type: ErrorType::Empty,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -2022,7 +2037,7 @@ async fn tokenize_inner(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -2096,7 +2111,7 @@ async fn decode_inner(
                     error: message,
                     error_type: ErrorType::Empty,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "validation");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "validation");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -2112,7 +2127,7 @@ async fn decode_inner(
                     error: message,
                     error_type: ErrorType::Validation,
                 };
-                let counter = metrics::counter!("te_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
+                let counter = metrics::counter!("infinity_request_failure", "model" => info.model_id.clone(), "err" => "batch_size");
                 counter.increment(1);
                 Err(err)?;
             }
@@ -2208,7 +2223,7 @@ async fn vertex_compatibility_inner(
         let local_context = context.clone();
 
         // Rerank is the only payload that can me matched safely
-        if let Ok(instance) = serde_json::from_value::<RerankRequest>(instance.clone()) {
+        if let Ok(instance) = <RerankRequest as serde::Deserialize>::deserialize(&instance) {
             futures.push(rerank_future(local_infer, local_info, local_context, instance).boxed());
             continue;
         }
@@ -2534,17 +2549,17 @@ fn build_router(
     }
 
     super::response_format::initialize_memory_errors();
-    let http_output_limit = std::env::var("TEI_HTTP_OUTPUT_MAX_BYTES")
+    let http_output_limit = std::env::var("INFINITY_HTTP_OUTPUT_MAX_BYTES")
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()
-        .context("Invalid TEI_HTTP_OUTPUT_MAX_BYTES")?
+        .context("Invalid INFINITY_HTTP_OUTPUT_MAX_BYTES")?
         .unwrap_or(512 * 1024 * 1024);
-    let http_input_limit = std::env::var("TEI_HTTP_INPUT_MAX_BYTES")
+    let http_input_limit = std::env::var("INFINITY_HTTP_INPUT_MAX_BYTES")
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()
-        .context("Invalid TEI_HTTP_INPUT_MAX_BYTES")?
+        .context("Invalid INFINITY_HTTP_INPUT_MAX_BYTES")?
         .unwrap_or(512 * 1024 * 1024);
     let admission = super::memory::MemoryAdmission::new(
         registry.models().iter().try_fold(0usize, |total, model| {
@@ -2597,6 +2612,9 @@ fn build_router(
         .layer(axum::middleware::from_fn_with_state(
             admission,
             super::memory::response_budget,
+        ))
+        .layer(axum::middleware::from_fn(
+            super::response_format::retain_results,
         ))
         .layer(cors_layer))
 }
@@ -2693,6 +2711,42 @@ impl From<serde_json::Error> for ErrorResponse {
     }
 }
 
+fn reserve_result_allocation<T>(count: usize) -> Result<(), TextEmbeddingsError> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| BackendError::Inference("HTTP result size overflow".into()))?;
+    infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
+    Ok(())
+}
+
+fn reserve_classification_output(
+    scores: &[Vec<f32>],
+    labels: &std::collections::HashMap<String, String>,
+) -> Result<(), TextEmbeddingsError> {
+    let overflow = || BackendError::Inference("Classification result size overflow".into());
+    let mut bytes = scores
+        .len()
+        .checked_mul(std::mem::size_of::<Vec<Prediction>>() + std::mem::size_of::<ClassifyData>())
+        .ok_or_else(overflow)?;
+    for row in scores {
+        bytes = bytes
+            .checked_add(
+                row.len()
+                    .checked_mul(std::mem::size_of::<Prediction>())
+                    .ok_or_else(overflow)?,
+            )
+            .ok_or_else(overflow)?;
+        for index in 0..row.len() {
+            let label_bytes = labels
+                .get(&index.to_string())
+                .map_or(6 + 20, |label| label.len());
+            bytes = bytes.checked_add(label_bytes).ok_or_else(overflow)?;
+        }
+    }
+    infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod classify_tests {
     use super::*;
@@ -2718,7 +2772,7 @@ mod classify_tests {
         assert_eq!(response.data[0].index, 0);
         assert_eq!(response.data[0].num_classes, 2);
         assert!((response.data[0].probs[0] - 0.11920292).abs() < 1e-6);
-        assert!((response.data[0].probs[1] - 0.88079708).abs() < 1e-6);
+        assert!((response.data[0].probs[1] - 0.880_797_1).abs() < 1e-6);
         assert_eq!(response.data[1].label, "negative");
         assert_eq!(response.data[1].index, 1);
         assert_eq!(response.data[1].probs, vec![0.5, 0.5]);

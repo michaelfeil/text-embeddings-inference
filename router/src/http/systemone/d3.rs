@@ -634,6 +634,7 @@ mod tests {
             let output = DecisionOutput {
                 logits: serde_json::from_value(case["logits"].clone()).unwrap(),
                 action_probability: 1.,
+                memory: None,
             };
             compare(
                 &answer(&question(case), output, 1.).unwrap(),
@@ -658,7 +659,8 @@ mod tests {
             &q,
             DecisionOutput {
                 logits: vec![0., f32::NAN],
-                action_probability: 1.
+                action_probability: 1.,
+                memory: None,
             },
             1.
         )
@@ -672,6 +674,7 @@ mod tests {
             DecisionOutput {
                 logits: vec![-2., 2.],
                 action_probability: 1.,
+                memory: None,
             },
             2.,
         )
@@ -681,6 +684,7 @@ mod tests {
             DecisionOutput {
                 logits: vec![-1., 1.],
                 action_probability: 1.,
+                memory: None,
             },
             1.,
         )

@@ -1,5 +1,6 @@
 //! Synthetic CUDA checkpoints exercise both runtimes without network downloads.
 #![cfg(feature = "benchmark-cuda")]
+use infinity_backend_libtorch::LibtorchBackend;
 use safetensors::{
     serialize_to_file,
     tensor::{Dtype, TensorView},
@@ -10,7 +11,6 @@ use std::{
 };
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 struct Fixture(PathBuf);
 impl Drop for Fixture {

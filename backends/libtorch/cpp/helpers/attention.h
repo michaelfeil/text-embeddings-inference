@@ -2,6 +2,7 @@
 #include <ATen/ATen.h>
 #include "batching/packed_input.h"
 #include "helpers/checked_size.h"
+#include "helpers/admission_error.h"
 #include <ATen/ops/_flash_attention_forward.h>
 #include <ATen/ops/_efficient_attention_forward.h>
 
@@ -12,7 +13,8 @@ namespace tei {
 // Allocate enough storage for BOTH the bounded logical view and actual tiles.
 inline constexpr int64_t default_attention_bias_max_bytes = 512LL << 20;
 inline void admit_attention_bias(int64_t bytes,int64_t limit) {
-  TORCH_CHECK(limit>0 && bytes<=limit,"Packed attention bias exceeds its memory budget");
+  TORCH_CHECK(limit>0&&bytes>=0,"Invalid packed attention bias memory budget");
+  require_memory_admission(bytes<=limit,"Packed attention bias exceeds its memory budget");
 }
 inline at::Tensor packed_sequence_bias(const at::Tensor& q,const PackedInput& input,
                                       int64_t max_bytes=default_attention_bias_max_bytes) {

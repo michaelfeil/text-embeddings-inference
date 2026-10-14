@@ -1,10 +1,10 @@
 //! Opt-in actual checkpoint oracle. Weights are pinned externally, never downloaded by tests.
+use infinity_backend_libtorch::LibtorchBackend;
 use text_embeddings_backend_core::{Backend, Batch, DecisionInput, ModelType};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 #[test]
-#[ignore = "Requires TEI_LAYA_MODEL pointing to pinned trained Laya weights"]
+#[ignore = "Requires INFINITY_LAYA_MODEL pointing to pinned trained Laya weights"]
 fn trained_laya_cpu_matches_published_upstream_fixture() {
-    let path = std::env::var("TEI_LAYA_MODEL").expect("TEI_LAYA_MODEL is required");
+    let path = std::env::var("INFINITY_LAYA_MODEL").expect("INFINITY_LAYA_MODEL is required");
     let fixture: serde_json::Value = serde_json::from_str(include_str!(
         "../../../router/tests/fixtures/laya-systemone.json"
     ))

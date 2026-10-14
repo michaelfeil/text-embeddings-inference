@@ -555,7 +555,7 @@ fn json_text(value: &Value) -> String {
 
 type ApiError = (StatusCode, Json<crate::ErrorResponse>);
 fn error(status: StatusCode, message: impl ToString) -> ApiError {
-    metrics::counter!("te_request_failure", "err" => "systemone").increment(1);
+    metrics::counter!("infinity_request_failure", "err" => "systemone").increment(1);
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => crate::ErrorType::Overloaded,
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => crate::ErrorType::Validation,
@@ -602,7 +602,7 @@ pub(crate) async fn systemone_inner(
     Extension(service): Extension<Option<Arc<SystemOne>>>,
     Json(raw_request): Json<Value>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
-    metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
+    metrics::counter!("infinity_request_count", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let service = service.ok_or_else(|| {
         error(
             StatusCode::BAD_REQUEST,
@@ -636,11 +636,11 @@ pub(crate) async fn systemone_inner(
     let _permit = infer
         .try_acquire_permit()
         .map_err(|e| error(StatusCode::TOO_MANY_REQUESTS, e))?;
-    metrics::counter!("te_systemone_count", "model" => info.model_id.clone()).increment(1);
+    metrics::counter!("infinity_systemone_count", "model" => info.model_id.clone()).increment(1);
     let start = Instant::now();
     // Validate and tokenize questions before fetching media, off the async executor.
     let worker = service.clone();
-    let (mut questions, sources, max_len) = tokio::task::spawn_blocking(move || {
+    let (prepared, _input_memory) = infinity_v3_core::input_memory::spawn_blocking(move || {
         let sources = match worker.as_ref() {
             SystemOne::Rune(_) => rune::Rune::image_sources(&mut request)?,
             SystemOne::Onejev(_) => onejev::Onejev::image_sources(&mut request)?,
@@ -650,8 +650,9 @@ pub(crate) async fn systemone_inner(
         Ok::<_, String>((worker.prepare(request)?, sources, max_len))
     })
     .await
-    .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?
-    .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    let (mut questions, sources, max_len) =
+        prepared.map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     if !sources.is_empty() {
         let media_error = |e: infinity_v3_core::TextEmbeddingsError| {
             let status = if matches!(e, infinity_v3_core::TextEmbeddingsError::Overloaded(_)) {
@@ -734,7 +735,19 @@ pub(crate) async fn systemone_inner(
                     batch_counter,
                 )
                 .await
-                .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+                .map_err(|e| {
+                    let status = if matches!(
+                        e,
+                        infinity_v3_core::TextEmbeddingsError::Backend(
+                            infinity_v3_backend::BackendError::Overloaded(_)
+                        )
+                    ) {
+                        StatusCode::TOO_MANY_REQUESTS
+                    } else {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
+                    error(status, e)
+                })?;
             let answer = service
                 .answer(&question, output.results)
                 .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -758,7 +771,7 @@ pub(crate) async fn systemone_inner(
         inference,
     );
     metadata.record_metrics(&info.model_id);
-    metrics::counter!("te_request_success", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
+    metrics::counter!("infinity_request_success", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let answers = if matches!(service.as_ref(), SystemOne::Clef(_)) {
         answers
             .into_iter()
@@ -901,6 +914,7 @@ mod tests {
                 },
             };
             let output = DecisionOutput {
+                memory: None,
                 logits: serde_json::from_value(seq["logits"].clone()).unwrap(),
                 action_probability: seq["action_probability"].as_f64().unwrap() as f32,
             };

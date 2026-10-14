@@ -1187,6 +1187,9 @@ impl From<TextEmbeddingsError> for ErrorResponse {
             TextEmbeddingsError::Validation(_) => ErrorType::Validation,
             TextEmbeddingsError::Empty(_) => ErrorType::Empty,
             TextEmbeddingsError::Overloaded(_) => ErrorType::Overloaded,
+            TextEmbeddingsError::Backend(infinity_v3_backend::BackendError::Overloaded(_)) => {
+                ErrorType::Overloaded
+            }
             TextEmbeddingsError::Backend(_) => ErrorType::Backend,
         };
         Self {
@@ -1237,15 +1240,13 @@ impl ResponseMetadata {
     fn record_metrics(&self, model_name: &str) {
         // Metrics
         let histogram =
-            metrics::histogram!("te_request_duration", "model" => model_name.to_owned());
+            metrics::histogram!("infinity_request_duration", "model" => model_name.to_owned());
         histogram.record(self.start_time.elapsed().as_secs_f64());
-        let histogram = metrics::histogram!("te_request_tokenization_duration", "model" => model_name.to_owned());
+        let histogram = metrics::histogram!("infinity_request_tokenization_duration", "model" => model_name.to_owned());
         histogram.record(self.tokenization_time.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_request_queue_duration", "model" => model_name.to_owned());
+        let histogram = metrics::histogram!("infinity_request_queue_duration", "model" => model_name.to_owned());
         histogram.record(self.queue_time.as_secs_f64());
-        let histogram =
-            metrics::histogram!("te_request_inference_duration", "model" => model_name.to_owned());
+        let histogram = metrics::histogram!("infinity_request_inference_duration", "model" => model_name.to_owned());
         histogram.record(self.inference_time.as_secs_f64());
     }
 }

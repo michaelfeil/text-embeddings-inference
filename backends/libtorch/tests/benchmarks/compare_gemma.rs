@@ -1,4 +1,5 @@
 //! Compare native backends on identical packed Gemma embeddings; HTTP/tokenization excluded.
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -9,7 +10,6 @@ use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{
     AudioFeatures, Backend, Batch, Embedding, ImagePatches, ModelType, MultimodalEncoding, Pool,
 };
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 fn batch(lengths: &[usize]) -> Batch {
     let mut input_ids = Vec::new();
@@ -89,13 +89,13 @@ fn main() {
     let qwen_vl = config["model_type"] == "qwen3_vl";
     let qwen_media =
         qwen_vl || config["model_type"] == "qwen3_5" || config["model_type"] == "qwen3_5_moe";
-    let override_dtype = std::env::var("TEI_COMPARE_DTYPE").ok();
+    let override_dtype = std::env::var("INFINITY_COMPARE_DTYPE").ok();
     let dtype = override_dtype
         .as_deref()
         .unwrap_or(if qwen_vl { "float16" } else { "bfloat16" });
     assert!(
         matches!(dtype, "float16" | "bfloat16"),
-        "TEI_COMPARE_DTYPE must be float16 or bfloat16"
+        "INFINITY_COMPARE_DTYPE must be float16 or bfloat16"
     );
     let dense_paths = std::fs::read(path.join("modules.json")).ok().map(|bytes| {
         serde_json::from_slice::<Vec<serde_json::Value>>(&bytes)
@@ -143,16 +143,18 @@ fn main() {
         ("8x512", vec![512; 8]),
         ("32x512", vec![512; 32]),
     ];
-    if std::env::var_os("TEI_GEMMA_TEXT_ONLY").is_none() && config["vision_config"].is_object() {
+    if std::env::var_os("INFINITY_GEMMA_TEXT_ONLY").is_none() && config["vision_config"].is_object()
+    {
         workloads.push(("image1x32", vec![32]));
         if qwen_media {
             workloads.push(("images2ragged32_48", vec![32, 48]));
         }
     }
-    if std::env::var_os("TEI_GEMMA_TEXT_ONLY").is_none() && config["audio_config"].is_object() {
+    if std::env::var_os("INFINITY_GEMMA_TEXT_ONLY").is_none() && config["audio_config"].is_object()
+    {
         workloads.push(("audio1x32", vec![32]));
     }
-    if let Ok(selected) = std::env::var("TEI_GEMMA_CASE") {
+    if let Ok(selected) = std::env::var("INFINITY_GEMMA_CASE") {
         workloads.retain(|(label, _)| *label == selected);
     }
     let mut rows = Vec::new();
@@ -290,7 +292,7 @@ fn main() {
         serde_json::to_string_pretty(&serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_dtype":config["dtype"],"model_type":config["model_type"],
         "pooling":if qwen_vl {"last_token"} else {"mean"},"dense_paths":dense_paths,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"measurement_mode":"parallel separate GPUs","warmup_per_backend":20,
         "torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),
-        "torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()),
+        "torch_cuda_graph_max_tokens":std::env::var("INFINITY_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()),
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows}))
         .unwrap()
     );

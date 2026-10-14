@@ -41,10 +41,16 @@
 
 namespace {
 thread_local std::string error;
+thread_local int32_t error_kind=0;
+thread_local const char* error_fallback=nullptr;
+void set_error(int32_t kind,const char* message) noexcept {
+  error_kind=kind;
+  try { error=message; } catch (...) { error_fallback="Native error message unavailable under memory pressure"; }
+}
 std::once_flag precision_initialized;
 void initialize_precision() {
   std::call_once(precision_initialized, [] {
-    const auto* value = std::getenv("TEI_TORCH_FULL_PRECISION_GEMM");
+    const auto* value = std::getenv("INFINITY_TORCH_FULL_PRECISION_GEMM");
     if (value && (std::strcmp(value, "true") == 0 || std::strcmp(value, "1") == 0)) {
       at::globalContext().setAllowFP16ReductionCuBLAS(false);
       at::globalContext().setAllowBF16ReductionCuBLAS(false);
@@ -330,13 +336,20 @@ std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,
  }return result;
 }
 template<class F> int32_t checked(F&& f) {
+  error_kind=0;error_fallback=nullptr;error.clear();
   try { c10::InferenceMode guard; f(); return 0; }
-  catch (const std::exception& ex) { error = ex.what(); return -1; }
-  catch (...) { error = "Unknown native exception"; return -1; }
+  catch (const tei::NativeCallError& ex) { error_kind=ex.kind;return -1; }
+  catch (const tei::MemoryAdmissionError& ex) { set_error(2,ex.what());return -1; }
+  catch (const c10::OutOfMemoryError& ex) { set_error(3,ex.what());return -1; }
+  catch (const c10::AcceleratorError& ex) { set_error(tei::accelerator_error_kind(ex),ex.what());return -1; }
+  catch (const std::bad_alloc& ex) { set_error(3,ex.what());return -1; }
+  catch (const std::exception& ex) { set_error(1,ex.what()); return -1; }
+  catch (...) { set_error(1,"Unknown native exception"); return -1; }
 }
 }
 extern "C" {
-const char* tei_error() { return error.c_str(); }
+const char* tei_error() { return error_fallback?error_fallback:error.c_str(); }
+int32_t tei_last_error_kind() { return error_kind; }
 int64_t tei_device_count(const char* name) {
   int64_t count = -1;
   checked([&] {
@@ -593,7 +606,7 @@ void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
     lease=std::make_unique<tei::OutputLease>(model.outputs,model.device,capacity);
     lease->allocate();
     if (forward_radix(handle,ids,types,positions,cumulative,batch,max_sequence,pool,pooled,pooled_count,raw,raw_count,nullptr,capacity,media_positions,images,image_count,audios,audio_count,radix,lease.get()) != 0)
-      throw std::runtime_error(error);
+      throw tei::NativeCallError(error_kind);
   });
   return status==0?lease.release():nullptr;
 }

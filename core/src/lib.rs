@@ -4,6 +4,7 @@ pub mod download;
 mod fast_tokenization;
 pub mod infer;
 pub mod input;
+pub mod input_memory;
 pub mod multimodal;
 pub mod queue_actor;
 mod radix;
@@ -28,5 +29,5 @@ pub enum TextEmbeddingsError {
 }
 
 pub(crate) fn log_response_dropped_after(stage: &'static str) {
-    metrics::counter!("te_request_canceled", "stage" => stage).increment(1);
+    metrics::counter!("infinity_request_canceled", "stage" => stage).increment(1);
 }

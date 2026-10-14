@@ -6,7 +6,7 @@ version.workspace = true
 edition.workspace = true
 authors.workspace = true
 homepage.workspace = true
-links = "tei_backend"
+links = "infinity_backend"
 
 [dependencies]
 clap = { workspace = true, optional = true }
@@ -15,7 +15,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 infinity_v3-backend-core = { path = "core" }
 infinity_v3-backend-candle = { path = "candle", optional = true }
-text-embeddings-backend-libtorch = { path = "libtorch", optional = true }
+infinity-backend-libtorch = { path = "libtorch", optional = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
 
@@ -25,7 +25,7 @@ experimental-fa4 = ["fa4"]
 fa4 = ["infinity_v3-backend-candle?/fa4"]
 clap = ["dep:clap", "infinity_v3-backend-core/clap"]
 candle = ["dep:infinity_v3-backend-candle"]
-libtorch = ["dep:text-embeddings-backend-libtorch"]
+libtorch = ["dep:infinity-backend-libtorch"]
 cuda = ["infinity_v3-backend-candle?/cuda"]
 cuda-static-linking = ["infinity_v3-backend-candle?/cuda-static-linking"]
 cuda-dynamic-linking = ["infinity_v3-backend-candle?/cuda-dynamic-linking"]

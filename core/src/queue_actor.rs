@@ -19,7 +19,7 @@ fn early_dispatch_tokens(value: Option<&str>) -> Option<usize> {
         Some(value) => {
             let tokens = value
                 .parse::<usize>()
-                .expect("TEI_EARLY_DISPATCH_TOKENS must be a nonnegative integer or empty");
+                .expect("INFINITY_EARLY_DISPATCH_TOKENS must be a nonnegative integer or empty");
             (tokens != 0).then_some(tokens)
         }
     }
@@ -49,6 +49,8 @@ pub struct Entry {
 /// Entry metadata
 #[derive(Debug)]
 pub struct Metadata {
+    /// Retained through queueing, model execution and result delivery.
+    pub(crate) input_memory: Option<crate::input_memory::InputMemoryOwner>,
     pub decision: Option<infinity_v3_backend::DecisionInput>,
     /// Shared HTTP-request identity and count of inputs still tokenizing.
     pub(crate) client_batch: Option<Arc<AtomicUsize>>,
@@ -116,10 +118,10 @@ impl Queue {
         model_name: String,
     ) -> Self {
         // Validate on the caller's thread before spawning the detached worker.
-        let configured_target = match std::env::var("TEI_EARLY_DISPATCH_TOKENS") {
+        let configured_target = match std::env::var("INFINITY_EARLY_DISPATCH_TOKENS") {
             Ok(value) => Some(value),
             Err(std::env::VarError::NotPresent) => None,
-            Err(err) => panic!("Invalid TEI_EARLY_DISPATCH_TOKENS: {err}"),
+            Err(err) => panic!("Invalid INFINITY_EARLY_DISPATCH_TOKENS: {err}"),
         };
         let early_dispatch_tokens = if replicas > 1 || configured_target.is_some() {
             early_dispatch_tokens(configured_target.as_deref())
@@ -175,7 +177,10 @@ impl Queue {
 
     /// Append an entry to the queue
     #[instrument(skip_all)]
-    pub async fn append(&self, entry: Entry) {
+    pub async fn append(&self, mut entry: Entry) {
+        if entry.metadata.input_memory.is_none() {
+            entry.metadata.input_memory = crate::input_memory::current();
+        }
         if self.closed.load(Ordering::SeqCst) {
             let _ = entry
                 .metadata
@@ -269,8 +274,6 @@ fn queue_blocking_task(
     // staged on this thread after dispatch, while the backend owns the batch.
     let mut spare_token_buffers = allocate_token_buffers();
 
-    tracing::info!("Using {} queue {}", "custom Baseten", "implementation.");
-
     while let Some(cmd) = queue_receiver.blocking_recv() {
         if closed.load(Ordering::SeqCst) {
             // Stop accepting commands, then settle those already buffered. The
@@ -283,7 +286,7 @@ fn queue_blocking_task(
                     .send(Err(BackendError::Unhealthy));
             }
             queued_tokens = 0;
-            metrics::gauge!("te_queue_size", "model" => model_name.clone()).set(0.0);
+            metrics::gauge!("infinity_queue_size", "model" => model_name.clone()).set(0.0);
             match cmd {
                 QueueCommand::Append(entry, _) => {
                     let _ = entry
@@ -306,7 +309,7 @@ fn queue_blocking_task(
                 let _span = span.entered();
                 queued_tokens += entry.encoding.input_ids.len();
                 entries.push_back(*entry);
-                let gauge = metrics::gauge!("te_queue_size", "model" => model_name.clone());
+                let gauge = metrics::gauge!("infinity_queue_size", "model" => model_name.clone());
                 gauge.increment(1.0);
             }
             QueueCommand::NextBatch {
@@ -480,7 +483,7 @@ fn queue_blocking_task(
                                 input_ids.len(),
                                 compact_ids.len()
                             );
-                            metrics::histogram!("te_radix_mlp_compression_ratio", "model" => model_name.clone())
+                            metrics::histogram!("infinity_radix_mlp_compression_ratio", "model" => model_name.clone())
                                 .record(compression_ratio as f64);
                             if radix_mlp_threshold >= 1.0 || compression_ratio < radix_mlp_threshold
                             {
@@ -540,12 +543,11 @@ fn queue_blocking_task(
                 }
 
                 let histogram =
-                    metrics::histogram!("te_batch_next_size", "model" => model_name.clone());
+                    metrics::histogram!("infinity_batch_next_size", "model" => model_name.clone());
                 histogram.record(batch_size as f64);
-                let histogram =
-                    metrics::histogram!("te_batch_next_tokens", "model" => model_name.clone());
+                let histogram = metrics::histogram!("infinity_batch_next_tokens", "model" => model_name.clone());
                 histogram.record(current_tokens as f64);
-                let gauge = metrics::gauge!("te_queue_size", "model" => model_name.clone());
+                let gauge = metrics::gauge!("infinity_queue_size", "model" => model_name.clone());
                 gauge.set(entries.len() as f64)
             }
         }
@@ -680,6 +682,7 @@ mod tests {
                     offsets: vec![],
                 },
                 metadata: Metadata {
+                    input_memory: None,
                     decision: None,
                     client_batch: None,
                     response_tx,
@@ -692,6 +695,32 @@ mod tests {
             },
             response_rx,
         )
+    }
+
+    #[tokio::test]
+    async fn input_admission_survives_queue_and_batch_cancellation() {
+        let queue = test_queue(16);
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let (canceled, response) = test_entry(vec![1, 2], true);
+        let owner = Arc::new(budget.clone().try_acquire_owned().unwrap());
+        crate::input_memory::with_input_memory(owner, queue.append(canceled)).await;
+        drop(response);
+        assert_eq!(budget.available_permits(), 0);
+        assert!(queue.next_batch().await.is_none());
+        assert_eq!(budget.available_permits(), 1);
+
+        let (live, _response) = test_entry(vec![3, 4], true);
+        let owner = Arc::new(budget.clone().try_acquire_owned().unwrap());
+        crate::input_memory::with_input_memory(owner, queue.append(live)).await;
+        assert_eq!(budget.available_permits(), 0);
+        let (metadata, batch) = queue.next_batch().await.unwrap();
+        assert_eq!(batch.input_ids, [3, 4]);
+        assert_eq!(budget.available_permits(), 0);
+        drop(batch);
+        // Completion metadata keeps admission until delivery or discard.
+        assert_eq!(budget.available_permits(), 0);
+        drop(metadata);
+        assert_eq!(budget.available_permits(), 1);
     }
 
     #[tokio::test]
@@ -929,6 +958,7 @@ mod tests {
         let metadata = [canceled, live]
             .into_iter()
             .map(|response_tx| Metadata {
+                input_memory: None,
                 client_batch: None,
                 response_tx,
                 tokenization: Duration::ZERO,
@@ -1006,6 +1036,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, response_tx)| Metadata {
+                input_memory: None,
                 client_batch: None,
                 response_tx,
                 tokenization: Duration::ZERO,

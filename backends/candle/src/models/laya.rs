@@ -380,6 +380,7 @@ impl super::Model for LayaModel {
                 ))?;
                 let output = self.forward_head(hidden, &input.1, input.0)?;
                 Ok(infinity_v3_backend_core::DecisionOutput {
+                    memory: None,
                     logits: output.logits,
                     action_probability: output.action_probability,
                 })

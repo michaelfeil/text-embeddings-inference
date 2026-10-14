@@ -931,10 +931,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires TEI_FP8_FIXTURE from the independent Torch/Triton reference"]
+    #[ignore = "requires INFINITY_FP8_FIXTURE from the independent Torch/Triton reference"]
     fn native_conversion_matches_external_fixture() -> Result<()> {
         let dev = candle::Device::new_cuda(0)?;
-        let path = std::env::var("TEI_FP8_FIXTURE").map_err(candle::Error::wrap)?;
+        let path = std::env::var("INFINITY_FP8_FIXTURE").map_err(candle::Error::wrap)?;
         let tensors = candle::safetensors::load(path, &dev)?;
         let mut checked = 0;
         for (name, x) in &tensors {

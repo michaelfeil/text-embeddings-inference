@@ -27,7 +27,7 @@ pub struct Tokenization {
     max_input_length: usize,
     position_offset: usize,
     /// Channel to communicate with the background tokenization task
-    sender: async_channel::Sender<TokenizerRequest>,
+    sender: async_channel::Sender<QueuedTokenizerRequest>,
 }
 
 #[derive(Debug)]
@@ -292,7 +292,7 @@ impl Tokenization {
                 }
             }
             let length = ids.len();
-            metrics::histogram!("te_request_input_length").record(length as f64);
+            metrics::histogram!("infinity_request_input_length").record(length as f64);
             return Ok(ValidEncoding {
                 multimodal: None,
                 input_ids: ids,
@@ -315,7 +315,7 @@ impl Tokenization {
         // Send request to the background validation task
         // Unwrap is safe here
         self.sender
-            .send(TokenizerRequest::Encode(
+            .send(QueuedTokenizerRequest::new(TokenizerRequest::Encode(
                 inputs,
                 truncate,
                 truncation_direction,
@@ -323,7 +323,7 @@ impl Tokenization {
                 mode,
                 response_sender,
                 Span::current(),
-            ))
+            )))
             .await
             .expect("Tokenization background task dropped the receiver. This is a bug.");
 
@@ -351,13 +351,13 @@ impl Tokenization {
         // Send request to the background validation task
         // Unwrap is safe here
         self.sender
-            .send(TokenizerRequest::Tokenize(
+            .send(QueuedTokenizerRequest::new(TokenizerRequest::Tokenize(
                 inputs,
                 add_special_tokens,
                 prompt_name,
                 response_sender,
                 Span::current(),
-            ))
+            )))
             .await
             .expect("Tokenization background task dropped the receiver. This is a bug.");
 
@@ -384,12 +384,12 @@ impl Tokenization {
         // Send request to the background validation task
         // Unwrap is safe here
         self.sender
-            .send(TokenizerRequest::Decode(
+            .send(QueuedTokenizerRequest::new(TokenizerRequest::Decode(
                 ids,
                 skip_special_tokens,
                 response_sender,
                 Span::current(),
-            ))
+            )))
             .await
             .expect("Tokenization background task dropped the receiver. This is a bug.");
 
@@ -408,11 +408,17 @@ fn tokenizer_worker(
     position_offset: usize,
     default_prompt: Option<String>,
     prompts: Option<HashMap<String, String>>,
-    receiver: async_channel::Receiver<TokenizerRequest>,
+    receiver: async_channel::Receiver<QueuedTokenizerRequest>,
     chat: Option<Arc<crate::chat::ChatProcessor>>,
 ) {
     // Loop over requests
-    while let Ok(request) = receiver.recv_blocking() {
+    while let Ok(queued) = receiver.recv_blocking() {
+        // Keep admission through processing and response delivery, even when
+        // cancellation has closed the receiver on the original HTTP task.
+        let QueuedTokenizerRequest {
+            request,
+            _input_memory,
+        } = queued;
         match request {
             TokenizerRequest::Encode(
                 inputs,
@@ -697,7 +703,7 @@ fn encode_input(
             "`inputs` must have less than {max_input_length} tokens. Given: {seq_len}"
         )));
     }
-    let histogram = metrics::histogram!("te_request_input_length");
+    let histogram = metrics::histogram!("infinity_request_input_length");
     histogram.record(seq_len as f64);
     Ok(ValidEncoding {
         multimodal: None,
@@ -808,6 +814,19 @@ impl From<(String, String)> for EncodingInput {
 enum EncodeMode {
     Embedding,
     Aligned,
+}
+
+struct QueuedTokenizerRequest {
+    request: TokenizerRequest,
+    _input_memory: Option<crate::input_memory::InputMemoryOwner>,
+}
+impl QueuedTokenizerRequest {
+    fn new(request: TokenizerRequest) -> Self {
+        Self {
+            request,
+            _input_memory: crate::input_memory::current(),
+        }
+    }
 }
 
 enum TokenizerRequest {
@@ -1017,6 +1036,42 @@ mod tests {
 #[cfg(test)]
 mod fast_embedding_tests {
     use super::*;
+
+    #[tokio::test]
+    async fn cancelled_tokenizer_job_keeps_input_admission_until_discarded() {
+        let (sender, receiver) = async_channel::bounded(1);
+        let tokenization = Tokenization {
+            multimodal: None,
+            embedding_gemma2: None,
+            token_input_vocab_size: None,
+            max_input_length: 16,
+            position_offset: 0,
+            sender,
+        };
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        for _ in 0..2 {
+            let owner = Arc::new(budget.clone().try_acquire_owned().unwrap());
+            let tokenizer = tokenization.clone();
+            let request = tokio::spawn(crate::input_memory::with_input_memory(owner, async move {
+                tokenizer.decode(vec![1, 2, 3], true).await
+            }));
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while receiver.is_empty() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            request.abort();
+            assert!(request.await.unwrap_err().is_cancelled());
+            assert_eq!(budget.available_permits(), 0);
+            let queued = receiver.recv().await.unwrap();
+            // A paused worker can hold the job outside the channel too.
+            assert_eq!(budget.available_permits(), 0);
+            drop(queued);
+            assert_eq!(budget.available_permits(), 1);
+        }
+    }
 
     #[test]
     fn pretokenized_embeddings_preserve_the_final_encoding() {

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "helpers/admission_error.h"
 #include "bridge.h"
 #include "batching/packed_input.h"
 #include "models/decision_models.h"
@@ -109,7 +110,7 @@ inline int64_t validate_input_descriptors(const int64_t* ids,const int64_t* type
 struct InputUploadBudget {
   size_t limit,bytes=0;
   void add(size_t count,size_t width) {
-    TORCH_CHECK(limit>0&&bytes<=limit&&width>0&&count<=limit/width&&count*width<=limit-bytes,
+    require_memory_admission(limit>0&&bytes<=limit&&width>0&&count<=limit/width&&count*width<=limit-bytes,
       "Native input upload exceeds its memory budget");
     bytes+=count*width;
   }

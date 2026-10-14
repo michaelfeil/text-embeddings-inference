@@ -1,4 +1,5 @@
 //! Synthetic typed decision checkpoints; no network or Python runtime.
+use infinity_backend_libtorch::LibtorchBackend;
 use safetensors::{
     serialize_to_file,
     tensor::{Dtype, TensorView},
@@ -9,7 +10,6 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 use text_embeddings_backend_core::{Backend, Batch, ClefField, DecisionInput, ModelType};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 const H: usize = 16;
 struct Fixture(PathBuf);
 impl Drop for Fixture {

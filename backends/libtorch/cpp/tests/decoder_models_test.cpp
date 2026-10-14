@@ -136,7 +136,7 @@ void output_capacity_bridge_test() {
  }
  auto pending=tei_forward_submit(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
    16,nullptr,nullptr,0,nullptr,0,nullptr);
- TORCH_CHECK(!pending&&std::string(tei_error()).find("Deferred output requires CUDA")!=std::string::npos,
+ TORCH_CHECK(!pending&&tei_last_error_kind()==1&&std::string(tei_error()).find("Deferred output requires CUDA")!=std::string::npos,
    "Exact deferred capacity failed metadata validation");
  float output[20];std::fill_n(output,20,std::numeric_limits<float>::quiet_NaN());
  TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
@@ -149,7 +149,7 @@ void output_capacity_bridge_test() {
  TeiImage huge{};huge.pixels=fake_float;huge.rows=1;huge.patch_dim=(512LL<<20)/sizeof(float)+1;
  huge.grid[0]=huge.grid[1]=huge.grid[2]=huge.merge_size=huge.token_count=1;
  auto budget_error=[&](int code) {
-  TORCH_CHECK(code!=0&&std::string(tei_error()).find("Native input upload exceeds")!=std::string::npos,
+  TORCH_CHECK(code!=0&&tei_last_error_kind()==2&&std::string(tei_error()).find("Native input upload exceeds")!=std::string::npos,
     "Input budget did not reject before payload read/allocation");
  };
  budget_error(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
@@ -171,10 +171,11 @@ void output_capacity_bridge_test() {
  std::fill_n(output,20,std::numeric_limits<float>::quiet_NaN());
  TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
    output,20,nullptr,nullptr,0,nullptr,0)==0,tei_error());
+ TORCH_CHECK(tei_last_error_kind()==0&&std::string(tei_error()).empty(),"Successful inference retained an admission error kind");
  for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(output[i]),"Valid response failed after input budget rejection");
  TeiDecision huge_metadata{};huge_metadata.markers=fake_indices;huge_metadata.marker_count=std::numeric_limits<size_t>::max();
  bool metadata_rejected=false;
- try{validate_decision_metadata_budget(&huge_metadata,1,512<<20);}catch(const c10::Error&){metadata_rejected=true;}
+ try{validate_decision_metadata_budget(&huge_metadata,1,512<<20);}catch(const MemoryAdmissionError&){metadata_rejected=true;}
  TORCH_CHECK(metadata_rejected,"Decision metadata overflow was copied before admission");
  TORCH_CHECK(tei_option(handle,"_input_upload_max_bytes","0")==0,tei_error());
  TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
@@ -227,6 +228,21 @@ void multimodal_test(){
 }
 }
 int main(){c10::InferenceMode inference;at::set_num_threads(1);
+ {
+  c10::AcceleratorError allocation({__func__,__FILE__,__LINE__},2,"Resource allocation failed");
+  c10::AcceleratorError illegal({__func__,__FILE__,__LINE__},700,"Illegal device address");
+  c10::AcceleratorError unknown({__func__,__FILE__,__LINE__},999,"Unknown device failure");
+  TORCH_CHECK(accelerator_error_kind(allocation)==3,"CUDA allocation failure must remain recoverable");
+  TORCH_CHECK(accelerator_error_kind(illegal)==1&&accelerator_error_kind(unknown)==1,
+    "Fatal accelerator failures must not be classified as overload");
+  for(int32_t kind:{1,2,3}) {
+    try { throw NativeCallError(kind); }
+    catch(const NativeCallError& e) {
+      TORCH_CHECK(e.kind==kind,
+        "Nested native failure lost its structured classification");
+    }
+  }
+ }
  output_capacity_bridge_test();
  input_descriptor_test();
  {
