@@ -246,6 +246,8 @@ Below are some examples of the currently supported models:
 |--------------------|-------------|-----------------------------------------------------------------------------------------------------------------|
 | Re-Ranking         | XLM-RoBERTa | [BAAI/bge-reranker-large](https://huggingface.co/BAAI/bge-reranker-large)                                       |
 | Re-Ranking         | XLM-RoBERTa | [BAAI/bge-reranker-base](https://huggingface.co/BAAI/bge-reranker-base)                                         |
+| Re-Ranking         | UltraBERT   | [UltraBERT 150M reranker](https://huggingface.co/tomaarsen/ultrabert-150m-reranker-msmarco32k-3e-5-20261014) |
+| Re-Ranking         | UltraBERT   | [UltraBERT 380M reranker](https://huggingface.co/tomaarsen/ultrabert-380m-reranker-msmarco32k-3e-5-20261014) |
 | Re-Ranking         | GTE         | [Alibaba-NLP/gte-multilingual-reranker-base](https://huggingface.co/Alibaba-NLP/gte-multilingual-reranker-base) |
 | Re-Ranking         | ModernBert  | [Alibaba-NLP/gte-reranker-modernbert-base](https://huggingface.co/Alibaba-NLP/gte-reranker-modernbert-base) |
 | Sentiment Analysis | RoBERTa     | [SamLowe/roberta-base-go_emotions](https://huggingface.co/SamLowe/roberta-base-go_emotions)                     |
