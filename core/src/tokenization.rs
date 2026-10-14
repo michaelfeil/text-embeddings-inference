@@ -165,26 +165,21 @@ impl Tokenization {
         truncation_direction: TruncationDirection,
         prompt_name: Option<String>,
     ) -> Result<ValidEncoding, TextEmbeddingsError> {
-        if let (Some(processor), EncodingInput::Messages(messages)) =
-            (&self.embedding_gemma2, &inputs)
-        {
-            let prepared = processor
-                .prepare(
-                    messages.clone(),
-                    truncate,
-                    truncation_direction,
-                    prompt_name,
-                )
-                .await?;
-            let length = prepared.input_ids.len();
-            return Ok(ValidEncoding {
-                multimodal: Some(prepared.media),
-                input_ids: prepared.input_ids,
-                token_type_ids: vec![0; length],
-                position_ids: (0..length as u32).collect(),
-                tokens: vec![],
-                offsets: vec![],
-            });
+        if let Some(processor) = &self.embedding_gemma2 {
+            if let EncodingInput::Messages(messages) = inputs {
+                let prepared = processor
+                    .prepare(messages, truncate, truncation_direction, prompt_name)
+                    .await?;
+                let length = prepared.input_ids.len();
+                return Ok(ValidEncoding {
+                    multimodal: Some(prepared.media),
+                    input_ids: prepared.input_ids,
+                    token_type_ids: vec![0; length],
+                    position_ids: (0..length as u32).collect(),
+                    tokens: vec![],
+                    offsets: vec![],
+                });
+            }
         }
         if let Some(processor) = &self.multimodal {
             if inputs.is_empty() {
