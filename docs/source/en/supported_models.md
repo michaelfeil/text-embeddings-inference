@@ -60,8 +60,7 @@ queries; documents use the empty `document` prompt. Mean and last-token pooling
 overrides and raw token embeddings are also supported. Execution uses the shared
 packed Mistral layers on CPU (FP32/FP16) and CUDA SM80+ (FP16/BF16), with
 bidirectional local/global attention and per-layer rotary scales. Its d128 MHA
-geometry currently uses FA2 even when `ATTN_BACKEND=fa4`. Metal and classifier
-heads are unsupported.
+geometry currently uses FA2 even when `ATTN_BACKEND=fa4`. Metal is unsupported.
 
 To explore the list of best performing text embeddings models, visit the
 [Massive Text Embedding Benchmark (MTEB) Leaderboard](https://huggingface.co/spaces/mteb/leaderboard).
@@ -104,6 +103,15 @@ or softmax for multiple outputs when raw scores are disabled. Single-label heads
 also use the existing `/rerank` endpoint. Multi-class classification uses
 `/predict`. Decoder classifiers require their checkpoint's prompt formatting;
 `/predict` does not insert a chat or reranker template.
+
+UltraBERT supports saved `UltrabertForSequenceClassification` checkpoints with
+CLS pooling and a `classifier.weight`/`classifier.bias` head. The trained
+[150M](https://huggingface.co/tomaarsen/ultrabert-150m-reranker-msmarco32k-3e-5-20261014)
+and [380M](https://huggingface.co/tomaarsen/ultrabert-380m-reranker-msmarco32k-3e-5-20261014)
+rerankers use `/rerank` or `/predict`; multi-class heads use `/predict`.
+`UltrabertForTokenClassification` checkpoints use `/predict_tokens`.
+These heads share the embedding encoder's CPU/CUDA support. Base masked-LM
+checkpoints need a fine-tuned, saved classifier head before serving classification.
 
 For Qwen3-Reranker, use a sequence-classification conversion with `score.weight`
 (e.g. the original LM head's `no` and `yes` rows) and the checkpoint's prescribed
