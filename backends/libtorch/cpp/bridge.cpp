@@ -418,7 +418,12 @@ template<class F> int32_t checked(F&& f) {
     const bool cudnn_allocation=message.starts_with(cudnn) &&
       (message.size()==cudnn.size() || message[cudnn.size()]==' ' ||
        message[cudnn.size()]=='\n' || message[cudnn.size()]==',' || message[cudnn.size()]=='.');
-    const bool allocation=cudnn_allocation ||
+    // The POSIX CPU allocator also erases ENOMEM into an enforce error.
+    const auto cpu_allocator=message.find(" DefaultCPUAllocator: can't allocate memory: you tried to allocate ");
+    const bool cpu_allocation=message.starts_with("[enforce fail at alloc_cpu.cpp:") &&
+      cpu_allocator!=std::string_view::npos &&
+      message.find(" bytes. Error code 12 (",cpu_allocator)!=std::string_view::npos;
+    const bool allocation=cudnn_allocation || cpu_allocation ||
       message.starts_with("CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `");
     set_error(allocation?3:1,ex.what());return -1;
   }
