@@ -574,12 +574,24 @@ impl LibtorchBackend {
         options["_cuda_graph_max_tokens"] = graph_max_tokens.into();
         for (env, key, default, minimum) in [
             (
+                "TEI_TORCH_INPUT_UPLOAD_MAX_BYTES",
+                "_input_upload_max_bytes",
+                512 << 20,
+                1,
+            ),
+            (
                 "TEI_TORCH_OUTPUT_STAGING_MAX_BYTES",
                 "_output_staging_max_bytes",
                 512 << 20,
                 1,
             ),
             ("TEI_TORCH_CUDA_GRAPH_ENTRIES", "_cuda_graph_entries", 4, 0),
+            (
+                "TEI_TORCH_ATTENTION_BIAS_MAX_BYTES",
+                "_attention_bias_max_bytes",
+                512 << 20,
+                1,
+            ),
             ("TEI_TORCH_CUDA_GRAPH_REUSE", "_cuda_graph_reuse", 3, 1),
             (
                 "TEI_TORCH_CUDA_GRAPH_MAX_BYTES",

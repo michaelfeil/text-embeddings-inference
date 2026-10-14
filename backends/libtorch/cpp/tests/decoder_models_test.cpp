@@ -143,6 +143,42 @@ void output_capacity_bridge_test() {
    output,20,nullptr,nullptr,0,nullptr,0)==0,tei_error());
  for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(output[i]),"Valid response failed after capacity rejection");
  for(int i=16;i<20;++i)TORCH_CHECK(std::isnan(output[i]),"Synchronous spare capacity was overwritten");
+ // Oversized finite payload descriptors must be rejected without reading them.
+ const auto fake_float=reinterpret_cast<const float*>(uintptr_t(1));
+ const auto fake_mask=reinterpret_cast<const uint8_t*>(uintptr_t(1));
+ TeiImage huge{};huge.pixels=fake_float;huge.rows=1;huge.patch_dim=(512LL<<20)/sizeof(float)+1;
+ huge.grid[0]=huge.grid[1]=huge.grid[2]=huge.merge_size=huge.token_count=1;
+ auto budget_error=[&](int code) {
+  TORCH_CHECK(code!=0&&std::string(tei_error()).find("Native input upload exceeds")!=std::string::npos,
+    "Input budget did not reject before payload read/allocation");
+ };
+ budget_error(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,&huge,1,nullptr,0));
+ pending=tei_forward_submit(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   16,nullptr,&huge,1,nullptr,0,nullptr);budget_error(pending?0:-1);
+ budget_error(tei_decide(handle,ids,types,positions,cumulative,2,2,nullptr,nullptr,0,nullptr,
+   nullptr,&huge,1,nullptr,0));
+ TeiAudio huge_audio{fake_float,fake_mask,1,(512LL<<20)/sizeof(float)+1,0,1};
+ budget_error(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,nullptr,0,&huge_audio,1));
+ TORCH_CHECK(tei_option(handle,"_input_upload_max_bytes","108")==0,tei_error());
+ auto fake_indices=reinterpret_cast<const int64_t*>(uintptr_t(1));
+ TeiRadix fake_radix{fake_indices,fake_indices,fake_indices,fake_indices,fake_indices,4};
+ budget_error(tei_forward_radix(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,nullptr,0,nullptr,0,&fake_radix));
+ budget_error(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,fake_indices,nullptr,0,nullptr,0));
+ std::fill_n(output,20,std::numeric_limits<float>::quiet_NaN());
+ TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,nullptr,0,nullptr,0)==0,tei_error());
+ for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(output[i]),"Valid response failed after input budget rejection");
+ TeiDecision huge_metadata{};huge_metadata.markers=fake_indices;huge_metadata.marker_count=std::numeric_limits<size_t>::max();
+ bool metadata_rejected=false;
+ try{validate_decision_metadata_budget(&huge_metadata,1,512<<20);}catch(const c10::Error&){metadata_rejected=true;}
+ TORCH_CHECK(metadata_rejected,"Decision metadata overflow was copied before admission");
+ TORCH_CHECK(tei_option(handle,"_input_upload_max_bytes","0")==0,tei_error());
+ TORCH_CHECK(tei_forward(handle,ids,types,positions,cumulative,2,2,0,&pooled,1,nullptr,0,
+   output,20,nullptr,nullptr,0,nullptr,0)!=0,"Zero input budget accepted");
  tei_destroy(handle);
 }
 at::Tensor run(Model& model, std::vector<int64_t> ids, std::vector<int32_t> offsets) {

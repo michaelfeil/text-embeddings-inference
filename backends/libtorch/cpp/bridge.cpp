@@ -85,6 +85,8 @@ struct Engine {
   }
   Engine(TeiConfig cfg, c10::Device dev, at::ScalarType type) : config(cfg), device(dev), dtype(type) {}
   void ready() {
+    TORCH_CHECK(options.integer("_input_upload_max_bytes",512LL<<20)>0,
+      "Native input upload budget must be positive");
     auto staging_bytes = options.integer("_output_staging_max_bytes", 512LL << 20);
     TORCH_CHECK(staging_bytes > 0, "Output staging memory budget must be positive");
     outputs->max_bytes = static_cast<size_t>(staging_bytes);
@@ -179,14 +181,28 @@ struct Engine {
     }
   }
 };
+size_t input_upload_limit(const Engine& model) {
+ const auto limit=model.options.integer("_input_upload_max_bytes",512LL<<20);
+ TORCH_CHECK(limit>0&&uint64_t(limit)<=std::numeric_limits<size_t>::max(),"Native input upload budget must be positive and representable");
+ return static_cast<size_t>(limit);
+}
+size_t validate_request_input(Engine& model,const int64_t* ids,const int64_t* types,
+ const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,const TeiRadix* radix) {
+ const auto family=model.options.string("model_type");
+ const bool gemma=family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2";
+ const auto tokens=tei::validate_input_descriptors(ids,types,positions,cumulative,batch,max_sequence,
+   media_positions,images,image_count,audios,audio_count,gemma);
+ const auto image_dtype=family.starts_with("qwen3_5")?at::kHalf:model.dtype;
+ return tei::validate_input_upload_budget(tokens,batch,media_positions,images,image_count,audios,audio_count,
+   radix,c10::elementSize(image_dtype),input_upload_limit(model),gemma);
+}
 void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,int32_t pool,
  const int64_t* pooled,size_t pooled_count,const int64_t* raw,size_t raw_count,size_t capacity,
- const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,bool deferred=false) {
- const auto family=model.options.string("model_type");
- tei::validate_input_descriptors(ids,types,positions,cumulative,batch,max_sequence,
-   media_positions,images,image_count,audios,audio_count,
-   family=="gemma4"||family=="gemma4_text"||family=="embedding_gemma2");
+ const int64_t* media_positions,const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,const TeiRadix* radix,bool deferred=false) {
+ validate_request_input(model,ids,types,positions,cumulative,batch,max_sequence,media_positions,
+   images,image_count,audios,audio_count,radix);
  const auto raw_rows=tei::validate_output_indices(cumulative,batch,pooled,pooled_count,raw,raw_count);
  TORCH_CHECK(model.model&&model.dense,"Native model is not ready");
  TORCH_CHECK(!image_count||model.model->supports_images(),"This native model does not yet support images");
@@ -394,7 +410,9 @@ int64_t tei_pooled_width(void* handle) {
 int32_t tei_ready(void* handle) { return checked([&] { static_cast<Engine*>(handle)->ready(); }); }
 int32_t tei_decision_counts(void* handle,const TeiDecision* requests,size_t count,int64_t* counts) {
  return checked([&]{auto& engine=*static_cast<Engine*>(handle);TORCH_CHECK(engine.decision,"Model was not loaded for typed decisions");
-  auto converted=decision_requests(requests,count);TORCH_CHECK(counts||!count,"Missing decision counts buffer");
+  TORCH_CHECK(counts||!count,"Missing decision counts buffer");
+  tei::validate_decision_metadata_budget(requests,count,input_upload_limit(engine));
+  auto converted=decision_requests(requests,count);
   for(size_t i=0;i<count;++i)counts[i]=engine.decision->output_count(converted[i]);
  });
 }
@@ -408,7 +426,10 @@ int32_t tei_decide_radix(void* handle,const int64_t* ids,const int64_t* types,co
  const int32_t* cumulative,int64_t batch,int64_t max_sequence,const TeiDecision* requests,
  float* logits,size_t capacity,float* actions,const int64_t* media_positions,
  const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,const TeiRadix* radix) {
- return checked([&]{auto& engine=*static_cast<Engine*>(handle);TORCH_CHECK(engine.decision&&batch>0,"Model was not loaded for typed decisions");
+ return checked([&]{auto& engine=*static_cast<Engine*>(handle);
+  const auto input_bytes=validate_request_input(engine,ids,types,positions,cumulative,batch,max_sequence,media_positions,images,image_count,audios,audio_count,radix);
+  TORCH_CHECK(engine.decision&&batch>0,"Model was not loaded for typed decisions");
+  tei::validate_decision_metadata_budget(requests,batch,input_upload_limit(engine),input_bytes);
   auto converted=decision_requests(requests,batch);size_t expected=0;
   for(const auto& request:converted){auto count=engine.decision->output_count(request);TORCH_CHECK(count>0&&static_cast<size_t>(count)<=capacity-expected,"Decision output exceeds provided capacity");expected+=count;}
   TORCH_CHECK((logits||!expected)&&actions,"Missing decision output buffer");
@@ -452,7 +473,7 @@ static int32_t forward_radix(void* handle, const int64_t* ids, const int64_t* ty
   return checked([&] {
     auto& model = *static_cast<Engine*>(handle);
     validate_forward_descriptors(model,ids,types,positions,cumulative,batch,max_sequence,pool,
-      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count);
+      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count,radix);
     TORCH_CHECK(completion||output||(!pooled_count&&!raw_count),"Missing native output buffer");
     auto packed=packed_input(model,ids,types,positions,cumulative,batch,max_sequence,
       media_positions,images,image_count,audios,audio_count,completion);
@@ -562,7 +583,7 @@ void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
   const auto status=checked([&] {
     auto& model=*static_cast<Engine*>(handle);
     validate_forward_descriptors(model,ids,types,positions,cumulative,batch,max_sequence,pool,
-      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count,true);
+      pooled,pooled_count,raw,raw_count,capacity,media_positions,images,image_count,audios,audio_count,radix,true);
     TORCH_CHECK(model.device.is_cuda(), "Deferred output requires CUDA");
     lease=std::make_unique<tei::OutputLease>(model.outputs,model.device,capacity);
     lease->allocate();

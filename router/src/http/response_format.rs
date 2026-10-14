@@ -1,6 +1,8 @@
 //! Typed response serialization and Accept negotiation shared by every HTTP route.
+#[cfg(test)]
+use axum::body::to_bytes;
 use axum::{
-    body::{to_bytes, Body},
+    body::Body,
     extract::{rejection::JsonRejection, FromRequest, Request},
     http::{header, HeaderMap, HeaderValue, Method, StatusCode},
     middleware::Next,
@@ -48,24 +50,100 @@ impl<T: DeserializeOwned, S: Send + Sync> FromRequest<S> for Json<T> {
 impl<T: Serialize> IntoResponse for Json<T> {
     fn into_response(self) -> Response {
         let format = FORMAT.try_with(|format| *format).unwrap_or(Format::Json);
-        match format {
-            Format::Native | Format::Json => axum::Json(self.0).into_response(),
-            Format::MessagePack | Format::LegacyMessagePack => {
-                match rmp_serde::to_vec_named(&self.0) {
-                    Ok(bytes) => {
-                        ([(header::CONTENT_TYPE, format.media_type())], bytes).into_response()
-                    }
-                    Err(error) => {
-                        tracing::error!("MessagePack response serialization failed: {error}");
-                        (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "Response serialization failed",
-                        )
-                            .into_response()
-                    }
-                }
+        let mut writer = super::memory::ReservedWriter::new();
+        let result = match format {
+            Format::Native | Format::Json => {
+                serde_json::to_writer(&mut writer, &self.0).map_err(|error| error.to_string())
+            }
+            Format::MessagePack | Format::LegacyMessagePack => self
+                .0
+                .serialize(&mut rmp_serde::Serializer::new(&mut writer).with_struct_map())
+                .map_err(|error| error.to_string()),
+        };
+        match result {
+            Ok(()) => (
+                [(
+                    header::CONTENT_TYPE,
+                    if format == Format::Native {
+                        "application/json"
+                    } else {
+                        format.media_type()
+                    },
+                )],
+                writer.finish(),
+            )
+                .into_response(),
+            Err(_) if writer.exhausted => {
+                // Fixed, small error serialization must not recurse into an exhausted budget.
+                memory_error(format, super::memory::error_shape())
+            }
+            Err(error) => {
+                tracing::error!("Response serialization failed: {error}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Response serialization failed",
+                )
+                    .into_response()
             }
         }
+    }
+}
+
+// Shared immutable errors keep exhausted-pool responses from allocating one
+// serialization buffer per rejected request. Initialized before serving.
+static MEMORY_ERRORS: std::sync::OnceLock<[axum::body::Bytes; 3]> = std::sync::OnceLock::new();
+const MEMORY_JSON: [&[u8]; 3] = [
+    br#"{"error":"HTTP response memory capacity exhausted","error_type":"Overloaded"}"#,
+    br#"{"object":"error","message":"HTTP response memory capacity exhausted","type":"overloaded_error","param":null,"code":429}"#,
+    br#"{"message":"HTTP response memory capacity exhausted","type":"Overloaded","code":429}"#,
+];
+pub(crate) fn initialize_memory_errors() {
+    MEMORY_ERRORS.get_or_init(|| {
+        MEMORY_JSON.map(|bytes| {
+            let value: serde_json::Value =
+                serde_json::from_slice(bytes).expect("Static memory-error JSON");
+            axum::body::Bytes::from(
+                rmp_serde::to_vec_named(&value).expect("Static memory-error MessagePack"),
+            )
+        })
+    });
+}
+fn memory_error(format: Format, shape: super::memory::ErrorShape) -> Response {
+    let index = match shape {
+        super::memory::ErrorShape::Standard => 0,
+        super::memory::ErrorShape::Classify => 1,
+        super::memory::ErrorShape::OpenAI => 2,
+    };
+    let bytes = if matches!(format, Format::MessagePack | Format::LegacyMessagePack) {
+        initialize_memory_errors();
+        MEMORY_ERRORS.get().unwrap()[index].clone()
+    } else {
+        axum::body::Bytes::from_static(MEMORY_JSON[index])
+    };
+    (
+        StatusCode::TOO_MANY_REQUESTS,
+        [(
+            header::CONTENT_TYPE,
+            if format == Format::Native {
+                "application/json"
+            } else {
+                format.media_type()
+            },
+        )],
+        bytes,
+    )
+        .into_response()
+}
+
+enum ConversionError {
+    Failed,
+    Exhausted,
+}
+fn conversion_error(writer: &super::memory::ReservedWriter) -> ConversionError {
+    if writer.exhausted {
+        ConversionError::Exhausted
+    } else {
+        ConversionError::Failed
     }
 }
 
@@ -132,6 +210,7 @@ fn select(headers: &HeaderMap, native: Option<&str>) -> Option<Format> {
 }
 
 pub(crate) async fn negotiate(request: Request, next: Next) -> Response {
+    let memory_error_shape = super::memory::ErrorShape::for_path(request.uri().path());
     let headers = request.headers().clone();
     let initial = select(&headers, None);
     // Native text routes can satisfy Accept values outside the API formats.
@@ -187,26 +266,59 @@ pub(crate) async fn negotiate(request: Request, next: Next) -> Response {
     // Only untyped text/empty/framework responses need buffering. Typed API responses
     // are serialized directly above, preserving f32 and integer types without JSON parsing.
     let encoded = async {
-        let bytes = to_bytes(body, usize::MAX).await.map_err(|_| ())?;
+        // Untyped framework/document responses use a finite conversion limit.
+        // Charge buffered input before allocation; typed inference bodies bypass this path.
+        use http_body::Body as _;
+        use std::io::Write;
+        let mut body = std::pin::pin!(body);
+        let mut writer = super::memory::ReservedWriter::new();
+        let mut length = 0usize;
+        while let Some(frame) = std::future::poll_fn(|cx| body.as_mut().poll_frame(cx)).await {
+            let frame = frame.map_err(|_| ConversionError::Failed)?;
+            if let Ok(data) = frame.into_data() {
+                length = length
+                    .checked_add(data.len())
+                    .ok_or(ConversionError::Failed)?;
+                if length > 2 * 1024 * 1024 {
+                    return Err(ConversionError::Failed);
+                }
+                writer
+                    .write_all(&data)
+                    .map_err(|_| conversion_error(&writer))?;
+            }
+        }
+        let bytes = writer.finish();
         let value = if original_json {
-            serde_json::from_slice::<serde_json::Value>(&bytes).map_err(|_| ())?
+            serde_json::from_slice::<serde_json::Value>(&bytes)
+                .map_err(|_| ConversionError::Failed)?
         } else if bytes.is_empty() {
             serde_json::Value::Null
         } else if let Ok(text) = std::str::from_utf8(&bytes) {
             serde_json::Value::String(text.to_owned())
         } else {
-            serde_json::to_value(bytes.to_vec()).map_err(|_| ())?
+            serde_json::to_value(bytes.to_vec()).map_err(|_| ConversionError::Failed)?
         };
+        let mut encoded = super::memory::ReservedWriter::new();
         if format == Format::Json {
-            serde_json::to_vec(&value).map_err(|_| ())
+            serde_json::to_writer(&mut encoded, &value).map_err(|_| conversion_error(&encoded))?;
         } else {
-            rmp_serde::to_vec_named(&value).map_err(|_| ())
+            value
+                .serialize(&mut rmp_serde::Serializer::new(&mut encoded).with_struct_map())
+                .map_err(|_| conversion_error(&encoded))?;
         }
+        Ok::<_, ConversionError>(encoded.finish())
     }
     .await;
     match encoded {
         Ok(bytes) => Response::from_parts(parts, Body::from(bytes)),
-        Err(()) => {
+        Err(ConversionError::Exhausted) => {
+            let (error_parts, error_body) = memory_error(format, memory_error_shape).into_parts();
+            parts.status = error_parts.status;
+            parts.headers.extend(error_parts.headers);
+            // Retain the admission lease in the original response extensions.
+            Response::from_parts(parts, error_body)
+        }
+        Err(ConversionError::Failed) => {
             parts.status = StatusCode::INTERNAL_SERVER_ERROR;
             Response::from_parts(parts, Body::empty())
         }

@@ -554,7 +554,9 @@ fn classify_error(
     )
 }
 
-fn classify_inference_error(error: ErrorResponse) -> (StatusCode, Json<ClassifyErrorResponse>) {
+pub(crate) fn classify_inference_error(
+    error: ErrorResponse,
+) -> (StatusCode, Json<ClassifyErrorResponse>) {
     let (status, Json(error)): (StatusCode, Json<ErrorResponse>) = error.into();
     let error_type = match status {
         StatusCode::TOO_MANY_REQUESTS => "overloaded_error",
@@ -2425,7 +2427,7 @@ pub async fn run(
         payload_limit,
         api_key,
         cors_allow_origin,
-    );
+    )?;
 
     // Run server
     let listener = tokio::net::TcpListener::bind(&addr)
@@ -2449,7 +2451,7 @@ fn build_router(
     payload_limit: usize,
     api_key: Option<String>,
     cors_allow_origin: Option<Vec<String>>,
-) -> Router {
+) -> Result<Router, anyhow::Error> {
     let doc = api_doc();
 
     // CORS allowed origins
@@ -2531,6 +2533,34 @@ fn build_router(
             .route("/invocations", post(default_inference));
     }
 
+    super::response_format::initialize_memory_errors();
+    let http_output_limit = std::env::var("TEI_HTTP_OUTPUT_MAX_BYTES")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("Invalid TEI_HTTP_OUTPUT_MAX_BYTES")?
+        .unwrap_or(512 * 1024 * 1024);
+    let http_input_limit = std::env::var("TEI_HTTP_INPUT_MAX_BYTES")
+        .ok()
+        .map(|value| value.parse::<usize>())
+        .transpose()
+        .context("Invalid TEI_HTTP_INPUT_MAX_BYTES")?
+        .unwrap_or(512 * 1024 * 1024);
+    let admission = super::memory::MemoryAdmission::new(
+        registry.models().iter().try_fold(0usize, |total, model| {
+            total
+                .checked_add(model.info.max_concurrent_requests)
+                .context("Combined HTTP concurrency is unrepresentable")
+        })?,
+        payload_limit,
+        http_input_limit,
+        http_output_limit,
+    )?;
+    routes = routes.layer(axum::middleware::from_fn_with_state(
+        admission.clone(),
+        super::memory::admit,
+    ));
+
     if let Some(api_key) = api_key {
         let prefix = format!("Bearer {}", api_key);
 
@@ -2552,7 +2582,7 @@ fn build_router(
         routes = routes.layer(axum::middleware::from_fn(auth));
     }
 
-    Router::new()
+    Ok(Router::new()
         .merge(SwaggerUi::new("/docs").url("/api-doc/openapi.json", doc))
         .merge(routes)
         .merge(public_routes)
@@ -2564,7 +2594,11 @@ fn build_router(
         ))
         .layer(DefaultBodyLimit::max(payload_limit))
         .layer(axum::middleware::from_fn(super::response_format::negotiate))
-        .layer(cors_layer)
+        .layer(axum::middleware::from_fn_with_state(
+            admission,
+            super::memory::response_budget,
+        ))
+        .layer(cors_layer))
 }
 
 impl From<&ErrorType> for StatusCode {
@@ -2909,21 +2943,21 @@ mod multi_model_test {
             2_000_000,
             Some("test".into()),
             None,
-        );
+        )?;
         let single_a = build_router(
             ModelRegistry::new(vec![embedding.clone()])?,
             handle.clone(),
             2_000_000,
             None,
             None,
-        );
+        )?;
         let single_b = build_router(
             ModelRegistry::new(vec![reranker.clone()])?,
             handle.clone(),
             2_000_000,
             None,
             None,
-        );
+        )?;
         let embedding_request =
             json!({"model":"embed", "input":["hello world", "another example"]});
         let rerank_request =

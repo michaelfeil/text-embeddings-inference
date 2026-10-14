@@ -110,6 +110,14 @@ on Linux. No `libtorch_python` library is linked by the bridge.
 
 ## Validation and performance
 
+`TEI_TORCH_INPUT_UPLOAD_MAX_BYTES` limits each native request's estimated input
+upload and preprocessing storage, defaulting to 536870912 bytes (512 MiB).
+It includes actual packed token buffers, media position axes, media payloads and
+conversion temporaries, radix maps, and native descriptor copies. Repeated media
+descriptors are charged independently. Requests over this limit return a backend
+error before input transfers or deferred output allocation. This limit does not
+cover model activations, workspaces, output storage, or allocator-reserved memory.
+
 `TEI_TORCH_HOST_OUTPUT_MAX_BYTES` limits estimated Rust host output storage per
 submission, defaulting to 536870912 bytes (512 MiB). The estimate includes result
 payloads, token-row vector metadata, output map storage, and the temporary flat
@@ -119,6 +127,22 @@ inference. Large serving buffers use fallible reservations so reservation failur
 returns an error; subsequent requests can still run. This output limit does not
 cover model activations, native staging buffers, upstream request buffers or
 allocator-reserved memory.
+
+HTTP POST requests also reserve a request slot before reading or parsing the body.
+`TEI_HTTP_INPUT_MAX_BYTES` limits aggregate reserved request-body capacity and
+`TEI_HTTP_OUTPUT_MAX_BYTES` limits aggregate encoded-response allocation capacity;
+each defaults to 536870912 bytes (512 MiB). The output budget must be between
+65536 bytes (64 KiB) and 4294967295 bytes (`u32::MAX`) on 64-bit platforms;
+on 32-bit platforms its maximum is Tokio's smaller `Semaphore::MAX_PERMITS`.
+Values outside this range are rejected at startup. Each admitted request reserves the
+full configured `--payload-limit`, and remains admitted until its response bytes
+are consumed or dropped. Output capacity is reserved before JSON or MessagePack
+serialization allocates its buffer, including both old and new allocations during
+buffer growth, and follows cloned response bytes through
+transport handoff. Exhausted capacity returns 429 without waiting; the existing
+per-body size limit still returns 413. These HTTP budgets do not include parsed
+object overhead, Core result vectors, model memory or socket buffers. Untyped
+framework/document format conversion is limited to 2 MiB.
 
 ```bash
 cargo test -p text-embeddings-backend-libtorch --lib
@@ -162,8 +186,13 @@ afterward existing graphs still replay and other shapes run eagerly.
 private-pool reserved segments plus static CUDA input buffers, cumulatively even
 after eviction. An oversized trial capture stops further captures, so the bound
 can overshoot by one trial pool. These budgets bound graph admission, not total
-model/allocator memory or CUDA graph executable metadata. No global allocator
-cleanup runs per request. Set entries or attempts to zero to disable capture.
+model/allocator memory or CUDA graph executable metadata. Eviction reclaims only
+the retired private pool; live output tensors keep their storage. Pools retained
+by live outputs are retried before later requests allocate. Capture streams
+are owned by the cache and reused only after their previous graph is destroyed, with a separate stream
+for each live graph and at most one additional trial stream per device. No global
+allocator cleanup runs per request. Set entries or attempts to zero to disable capture.
+Cache teardown drains pending replay before releasing graph workspaces and streams.
 The default capture limit is 4096 tokens; `TEI_TORCH_CUDA_GRAPH_MAX_TOKENS` accepts
 a positive override. Unsupported capture operations run eagerly. Media capture
 requires the additional experimental flag described below.
@@ -268,3 +297,11 @@ error before allocating additional staging storage. Increase the limit for large
 raw outputs only when the deployment has sufficient host and device memory.
 This limit covers staging tensor storage, not model weights, activations or memory
 reserved by the host/CUDA caching allocators.
+
+`TEI_TORCH_ATTENTION_BIAS_MAX_BYTES` (default 512 MiB, positive) bounds each
+packed attention bias construction. ALiBi admission includes its backing storage
+and a conservative sum of construction temporaries. DeBERTa also checks bucket
+table construction against this limit. Requests that exceed the limit fail before
+these buffers are allocated; their token lengths and model math are unchanged.
+This is a limit for these attention buffers, not a total activation, workspace or
+CUDA allocator reservation budget.

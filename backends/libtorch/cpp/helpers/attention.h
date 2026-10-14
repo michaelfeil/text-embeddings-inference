@@ -10,14 +10,19 @@ namespace tei {
 // Its bias indexing uses local Q/K positions and stride(0) for each sequence,
 // while public tensor metadata requires logical batch=1 and total-token axes.
 // Allocate enough storage for BOTH the bounded logical view and actual tiles.
-inline at::Tensor packed_sequence_bias(const at::Tensor& q,const PackedInput& input) {
+inline constexpr int64_t default_attention_bias_max_bytes = 512LL << 20;
+inline void admit_attention_bias(int64_t bytes,int64_t limit) {
+  TORCH_CHECK(limit>0 && bytes<=limit,"Packed attention bias exceeds its memory budget");
+}
+inline at::Tensor packed_sequence_bias(const at::Tensor& q,const PackedInput& input,
+                                      int64_t max_bytes=default_attention_bias_max_bytes) {
   const int64_t total=q.size(0),heads=q.size(1),nmax=input.max_sequence;
   TORCH_CHECK(total>0 && heads>0 && input.batch>0 && nmax>0 && nmax<=total,"Invalid packed sequence bias dimensions");
   const int64_t stride=checked_size_product(checked_size_sum(nmax,7)/8,8);
   const int64_t tile=checked_size_product(nmax,stride),batch_stride=checked_size_product(heads,tile);
   const int64_t size=std::max(checked_size_product(input.batch,batch_stride),
     checked_size_sum(checked_size_sum(checked_size_product(heads-1,tile),checked_size_product(total-1,stride)),total));
-  checked_size_product(size,q.element_size());
+  admit_attention_bias(checked_size_product(size,q.element_size()),max_bytes);
   checked_size_product(checked_size_product(heads,total),total);
   return at::empty({size},q.options()).as_strided({1,heads,total,total},{batch_stride,tile,stride,1});
 }
@@ -30,13 +35,23 @@ inline at::Tensor packed_sequence_bias(const at::Tensor& q,const PackedInput& in
 // Q/K/V retain precisely the real packed tokens; only bias storage is aligned.
 inline at::Tensor packed_alibi_bias(const at::Tensor& q, const PackedInput& input,
                                     const at::Tensor& slopes,
-                                    int64_t window_left = -1, int64_t window_right = -1) {
+                                    int64_t window_left = -1, int64_t window_right = -1,
+                                    int64_t max_bytes=default_attention_bias_max_bytes) {
   const int64_t total=q.size(0), heads=q.size(1), length=input.max_sequence;
   TORCH_CHECK(total>0 && length>0 && length<=total && heads>0, "Invalid packed ALiBi dimensions");
   const int64_t stride=checked_size_product(checked_size_sum(length,7)/8,8),tile=checked_size_product(length,stride);
   const int64_t backing=checked_size_sum(checked_size_sum(checked_size_product(heads-1,tile),
     checked_size_product(total-1,stride)),total);
-  checked_size_product(backing,q.element_size());
+  // Bound backing plus a conservative sum of construction temporaries:
+  // index, signed/absolute deltas, broadcast multiply, dtype conversion and mask.
+  const auto cells=checked_size_product(length,length);
+  const auto head_cells=checked_size_product(heads,cells);
+  auto bytes=checked_size_product(backing,q.element_size());
+  bytes=checked_size_sum(bytes,checked_size_product(length,sizeof(int64_t)));
+  bytes=checked_size_sum(bytes,checked_size_product(cells,2*sizeof(int64_t)+sizeof(bool)));
+  bytes=checked_size_sum(bytes,checked_size_product(head_cells,
+    checked_size_sum(std::max<int64_t>(slopes.element_size(),q.element_size()),q.element_size())));
+  admit_attention_bias(bytes,max_bytes);
   checked_size_product(checked_size_product(heads,total),total);
   auto storage=at::empty({backing},q.options());
   auto local=storage.as_strided({heads,length,length},{tile,stride,1});

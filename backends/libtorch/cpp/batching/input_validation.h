@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
 #include "bridge.h"
+#include "batching/packed_input.h"
+#include "models/decision_models.h"
 #include <c10/util/Exception.h>
 #include <algorithm>
 #include <limits>
@@ -101,5 +103,68 @@ inline int64_t validate_input_descriptors(const int64_t* ids,const int64_t* type
     span(item.token_start,item.token_count,"audio");
   }
   return tokens;
+}
+// Bound real uploaded buffers and temporary F32-to-model image conversion.
+// This excludes model activations/workspaces and the separate output pool.
+struct InputUploadBudget {
+  size_t limit,bytes=0;
+  void add(size_t count,size_t width) {
+    TORCH_CHECK(limit>0&&bytes<=limit&&width>0&&count<=limit/width&&count*width<=limit-bytes,
+      "Native input upload exceeds its memory budget");
+    bytes+=count*width;
+  }
+};
+inline size_t validate_input_upload_budget(int64_t tokens,int64_t batch,bool media_positions,
+    const TeiImage* images,size_t image_count,const TeiAudio* audios,size_t audio_count,
+    const TeiRadix* radix,size_t image_element_size,size_t limit,bool normalize_images=false) {
+  TORCH_CHECK(limit>0,"Native input upload budget must be positive");
+  InputUploadBudget budget{limit};
+  auto add=[&](size_t count,size_t width){budget.add(count,width);};
+  add(tokens,3*sizeof(int64_t));add(batch+1,sizeof(int32_t));
+  if(media_positions)add(tokens,3*sizeof(int64_t));
+  // push_back vectors can briefly retain old and replacement capacities.
+  add(image_count,3*sizeof(ImageInput));add(audio_count,3*sizeof(AudioInput));
+  for(size_t i=0;i<image_count;++i) {
+    const auto count=input_product(images[i].rows,images[i].patch_dim,"image payload");
+    add(count,sizeof(float));
+    if(normalize_images)add(count,2*sizeof(float));
+    if(image_element_size!=sizeof(float))add(count,image_element_size);
+  }
+  for(size_t i=0;i<audio_count;++i) {
+    add(input_product(audios[i].frames,audios[i].feature_size,"audio payload"),sizeof(float));
+    add(audios[i].frames,sizeof(uint8_t));
+  }
+  if(radix) {
+    TORCH_CHECK(radix->compact_tokens>0&&radix->compact_tokens<=tokens&&radix->ids&&
+      radix->types&&radix->positions&&radix->scatter&&radix->fold,"Invalid native radix buffers");
+    add(radix->compact_tokens,4*sizeof(int64_t));add(tokens,sizeof(int64_t));
+    // validate_radix owns two compact parent/context arrays on the host.
+    add(radix->compact_tokens,2*sizeof(int64_t));
+    if(image_count||media_positions) {
+      add(batch,sizeof(std::vector<const TeiImage*>));add(tokens,sizeof(int64_t));
+      add(image_count,3*sizeof(const TeiImage*));
+      // At most one checked context pair per full token, including tree nodes.
+      add(tokens,sizeof(std::pair<int64_t,int64_t>)+6*sizeof(void*));
+    }
+  }
+  return budget.bytes;
+}
+inline size_t validate_decision_metadata_budget(const TeiDecision* requests,size_t count,
+    size_t limit,size_t used=0) {
+  InputUploadBudget budget{limit,used};budget.add(count,sizeof(DecisionRequest));
+  TORCH_CHECK(requests||!count,"Missing decision metadata buffer");
+  for(size_t i=0;i<count;++i) {
+    const auto& request=requests[i];
+    budget.add(request.marker_count,sizeof(int64_t));budget.add(request.token_count,sizeof(int64_t));
+    budget.add(request.field_count,3*sizeof(DecisionField));
+    TORCH_CHECK((!request.marker_count||request.markers)&&(!request.token_count||request.token_ids)&&
+      (!request.field_count||request.fields),"Missing decision metadata values");
+    for(size_t j=0;j<request.field_count;++j) {
+      const auto& field=request.fields[j];
+      budget.add(field.option_count,3*sizeof(std::pair<int64_t,int64_t>));
+      TORCH_CHECK(!field.option_count||field.options,"Missing Clef option spans");
+    }
+  }
+  return budget.bytes;
 }
 }

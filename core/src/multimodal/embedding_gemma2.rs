@@ -279,25 +279,16 @@ impl EmbeddingGemma2Processor {
                                     AudioFormat::Wav => "wav",
                                     AudioFormat::Mp3 => "mp3",
                                 };
-                                let samples =
+                                let (samples, sample_memory) =
                                     self.decode_audio(&resolved.bytes, decoder_format).await?;
-                                let sample_memory = self.budget.reserve(samples.len() * 4)?;
-                                let _worker = self
-                                    .workers
-                                    .clone()
-                                    .acquire_owned()
-                                    .await
-                                    .map_err(|_| invalid("Media workers closed"))?;
-                                let features = tokio::task::spawn_blocking(move || {
-                                    extract_audio_features(&samples)
-                                })
-                                .await
-                                .map_err(|_| invalid("Audio feature extraction failed"))??;
-                                drop(sample_memory);
-                                memory
-                                    .merge(self.budget.reserve(
-                                        features.values.len() * 8 + features.mask.len(),
-                                    )?);
+                                let (features, feature_memory) = prepare_audio_features(
+                                    samples,
+                                    sample_memory,
+                                    self.budget.clone(),
+                                    self.workers.clone(),
+                                )
+                                .await?;
+                                memory.merge(feature_memory);
                                 items.push(PreparedItem::Audio(Arc::new(features)));
                                 if !manual {
                                     text.push_str("<|audio|>");
@@ -394,14 +385,18 @@ impl EmbeddingGemma2Processor {
         })
     }
 
-    async fn decode_audio(&self, bytes: &[u8], format: &str) -> Result<Vec<f32>> {
+    async fn decode_audio(
+        &self,
+        bytes: &[u8],
+        format: &str,
+    ) -> Result<(Vec<f32>, OwnedSemaphorePermit)> {
         let _worker = self
             .workers
             .clone()
             .acquire_owned()
             .await
             .map_err(|_| invalid("Media workers closed"))?;
-        let _decode_memory = self.budget.reserve(480_000 * 8)?;
+        let decode_memory = self.budget.reserve(480_000 * 8)?;
         let dir =
             tempfile::tempdir().map_err(|_| invalid("Media temporary directory unavailable"))?;
         let path = dir.path().join("audio");
@@ -427,16 +422,23 @@ impl EmbeddingGemma2Processor {
             .spawn()
             .map_err(|_| invalid("Audio decoding requires ffmpeg"))?;
         let mut output = Vec::new();
-        child
-            .stdout
-            .take()
-            .unwrap()
-            .take(480_000 * 4 + 1)
-            .read_to_end(&mut output)
-            .await
-            .map_err(|_| invalid("Audio decoding failed"))?;
-        if output.len() > 480_000 * 4 {
-            return Err(invalid("Audio exceeds the 30 second limit"));
+        output.try_reserve_exact(480_000 * 4).map_err(|_| {
+            TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits)
+        })?;
+        let mut stdout = child.stdout.take().unwrap();
+        let mut chunk = [0u8; 8192];
+        loop {
+            let count = stdout
+                .read(&mut chunk)
+                .await
+                .map_err(|_| invalid("Audio decoding failed"))?;
+            if count == 0 {
+                break;
+            }
+            if count > 480_000 * 4 - output.len() {
+                return Err(invalid("Audio exceeds the 30 second limit"));
+            }
+            output.extend_from_slice(&chunk[..count]);
         }
         if !child
             .wait()
@@ -447,14 +449,20 @@ impl EmbeddingGemma2Processor {
         {
             return Err(invalid("Invalid or unsupported audio"));
         }
-        let samples: Vec<f32> = output
-            .chunks_exact(4)
-            .map(|c| f32::from_le_bytes(c.try_into().unwrap()))
-            .collect();
+        let mut samples = Vec::new();
+        samples.try_reserve_exact(output.len() / 4).map_err(|_| {
+            TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits)
+        })?;
+        samples.extend(
+            output
+                .chunks_exact(4)
+                .map(|c| f32::from_le_bytes(c.try_into().unwrap())),
+        );
         if samples.len() < 321 || samples.iter().any(|v| !v.is_finite()) {
             return Err(invalid("Audio is too short or contains invalid samples"));
         }
-        Ok(samples)
+        // Keep the reservation with the returned samples through extraction.
+        Ok((samples, decode_memory))
     }
 
     async fn decode_video(&self, bytes: &[u8]) -> Result<Vec<(String, OwnedSemaphorePermit)>> {
@@ -573,23 +581,77 @@ impl EmbeddingGemma2Processor {
         let mut sources = Vec::new();
         let mut source_memory = Vec::new();
         for i in 1..=unique_indices.len() {
-            let frame = std::fs::read(dir.path().join(format!("frame-{i:03}.png")))
-                .map_err(|_| invalid("Missing decoded video frame"))?;
-            if frame.len() > self.config.max_image_bytes {
-                return Err(invalid("Decoded video frame exceeds byte limit"));
-            }
-            source_memory.push(self.budget.reserve(frame.len() * 3)?);
-            sources.push(format!("data:image/png;base64,{}", STANDARD.encode(frame)));
+            let (source, reservation) = read_video_frame(
+                &dir.path().join(format!("frame-{i:03}.png")),
+                self.config.max_image_bytes,
+                &self.budget,
+            )?;
+            source_memory.push(reservation);
+            sources.push(source);
         }
         indices
             .iter()
             .map(|index| {
                 let source = &sources[unique_indices.binary_search(index).unwrap()];
                 let memory = self.budget.reserve(source.len())?;
-                Ok((source.clone(), memory))
+                let mut copy = String::new();
+                copy.try_reserve_exact(source.len()).map_err(|_| {
+                    TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits)
+                })?;
+                copy.push_str(source);
+                Ok((copy, memory))
             })
             .collect()
     }
+}
+
+fn read_video_frame(
+    path: &Path,
+    max_bytes: usize,
+    budget: &MediaBudget,
+) -> Result<(String, OwnedSemaphorePermit)> {
+    use std::io::Read;
+    const PREFIX: &str = "data:image/png;base64,";
+    let mut file = std::fs::File::open(path).map_err(|_| invalid("Missing decoded video frame"))?;
+    let length = usize::try_from(
+        file.metadata()
+            .map_err(|_| invalid("Missing decoded video frame"))?
+            .len(),
+    )
+    .map_err(|_| invalid("Decoded video frame exceeds byte limit"))?;
+    if length > max_bytes {
+        return Err(invalid("Decoded video frame exceeds byte limit"));
+    }
+    let encoded = base64::encoded_len(length, true)
+        .and_then(|size| size.checked_add(PREFIX.len()))
+        .ok_or_else(|| invalid("Decoded video frame allocation overflow"))?;
+    let bytes = length
+        .checked_add(encoded)
+        .ok_or_else(|| invalid("Decoded video frame allocation overflow"))?;
+    // Charge simultaneous compressed frame and final data URL before reading.
+    let memory = budget.reserve(bytes)?;
+    let mut frame = Vec::new();
+    frame
+        .try_reserve_exact(length)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    frame.resize(length, 0);
+    file.read_exact(&mut frame)
+        .map_err(|_| invalid("Missing decoded video frame"))?;
+    let mut extra = [0u8; 1];
+    if file
+        .read(&mut extra)
+        .map_err(|_| invalid("Missing decoded video frame"))?
+        != 0
+    {
+        return Err(invalid("Decoded video frame changed during read"));
+    }
+    let mut source = String::new();
+    source
+        .try_reserve_exact(encoded)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    source.push_str(PREFIX);
+    STANDARD.encode_string(&frame, &mut source);
+    Ok((source, memory))
 }
 
 fn sample_video_frames(
@@ -613,6 +675,38 @@ fn sample_video_frames(
         .collect()
 }
 
+async fn prepare_audio_features(
+    samples: Vec<f32>,
+    sample_memory: OwnedSemaphorePermit,
+    budget: MediaBudget,
+    workers: Arc<Semaphore>,
+) -> Result<(AudioFeatures, OwnedSemaphorePermit)> {
+    let worker = workers
+        .acquire_owned()
+        .await
+        .map_err(|_| invalid("Media workers closed"))?;
+    // Reserve F32 features, their native conversion copy, and mask before allocation.
+    let frames = audio_feature_frames(samples.len())?;
+    let feature_memory = budget.reserve(frames * (128 * 8 + 1))?;
+    tokio::task::spawn_blocking(move || {
+        // Cancellation cannot release admission while blocking work owns samples.
+        let _worker = worker;
+        let _sample_memory = sample_memory;
+        let features = extract_audio_features(&samples)?;
+        Ok((features, feature_memory))
+    })
+    .await
+    .map_err(|_| invalid("Audio feature extraction failed"))?
+}
+
+fn audio_feature_frames(samples: usize) -> Result<usize> {
+    if !(321..=480_000).contains(&samples) {
+        return Err(invalid("Invalid audio sample count"));
+    }
+    // The sample limit makes padding, frame counts and output byte counts safe.
+    Ok((samples.div_ceil(128) * 128 + 160 - 321) / 160 + 1)
+}
+
 /// Gemma4's magnitude (not power) log-mel spectrogram with semicausal Hann windows.
 pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
     use rustfft::{num_complex::Complex, FftPlanner};
@@ -620,11 +714,7 @@ pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
     const HOP: usize = 160;
     const FFT: usize = 512;
     const BINS: usize = 128;
-    if samples.len() < FRAME + 1 || samples.len() > 480_000 {
-        return Err(invalid("Invalid audio sample count"));
-    }
-    let padded_len = samples.len().div_ceil(128) * 128;
-    let frames = (padded_len + FRAME / 2 - (FRAME + 1)) / HOP + 1;
+    let frames = audio_feature_frames(samples.len())?;
     let window: Vec<f32> = (0..FRAME)
         .map(|i| (0.5 - 0.5 * (std::f64::consts::TAU * i as f64 / FRAME as f64).cos()) as f32)
         .collect();
@@ -645,9 +735,21 @@ pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
         })
         .collect();
     let fft = FftPlanner::<f64>::new().plan_fft_forward(FFT);
-    let mut values = Vec::with_capacity(frames * BINS);
-    let mut mask = Vec::with_capacity(frames);
-    let mut buffer = vec![Complex::default(); FFT];
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(frames * BINS)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    let mut mask = Vec::new();
+    mask.try_reserve_exact(frames)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    // Explicit scratch avoids an infallible allocation on every FFT frame.
+    let mut scratch = Vec::new();
+    scratch
+        .try_reserve_exact(fft.get_inplace_scratch_len())
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    scratch.resize(fft.get_inplace_scratch_len(), Complex::default());
+    let mut buffer = [Complex::default(); FFT];
+    let mut magnitude = [0.0; FFT / 2 + 1];
     for frame in 0..frames {
         let valid = frame * HOP + FRAME < samples.len() + FRAME / 2;
         mask.push(u8::from(valid));
@@ -660,8 +762,10 @@ pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
                 }
             }
         }
-        fft.process(&mut buffer);
-        let magnitude: Vec<f64> = buffer[..=FFT / 2].iter().map(|v| v.norm()).collect();
+        fft.process_with_scratch(&mut buffer, &mut scratch);
+        for (value, complex) in magnitude.iter_mut().zip(&buffer) {
+            *value = complex.norm();
+        }
         for filter in &filters {
             let mel = magnitude
                 .iter()
@@ -686,6 +790,57 @@ pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
 mod tests {
     use super::*;
     #[test]
+    fn cancelled_audio_extraction_retains_admission_until_blocking_work_finishes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let budget = MediaBudget::new(8 * 1024 * 1024).unwrap();
+            let workers = Arc::new(Semaphore::new(1));
+            let (release, blocked) = std::sync::mpsc::channel();
+            let (started, ready) = tokio::sync::oneshot::channel();
+            let blocker = tokio::task::spawn_blocking(move || {
+                started.send(()).unwrap();
+                blocked
+                    .recv_timeout(std::time::Duration::from_secs(5))
+                    .unwrap();
+            });
+            ready.await.unwrap();
+            let samples = vec![0.0; 16000];
+            let sample_memory = budget.reserve(samples.len() * 4).unwrap();
+            let request = tokio::spawn(prepare_audio_features(
+                samples,
+                sample_memory,
+                budget.clone(),
+                workers.clone(),
+            ));
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while workers.available_permits() != 0 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            request.abort();
+            assert!(request.await.unwrap_err().is_cancelled());
+            assert_eq!(workers.available_permits(), 0);
+            assert!(budget.reserve(8 * 1024 * 1024).is_err());
+            release.send(()).unwrap();
+            blocker.await.unwrap();
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while workers.available_permits() == 0 || budget.reserve(8 * 1024 * 1024).is_err() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert!(budget.reserve(8 * 1024 * 1024).is_ok());
+        });
+    }
+
+    #[test]
     fn video_uniform_sampling_matches_processor() {
         assert_eq!(
             sample_video_frames(300, 30.0, 10.0, 1.0, 32),
@@ -695,11 +850,30 @@ mod tests {
         assert_eq!(frames.len(), 32);
         assert_eq!(frames[0], 0);
         assert_eq!(frames[31], 3570);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.png");
+        std::fs::write(&path, [1, 2, 3]).unwrap();
+        let budget = MediaBudget::new(1024).unwrap();
+        assert!(read_video_frame(&path, 2, &budget).is_err());
+        let held = budget.reserve(1024).unwrap();
+        assert!(matches!(
+            read_video_frame(&path, 3, &budget),
+            Err(TextEmbeddingsError::Overloaded(_))
+        ));
+        drop(held);
+        let (source, memory) = read_video_frame(&path, 3, &budget).unwrap();
+        assert_eq!(source, "data:image/png;base64,AQID");
+        assert!(budget.reserve(1024).is_err());
+        drop(memory);
+        assert!(budget.reserve(1024).is_ok());
     }
     #[test]
     fn audio_frame_and_token_counts_follow_two_stride_two_convolutions() {
         let features = extract_audio_features(&vec![0.0; 16000]).unwrap();
         assert_eq!(features.mask.len(), 99);
+        assert!(audio_feature_frames(320).is_err());
+        assert!(audio_feature_frames(480_001).is_err());
+        assert!(audio_feature_frames(usize::MAX).is_err());
         assert_eq!(features.token_count(), 25);
         assert!(features
             .values
