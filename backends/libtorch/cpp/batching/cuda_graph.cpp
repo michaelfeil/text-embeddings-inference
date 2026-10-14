@@ -26,6 +26,27 @@ struct CudaGraphCache::Impl {
   bool budget_exhausted=false;
   Stats counters;
 #ifdef TEI_TORCH_CUDA_KERNELS
+  struct CaptureLane {
+    cudaStream_t raw=nullptr;
+    c10::DeviceIndex device;
+    CaptureLane(const CaptureLane&)=delete;
+    CaptureLane& operator=(const CaptureLane&)=delete;
+    explicit CaptureLane(c10::DeviceIndex index):device(index) {
+      c10::cuda::CUDAGuard guard(device);
+      C10_CUDA_CHECK(cudaStreamCreateWithFlags(&raw,cudaStreamNonBlocking));
+    }
+    ~CaptureLane() {
+      try {
+        c10::cuda::CUDAGuard guard(device);
+        C10_CUDA_CHECK_WARN(cudaStreamDestroy(raw));
+      } catch(...) { /* A failed device is reported by inference/completion. */ }
+    }
+    c10::cuda::CUDAStream stream() const {
+      return c10::cuda::getStreamFromExternal(raw,device);
+    }
+  };
+  // Destroy owned streams only after graphs and their workspaces are gone.
+  std::unordered_map<c10::DeviceIndex,std::vector<std::unique_ptr<CaptureLane>>> capture_streams;
   struct Entry {
     std::vector<int32_t> offsets;
     PackedInput input;
@@ -34,13 +55,13 @@ struct CudaGraphCache::Impl {
     std::list<std::string>::iterator lru;
     uint64_t bytes=0;
     std::optional<c10::cuda::CUDAStream> capture_stream;
+    std::optional<c10::cuda::CUDAStream> replay_stream;
   };
   std::unordered_map<std::string, std::unique_ptr<Entry>> entries;
   std::list<std::string> lru;
   std::unordered_set<std::string> failed;
   // Reuse retired lanes, but never share a lane between live graphs: graph
   // destruction clears cuBLAS workspaces associated with its capture stream.
-  std::unordered_map<c10::DeviceIndex,std::vector<c10::cuda::CUDAStream>> capture_streams;
   std::vector<c10::MempoolId_t> retired_pools;
   void reclaim_retired() {
     for(auto pool=retired_pools.begin();pool!=retired_pools.end();) {
@@ -50,6 +71,15 @@ struct CudaGraphCache::Impl {
         if(segment.owner_private_pool_id==*pool){retained=true;break;}
       if(retained)++pool;else pool=retired_pools.erase(pool);
     }
+  }
+  ~Impl() {
+    // Deferred outputs outlive the model. Join caller work before graph
+    // destruction releases stream-local workspaces used by pending replay.
+    for(const auto& resident:entries) {
+      try { if(resident.second->replay_stream)resident.second->replay_stream->synchronize(); }
+      catch(...) { /* A failed device is reported by inference/completion. */ }
+    }
+    entries.clear();
   }
 #endif
   Impl(size_t count,int64_t tokens,size_t uses,uint64_t bytes,size_t captures)
@@ -117,6 +147,9 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   if(found!=impl->entries.end()) {
     ++impl->counters.hits;
     auto& entry=*found->second;
+    const auto replay_stream=c10::cuda::getCurrentCUDAStream(input.ids.get_device());
+    if(entry.replay_stream&&entry.replay_stream!=replay_stream)entry.replay_stream->synchronize();
+    entry.replay_stream=replay_stream;
     impl->lru.erase(entry.lru);impl->lru.push_front(id);entry.lru=impl->lru.begin();
     entry.input.ids.copy_(input.ids);entry.input.types.copy_(input.types);
     entry.input.positions.copy_(input.positions);entry.input.cumulative.copy_(input.cumulative);
@@ -191,14 +224,13 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
       if(resident.second->capture_stream==lane)return false;
     return true;
   };
-  auto lane=std::find_if(lanes.begin(),lanes.end(),available);
+  auto lane=std::find_if(lanes.begin(),lanes.end(),[&](const auto& owned){return available(owned->stream());});
   if(lane==lanes.end()) {
-    const auto candidate=c10::cuda::getStreamFromPool(false,capture_device);
-    // The upstream stream pool can wrap. Never collide with a live entry.
-    if(!available(candidate))return run(input);
-    lanes.push_back(candidate);lane=std::prev(lanes.end());
+    // The shared Torch pool wraps after 32 streams and can collide with another
+    // resident model's graphs. Own these bounded lanes instead.
+    lanes.push_back(std::make_unique<Impl::CaptureLane>(capture_device));lane=std::prev(lanes.end());
   }
-  const auto capture_stream=*lane;
+  const auto capture_stream=(*lane)->stream();
   entry->capture_stream=capture_stream;
   at::cuda::CUDAEvent input_ready;input_ready.record(current);input_ready.block(capture_stream);
   bool capturing=false;
@@ -217,6 +249,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     }
     at::cuda::CUDAEvent warmed;warmed.record(capture_stream);warmed.block(current);
     entry->graph->replay();
+    entry->replay_stream=current;
   } catch(const std::exception&) {
     // Unsupported operators fall back to eager inference. Capture happens on a
     // dedicated stream so an invalidated capture never touches the caller stream.
