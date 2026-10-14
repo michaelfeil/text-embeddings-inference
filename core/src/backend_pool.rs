@@ -243,6 +243,8 @@ impl Execution {
         // Retain execution ownership even if its caller cancels. A deferred
         // submission may release the model lease, but completion still reports
         // failures and accounts for the full inference duration.
+        // Libtorch's NativeOutput/OutputLease owns pending buffers separately:
+        // releasing the replica here does not make those buffers reusable.
         tokio::spawn(async move {
             let backend = execution.pool.inner.backends[execution.id].clone();
             execution.started();

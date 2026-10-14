@@ -13,7 +13,11 @@ use tokenizers::TruncationDirection;
 use tokio::sync::{mpsc, oneshot, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tracing::instrument;
 
-/// Inference struct
+/// Request entry point and shared lifetime of the inference workers.
+///
+/// Clones share the queue, replica pool and shutdown state. `with_pool` starts
+/// one batch preparer and one submitter per replica, with a single shared slot
+/// for a prepared batch. Per-request replies travel through `Metadata` channels.
 #[derive(Debug, Clone)]
 pub struct Infer {
     model_name: metrics::SharedString,

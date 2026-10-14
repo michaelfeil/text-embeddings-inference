@@ -1,3 +1,10 @@
+//! Request preparation, batching and result delivery.
+//!
+//! Start at `infer::Infer` for the request path. `tokenization` prepares inputs,
+//! `queue_actor` selects and packs batches, and `backend_pool` leases model
+//! replicas. The backend crates run the models; core keeps request metadata
+//! until results can be sent back to each caller.
+
 pub mod backend_pool;
 pub mod chat;
 pub mod download;

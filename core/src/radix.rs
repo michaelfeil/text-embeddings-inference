@@ -3,6 +3,10 @@ use infinity_v3_backend::{ImagePatches, MultimodalEncoding};
 use sha2::{Digest, Sha256};
 use std::{collections::HashMap, sync::Arc};
 
+// Tuple order: compact token IDs, compact positions, scatter_unfold, fold_gather.
+// scatter[full_row] gives its compact row; fold[compact_row] picks one full
+// representative. Attention still sees full sequences. Optional alignment adds
+// unused compact rows, which libtorch's OwnedRadix removes before the C ABI.
 type Fold = (Vec<u32>, Vec<u32>, Vec<u32>, Vec<u32>);
 
 pub(crate) fn compute(
