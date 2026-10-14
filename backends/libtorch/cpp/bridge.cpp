@@ -83,6 +83,7 @@ struct Engine {
   at::ScalarType dtype;
   tei::Options options;
   tei::Weights weights;
+  std::shared_ptr<tei::WorkspaceMemoryPolicy> workspace_policy;
   std::unique_ptr<tei::Model> model;
   std::shared_ptr<tei::OutputPool> outputs = std::make_shared<tei::OutputPool>();
   std::unique_ptr<tei::DenseChain> dense;
@@ -102,7 +103,7 @@ struct Engine {
     TORCH_CHECK(options.integer("_device_memory_headroom_bytes",1LL<<30)>0,"Native device memory headroom must be positive");
     const auto workspace_bytes=options.integer("_retained_workspace_max_bytes",512LL<<20);
     TORCH_CHECK(workspace_bytes>0&&uint64_t(workspace_bytes)<=std::numeric_limits<size_t>::max(),"Invalid native retained workspace allowance");
-    if(device.is_cuda())tei::configure_workspace_admission(device.index(),static_cast<size_t>(workspace_bytes));
+    if(device.is_cuda())workspace_policy=tei::configure_workspace_admission(device.index(),static_cast<size_t>(workspace_bytes));
     auto staging_bytes = options.integer("_output_staging_max_bytes", 512LL << 20);
     TORCH_CHECK(staging_bytes > 0, "Output staging memory budget must be positive");
     outputs->max_bytes = static_cast<size_t>(staging_bytes);
@@ -220,7 +221,9 @@ size_t validate_transient_memory(Engine& model,int64_t tokens,int64_t batch,int6
   const auto bytes=model.options.integer("_transient_max_bytes",8LL<<30);
   TORCH_CHECK(bytes>0&&uint64_t(bytes)<=std::numeric_limits<size_t>::max(),"Invalid native transient tensor memory budget");
   return tei::estimate_transient_memory(*model.transient_profile,tokens,batch,maximum,pool,expected,
-    images,image_count,audios,audio_count,static_cast<size_t>(bytes));
+    images,image_count,audios,audio_count,static_cast<size_t>(bytes),
+    model.options.string("_decision.kind")=="d3",
+    model.options.string("_decision.kind")=="d3"&&model.options.string("model_type").starts_with("qwen3_5"));
 }
 size_t validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,int32_t pool,

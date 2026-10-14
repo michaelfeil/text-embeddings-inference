@@ -77,7 +77,8 @@ inline size_t positive_memory_dimension(int64_t value) {
 }
 inline size_t estimate_transient_memory(const TransientMemoryProfile& p,int64_t tokens,
     int64_t batch,int64_t maximum,int32_t pool,size_t output_count,const TeiImage* images,
-    size_t image_count,const TeiAudio* audios,size_t audio_count,size_t limit) {
+    size_t image_count,const TeiAudio* audios,size_t audio_count,size_t limit,
+    bool shared_image_uploads=false,bool shared_image_features=false) {
   const auto t=positive_memory_dimension(tokens),b=positive_memory_dimension(batch),
     m=positive_memory_dimension(maximum),h=positive_memory_dimension(p.hidden),
     heads=positive_memory_dimension(p.heads),linear=positive_memory_dimension(p.linear),
@@ -148,8 +149,18 @@ inline size_t estimate_transient_memory(const TransientMemoryProfile& p,int64_t 
       TORCH_CHECK(grid<=std::numeric_limits<size_t>::max()/n,"Native vision token geometry overflow");grid*=n;
     }
     const auto rows=std::max(grid,positive_memory_dimension(image.rows));
-    cost.add({positive_memory_dimension(image.rows),positive_memory_dimension(image.patch_dim),4,sizeof(float)});
-    tower(*p.vision,rows,positive_memory_dimension(image.token_count),false,0,grid/positive_memory_dimension(image.grid[0]));
+    bool uploaded=false,featured=false;
+    for(size_t j=0;(shared_image_uploads||shared_image_features)&&j<i;++j) {
+      const auto& previous=images[j];
+      // from_blob creates contiguous F32 matrices; mirror RequestImageUploads
+      // identity/layout and RequestImageFeatures grid/merge identity exactly.
+      if(previous.pixels!=image.pixels||previous.rows!=image.rows||previous.patch_dim!=image.patch_dim)continue;
+      uploaded=shared_image_uploads;
+      if(shared_image_uploads&&shared_image_features&&previous.merge_size==image.merge_size&&previous.token_count==image.token_count&&
+         std::equal(std::begin(previous.grid),std::end(previous.grid),std::begin(image.grid)))featured=true;
+    }
+    if(!uploaded)cost.add({positive_memory_dimension(image.rows),positive_memory_dimension(image.patch_dim),4,sizeof(float)});
+    if(!featured)tower(*p.vision,rows,positive_memory_dimension(image.token_count),false,0,grid/positive_memory_dimension(image.grid[0]));
   }
   if(image_count&&p.retained_vision_bytes)cost.add({p.retained_vision_bytes});
   for(size_t i=0;i<audio_count;++i) {

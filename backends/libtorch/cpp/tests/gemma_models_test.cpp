@@ -358,7 +358,7 @@ int main(int argc,char** argv) {
     auto dense_profile=dense_model->transient_memory_profile();
     TORCH_CHECK(dense_profile&&dense_profile->experts==0&&dense_profile->top_k==1,
       "Dense Gemma charged disabled expert metadata");
-    TORCH_CHECK(estimate_transient_memory(*dense_profile,7,5,2,0,0,nullptr,0,nullptr,0,1<<20)>0,
+    TORCH_CHECK(estimate_transient_memory(*dense_profile,7,2,5,0,0,nullptr,0,nullptr,0,1<<20)>0,
       "Dense Gemma profile rejected valid packed inference");
     auto output = model->forward(input(packed,po));
     TORCH_CHECK(at::equal(output,dense_model->forward(input(packed,po))),

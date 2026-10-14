@@ -144,6 +144,32 @@ void decoder_profile_retention_test() {
    output,16,nullptr,nullptr,0,nullptr,0)==0,tei_error());
  for(float value:output)TORCH_CHECK(std::isfinite(value),"Wide FFN admission rejection poisoned valid inference");
 }
+void shared_image_transient_admission_test() {
+ TransientMemoryProfile p;p.hidden=8;p.heads=2;p.linear=16;p.element=2;
+ p.vision=TowerMemoryProfile{8,2,16,0,0};p.vision->efficient_scores=true;
+ std::array<float,128> pixels{};
+ TeiImage image{pixels.data(),4,16,{1,2,2},1,0,4,0};
+ std::array<TeiImage,4> aliases;
+ for(size_t i=0;i<aliases.size();++i) {aliases[i]=image;aliases[i].token_start=i*4;aliases[i].sequence_start=i*4;}
+ auto estimate=[&](const TeiImage* descriptors,size_t count,bool uploads,bool features,size_t limit=1<<20) {
+  return estimate_transient_memory(p,16,4,4,0,0,descriptors,count,nullptr,0,limit,uploads,features);
+ };
+ const auto single=estimate(&image,1,false,false);
+ TORCH_CHECK(estimate(aliases.data(),4,true,true,single)==single,
+   "D3 alias images were charged more than their single upload/vision computation");
+ bool rejected=false;try{estimate(aliases.data(),4,false,false,single);}catch(const MemoryAdmissionError&){rejected=true;}
+ TORCH_CHECK(rejected,"Unshared image computations bypassed the transient cap");
+ TORCH_CHECK(estimate(aliases.data(),4,true,false)>single,
+   "Upload sharing incorrectly suppressed unshared vision computations");
+ aliases.back().grid[1]=1;aliases.back().grid[2]=4;
+ TORCH_CHECK(estimate(aliases.data(),4,true,true)>single,"Distinct image grids shared their vision estimate");
+ aliases.back()=image;aliases.back().merge_size=2;
+ TORCH_CHECK(estimate(aliases.data(),4,true,true)>single,"Distinct image merge layouts shared their vision estimate");
+ aliases.back()=image;aliases.back().pixels=pixels.data()+64;
+ TORCH_CHECK(estimate(aliases.data(),4,true,true)>single,"Distinct image storage shared its transient estimate");
+ aliases.back()=image;aliases.back().rows=2;aliases.back().patch_dim=32;
+ TORCH_CHECK(estimate(aliases.data(),4,true,true)>single,"Distinct image upload layouts shared their transient estimate");
+}
 void relative_transient_admission_test() {
  TransientMemoryProfile profile;profile.hidden=8;profile.heads=4;profile.linear=8;profile.element=4;
  profile.relative_bins=4096;
@@ -298,7 +324,8 @@ void multimodal_test(){
 }
 int main(){c10::InferenceMode inference;at::set_num_threads(1);
  {
-  configure_workspace_admission(0,128);auto state=workspace_admission_state(0);
+  auto surviving_policy=configure_workspace_admission(0,256);
+  auto policy=configure_workspace_admission(0,128);auto state=workspace_admission_state(0);
   auto first=reserve_workspace_memory(0,96);
   TORCH_CHECK(first&&!reserve_workspace_memory(0,40)&&state->retained==96,
     "Retained custom workspaces bypassed their shared per-device allowance");
@@ -306,7 +333,22 @@ int main(){c10::InferenceMode inference;at::set_num_threads(1);
   TORCH_CHECK(!reserve_workspace_memory(0,40),"Captured workspace references released their allowance early");
   captured.reset();auto recovered=reserve_workspace_memory(0,128);
   TORCH_CHECK(recovered&&state->retained==128,"Released workspace prevented valid fallback recovery");
-  recovered.reset();TORCH_CHECK(state->retained==0,"Workspace destruction retained its allowance");
+  try {
+    auto failed_engine_policy=configure_workspace_admission(0,32);
+    TORCH_CHECK(state->limit==32,"Failed engine policy was not registered");
+    throw std::runtime_error("Injected engine initialization failure");
+  } catch(const std::runtime_error&) {}
+  TORCH_CHECK(state->limit==128&&state->retained==128,
+    "Engine initialization unwind leaked its workspace policy or permits");
+  policy.reset();auto extended=reserve_workspace_memory(0,128);
+  TORCH_CHECK(extended&&state->limit==256&&state->retained==256,
+    "Destroyed restrictive engine policy prevented surviving workspace recovery");
+  surviving_policy.reset();auto restrictive=configure_workspace_admission(0,64);
+  TORCH_CHECK(state->retained==256&&!reserve_workspace_memory(0,1),
+    "Policy release erased outstanding workspace lifetime reservations");
+  extended.reset();recovered.reset();restrictive.reset();
+  TORCH_CHECK(state->retained==0&&state->limit==0&&state->policies.empty(),
+    "Destroyed workspace policies were retained across engine lifetimes");
  }
  {
   auto state=device_admission_state(0);
@@ -328,6 +370,7 @@ int main(){c10::InferenceMode inference;at::set_num_threads(1);
  }
  decoder_profile_retention_test();
  relative_transient_admission_test();
+ shared_image_transient_admission_test();
  {
   c10::AcceleratorError allocation({__func__,__FILE__,__LINE__},2,"Resource allocation failed");
   c10::AcceleratorError illegal({__func__,__FILE__,__LINE__},700,"Illegal device address");
@@ -370,7 +413,7 @@ int main(){c10::InferenceMode inference;at::set_num_threads(1);
   auto profile=model->transient_memory_profile();
   TORCH_CHECK(profile&&profile->experts==0&&profile->top_k==1,
     "Dense Qwen3-MoE layers charged unused expert top-k metadata");
-  TORCH_CHECK(estimate_transient_memory(*profile,7,4,2,0,0,nullptr,0,nullptr,0,1<<20)>0,
+  TORCH_CHECK(estimate_transient_memory(*profile,7,2,4,0,0,nullptr,0,nullptr,0,1<<20)>0,
     "Dense Qwen3-MoE profile rejected a valid packed request");
   auto reference=create_decoder(dense_cfg,reference_weights,c10::Device("cpu"),at::kFloat);reference->ready();
   TORCH_CHECK(at::equal(run(*model,{3,4,5,6,7,8,9},{0,3,7}),run(*reference,{3,4,5,6,7,8,9},{0,3,7})),
