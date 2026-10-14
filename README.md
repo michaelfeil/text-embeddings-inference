@@ -59,10 +59,17 @@ read. The queue's early-dispatch override is `INFINITY_EARLY_DISPATCH_TOKENS`.
     - [Apple M1/M2 Arm](#apple-m1m2-arm64-architectures)
 - [Examples](#examples)
 
-This fork serves inference through HTTP using Candle by default, with an optional
+This fork serves inference through HTTP using the deprecated Candle backend by
+default, with an optional
 [experimental native LibTorch 2.14.1 backend](docs/libtorch-backend.md). The Python
 backend, Intel IPEX/Gaudi images, and public gRPC API have been removed.
 OpenTelemetry export over OTLP/gRPC remains supported.
+
+**The Candle backend is deprecated.** Use `--backend libtorch` (or
+`INFINITY_BACKEND=libtorch`) for models supported by the
+[native LibTorch backend](docs/libtorch-backend.md), with a build that includes
+the `libtorch` feature. Candle remains the default for compatibility and emits
+a deprecation warning when initialized.
 
 infinity_v3 is a toolkit for deploying and serving open source text embeddings and sequence
 classification models. infinity_v3 enables high-performance extraction for the most popular models, including FlagEmbedding,
@@ -317,7 +324,7 @@ Options:
           [possible values: auto, float16, float32, bfloat16]
 
       --backend <BACKEND>
-          Inference runtime (requires the matching Cargo feature)
+          Inference runtime (requires the matching Cargo feature). Candle is deprecated; use libtorch for supported models
 
           [env: INFINITY_BACKEND=]
           [default: candle]
