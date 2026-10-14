@@ -2,6 +2,7 @@
 #pragma once
 #include "helpers/admission_error.h"
 #include <ATen/ATen.h>
+#include "helpers/pinned_admission.h"
 #include <algorithm>
 #include <array>
 #include <condition_variable>
@@ -72,8 +73,8 @@ class OutputLease {
         // No output copy references these oversized buffers yet. Keep only
         // this request's output capacity so its real inputs can be admitted.
         slot->host = at::Tensor(); slot->device_output = at::Tensor();
-        slot->host = at::empty({static_cast<int64_t>(capacity)},
-          at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
+        slot->host = allocate_pinned_staging(static_cast<int64_t>(capacity),
+          at::TensorOptions().dtype(at::kFloat));
         slot->device_output = at::empty({static_cast<int64_t>(capacity)},
           at::TensorOptions().dtype(at::kFloat).device(device));
       }
@@ -140,8 +141,8 @@ public:
     if (grow_host) slot->host = at::Tensor();
     if (grow_device) slot->device_output = at::Tensor();
     if (grow_host)
-      slot->host = at::empty({capacity},
-          at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
+      slot->host = allocate_pinned_staging(capacity,
+          at::TensorOptions().dtype(at::kFloat));
     if (grow_device)
       slot->device_output = at::empty({capacity},
           at::TensorOptions().dtype(at::kFloat).device(device));
@@ -154,7 +155,7 @@ public:
     if (!pin.defined() || pin.scalar_type() != host.scalar_type() || pin.numel() < host.numel()) {
       make_room(host.nbytes(), pin.defined() ? pin.storage().nbytes() : 0, true);
       pin = at::Tensor();
-      pin = at::empty({host.numel()}, host.options().pinned_memory(true));
+      pin = allocate_pinned_staging(host.numel(), host.options());
     }
     lock.unlock();
     auto view = pin.narrow(0, 0, host.numel()).view(host.sizes());
