@@ -26,6 +26,16 @@ uint64_t prefix_admission_step(uint64_t parent,const PrefixToken& token) {
   // The previous digest seeds the next token, retaining the whole prefix.
   return XXH3_64bits_withSeed(token.values.data(),sizeof(token.values),parent);
 }
+uint64_t prefix_admission_block(uint64_t parent,std::span<const PrefixToken> tokens) {
+  return XXH3_64bits_withSeed(tokens.data(),tokens.size_bytes(),parent);
+}
+PrefixFingerprint prefix_document_fingerprint(std::span<const PrefixToken> tokens,int operation,bool rotary_context) {
+  // Separate complete-document observations from the sampled admission stem.
+  // A collision can only permit a capture, never authorize resident reuse.
+  auto hash=XXH3_128bits_withSeed(tokens.data(),tokens.size_bytes(),
+    0x444f43554d454e54ULL+uint64_t(operation)*4+uint64_t(rotary_context));
+  return {hash.low64,hash.high64};
+}
 void prefix_fingerprints(PrefixIdentity& key,int64_t tokens) {
   auto count=std::min<int64_t>(tokens,key.tokens.size())/prefix_block_tokens;
   if(int64_t(key.fingerprints.size())>count)key.fingerprints.resize(count);

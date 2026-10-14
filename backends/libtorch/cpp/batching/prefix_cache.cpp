@@ -357,7 +357,7 @@ void PrefixCache::reset_observations() {
   index.reset();
   recent={};recent_next=0;
   boundaries.clear();boundary_clock=0;
-  if(short_recent){for(auto& depth:short_recent->depths)depth.clear();short_recent->clock=0;}
+  if(short_recent){for(auto& depth:short_recent->depths)depth.clear();short_recent->extended.clear();short_recent->clock=0;}
 }
 void PrefixCache::clear() {std::lock_guard guard(mutex);entries.clear();linear->clear();reset_observations();}
 at::Tensor PrefixCache::cumulative(const std::vector<int32_t>& offsets,const c10::Device& device) {
@@ -390,31 +390,53 @@ at::Tensor PrefixCache::cumulative(const std::vector<int32_t>& offsets,const c10
 #endif
   return at::tensor(offsets,at::TensorOptions().dtype(at::kInt)).to(device);
 }
-int64_t PrefixCache::observe_text(std::span<const PrefixToken> tokens,int operation,bool rotary_context) {
-  TORCH_INTERNAL_ASSERT(short_recent&&tokens.size()>0&&tokens.size()<=64);
+int64_t PrefixCache::observe_text(std::span<const PrefixToken> tokens,int operation,bool rotary_context,
+  int64_t known_prefix,int64_t observed) {
+  TORCH_INTERNAL_ASSERT(short_recent&&tokens.size()>0&&known_prefix>=0&&size_t(known_prefix)<=tokens.size());
   // Position-first counters preserve interleaved questions under a shared role
   // header. Each depth has eight-way buckets, bounding an observation to eight
   // probes instead of comparing every prior document's complete token prefix.
   auto& state=*short_recent;
   uint64_t key=0x5354454d434f554eULL+uint64_t(operation)*4+uint64_t(rotary_context);
   const auto tick=++state.clock;
-  int64_t confirmed=0;
-  for(size_t depth=0;depth<tokens.size();++depth) {
-    key=prefix_admission_step(key,tokens[depth]);
-    auto& table=state.depths[depth];if(table.empty())table.resize(state.cells);
-    const auto bucket=(key&((state.cells/8)-1))*8;
+  int64_t confirmed=std::max<int64_t>(known_prefix,std::max<int64_t>(0,observed));
+  auto count=[&](auto& table,uint64_t hash,size_t cells) {
+    if(table.size()<cells) {
+      std::vector<ShortRecent::Counter> grown(cells);
+      for(const auto& cell:table)if(cell.uses) {
+        const auto bucket=(cell.key&((cells/8)-1))*8;
+        auto slot=std::find_if(grown.begin()+bucket,grown.begin()+bucket+8,[](const auto& value){return !value.uses;});
+        TORCH_INTERNAL_ASSERT(slot!=grown.begin()+bucket+8);*slot=cell;
+      }
+      table.swap(grown);
+    }
+    const auto bucket=(hash&((table.size()/8)-1))*8;
     ShortRecent::Counter* selected=nullptr;
     for(size_t way=0;way<8;++way) {
       auto& cell=table[bucket+way];
-      if(cell.uses&&cell.key==key){selected=&cell;break;}
+      if(cell.uses&&cell.key==hash){selected=&cell;break;}
       if(!selected||(!cell.uses&&selected->uses)
         ||(cell.uses&&selected->uses&&cell.used<selected->used))selected=&cell;
     }
-    if(selected->uses&&selected->key==key) {
+    if(selected->uses&&selected->key==hash) {
       if(selected->uses<admission_uses)++selected->uses;
-    }else {selected->key=key;selected->uses=1;}
+    }else {selected->key=hash;selected->uses=1;}
     selected->used=tick;
-    if(selected->uses>=admission_uses)confirmed=depth+1;
+    return selected->uses>=admission_uses;
+  };
+  for(size_t depth=0;depth<std::min<size_t>(64,tokens.size());++depth) {
+    key=prefix_admission_step(key,tokens[depth]);
+    // The miss shortcut already counted this stem, or a reader already proves
+    // these rows reusable. Only unseen descendants need admission counters.
+    if(observed<0&&int64_t(depth)>=known_prefix&&count(state.depths[depth],key,state.cells))confirmed=depth+1;
+  }
+  size_t factor=8;
+  while(factor<std::min<size_t>(256,(tokens.size()>64?(tokens.size()-64+7)/8:0)))factor*=2;
+  if(confirmed>=64)for(size_t start=64;start<tokens.size();start+=8) {
+    const auto length=std::min<size_t>(8,tokens.size()-start);
+    key=prefix_admission_block(key,tokens.subspan(start,length));
+    if(int64_t(start+length)>known_prefix&&count(state.extended,key,std::min<size_t>(65536,state.cells*factor)))
+      confirmed=start+length;
   }
   return confirmed>=int64_t(std::min<size_t>(8,tokens.size()))?confirmed:0;
 }
@@ -539,7 +561,7 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
         if(count) {
           if(short_policy) {
             const auto common=observe_text({stem.data(),size_t(count)},operation,original.multimodal_positions.defined());
-            observed[row]=common==64?retained:common;
+            observed[row]=common;
           }else observed[row]=admit(prefix_admission_fingerprint({stem.data(),size_t(count)},operation,false,original.multimodal_positions.defined()))?retained:0;
         }
       }
@@ -635,8 +657,14 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       if(retained>=64)retained=retained/64*64;
     }
     if(short_policy) {
-      const auto common=observed.empty()?observe_text({key.tokens.data(),size_t(std::min<int64_t>(64,retained))},operation,key.rotary_context):observed[row];
-      if(common<64)retained=std::min(retained,common);
+      const auto common=observe_text({key.tokens.data(),size_t(retained)},operation,key.rotary_context,best,
+        observed.empty()?-1:observed[row]);
+      const bool complete=retained>64&&admit(prefix_document_fingerprint(
+        {key.tokens.data(),size_t(retained)},operation,key.rotary_context));
+      // A cold confirmed stem may seed a complete snapshot to discover longer
+      // prefixes. Once a reader exists, a changing tail must not repeatedly
+      // promote that stem into an unrelated complete document.
+      if(!complete&&(common<64||best))retained=std::min(retained,common);
     }
     for(const auto& media:key.media)if(media.start<retained&&media.start+media.count>retained)retained=media.start;
     key.tokens.resize(retained);

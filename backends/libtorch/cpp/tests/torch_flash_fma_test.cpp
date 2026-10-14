@@ -51,28 +51,35 @@ static void single_query_tiles(const c10::Device& device) {
   std::cout<<"Single-query BF16 ragged/GQA tiles match full-context outputs bitwise\n";
 }
 
-static void default_torch_suffix_spans(const c10::Device& device) {
+static void default_torch_suffix_spans(const c10::Device& device,bool extended_only=false) {
   // Query lengths exercise short spans against independent full
   // causal execution. Ragged contexts and GQA expose row/head addressing errors.
   auto opts=at::TensorOptions().device(device).dtype(at::kBFloat16);
   const std::vector<int32_t> full_offsets{0,16,48,113,306,819,2867};
-  const std::vector<int32_t> query_offsets{0,2,9,17,33,57,89};
-  std::vector<int64_t> selected;
-  for(size_t row=0;row+1<full_offsets.size();++row)
-    for(int64_t token=full_offsets[row+1]-(query_offsets[row+1]-query_offsets[row]);token<full_offsets[row+1];++token)
-      selected.push_back(token);
-  auto cu=at::tensor(full_offsets,opts.dtype(at::kInt));
-  auto suffix_cu=at::tensor(query_offsets,opts.dtype(at::kInt));
-  auto indices=at::tensor(selected,opts.dtype(at::kLong));
-  for(int seed=0;seed<16;++seed)for(int64_t kvheads:{2,8}) {
-    auto generator=at::detail::createCPUGenerator(2300+seed);
-    auto values=at::randn({full_offsets.back(),16+2*kvheads,128},generator,at::kFloat).to(opts);
-    auto q=values.narrow(1,0,16),k=values.narrow(1,16,kvheads),v=values.narrow(1,16+kvheads,kvheads);
-    auto reference=tei::torch_flash_fma(q,k,v,cu,2048,1./std::sqrt(128.),true);
-    auto actual=tei::torch_flash_fma_varlen(q.index_select(0,indices),k,v,suffix_cu,cu,32,2048,1./std::sqrt(128.),true);
-    TORCH_CHECK(at::equal(actual,reference.index_select(0,indices)),
-      "Short-query tile changed fused BF16 attention bits seed=",seed," kvheads=",kvheads);
+  for(const std::vector<int32_t>& query_offsets:{std::vector<int32_t>{0,2,9,17,33,57,89},
+    std::vector<int32_t>{0,2,9,42,89,141,205}}) {
+    std::vector<int64_t> selected;
+    int64_t maximum=0;
+    for(size_t row=0;row+1<full_offsets.size();++row) {
+      maximum=std::max<int64_t>(maximum,query_offsets[row+1]-query_offsets[row]);
+      for(int64_t token=full_offsets[row+1]-(query_offsets[row+1]-query_offsets[row]);token<full_offsets[row+1];++token)
+        selected.push_back(token);
+    }
+    if(extended_only&&maximum<=32)continue;
+    auto cu=at::tensor(full_offsets,opts.dtype(at::kInt));
+    auto suffix_cu=at::tensor(query_offsets,opts.dtype(at::kInt));
+    auto indices=at::tensor(selected,opts.dtype(at::kLong));
+    for(int seed=0;seed<16;++seed)for(int64_t kvheads:{2,8}) {
+      auto generator=at::detail::createCPUGenerator(2300+seed);
+      auto values=at::randn({full_offsets.back(),16+2*kvheads,128},generator,at::kFloat).to(opts);
+      auto q=values.narrow(1,0,16),k=values.narrow(1,16,kvheads),v=values.narrow(1,16+kvheads,kvheads);
+      auto reference=tei::torch_flash_fma(q,k,v,cu,2048,1./std::sqrt(128.),true);
+      auto actual=tei::torch_flash_fma_varlen(q.index_select(0,indices),k,v,suffix_cu,cu,maximum,2048,1./std::sqrt(128.),true);
+      TORCH_CHECK(at::equal(actual,reference.index_select(0,indices)),
+        "Short-query tile changed fused BF16 attention bits seed=",seed," kvheads=",kvheads);
+    }
   }
+  if(extended_only)return;
   constexpr int64_t total=2048;
   for(int64_t dim:{64,128})for(auto dtype:{at::kBFloat16,at::kHalf}) {
     const int64_t heads=dim==64?14:16,kvheads=dim==64?2:8;
@@ -230,6 +237,9 @@ static void alibi32_spans(const c10::Device& device) {
 
 int main(int argc,char** argv) {
   c10::InferenceMode guard;
+  if(argc>1&&std::string(argv[1])=="suffix64") {
+    default_torch_suffix_spans(c10::Device("cuda:0"),true);return 0;
+  }
   const c10::Device device(argc>1 ? argv[1] : "cuda:0");
   media_spans(device);
   cached_suffix_spans(device);

@@ -137,6 +137,7 @@ private:
   struct ShortRecent {
     struct Counter { uint64_t key=0; size_t uses=0; uint64_t used=0; };
     std::array<std::vector<Counter>,64> depths;
+    std::vector<Counter> extended;
     size_t cells=64;
     uint64_t clock=0;
   };
@@ -153,7 +154,8 @@ private:
   bool ordered_submissions;
   bool admit(const PrefixIdentity&,int operation);
   bool admit(PrefixFingerprint);
-  int64_t observe_text(std::span<const PrefixToken>,int operation,bool rotary_context);
+  int64_t observe_text(std::span<const PrefixToken>,int operation,bool rotary_context,
+    int64_t known_prefix=0,int64_t observed=-1);
   void reset_observations();
   at::Tensor cumulative(const std::vector<int32_t>&,const c10::Device&);
 };

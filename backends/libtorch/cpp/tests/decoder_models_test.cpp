@@ -116,6 +116,7 @@ void cached_decoder_test(Model& model) {
  check_close(original,run(model,{3,4,5,3,4,8,9},{0,3,7}));
  cache.clear();TORCH_CHECK(cache.bytes()==0,"Cleared prefix entries retain resident tensors");
 }
+void cache_concurrency_test(Model& model,int64_t length=12);
 void cache_admission_test(Model& model) {
  struct Observed final:Model {
   Model& inner;mutable bool capturing=false;mutable size_t calls=0;bool fail=false;
@@ -274,20 +275,76 @@ void cache_admission_test(Model& model) {
  TORCH_CHECK(questions.stats().admissions==2,"Interleaved questions lost their longer shared prefix");
  auto question_reused=questions.stats().reused_tokens;ask(11,21);
  TORCH_CHECK(questions.stats().reused_tokens-question_reused==12,"Question reused only the common role header");
+ // A sampled64-token stem must not promote every changing document into a
+ // complete snapshot. Repeated complete documents must still bypass the model.
+ auto long_config=config("qwen3");long_config.values["max_position_embeddings"]="256";
+ auto long_weights=weights(long_config);
+ auto long_model=create_decoder(long_config,long_weights,c10::Device("cpu"),at::kFloat);long_model->ready();
+ Observed long_observed(*long_model);
+ std::vector<int32_t> long_ends={0,128};
+ PackedInput long_input{at::arange(128,options).remainder(29)+1,at::zeros({128},options),at::arange(128,options),
+   at::tensor(long_ends,options.dtype(at::kInt)),long_ends.data(),1,128};
+ PrefixCache stable(1<<20,256,4,2);
+ for(int i=0;i<2;++i)check_close(stable.run(long_observed,long_input,0),long_model->forward(long_input));
+ const auto seeded=stable.stats().admissions;
+ for(int document=16;document<26;++document) {
+  long_input.ids.narrow(0,64,64).fill_(document);
+  check_close(stable.run(long_observed,long_input,0),long_model->forward(long_input));
+ }
+ TORCH_CHECK(stable.stats().admissions==seeded&&stable.stats().evictions==0,
+   "Changing documents kept admitting whole snapshots beyond the shared64-token stem");
+ check_close(stable.run(long_observed,long_input,0),long_model->forward(long_input));
+ const auto complete_calls=long_observed.calls;
+ check_close(stable.run(long_observed,long_input,0),long_model->forward(long_input));
+ TORCH_CHECK(long_observed.calls==complete_calls,"Repeated long document never promoted to complete readout");
+ // Longer questions under a common64-token header count their own eight-token
+ // descendants. The threshold and clear apply to those descendants too.
+ PrefixCache descendants(1<<20,256,8,3);
+ auto ask_long=[&](int topic,int document) {
+  long_input.ids.narrow(0,64,32).fill_(topic);long_input.ids.narrow(0,96,32).fill_(document);
+  check_close(descendants.run(long_observed,long_input,0),long_model->forward(long_input));
+ };
+ for(int i=0;i<3;++i)ask_long(11,15);
+ const auto root_admissions=descendants.stats().admissions;
+ ask_long(12,16);ask_long(12,17);
+ TORCH_CHECK(descendants.stats().admissions==root_admissions,"Longer question ignored its observation threshold");
+ ask_long(12,18);const auto prior_reused=descendants.stats().reused_tokens;
+ ask_long(12,19);
+ TORCH_CHECK(descendants.stats().reused_tokens-prior_reused==96,"Longer question reused only its common64-token header");
+ descendants.clear();for(int i=0;i<3;++i)ask_long(11,15);
+ const auto cleared_admissions=descendants.stats().admissions;ask_long(12,20);
+ TORCH_CHECK(descendants.stats().admissions==cleared_admissions,"Clear retained long-question observation counts");
+ // Growing the longer-prefix table must preserve the first observation above.
+ std::vector<int32_t> grown_ends={0,256};auto grown=long_input;
+ grown.ids=at::cat({long_input.ids,at::full({128},20,options)},0);grown.types=at::zeros({256},options);
+ grown.positions=at::arange(256,options);grown.cumulative=at::tensor(grown_ends,options.dtype(at::kInt));
+ grown.offsets=grown_ends.data();grown.max_sequence=256;
+ for(int document:{21,22}) {
+  grown.ids.narrow(0,96,160).fill_(document);
+  check_close(descendants.run(long_observed,grown,0),long_model->forward(grown));
+ }
+ const auto grown_reused=descendants.stats().reused_tokens;grown.ids.narrow(0,96,160).fill_(23);
+ check_close(descendants.run(long_observed,grown,0),long_model->forward(grown));
+ TORCH_CHECK(descendants.stats().reused_tokens-grown_reused==96,"Counter growth discarded a long-question observation");
+ cache_concurrency_test(*long_model,128);
  auto malformed=input;
  malformed.host_ids=input.ids.narrow(0,0,3);malformed.host_types=input.types.narrow(0,0,3);
  malformed.host_positions=input.positions.narrow(0,0,3);
  bool invalid_host=false;try{mixed.run(observed,malformed,0);}catch(const c10::Error&){invalid_host=true;}
  TORCH_CHECK(invalid_host&&mixed.bytes()==0,"Invalid borrowed host length reached prefix lookup");
 }
-void cache_concurrency_test(Model& model) {
+void cache_concurrency_test(Model& model,int64_t length) {
  auto options=at::TensorOptions().dtype(at::kLong);
  std::vector<at::Tensor> references;
- for(int64_t topic=0;topic<320;++topic)references.push_back(run(model,{3,4,5,6,7,8,9,10,3+topic%24,3+topic/24,13,14},{0,12}));
- PrefixCache cache(2<<20,64,512,2);std::vector<int32_t> ends={0,12};
+ auto tokens_for=[&](int topic) {
+  std::vector<int64_t> tokens{3,4,5,6,7,8,9,10,3+topic%24,3+topic/24,13,14};tokens.resize(length,14);return tokens;
+ };
+ for(int64_t topic=0;topic<320;++topic)references.push_back(run(model,tokens_for(topic),{0,int32_t(length)}));
+ const auto budget=uint64_t(length<=64?2:32)<<20;
+ PrefixCache cache(budget,std::max<int64_t>(64,length),512,2);std::vector<int32_t> ends={0,int32_t(length)};
  auto input_for=[&](int topic) {
-  return PackedInput{at::tensor(std::vector<int64_t>{3,4,5,6,7,8,9,10,3+topic%24,3+topic/24,13,14},options),at::zeros({12},options),
-    at::arange(12,options),at::tensor(ends,options.dtype(at::kInt)),ends.data(),1,12};
+  return PackedInput{at::tensor(tokens_for(topic),options),at::zeros({length},options),
+    at::arange(length,options),at::tensor(ends,options.dtype(at::kInt)),ends.data(),1,length};
  };
  // Populate enough related questions to activate the resident index before
  // racing lookup, caller mutation and clear. Admission itself is also guarded.
@@ -312,7 +369,7 @@ void cache_concurrency_test(Model& model) {
   c10::InferenceMode inference;start.arrive_and_wait();
   try {for(int i=0;i<600;++i) {
    if(i%7==0)cache.clear();
-   TORCH_CHECK(cache.bytes()<=2<<20,"Concurrent clear/stats exceeded the cache budget");
+   TORCH_CHECK(cache.bytes()<=budget,"Concurrent clear/stats exceeded the cache budget");
    static_cast<void>(cache.stats());std::this_thread::yield();
   }}catch(...){save_failure();}
  });
@@ -347,7 +404,7 @@ void indexed_stream_test(const c10::Device& device) {
  at::cuda::getCurrentCUDAStream(device.index()).synchronize();
  {
   std::vector<at::Tensor> scratch;
-  for(int i=0;i<1400;++i)scratch.push_back(at::empty({12,1,1},host.device(device).dtype(at::kFloat)).fill_(0));
+  for(int i=0;i<1400;++i)scratch.push_back(at::empty({12,1,1},host.device(device).dtype(at::kFloat)).fill_(777));
   publisher.synchronize();
  }
  auto first=c10::cuda::getStreamFromPool(false,device.index()),second=c10::cuda::getStreamFromPool(false,device.index());
@@ -359,9 +416,11 @@ void indexed_stream_test(const c10::Device& device) {
  // Warm the consuming-stream allocator and boundary shape before deliberately
  // blocking one stream, so a fresh synchronizing allocation cannot open it.
  for(auto stream:{first,second}) {
-  c10::cuda::CUDAStreamGuard guard(stream);cache.run(model,requests.front(),0).fill_(0);
+  c10::cuda::CUDAStreamGuard guard(stream);
+  std::vector<at::Tensor> warm_outputs;
+  for(const auto& request:requests)warm_outputs.push_back(cache.run(model,request,0).fill_(123));
   std::vector<at::Tensor> large;
-  for(int i=0;i<32;++i)large.push_back(at::empty({320,12,3},host.device(device).dtype(at::kFloat)).fill_(0));
+  for(int i=0;i<32;++i)large.push_back(at::empty({320,12,3},host.device(device).dtype(at::kFloat)).fill_(777));
   std::vector<at::Tensor> scratch;
   for(int i=0;i<1000;++i)scratch.push_back(at::empty({512},host.device(device).dtype(at::kByte)));
   stream.synchronize();
@@ -939,6 +998,9 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
 #ifdef TEI_TORCH_CUDA_KERNELS
  if(argc>1&&std::string(argv[1])=="boundary-cuda"){cumulative_stream_test(c10::Device("cuda:0"));return 0;}
  if(argc>1&&std::string(argv[1])=="index-cuda"){indexed_stream_test(c10::Device("cuda:0"));return 0;}
+ // Run the controlled allocator-poison fixture before unrelated model pools
+ // can change its allocator warmup under CUDA instrumentation.
+ if(argc>1)indexed_stream_test(c10::Device(argv[1]));
 #endif
  {
   // Preselected, non-normalized FP32 routes preserve learned expert scales
@@ -1009,7 +1071,7 @@ int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(
     at::tensor({0,1,2,0,1,2,3},opts),at::tensor(ends,opts.dtype(at::kInt)),ends.data(),2,4};
    check_prefix_cache(*gpu,input,0,.01,.02);
 #ifdef TEI_TORCH_CUDA_KERNELS
-   if(std::string(family)=="qwen3") {indexed_stream_test(c10::Device(argv[1]));cumulative_stream_test(c10::Device(argv[1]));cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
+   if(std::string(family)=="qwen3") {cumulative_stream_test(c10::Device(argv[1]));cache_stream_test(*gpu,input);suffix_graph_test(*gpu,input);}
    if(std::string(family)=="qwen2")cache_cold_maximum_test(c10::Device(argv[1]));
 #endif
   }
