@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
       try {
         if(alibi)tei::packed_alibi_bias(q,input,at::ones({12}),-1,-1,1024);
         else tei::packed_sequence_bias(q,input,1024);
-      } catch(const c10::Error& ex) {
+      } catch(const tei::MemoryAdmissionError& ex) {
         rejected=std::string(ex.what()).find("exceeds its memory budget")!=std::string::npos;
       }
       TORCH_CHECK(rejected,"Finite attention geometry bypassed byte admission");
