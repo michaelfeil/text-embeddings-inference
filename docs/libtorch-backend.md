@@ -343,6 +343,18 @@ raw outputs only when the deployment has sufficient host and device memory.
 This limit covers staging tensor storage, not model weights, activations or memory
 reserved by the host/CUDA caching allocators.
 
+`INFINITY_TORCH_PINNED_STAGING_MAX_BYTES` (default 512 MiB, positive) limits native
+pinned input/output storage across all replicas in the process. Native pins use
+direct CUDA host allocations instead of Torch's pinned size-class cache. Their
+page-rounded allocation credit remains owned by the underlying tensor storage,
+including idle slots and surviving views; it is returned only after successful
+physical release. Cancellation and partial submission drain the lease's CUDA
+stream before releasing its storage. A failed release keeps its credit charged.
+Admission also counts Torch's current `allocated_bytes`, including cached blocks,
+and reclaims completed unused Torch cache blocks before rejecting for pressure.
+This protects native staging allocations; foreign concurrent Torch allocations,
+other host allocations, and driver bookkeeping remain outside this process limit.
+
 `INFINITY_TORCH_ATTENTION_BIAS_MAX_BYTES` (default 512 MiB, positive) bounds each
 packed attention bias construction. ALiBi admission includes its backing storage
 and a conservative sum of construction temporaries. DeBERTa also checks bucket

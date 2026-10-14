@@ -101,6 +101,55 @@ int main() {
     c10::InferenceMode inference;
     const at::Device device("cuda:0");
     c10::cuda::CUDAGuard guard(device);
+    // Aggregate admission is tied to actual storage across independent engines,
+    // including idle retained slots and views that survive their pool.
+    auto pinned_state = tei::pinned_admission_state();
+    auto* host_allocator = at::getHostAllocator(at::kCUDA);
+    host_allocator->empty_cache();
+    const auto original_pinned_limit = pinned_state->max_bytes;
+    TORCH_CHECK(pinned_state->bytes == 0, "Unexpected initial native pinned storage");
+    const auto foreign_pins = static_cast<size_t>(host_allocator->get_stats().allocated_bytes.current);
+    pinned_state->max_bytes = foreign_pins + 8192;
+    auto engine_a = std::make_shared<tei::OutputPool>();
+    auto engine_b = std::make_shared<tei::OutputPool>();
+    for (auto engine : {engine_a, engine_b}) {
+      tei::OutputLease lease(engine, device, 1); lease.allocate(); lease.record(); lease.wait();
+    }
+    TORCH_CHECK(pinned_state->bytes == 8192 && engine_a->slots[0].host.is_pinned(),
+                "Pinned replicas did not share physical staging accounting");
+    bool process_rejected = false;
+    try { auto engine_c = std::make_shared<tei::OutputPool>();
+      tei::OutputLease lease(engine_c, device, 1); lease.allocate(); }
+    catch (const tei::MemoryAdmissionError&) { process_rejected = true; }
+    TORCH_CHECK(process_rejected && pinned_state->bytes == 8192,
+                "Another replica bypassed process pinned admission");
+    auto surviving_view = engine_a->slots[0].host.narrow(0, 0, 1);
+    engine_a.reset(); engine_b.reset();
+    TORCH_CHECK(pinned_state->bytes == 4096, "Surviving view released pinned storage credit");
+    surviving_view = at::Tensor();
+    TORCH_CHECK(pinned_state->bytes == 0, "Last storage reference did not release native pinned memory");
+    // Torch's cached physical bytes, not only active bytes, remain charged.
+    auto torch_pin = at::empty({1025}, at::TensorOptions().dtype(at::kFloat).pinned_memory(true));
+    process_rejected = false;
+    try { auto blocked = tei::allocate_pinned_staging(1, at::TensorOptions().dtype(at::kFloat)); }
+    catch (const tei::MemoryAdmissionError&) { process_rejected = true; }
+    TORCH_CHECK(process_rejected && pinned_state->bytes == 0 && torch_pin.is_pinned(),
+                "Native admission ignored active foreign Torch pins");
+    torch_pin = at::Tensor();
+    const auto cached_pins = host_allocator->get_stats();
+    TORCH_CHECK(cached_pins.allocated_bytes.current >= cached_pins.active_bytes.current + 8192,
+                "Torch pinned size-class cache fixture was not retained");
+    pinned_state->max_bytes = foreign_pins + 4096;
+    auto reclaimed = tei::allocate_pinned_staging(1, at::TensorOptions().dtype(at::kFloat));
+    TORCH_CHECK(pinned_state->bytes == 4096 && host_allocator->get_stats().allocated_bytes.current <= foreign_pins,
+                "Pinned admission did not reclaim completed Torch cache before allocation");
+    // Torch cannot register externally owned pins. OutputLease must own them
+    // through its stream event rather than relying on Torch's cache lifetime.
+    TORCH_CHECK(!host_allocator->record_event(reclaimed.data_ptr(), reclaimed.storage().data_ptr().get_context(),
+      c10::cuda::getCurrentCUDAStream().unwrap()), "Native pins unexpectedly entered Torch's cache");
+    reclaimed = at::Tensor();
+    TORCH_CHECK(pinned_state->bytes == 0, "Direct pinned staging was cached after release");
+    pinned_state->max_bytes = original_pinned_limit;
     auto pool = std::make_shared<tei::OutputPool>();
     tei::CudaGraphCache cache(2, 4096,1);
     Model model;
@@ -150,6 +199,17 @@ int main() {
     { tei::OutputLease abandoned(pool, device, 4096 * 768); abandoned.allocate();
       abandoned.copy(at::ones({4096,768}, at::TensorOptions().device(device).dtype(at::kHalf)), 0);
       abandoned.record(); }
+    at::Tensor partial_upload;
+    auto partial_pool = std::make_shared<tei::OutputPool>();
+    const auto before_partial = pinned_state->bytes;
+    { tei::OutputLease partial(partial_pool, device, 1); partial.allocate();
+      partial_upload = partial.upload(at::full({1024 * 1024}, 123, at::TensorOptions().dtype(at::kInt)));
+      // Unwinding before record() must drain H2D before freeing its external pin.
+    }
+    TORCH_CHECK(pinned_state->bytes == before_partial && partial_pool->retained_bytes() == 0,
+                "Partial upload did not drain and release native pinned storage");
+    TORCH_CHECK(at::equal(partial_upload.cpu(), at::full({1024 * 1024}, 123, at::TensorOptions().dtype(at::kInt))),
+                "Partial upload released its external pin before H2D completion");
     tei::OutputLease reused(pool, device, 768); reused.allocate();
     reused.copy(at::full({1,768}, 42, at::TensorOptions().device(device)), 0); reused.record();
     TORCH_CHECK(reused.wait()[767] == 42, "Abandoned lease contaminated reuse");
