@@ -174,7 +174,7 @@ impl Pplx {
 }
 
 // Python json.dumps(..., ensure_ascii=False) uses spaces after commas and colons.
-fn describe(value: &Value) -> Result<String, String> {
+pub(super) fn describe(value: &Value) -> Result<String, String> {
     Ok(match value {
         Value::String(s) => s.clone(),
         Value::Array(items) => format!(

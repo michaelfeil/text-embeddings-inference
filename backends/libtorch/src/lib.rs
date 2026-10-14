@@ -482,13 +482,19 @@ impl LibtorchBackend {
             let (kind, config) = if laya {
                 ("laya", read_config("rl_agent_config.json")?)
             } else if path.join("decision_config.json").exists() {
-                ("pplx", read_config("decision_config.json")?)
+                let config = read_config("decision_config.json")?;
+                let kind = if config["format_id"] == "d3-code-readout-v1" {
+                    "d3"
+                } else {
+                    "pplx"
+                };
+                (kind, config)
             } else if path.join("joint_head_config.json").exists() {
                 ("clef", read_config("joint_head_config.json")?)
             } else {
                 ("option_tokens", serde_json::json!({}))
             };
-            if kind == "pplx" {
+            if matches!(kind, "pplx" | "d3") {
                 options["_decision_attention_mode"] = config
                     .get("attention_mode")
                     .cloned()
@@ -499,6 +505,11 @@ impl LibtorchBackend {
         } else {
             None
         };
+        if decision_kind == Some("d3") && dtype != "bfloat16" {
+            return Err(start(
+                "D3 requires bfloat16 for its backbone and vision tower",
+            ));
+        }
         let family = options["model_type"]
             .as_str()
             .ok_or_else(|| start("Missing model_type"))?
@@ -906,7 +917,7 @@ impl LibtorchBackend {
             .map(|file| (file, String::new()))
             .collect::<Vec<_>>();
         if let Some(kind) = decision_kind {
-            if kind == "pplx" {
+            if matches!(kind, "pplx" | "d3") {
                 files.push(("readout.safetensors".into(), "__tei_decision.".into()));
             }
             if kind == "clef" {
@@ -1554,6 +1565,22 @@ mod tests {
         let actual = model.embed(batch()).unwrap();
         for (index, expected) in expected {
             assert_eq!(values(&expected), values(&actual[&index]));
+        }
+    }
+
+    #[test]
+    fn d3_constructor_rejects_unsupported_dtype_before_loading_weights() {
+        let fixture = fixture("", false);
+        fs::write(
+            fixture.0.join("decision_config.json"),
+            r#"{"format_id":"d3-code-readout-v1"}"#,
+        )
+        .unwrap();
+        for dtype in ["float32", "float16"] {
+            let error = LibtorchBackend::new(&fixture.0, dtype, ModelType::Decision, "cpu")
+                .err()
+                .expect("D3 must reject unsupported precision");
+            assert!(error.to_string().contains("D3 requires bfloat16"));
         }
     }
 

@@ -226,6 +226,8 @@ fn decode_data_url(source: &str, max_bytes: usize) -> Result<Vec<u8>> {
             | "data:image/webp;base64"
             | "data:video/mp4;base64"
             | "data:video/webm;base64"
+            | "data:video/quicktime;base64"
+            | "data:video/x-matroska;base64"
             | "data:audio/wav;base64"
             | "data:audio/mpeg;base64"
     ) {

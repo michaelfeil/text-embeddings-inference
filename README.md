@@ -1014,3 +1014,68 @@ checkpoints, which omit the attention-mode field. Unknown attention modes and
 pooling modes other than `last` are rejected.
 Prompts exceeding 8192 tokens (or a smaller `max_len`) return 422.
 Image/video inputs are not supported by this protocol yet.
+
+### D3 typed multimodal decisions
+
+`vllm-sr/d3` serves choice, noul and score questions on `/v1/systemone` using the
+LibTorch backend in BF16. Both `--model-id d3` and `--model-id vllm-sr/d3`
+select the native D3 protocol automatically. For a local checkpoint, pass
+`--decision-protocol d3` explicitly:
+
+```bash
+infinity_v3 --backend libtorch --torch-device cuda \
+  --model-id vllm-sr/d3 --dtype bfloat16 --device-id 0
+```
+
+D3 uses its checkpoint chat template, noncausal full-attention layers, native
+causal Gated DeltaNet layers, and an FP32 255-row readout. Prefix folding is
+disabled for noncausal inference. Each question runs over the complete state
+and options; probabilities normalize only over that question's valid options,
+with checkpoint temperature applied once. Choices return entropy confidence;
+score questions accept 2–10 distinct levels and return the expected zero-based
+score, option probabilities, entropy confidence, and a legend. The adapter
+matches the default upstream inference mode without permutation averaging.
+
+The state can be text or any JSON value. Top-level `images` and `videos` are
+ordered arrays of inline data URLs or HTTPS URLs; all questions see the same
+media. Images precede videos, followed by the state and question text. PNG,
+JPEG and WebP images are resized to 65,536–1,638,400 pixels. EXIF orientation is
+ignored, matching the published D3 loader. Video uses FFmpeg:
+2 fps, 4–32 uniformly selected source frames (or every frame of shorter clips),
+paired in time with timestamps and at most 200,704 pixels per frame. Videos are
+limited to 300 seconds, 32 MB each, and 16,384 visual tokens in total. The
+server's configured media count, byte, pixel, and memory limits also apply.
+Remote downloads require `--image-allowed-hosts`; local filesystem paths and
+raw frame arrays are not accepted by the HTTP API.
+
+```bash
+curl http://localhost:3000/v1/systemone \
+  -H 'Content-Type: application/json' -H 'Accept: application/json' -d '{
+  "state": {"request": "My order arrived damaged", "has_receipt": true},
+  "questions": {
+    "team": {"type": "choice", "instructions": "Which team should handle this?",
+      "criteria": {"returns": "Damaged deliveries", "billing": "Payments"}},
+    "receipt": {"type": "noul", "instructions": "Does the customer have a receipt?"}
+  }
+}'
+```
+
+Add `"images": ["data:image/png;base64,..."]` or
+`"videos": ["data:video/mp4;base64,..."]` to the same request for media.
+Prompts exceeding `max_len` or the server's token budget are rejected with 422;
+text and media are never silently truncated. D3 reports zero output tokens.
+
+D3 qualification fixtures can be generated using the checkpoint's pinned Python
+environment:
+
+```bash
+python scripts/d3-reference.py --checkpoint /path/to/d3 \
+  --output /tmp/d3-reference --device cuda:0
+```
+Set `D3_REFERENCE_DIR` to the output directory and `D3_HTTP_URL` to a local D3
+`/v1/systemone` endpoint. Run the single ignored
+`deployed_checkpoint_matches_upstream_answers` router test with `--ignored` to
+compare text, image, video, and mixed-media answers. This smoke check permits
+small BF16 kernel differences; it does not establish bitwise parity or
+benchmark-wide accuracy. HTTP callers requesting JSON should send
+`Accept: application/json`.
