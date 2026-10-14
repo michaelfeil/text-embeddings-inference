@@ -8,6 +8,7 @@ CUDA libraries, model weights, or container base images.
 | Component | Retained license and attribution locations |
 | --- | --- |
 | Hugging Face Text Embeddings Inference | [LICENSE](LICENSE), [NOTICE](NOTICE), and inherited file headers. |
+| Vendored TEI regression-test snapshots | Apache-2.0 comparison baselines; [Candle snapshot provenance](backends/candle/tests/snapshots/NOTICE) and [router snapshot provenance](router/tests/snapshots/NOTICE) list the fixtures, full Git blob hashes, and pinned upstream revisions. |
 | Adapted Candle CPU operators | [Apache text](LICENSES/Apache-2.0.txt) and source attribution in [ModernBERT CPU math](backends/libtorch/cpp/helpers/modern_cpu_math.cpp), based on Candle revision `036f39e`. |
 | Candle CUDA activation kernel | [MIT text](backends/candle/src/kernels/LICENSE.candle-MIT) and [kernel notices](backends/candle/src/kernels/gated_activation.cu). |
 | Candle cuBLASLt extension | [Apache text](backends/candle/extensions/candle-cublaslt/LICENSE-APACHE) and [MIT text](backends/candle/extensions/candle-cublaslt/LICENSE-MIT). |
