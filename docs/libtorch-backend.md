@@ -154,6 +154,14 @@ socket buffers or allocator overhead. The separate HTTP encoded-response budget
 still applies. This is an allocation-admission limit, not a process RSS ceiling.
 Direct Core consumers must keep response metadata alive with extracted results.
 
+`INFINITY_HTTP_MAX_CONNECTIONS` bounds accepted HTTP connections, including idle
+keep-alive clients, and defaults to 256. When full, new connections remain in the
+operating system's listen backlog until a slot becomes available. Protocol prefaces
+and HTTP/1 headers have a 10-second read deadline; HTTP/2 allows at most 128
+concurrent streams per connection. Shutdown closes idle connections and drains
+active requests. This caps server connection tasks, not total kernel socket memory
+or process RSS.
+
 HTTP POST requests also reserve a request slot before reading or parsing the body.
 `INFINITY_HTTP_INPUT_MAX_BYTES` limits aggregate reserved request-body capacity and
 `INFINITY_HTTP_OUTPUT_MAX_BYTES` limits aggregate encoded-response allocation capacity;
