@@ -43,6 +43,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: Some(batch_counter.clone()),
                     response_tx,
                     tokenization,
@@ -441,6 +442,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: batch_counter.clone(),
                     response_tx,
                     tokenization: start_time.elapsed(),
@@ -521,6 +523,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: batch_counter.clone(),
                     response_tx,
                     tokenization: start_time.elapsed(),
@@ -642,6 +645,7 @@ impl Infer {
         self.queue
             .append(Entry {
                 metadata: Metadata {
+                    input_memory: None,
                     client_batch: batch_counter.clone(),
                     response_tx,
                     tokenization: start_time.elapsed(),
@@ -1074,6 +1078,7 @@ mod completion_tests {
             outputs.insert(0, vec![vec![0.25, 0.75]]);
             let (response_tx, receiver) = oneshot::channel();
             let entry = Metadata {
+                input_memory: None,
                 decision: None,
                 client_batch: None,
                 response_tx,
@@ -1128,6 +1133,7 @@ mod completion_tests {
             let (response_tx, receiver) = oneshot::channel();
             receivers.push(receiver);
             entries.push(Metadata {
+                input_memory: None,
                 decision: None,
                 client_batch: None,
                 response_tx,

@@ -49,6 +49,8 @@ pub struct Entry {
 /// Entry metadata
 #[derive(Debug)]
 pub struct Metadata {
+    /// Retained through queueing, model execution and result delivery.
+    pub(crate) input_memory: Option<crate::input_memory::InputMemoryOwner>,
     pub decision: Option<infinity_v3_backend::DecisionInput>,
     /// Shared HTTP-request identity and count of inputs still tokenizing.
     pub(crate) client_batch: Option<Arc<AtomicUsize>>,
@@ -142,7 +144,10 @@ impl Queue {
 
     /// Append an entry to the queue
     #[instrument(skip_all)]
-    pub async fn append(&self, entry: Entry) {
+    pub async fn append(&self, mut entry: Entry) {
+        if entry.metadata.input_memory.is_none() {
+            entry.metadata.input_memory = crate::input_memory::current();
+        }
         if self.closed.load(Ordering::SeqCst) {
             let _ = entry
                 .metadata
@@ -627,6 +632,7 @@ mod tests {
                     offsets: vec![],
                 },
                 metadata: Metadata {
+                    input_memory: None,
                     decision: None,
                     client_batch: None,
                     response_tx,
@@ -639,6 +645,32 @@ mod tests {
             },
             response_rx,
         )
+    }
+
+    #[tokio::test]
+    async fn input_admission_survives_queue_and_batch_cancellation() {
+        let queue = test_queue(16);
+        let budget = Arc::new(tokio::sync::Semaphore::new(1));
+        let (canceled, response) = test_entry(vec![1, 2], true);
+        let owner = Arc::new(budget.clone().try_acquire_owned().unwrap());
+        crate::input_memory::with_input_memory(owner, queue.append(canceled)).await;
+        drop(response);
+        assert_eq!(budget.available_permits(), 0);
+        assert!(queue.next_batch().await.is_none());
+        assert_eq!(budget.available_permits(), 1);
+
+        let (live, _response) = test_entry(vec![3, 4], true);
+        let owner = Arc::new(budget.clone().try_acquire_owned().unwrap());
+        crate::input_memory::with_input_memory(owner, queue.append(live)).await;
+        assert_eq!(budget.available_permits(), 0);
+        let (metadata, batch) = queue.next_batch().await.unwrap();
+        assert_eq!(batch.input_ids, [3, 4]);
+        assert_eq!(budget.available_permits(), 0);
+        drop(batch);
+        // Completion metadata keeps admission until delivery or discard.
+        assert_eq!(budget.available_permits(), 0);
+        drop(metadata);
+        assert_eq!(budget.available_permits(), 1);
     }
 
     #[tokio::test]
@@ -876,6 +908,7 @@ mod tests {
         let metadata = [canceled, live]
             .into_iter()
             .map(|response_tx| Metadata {
+                input_memory: None,
                 client_batch: None,
                 response_tx,
                 tokenization: Duration::ZERO,
@@ -953,6 +986,7 @@ mod tests {
             .into_iter()
             .enumerate()
             .map(|(i, response_tx)| Metadata {
+                input_memory: None,
                 client_batch: None,
                 response_tx,
                 tokenization: Duration::ZERO,
