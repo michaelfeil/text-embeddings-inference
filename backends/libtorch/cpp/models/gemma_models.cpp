@@ -4,6 +4,7 @@
 #include "models/gemma_models.h"
 #include "helpers/image_feature_cache.h"
 #include "helpers/fp8_linear.h"
+#include "helpers/vendor_error.h"
 #include "batching/radix.h"
 #include "models/decoder_models.h"
 #include "kernels/qwen35_kernels.h"
@@ -143,6 +144,8 @@ class Gemma final : public Model {
           auto output=at::empty({m,n},x.options());
           const float alpha=1.f,beta=0.f;
           auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.workspace_bytes?plan.workspace.mutable_data_ptr():nullptr,plan.workspace_bytes,c10::cuda::getCurrentCUDAStream(device.index()).stream());
+          if(status==CUBLAS_STATUS_ALLOC_FAILED)
+            throw VendorAllocationError{"Gemma4 packed projection cublasLtMatmul",static_cast<int32_t>(status)};
           TORCH_CHECK(status==CUBLAS_STATUS_SUCCESS,"Gemma4 packed projection failed: ",static_cast<int>(status));
           return output;
         }
