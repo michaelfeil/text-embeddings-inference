@@ -42,7 +42,7 @@ pub struct SimpleToken {
 
 #[derive(Debug)]
 struct TokenizerWorkers {
-    sender: async_channel::Sender<TokenizerRequest>,
+    sender: async_channel::Sender<QueuedTokenizerRequest>,
     supervisor: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 impl Drop for TokenizerWorkers {
@@ -1046,6 +1046,10 @@ mod fast_embedding_tests {
             token_input_vocab_size: None,
             max_input_length: 16,
             position_offset: 0,
+            workers: Arc::new(TokenizerWorkers {
+                sender: sender.clone(),
+                supervisor: std::sync::Mutex::new(None),
+            }),
             sender,
         };
         let budget = Arc::new(tokio::sync::Semaphore::new(1));
