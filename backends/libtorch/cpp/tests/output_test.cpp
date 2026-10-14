@@ -58,9 +58,16 @@ void native_allocator_error_test(const at::Device& device,int pressure=0) {
     std::array<float,16> saved;std::copy_n(before,16,saved.begin());
     auto state=tei::pinned_admission_state();const auto previous_limit=state->max_bytes;
     state->max_bytes=state->bytes+static_cast<size_t>(at::getHostAllocator(at::kCUDA)->get_stats().allocated_bytes.current);
+    // Exact RAW capacity for 32 original four-token sequences grows the host
+    // allocation from one physical 4 KiB page to two, without padding.
+    std::array<int64_t,128> packed_ids{},packed_types{},packed_positions{};
+    std::array<int32_t,33> packed_offsets{};std::array<int64_t,32> raw_rows{};
+    for(int sequence=0;sequence<32;++sequence){raw_rows[sequence]=sequence;packed_offsets[sequence]=4*sequence;
+      for(int token=0;token<4;++token){packed_ids[4*sequence+token]=ids[token];packed_positions[4*sequence+token]=token;}}
+    packed_offsets.back()=128;
     try {
-      std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),ids,types,positions,
-        offsets,1,4,0,&row,1,nullptr,0,8192,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+      std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),packed_ids.data(),packed_types.data(),packed_positions.data(),
+        packed_offsets.data(),32,128,4,nullptr,0,raw_rows.data(),raw_rows.size(),2048,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
       TORCH_CHECK(!rejected&&tei_last_error_kind()==2&&std::string(tei_error()).find("Process native pinned staging")!=std::string::npos,
         "Process pinned saturation lost its recoverable admission classification");
       const auto* after=tei_output_wait(held.get());TORCH_CHECK(after,tei_error());
