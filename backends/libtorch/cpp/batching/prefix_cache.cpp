@@ -667,6 +667,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
       if(!complete&&(common<64||best))retained=std::min(retained,common);
     }
     for(const auto& media:key.media)if(media.start<retained&&media.start+media.count>retained)retained=media.start;
+    // The selected reader already owns every eligible row. No new snapshot
+    // can be admitted, so trimming and duplicate lookup have no work to do.
+    if(retained<=best){context.writers.emplace_back();continue;}
     key.tokens.resize(retained);
     key.tokens.shrink_to_fit();
     key.media.erase(std::remove_if(key.media.begin(),key.media.end(),[&](const auto& media){return media.start>=retained;}),key.media.end());
