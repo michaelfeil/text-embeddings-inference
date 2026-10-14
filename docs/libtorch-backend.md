@@ -379,11 +379,12 @@ an upper bound on private graph pools, retained vendor workspaces and every
 model's actual tensor peak. Those limits require separate accounting.
 
 `INFINITY_TORCH_RETAINED_WORKSPACE_MAX_BYTES` separately bounds the retained custom
-OrdinaryLinearExecutor and Gemma radix-projection CUDA workspaces per device
+OrdinaryLinearExecutor, Gemma and Qwen3.5 radix-projection CUDA workspaces per device
 within this process, at 512 MiB by default. Models sharing a device use the
 most restrictive configured allowance. Admission happens before allocation;
 when the allowance is occupied, these optimizations use their existing ATen
-fallback. Cached plans retain the reservation with their exact workspace
+fallback and retry the same supported plan after workspace credit is released.
+Cached plans retain the reservation with their exact workspace
 allocation, including old generations. This cap does not include ATen-owned
 cuBLAS/cuDNN workspaces or temporary routed-MoE scratch.
 
