@@ -29,5 +29,5 @@ pub enum TextEmbeddingsError {
 }
 
 pub(crate) fn log_response_dropped_after(stage: &'static str) {
-    metrics::counter!("te_request_canceled", "stage" => stage).increment(1);
+    metrics::counter!("infinity_request_canceled", "stage" => stage).increment(1);
 }

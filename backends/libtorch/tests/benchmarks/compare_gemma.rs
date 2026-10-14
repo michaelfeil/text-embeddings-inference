@@ -1,4 +1,5 @@
 //! Compare native backends on identical packed Gemma embeddings; HTTP/tokenization excluded.
+use infinity_v3_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -9,7 +10,6 @@ use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{
     AudioFeatures, Backend, Batch, Embedding, ImagePatches, ModelType, MultimodalEncoding, Pool,
 };
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 fn batch(lengths: &[usize]) -> Batch {
     let mut input_ids = Vec::new();

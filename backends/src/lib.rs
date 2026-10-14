@@ -92,7 +92,7 @@ impl TorchDevice {
         #[cfg(feature = "libtorch")]
         {
             Ok(
-                if text_embeddings_backend_libtorch::device_count("cuda").unwrap_or(0) > 0 {
+                if infinity_v3_backend_libtorch::device_count("cuda").unwrap_or(0) > 0 {
                     Self::Cuda
                 } else {
                     Self::Cpu
@@ -107,7 +107,7 @@ impl TorchDevice {
     pub fn count(self) -> Result<usize, BackendError> {
         #[cfg(feature = "libtorch")]
         {
-            text_embeddings_backend_libtorch::device_count(&self.name(0))
+            infinity_v3_backend_libtorch::device_count(&self.name(0))
         }
         #[cfg(not(feature = "libtorch"))]
         Err(BackendError::Start(
@@ -480,7 +480,7 @@ async fn init_backend(
             };
             let device = torch_device.resolved()?.name(device_id);
             let model = tokio::task::spawn_blocking(move || {
-                text_embeddings_backend_libtorch::LibtorchBackend::new_with_dense_paths_and_fp8(
+                infinity_v3_backend_libtorch::LibtorchBackend::new_with_dense_paths_and_fp8(
                     &model_path,
                     &dtype.to_string(),
                     model_type,

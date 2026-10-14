@@ -6,7 +6,7 @@ Cargo builds them only when explicitly requested with `benchmark-cuda`.
 The existing example names and command lines remain available:
 
 ```sh
-cargo run --release -p text-embeddings-backend-libtorch \
+cargo run --release -p infinity_v3-backend-libtorch \
   --features benchmark-cuda --example compare_bert -- MODEL 200 2 3 mean
 ```
 

@@ -1,5 +1,6 @@
 #![cfg(feature = "benchmark-cuda")]
 //! Compare native backends on the same packed decoder inputs; tokenization/HTTP are excluded.
+use infinity_v3_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
@@ -8,7 +9,6 @@ use std::{
 };
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, Embeddings, ModelType, Pool};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 // Distinct suffixes branch off a real shared token prefix. This is a trie over
 // actual token/position/type triples, with no unused rows or token padding.

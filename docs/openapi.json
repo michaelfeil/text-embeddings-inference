@@ -529,7 +529,7 @@
             }
           },
           "503": {
-            "description": "Text embeddings Inference is down",
+            "description": "Infinity inference is down",
             "content": {
               "application/json": {
                 "schema": {

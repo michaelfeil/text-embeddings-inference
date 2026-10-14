@@ -23,7 +23,7 @@ pub(crate) fn prometheus_builer(
     }
 
     // Input Length buckets: half-steps up to 32k, then powers of 2
-    let input_length_matcher = Matcher::Full(String::from("te_request_input_length"));
+    let input_length_matcher = Matcher::Full(String::from("infinity_request_input_length"));
     let input_length_buckets: Vec<f64> = [
         1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 768.0, 1024.0, 1536.0, 2048.0,
         3072.0, 4096.0, 6144.0, 8192.0, 12288.0, 16384.0, 24576.0, 32768.0, 65536.0, 131072.0,
@@ -34,14 +34,14 @@ pub(crate) fn prometheus_builer(
     .collect();
 
     // Batch size buckets: 1-32 (all integers), then powers of 2
-    let batch_size_matcher = Matcher::Full(String::from("te_batch_next_size"));
+    let batch_size_matcher = Matcher::Full(String::from("infinity_batch_next_size"));
     let batch_size_buckets: Vec<f64> = (1..=32)
         .map(|x| x as f64)
         .chain((7..13).map(|x| 2.0_f64.powi(x)))
         .collect();
 
     // Batch tokens buckets: half-steps up to 32k, then powers of 2
-    let batch_tokens_matcher = Matcher::Full(String::from("te_batch_next_tokens"));
+    let batch_tokens_matcher = Matcher::Full(String::from("infinity_batch_next_tokens"));
     let batch_tokens_buckets: Vec<f64> = [
         1.0, 2.0, 4.0, 8.0, 16.0, 32.0, 64.0, 128.0, 256.0, 512.0, 768.0, 1024.0, 1536.0, 2048.0,
         3072.0, 4096.0, 6144.0, 8192.0, 12288.0, 16384.0, 24576.0, 32768.0, 65536.0, 131072.0,
@@ -51,7 +51,8 @@ pub(crate) fn prometheus_builer(
     .collect();
 
     // Compression ratio buckets (for values between 0 and 1)
-    let compression_ratio_matcher = Matcher::Full(String::from("te_radix_mlp_compression_ratio"));
+    let compression_ratio_matcher =
+        Matcher::Full(String::from("infinity_radix_mlp_compression_ratio"));
     let compression_ratio_buckets: Vec<f64> = vec![
         0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.75, 0.8, 0.85, 0.9, 0.91, 0.92, 0.93, 0.94, 0.95,
         0.96, 0.97, 0.98, 0.99, 1.0,

@@ -234,7 +234,7 @@ fn queue_blocking_task(
                     .send(Err(BackendError::Unhealthy));
             }
             queued_tokens = 0;
-            metrics::gauge!("te_queue_size").set(0.0);
+            metrics::gauge!("infinity_queue_size").set(0.0);
             match cmd {
                 QueueCommand::Append(entry, _) => {
                     let _ = entry
@@ -257,7 +257,7 @@ fn queue_blocking_task(
                 let _span = span.entered();
                 queued_tokens += entry.encoding.input_ids.len();
                 entries.push_back(*entry);
-                let gauge = metrics::gauge!("te_queue_size");
+                let gauge = metrics::gauge!("infinity_queue_size");
                 gauge.increment(1.0);
             }
             QueueCommand::NextBatch {
@@ -431,7 +431,7 @@ fn queue_blocking_task(
                                 input_ids.len(),
                                 compact_ids.len()
                             );
-                            metrics::histogram!("te_radix_mlp_compression_ratio")
+                            metrics::histogram!("infinity_radix_mlp_compression_ratio")
                                 .record(compression_ratio as f64);
                             if radix_mlp_threshold >= 1.0 || compression_ratio < radix_mlp_threshold
                             {
@@ -490,11 +490,11 @@ fn queue_blocking_task(
                     spare_token_buffers = allocate_token_buffers();
                 }
 
-                let histogram = metrics::histogram!("te_batch_next_size");
+                let histogram = metrics::histogram!("infinity_batch_next_size");
                 histogram.record(batch_size as f64);
-                let histogram = metrics::histogram!("te_batch_next_tokens");
+                let histogram = metrics::histogram!("infinity_batch_next_tokens");
                 histogram.record(current_tokens as f64);
-                let gauge = metrics::gauge!("te_queue_size");
+                let gauge = metrics::gauge!("infinity_queue_size");
                 gauge.set(entries.len() as f64)
             }
         }

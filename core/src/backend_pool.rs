@@ -37,9 +37,9 @@ struct Inner {
 
 impl Inner {
     fn signal(&self, state: &State) {
-        metrics::gauge!("te_backend_replicas_healthy").set(state.healthy() as f64);
-        metrics::gauge!("te_backend_replicas_total").set(state.replicas.len() as f64);
-        metrics::gauge!("te_backend_replicas_running")
+        metrics::gauge!("infinity_backend_replicas_healthy").set(state.healthy() as f64);
+        metrics::gauge!("infinity_backend_replicas_total").set(state.replicas.len() as f64);
+        metrics::gauge!("infinity_backend_replicas_running")
             .set(state.replicas.iter().filter(|r| r.busy).count() as f64);
         self.changed.send_replace(());
     }
@@ -137,7 +137,7 @@ impl BackendPool {
                     let id = state.idle.remove(position).unwrap();
                     state.replicas[id].busy = true;
                     self.inner.signal(&state);
-                    metrics::histogram!("te_pipeline_pool_wait_duration")
+                    metrics::histogram!("infinity_pipeline_pool_wait_duration")
                         .record(start.elapsed().as_secs_f64());
                     return Ok(Execution {
                         pool: self.clone(),
@@ -154,7 +154,8 @@ impl BackendPool {
     }
 
     pub fn observe_preparation(&self, duration: Duration) {
-        metrics::histogram!("te_pipeline_preparation_duration").record(duration.as_secs_f64());
+        metrics::histogram!("infinity_pipeline_preparation_duration")
+            .record(duration.as_secs_f64());
     }
 
     pub async fn health(&self) -> Result<(), BackendError> {
@@ -309,7 +310,7 @@ impl Execution {
     }
 
     fn started(&self) {
-        metrics::histogram!("te_replica_dispatch_delay_duration", "replica" => self.id.to_string())
+        metrics::histogram!("infinity_replica_dispatch_delay_duration", "replica" => self.id.to_string())
             .record(self.reserved_at.elapsed().as_secs_f64());
     }
 
@@ -331,7 +332,7 @@ impl Execution {
             r.healthy = false;
         }
         if let Ok((_, duration)) = result {
-            metrics::counter!("te_replica_tokens", "replica" => self.id.to_string())
+            metrics::counter!("infinity_replica_tokens", "replica" => self.id.to_string())
                 .increment(tokens as u64);
             if !duration.is_zero() {
                 r.batches += 1;
@@ -348,9 +349,9 @@ impl Execution {
                         "Replica inference throughput (latest batch)"
                     );
                 }
-                metrics::histogram!("te_replica_inference_duration", "replica" => self.id.to_string())
+                metrics::histogram!("infinity_replica_inference_duration", "replica" => self.id.to_string())
                     .record(duration.as_secs_f64());
-                metrics::counter!("te_replica_batches", "replica" => self.id.to_string())
+                metrics::counter!("infinity_replica_batches", "replica" => self.id.to_string())
                     .increment(1);
             }
             if !self.released && !state.closed {

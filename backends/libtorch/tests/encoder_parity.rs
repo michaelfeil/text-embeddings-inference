@@ -1,4 +1,5 @@
 #![recursion_limit = "256"]
+use infinity_v3_backend_libtorch::LibtorchBackend;
 use safetensors::tensor::{serialize, Dtype, TensorView};
 use std::{
     fs,
@@ -8,7 +9,6 @@ use std::{
 #[cfg(feature = "benchmark-cuda")]
 use text_embeddings_backend_candle::CandleBackend;
 use text_embeddings_backend_core::{Backend, Batch, Embedding, ModelType, Pool};
-use text_embeddings_backend_libtorch::LibtorchBackend;
 
 const H: usize = 32;
 const I: usize = 48;
