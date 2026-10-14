@@ -12,7 +12,7 @@
 
 // Exercise the production C ABI catch and error-unwind path with a real CUDA
 // allocator rejection. The large payload is never transferred or read.
-void native_allocator_error_test(const at::Device& device) {
+void native_allocator_error_test(const at::Device& device,bool bounded_staging=false) {
   TeiConfig cfg{16,2,2,24,32,32,1,1e-6,0};
   std::unique_ptr<void,decltype(&tei_destroy)> engine(tei_create(&cfg,device.str().c_str(),1),tei_destroy);
   TORCH_CHECK(engine,tei_error());
@@ -39,6 +39,7 @@ void native_allocator_error_test(const at::Device& device) {
     weight(root+"self_attn.q_norm.weight",{8},true);weight(root+"self_attn.k_norm.weight",{8},true);
     weight(root+"mlp.gate_proj.weight",{24,16});weight(root+"mlp.up_proj.weight",{24,16});weight(root+"mlp.down_proj.weight",{16,24});
   }
+  if(bounded_staging)TORCH_CHECK(tei_option(engine.get(),"_output_staging_max_bytes","256")==0,tei_error());
   TORCH_CHECK(tei_ready(engine.get())==0,tei_error());
   int64_t ids[]={3,4,5,6},types[4]{},positions[]={0,1,2,3},row=0;int32_t offsets[]={0,4};
   auto valid=[&] {
@@ -48,7 +49,23 @@ void native_allocator_error_test(const at::Device& device) {
     for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(values[i]),"Allocator failure corrupted valid response");
     TORCH_CHECK(tei_last_error_kind()==0,"Valid result retained allocator error kind");
   };
-  valid();C10_CUDA_CHECK(cudaDeviceSynchronize());
+  valid();
+  if(bounded_staging) {
+    std::unique_ptr<void,decltype(&tei_output_destroy)> held(tei_forward_submit(engine.get(),ids,types,positions,
+      offsets,1,4,0,&row,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(held,tei_error());const auto* before=tei_output_wait(held.get());TORCH_CHECK(before,tei_error());
+    std::array<float,16> saved;std::copy_n(before,16,saved.begin());
+    // A retains128 output+112 input bytes. B's empty result needs8 bytes;
+    // its first32-byte input pin cannot fit until the held result is released.
+    auto rejected=tei_forward_submit(engine.get(),ids,types,positions,offsets,1,4,0,nullptr,0,
+      nullptr,0,0,nullptr,nullptr,0,nullptr,0,nullptr);
+    TORCH_CHECK(!rejected&&tei_last_error_kind()==2&&std::string(tei_error()).find("pending results")!=std::string::npos,
+      "Nested input staging saturation lost its admission classification or diagnostic");
+    const auto* after=tei_output_wait(held.get());TORCH_CHECK(after,tei_error());
+    for(size_t i=0;i<saved.size();++i)TORCH_CHECK(after[i]==saved[i],"Rejected input upload corrupted a held result");
+    held.reset();valid();return;
+  }
+  C10_CUDA_CHECK(cudaDeviceSynchronize());
   c10::cuda::CUDACachingAllocator::emptyCache();
   const double original=c10::cuda::CUDACachingAllocator::getMemoryFraction(device.index());
   size_t free=0,total=0;C10_CUDA_CHECK(cudaMemGetInfo(&free,&total));
@@ -220,6 +237,7 @@ int main() {
       recovered.copy(at::full({8}, 11, at::TensorOptions().device(device)), 0); recovered.record();
       TORCH_CHECK(recovered.wait()[7] == 11, "Device allocation failure poisoned subsequent submission"); }
     native_allocator_error_test(device);
+    native_allocator_error_test(device,true);
     std::cout << "output staging, overlap, graph eviction, alternation, reuse and cancellation passed\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }
