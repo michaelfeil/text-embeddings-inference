@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Apache-2.0
+// Contribution terms: see LICENSE and LICENSING.md at the repository root.
 #pragma once
 #include "helpers/admission_error.h"
 #include <algorithm>

@@ -375,7 +375,7 @@ deferred calls use their existing output completion event and lease.
 
 Linux CPU requests reserve the same tensor estimate across native CPU models in
 the process. Admission uses the smaller of host `MemAvailable` and the remaining
-allowance in every finite memory cgroup ancestor, supporting both cgroup versions.
+allowance in the visible memory cgroup hierarchy, supporting both cgroup versions.
 The existing device-headroom setting also applies to CPU requests. CPU reservations
 release when synchronous inference finishes or unwinds. Unavailable accounting
 rejects the request with overload while preserving worker health.
