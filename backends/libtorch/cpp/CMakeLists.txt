@@ -29,6 +29,8 @@ install(DIRECTORY ../../../LICENSES/ DESTINATION share/licenses/tei_torch/LICENS
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
+  target_sources(tei_torch PRIVATE kernels/laya_features.cu)
+  set_source_files_properties(kernels/laya_features.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--prec-div=true;--prec-sqrt=true")
   # The exact router keeps F32 subnormals; RMS kernels retain their old flags.
   target_sources(tei_torch PRIVATE kernels/decoder_half_moe.cu)
   set_source_files_properties(kernels/decoder_half_moe.cu PROPERTIES

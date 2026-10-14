@@ -60,6 +60,45 @@ void laya_test(){Input in;Options cfg,backbone;cfg.values={{"head_layers","1"},{
  TORCH_CHECK(head->output_count(first)==2&&head->output_count(second)==1,"Wrong Laya output count");first.markers={3};reject([&]{head->forward(hidden,in.input,{first,second});});first.question_type=3;reject([&]{head->output_count(first);});
  std::cout<<"Laya head, learned action top1/entropy features, warmup and marker validation passed\n";
 }
+void laya_packed_cuda_test(){
+ for(auto dtype:{at::kBFloat16,at::kHalf}){
+ Input in;Options cfg,backbone;cfg.values={{"head_layers","1"},{"max_len","32"},{"head_max_len","32"}};backbone.values["hidden_size"]="16";
+ auto weights=laya_weights();auto device=c10::Device("cuda:0");
+ // Nonzero attention/FFN/scorer weights expose cross-sequence leakage. The
+ // existing feature-dependent action weights keep probabilities nonsaturated.
+ for(auto& [name,value]:weights){
+  if(name=="type_emb.weight"||name.starts_with("head.layers.0.self_attn")||name.starts_with("head.layers.0.linear")||name=="scorer.1.weight"||name=="scorer.3.weight")
+   value=at::sin(at::arange(value.numel()).reshape(value.sizes()).to(at::kFloat)*.17)*.04;
+  value=value.to(device,dtype);
+ }
+ auto head=create_decision_head("laya",cfg,backbone,weights,{});
+ in.input.ids=in.input.ids.to(device);in.input.types=in.input.types.to(device);
+ in.input.positions=in.input.positions.to(device);in.input.cumulative=in.input.cumulative.to(device);
+ auto hidden=at::sin(at::arange(80).reshape({5,16}).to(at::kFloat)*.13).to(device,dtype);
+ DecisionRequest first{DecisionRequest::Kind::Laya},second{DecisionRequest::Kind::Warmup};first.question_type=2;first.markers={2,0,2};
+ auto output=head->forward(hidden,in.input,{first,second});
+ TORCH_CHECK(output[0].action_probability.item<float>()>.05&&output[0].action_probability.item<float>()<.95,"Action regression must be nonsaturated");
+ for(int64_t i=0;i<2;++i){
+  auto start=in.offsets[i],length=in.offsets[i+1]-start;
+  int32_t offsets[]={0,static_cast<int32_t>(length)};PackedInput single{
+   in.input.ids.narrow(0,start,length),in.input.types.narrow(0,start,length),in.input.positions.narrow(0,start,length),
+   at::tensor({0,length},in.input.cumulative.options()),offsets,1,length};
+  auto reference=head->forward(hidden.narrow(0,start,length),single,{i?second:first});
+  close(output[i].logits,reference[0].logits,.006);
+  close(output[i].action_probability,reference[0].action_probability,.001);
+ }
+ auto changed=hidden.clone();changed.narrow(0,3,2).fill_(17.);
+ auto isolated=head->forward(changed,in.input,{first,second});
+ close(output[0].logits,isolated[0].logits,.00001);
+ close(output[0].action_probability,isolated[0].action_probability,.00001);
+ first.question_type=1;first.markers={1};auto updated=head->forward(hidden,in.input,{first,second});
+ TORCH_CHECK(updated[0].logits.numel()==1&&updated[1].logits.numel()==1,"Packed head retained old marker metadata");
+ first.markers={3};reject([&]{head->forward(hidden,in.input,{first,second});});
+ first.markers={0};auto invalid=in.input;int32_t invalid_offsets[]={-1,3,5};invalid.offsets=invalid_offsets;
+ reject([&]{head->forward(hidden,invalid,{first,second});});
+ }
+ std::cout<<"Laya CUDA packed head FP16/BF16: nonsaturated action, repeated/unsorted markers, singleton warmup, changed metadata and sequence isolation passed\n";
+}
 Weights clef_weights(){Weights w;for(auto p:{"hidden_norm","option_summary_norm","field_norm","option_norm"})norm(w,p,16);
  for(auto p:{"memory_projection","question_projection","option_question_projection","global_projection","option_context_projection","option_lexical_projection"})linear(w,p,16,16,false);
  w["option_lexical_projection.weight"]=at::eye(16);w["type_embedding.weight"]=at::zeros({3,16});linear(w,"residual_scorer.0",64,16);linear(w,"residual_scorer.3",16,1);
@@ -148,4 +187,4 @@ void d3_test(){
  readout["weight"]=readout["weight"].to(at::kBFloat16);reject([&]{create_decision_head("d3",cfg,backbone,readout,{});});
  std::cout<<"D3 FP32 full readout, last-token selection, warmup and checkpoint validation passed\n";
 }
-int main(){c10::InferenceMode inference;at::set_num_threads(1);options_test();d3_test();laya_test();clef_test();}
+int main(int argc,char** argv){c10::InferenceMode inference;at::set_num_threads(1);options_test();d3_test();laya_test();clef_test();if(argc>1&&std::string(argv[1])=="--cuda")laya_packed_cuda_test();}

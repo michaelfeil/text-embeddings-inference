@@ -2,6 +2,9 @@
 // Ports the typed head contracts in Candle models/laya.rs and models/clef.rs.
 #include "models/decision_models.h"
 #include "helpers/transient_memory.h"
+#ifdef TEI_TORCH_CUDA_KERNELS
+#include "kernels/laya_features.h"
+#endif
 #include <ATen/ops/_flash_attention_forward.h>
 #include <cmath>
 #include <algorithm>
@@ -54,6 +57,17 @@ struct Attention {
    attended=at::scaled_dot_product_attention(transform(q),transform(k),transform(v)).squeeze(0).transpose(0,1);
   }
   return out(attended.contiguous().view({n,width}));
+ }
+ at::Tensor packed_self(const at::Tensor& x,const PackedInput& input) const {
+  auto tokens=x.size(0),width=x.size(1),dim=width/heads;
+  TORCH_CHECK(x.is_cuda()&&(x.scalar_type()==at::kHalf||x.scalar_type()==at::kBFloat16)
+    &&dim%8==0&&dim<=256,"Packed decision attention requires CUDA FP16/BF16");
+  auto projected=at::linear(x,qkv,bias).view({tokens,3,heads,dim});
+  auto attended=std::get<0>(at::_flash_attention_forward(
+   projected.select(1,0),projected.select(1,1),projected.select(1,2),
+   input.cumulative,input.cumulative,input.max_sequence,input.max_sequence,
+   0.,false,false,1./std::sqrt(double(dim))));
+  return out(attended.contiguous().view({tokens,width}));
  }
 };
 at::Tensor span(const at::Tensor& x,std::pair<int64_t,int64_t> interval) {
@@ -119,6 +133,10 @@ struct LayaLayer {
  Norm n1,n2;Attention attention;Linear ff1,ff2;
  LayaLayer(const Weights& w,const std::string& p,int64_t h):n1(w,p+".norm1",h),n2(w,p+".norm2",h),attention(w,p+".self_attn",h,std::max(int64_t(1),h/64),true),ff1(w,p+".linear1",h,4*h),ff2(w,p+".linear2",4*h,h){}
  at::Tensor operator()(const at::Tensor& x)const{auto n=n1(x);auto y=x+attention(n,n);return y+ff2(at::relu(ff1(n2(y))));}
+ at::Tensor packed(const at::Tensor& x,const PackedInput& input)const{
+  auto y=x+attention.packed_self(n1(x),input);
+  return y+ff2(at::relu(ff1(n2(y))));
+ }
 };
 struct LayaHead final:DecisionHead {
  at::Tensor types;std::vector<LayaLayer> layers;Norm scorer_norm;Linear scorer1,scorer2,action1,action2;int64_t width;
@@ -138,11 +156,60 @@ struct LayaHead final:DecisionHead {
    const auto markers=requests[i].kind==3?size_t(1):requests[i].marker_count;
    cost.add({length,h,32,sizeof(float)});cost.add({length,h,4,8,sizeof(float)});
    cost.add({markers,h,32,sizeof(float)});cost.add({markers,8,sizeof(float)});
+   // Packed CUDA head uploads one type index per token and absolute marker indices.
+   if(types.is_cuda()){cost.add({length,sizeof(int64_t)});cost.add({markers,sizeof(int64_t)});}
    if(!layers.empty()&&types.device().is_cpu())cost.add({length,length,heads,8,sizeof(float)});
   }return cost.bytes();
  }
+ std::vector<DecisionResult> forward_packed(const at::Tensor& hidden,const PackedInput& input,
+   const std::vector<DecisionRequest>& requests)const {
+  std::vector<int64_t> token_types(hidden.size(0)),marker_rows,marker_offsets{0};
+  for(int64_t i=0;i<input.batch;++i){
+   const auto& request=requests[i];const bool warmup=request.kind==DecisionRequest::Kind::Warmup;
+   TORCH_CHECK(warmup||request.kind==DecisionRequest::Kind::Laya,"Expected Laya marker metadata");
+   auto type=warmup?0:request.question_type;
+   TORCH_CHECK(type>=0&&type<3&&(warmup||!request.markers.empty()),"Invalid Laya question type or markers");
+   auto start=input.offsets[i],end=input.offsets[i+1];
+   TORCH_CHECK(start>=0&&end<=hidden.size(0),"Laya sequence outside packed hidden states");
+   std::fill(token_types.begin()+start,token_types.begin()+end,type);
+   if(warmup)marker_rows.push_back(start);
+   else for(auto marker:request.markers){
+    TORCH_CHECK(marker>=0&&marker<end-start,"Laya marker outside sequence");
+    marker_rows.push_back(start+marker);
+   }
+   marker_offsets.push_back(marker_rows.size());
+  }
+  auto indices_options=hidden.options().dtype(at::kLong);
+  auto h=hidden+types.index_select(0,at::tensor(token_types,indices_options));
+  for(const auto& layer:layers)h=layer.packed(h,input);
+  auto selected=h.index_select(0,at::tensor(marker_rows,indices_options));
+  auto all_logits=scorer2(at::gelu(scorer1(scorer_norm(selected)),"none")).flatten().to(at::kFloat);
+  #ifdef TEI_TORCH_CUDA_KERNELS
+  auto features=laya_action_features(all_logits,at::tensor(marker_offsets,indices_options)).to(hidden.scalar_type());
+  auto pooled=h.index_select(0,input.cumulative.narrow(0,0,input.batch));
+  auto actions=at::softmax(action2(at::gelu(action1(at::cat({pooled,features},1)),"none")).to(at::kFloat),-1).select(1,0);
+  std::vector<DecisionResult> result;result.reserve(input.batch);
+  for(int64_t i=0;i<input.batch;++i)result.push_back({all_logits.narrow(0,marker_offsets[i],marker_offsets[i+1]-marker_offsets[i]),actions.select(0,i)});
+  return result;
+  #else
+  std::vector<DecisionResult> result;result.reserve(input.batch);
+  for(int64_t i=0;i<input.batch;++i){
+   auto count=marker_offsets[i+1]-marker_offsets[i];
+   auto logits=all_logits.narrow(0,marker_offsets[i],count);
+   auto probabilities=at::softmax(logits,0),sorted=std::get<0>(probabilities.sort(0,true));
+   auto top1=sorted.select(0,0),top2=count>1?sorted.select(0,1):at::zeros_like(top1);
+   auto entropy=-(probabilities*probabilities.clamp_min(1e-9).log()).sum()/std::log(double(std::max(int64_t(2),count)));
+   auto normalized_count=at::full({},double(std::max(int64_t(2),count))/255.,logits.options());
+   auto features=at::stack({top1,top1-top2,entropy,normalized_count}).to(hidden.scalar_type());
+   auto action=at::softmax(action2(at::gelu(action1(at::cat({h.select(0,input.offsets[i]),features}).unsqueeze(0)),"none")).to(at::kFloat),-1).select(0,0).select(0,0);
+   result.push_back({logits,action});
+  }
+  return result;
+  #endif
+ }
  std::vector<DecisionResult> forward(const at::Tensor& hidden,const PackedInput& input,const std::vector<DecisionRequest>& requests)const override{
   validate(hidden,input,requests);TORCH_CHECK(hidden.size(1)==width,"Laya hidden width mismatch");std::vector<DecisionResult> result;
+  if(hidden.is_cuda())return forward_packed(hidden,input,requests);
   for(int64_t i=0;i<input.batch;++i){auto request=requests[i];if(request.kind==DecisionRequest::Kind::Warmup){request.question_type=0;request.markers={0};}else TORCH_CHECK(request.kind==DecisionRequest::Kind::Laya,"Expected Laya marker metadata");
    auto length=input.offsets[i+1]-input.offsets[i];TORCH_CHECK(request.question_type>=0&&request.question_type<3&&!request.markers.empty(),"Invalid Laya question type or markers");
    for(auto marker:request.markers)TORCH_CHECK(marker>=0&&marker<length,"Laya marker outside sequence");
