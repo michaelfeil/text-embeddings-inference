@@ -40,6 +40,7 @@
 #include "batching/input_validation.h"
 #include <memory>
 #include <string>
+#include <string_view>
 #include <set>
 #include <unordered_map>
 
@@ -410,6 +411,17 @@ template<class F> int32_t checked(F&& f) {
   catch (const tei::MemoryAdmissionError& ex) { set_error(2,ex.what());return -1; }
   catch (const c10::OutOfMemoryError& ex) { set_error(3,ex.what());return -1; }
   catch (const c10::AcceleratorError& ex) { set_error(tei::accelerator_error_kind(ex),ex.what());return -1; }
+  catch (const c10::Error& ex) {
+    // PyTorch's vendor-check macros erase the numeric status. Match their
+    // exact allocation-status transport, never general memory-related text.
+    const std::string_view message(ex.msg()),cudnn="cuDNN error: CUDNN_STATUS_ALLOC_FAILED";
+    const bool cudnn_allocation=message.starts_with(cudnn) &&
+      (message.size()==cudnn.size() || message[cudnn.size()]==' ' ||
+       message[cudnn.size()]=='\n' || message[cudnn.size()]==',' || message[cudnn.size()]=='.');
+    const bool allocation=cudnn_allocation ||
+      message.starts_with("CUDA error: CUBLAS_STATUS_ALLOC_FAILED when calling `");
+    set_error(allocation?3:1,ex.what());return -1;
+  }
   catch (const std::bad_alloc& ex) { set_error(3,ex.what());return -1; }
   catch (const std::exception& ex) { set_error(1,ex.what()); return -1; }
   catch (...) { set_error(1,"Unknown native exception"); return -1; }
