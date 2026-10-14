@@ -116,9 +116,11 @@ behavior. This change performs no image inference or remote media downloads.
 
 ## Compatibility and implementation boundary
 
-This deliberately narrows the earlier PR's arbitrary JSON state contract. Clients
-sending records must serialize them explicitly as text. Native message envelopes
-are recognized structurally and never fall back to JSON text. The Laya adapter
+The HTTP boundary accepts text, ordinary JSON objects and arrays, and native
+message envelopes. Ordinary structured state is rendered to JSON text before
+adapter preparation; see [SystemOne wire format](systemone-wire-format.md).
+Objects containing `messages` are reserved for native conversations and never
+fall back to JSON text, including when validation fails. The Laya adapter
 returns 422 for native messages because it has no native chat processor or
 multimodal encoder. Existing plain-text tokenization and output remain unchanged.
 

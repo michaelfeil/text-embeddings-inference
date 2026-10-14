@@ -21,6 +21,8 @@ use tokenizers::Tokenizer;
 #[derive(Debug, Deserialize, utoipa::ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct SystemOneRequest {
+    #[serde(deserialize_with = "wire::deserialize_state")]
+    #[schema(value_type = SystemOneState)]
     pub state: ModelInput,
     pub questions: Map<String, Value>,
     pub model: Option<String>,
@@ -43,6 +45,7 @@ mod d3;
 mod onejev;
 mod pplx;
 mod rune;
+pub mod wire;
 
 pub enum SystemOne {
     Laya(Laya),
@@ -255,10 +258,7 @@ impl Laya {
                     "noul" => 2,
                     _ => return Err("Question type must be choice, score, or noul".into()),
                 };
-                let instructions = q
-                    .get("instructions")
-                    .and_then(Value::as_str)
-                    .ok_or("Question instructions must be a string")?;
+                let instructions = wire::instructions(q.get("instructions"))?;
                 if kind != "noul" && q.get("labels").is_some() {
                     return Err("labels is only supported for noul".into());
                 }
@@ -858,6 +858,48 @@ mod tests {
             sep: 2,
             mask: 3,
         }
+    }
+
+    #[test]
+    fn laya_structured_content_matches_explicit_json_text() {
+        let mut model = service();
+        let state = json!({"ticket":{"message":"hello","priority":2}});
+        let instructions = json!({"question":"Is it true?","context":["hello"]});
+        model.tokenizer = Tokenizer::new(
+            tokenizers::models::wordlevel::WordLevel::builder()
+                .vocab(
+                    [
+                        ("[UNK]".into(), 0),
+                        (render(&state), 4),
+                        (format!("choice question: {}", render(&instructions)), 5),
+                        (" hello: hello".into(), 6),
+                    ]
+                    .into_iter()
+                    .collect(),
+                )
+                .unk_token("[UNK]".into())
+                .build()
+                .unwrap(),
+        );
+        let make = |state, instructions| {
+            serde_json::from_value(json!({
+                "state": state,
+                "questions": {"ticket-check": {"type":"choice", "instructions":instructions, "criteria":{"hello":"hello"}}}
+            }))
+            .unwrap()
+        };
+        let structured = model
+            .prepare(make(state.clone(), instructions.clone()))
+            .unwrap();
+        let text = model
+            .prepare(make(json!(render(&state)), json!(render(&instructions))))
+            .unwrap();
+        assert_eq!(structured[0].id, "ticket-check");
+        for token in [4, 5, 6] {
+            assert!(structured[0].encoding.input_ids.contains(&token));
+        }
+        assert_eq!(structured[0].encoding.input_ids, text[0].encoding.input_ids);
+        assert_eq!(structured[0].compute_chars, text[0].compute_chars);
     }
 
     #[test]
