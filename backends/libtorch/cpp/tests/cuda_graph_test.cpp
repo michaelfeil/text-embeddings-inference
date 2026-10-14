@@ -116,17 +116,45 @@ public:
   return result.unsqueeze(1);
  }
 };
-std::unique_ptr<Model> tiny_decoder(Weights* fixture=nullptr) {
+std::unique_ptr<Model> tiny_decoder(Weights* fixture=nullptr,int64_t head_dim=8,at::ScalarType dtype=at::kHalf) {
  Options cfg;cfg.values={{"model_type","qwen3"},{"hidden_size","16"},{"num_attention_heads","2"},{"num_key_value_heads","1"},{"head_dim","8"},{"intermediate_size","24"},{"num_hidden_layers","1"},{"vocab_size","32"},{"max_position_embeddings","32"}};
- Weights w;auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kHalf);
+ cfg.values["head_dim"]=std::to_string(head_dim);
+ Weights w;auto opts=at::TensorOptions().device(at::kCUDA).dtype(dtype);
  auto add=[&](std::string name,std::initializer_list<int64_t> shape,bool norm=false){w[name]=norm?at::ones(at::IntArrayRef(shape),opts):at::randn(at::IntArrayRef(shape),opts)*.1;};
  add("model.embed_tokens.weight",{32,16});add("model.norm.weight",{16},true);
  auto p=std::string("model.layers.0.");add(p+"input_layernorm.weight",{16},true);add(p+"post_attention_layernorm.weight",{16},true);
- add(p+"self_attn.q_proj.weight",{16,16});add(p+"self_attn.k_proj.weight",{8,16});add(p+"self_attn.v_proj.weight",{8,16});add(p+"self_attn.o_proj.weight",{16,16});
- add(p+"self_attn.q_norm.weight",{8},true);add(p+"self_attn.k_norm.weight",{8},true);
+ add(p+"self_attn.q_proj.weight",{2*head_dim,16});add(p+"self_attn.k_proj.weight",{head_dim,16});add(p+"self_attn.v_proj.weight",{head_dim,16});add(p+"self_attn.o_proj.weight",{16,2*head_dim});
+ add(p+"self_attn.q_norm.weight",{head_dim},true);add(p+"self_attn.k_norm.weight",{head_dim},true);
  add(p+"mlp.gate_proj.weight",{24,16});add(p+"mlp.up_proj.weight",{24,16});add(p+"mlp.down_proj.weight",{16,24});
  if(fixture)*fixture=w;
- auto result=create_decoder(cfg,w,c10::Device("cuda:0"),at::kHalf);result->ready();return result;
+ auto result=create_decoder(cfg,w,c10::Device("cuda:0"),dtype);result->ready();return result;
+}
+void prefix_qkv_graph_test() {
+ for(auto dtype:{at::kHalf,at::kBFloat16}) {
+  at::manual_seed(409);auto model=tiny_decoder(nullptr,128,dtype);
+  auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+  std::vector<int32_t> ends{0,8,14,24};std::vector<int64_t> positions;
+  for(size_t row=0;row+1<ends.size();++row)for(int token=0;token<ends[row+1]-ends[row];++token)positions.push_back(token);
+  PackedInput input{at::Tensor(),at::zeros({24},opts),at::tensor(positions,opts),
+   at::tensor(ends,opts.dtype(at::kInt)),ends.data(),3,10};
+  PrefixCache cache(16<<20,64,32);CudaGraphCache graphs(4,64,1);
+  for(int round=0;round<12;++round) {
+   if(round==8)cache.clear();
+   const int parent=(round/2)%2;
+   auto ids=std::vector<int64_t>(24,3+parent);input.ids=at::tensor(ids,opts);
+   cache.run(*model,input,0,&graphs);
+   // Ragged rows retain different prefix lengths; change every suffix row to
+   // force shader replay rather than a complete-output cache hit.
+   for(int row=0;row<3;++row)for(int token=ends[row]+row+2;token<ends[row+1];++token)ids[token]=16+round;
+   input.ids=at::tensor(ids,opts);auto expected=model->forward(input);
+   auto actual=cache.run(*model,input,0,&graphs);
+   TORCH_CHECK(at::allclose(actual,expected,.01,.02),"Direct prefix QKV graph changed ragged output after parent rebinding");
+   actual.zero_();
+  }
+  auto stats=graphs.stats();
+  TORCH_CHECK(stats.prefix_captures==1&&stats.prefix_hits>=10,"Direct prefix QKV graph did not capture/replay after clear");
+ }
+ std::cout<<"Direct prefix QKV graph preserved ragged Half/BF16 output through rebinding and clear\n";
 }
 void radix_graph_test(Model& model) {
  CudaGraphCache cache(3,16,1);
@@ -338,8 +366,9 @@ void admission_test() {
  TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==1,"Oversized pools repeatedly captured");
 }
 int main(int argc,char** argv){c10::InferenceMode guard;
+ if(argc==2&&std::string(argv[1])=="prefix-qkv"){prefix_qkv_graph_test();return 0;}
  if(argc==2&&std::string(argv[1])=="prefix-input"){prefix_input_test();return 0;}
- prefix_state_copy_test();prefix_input_test();if(argc==2&&std::string(argv[1])=="prefix-copy")return 0;arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);full_snapshot_graph_test(model);CudaGraphCache cache(2,8,1);
+ prefix_state_copy_test();prefix_input_test();if(argc==2&&std::string(argv[1])=="prefix-copy")return 0;prefix_qkv_graph_test();arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);full_snapshot_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);

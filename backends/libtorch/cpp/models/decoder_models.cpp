@@ -626,8 +626,23 @@ public:
       auto q = qkv.narrow(1, 0, heads), k = qkv.narrow(1, heads, kvheads), v = qkv.narrow(1, heads + kvheads, kvheads);
 #ifdef TEI_TORCH_CUDA_KERNELS
       if (q.is_cuda() && layer.q_norm.defined() && head_dim==128) {
-        auto pair=fused_qk_norm_rope(q,k,layer.q_norm,layer.k_norm,cosine,sine,epsilon);
-        q=pair.first;k=pair.second;
+        if(input.prefix&&input.prefix->collect_graph&&!radix_enabled(input)
+          &&(q.scalar_type()==at::kHalf||q.scalar_type()==at::kBFloat16)) {
+          auto& packed=input.prefix->prepare_graph_layer(layer_index,k,v);
+          if(input.batch==1) {
+            auto key_target=packed.key.narrow(0,input.prefix->hits[0],k.size(0));
+            auto value_target=packed.value.narrow(0,input.prefix->hits[0],v.size(0));
+            q=fused_qkv_norm_rope_into(q,k,v,layer.q_norm,layer.k_norm,cosine,sine,epsilon,key_target,value_target);
+            k=key_target;v=value_target;
+          }else {
+            const auto& rows=input.prefix->prepare_graph_rows(q.device());
+            q=fused_qkv_norm_rope_into(q,k,v,layer.q_norm,layer.k_norm,cosine,sine,epsilon,packed.key,packed.value,rows);
+            k=packed.key;v=packed.value;
+          }
+        }else {
+          auto pair=fused_qk_norm_rope(q,k,layer.q_norm,layer.k_norm,cosine,sine,epsilon);
+          q=pair.first;k=pair.second;
+        }
       } else
 #endif
       {

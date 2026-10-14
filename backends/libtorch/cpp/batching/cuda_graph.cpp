@@ -371,6 +371,7 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     for(const auto& audio:entry->original.audios){charge(audio.features);charge(audio.validity);charge(audio.selected_frames);}
     if(entry->prefix->graph_hidden.defined())charge(entry->prefix->graph_hidden);
     else for(const auto& reader:entry->prefix->readers)if(reader)charge(reader->output);
+    charge(entry->prefix->graph_input_rows);
     for(const auto& row:entry->prefix->graph_layers)
       for(const auto& [layer,state]:row){charge(state.key);charge(state.value);}
   }

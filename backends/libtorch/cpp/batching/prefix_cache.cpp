@@ -76,32 +76,62 @@ bool PrefixContext::store(int64_t row,int64_t layer,const PrefixLayer& source,
   entry->reserved_bytes-=needed;budget->reserved_bytes-=needed;
   return true;
 }
+const at::Tensor& PrefixContext::prepare_graph_rows(const c10::Device& device) {
+  TORCH_CHECK(collect_graph,"Prefix row mapping requires graph collection");
+  if(!graph_input_rows.defined()) {
+    std::vector<int32_t> rows;rows.reserve(offsets.back());
+    for(int64_t row=0;row<original.batch;++row) {
+      const auto full=int64_t(original.offsets[row+1])-original.offsets[row];
+      const auto count=int64_t(offsets[row+1])-offsets[row];
+      TORCH_CHECK(hits[row]>=0&&count>0&&hits[row]+count==full,"Invalid direct prefix row mapping");
+      for(int64_t token=0;token<count;++token)rows.push_back(original.offsets[row]+hits[row]+token);
+    }
+    graph_input_rows=at::tensor(rows,at::TensorOptions().dtype(at::kInt)).to(device);
+  }
+  return graph_input_rows;
+}
+PrefixLayer& PrefixContext::prepare_graph_layer(int64_t layer,const at::Tensor& key,const at::Tensor& value) {
+  TORCH_CHECK(collect_graph,"Prefix attention arena requires graph collection");
+  auto& packed=graph_packed_layers[layer];
+  if(!packed.key.defined()) {
+    auto key_shape=key.sizes().vec(),value_shape=value.sizes().vec();
+    key_shape[0]=original.ids.numel();value_shape[0]=original.ids.numel();
+    packed.key=at::empty(key_shape,key.options());packed.value=at::empty(value_shape,value.options());
+  }
+  std::vector<at::Tensor> targets,sources;
+  for(int64_t row=0;row<original.batch;++row) {
+    auto& saved=graph_layers[row][layer];if(saved.key.defined())continue;
+    const auto full=original.offsets[row+1]-original.offsets[row];
+    saved.key=packed.key.narrow(0,original.offsets[row],full);
+    saved.value=packed.value.narrow(0,original.offsets[row],full);
+    if(hits[row]) {
+      auto old=previous(row,layer);
+      TORCH_CHECK(old&&old->key.defined()&&old->key.size(0)>=hits[row],"Missing graph prefix attention state");
+      targets.push_back(saved.key.narrow(0,0,hits[row]));sources.push_back(old->key.narrow(0,0,hits[row]));
+      targets.push_back(saved.value.narrow(0,0,hits[row]));sources.push_back(old->value.narrow(0,0,hits[row]));
+    }
+  }
+  if(!targets.empty())tensor_copies(targets,sources);
+  return packed;
+}
 PrefixContext::KV PrefixContext::attention(int64_t layer,const at::Tensor& key,const at::Tensor& value,bool capture) {
+  if(capture&&collect_graph)prepare_graph_layer(layer,key,value);
+  const bool direct=capture&&collect_graph&&!key.is_neg()&&!key.is_conj()&&!value.is_neg()&&!value.is_conj()
+    &&key.data_ptr()==graph_packed_layers.at(layer).key.data_ptr()
+    &&value.data_ptr()==graph_packed_layers.at(layer).value.data_ptr()
+    &&key.sizes()==graph_packed_layers.at(layer).key.sizes()&&value.sizes()==graph_packed_layers.at(layer).value.sizes()
+    &&key.strides()==graph_packed_layers.at(layer).key.strides()&&value.strides()==graph_packed_layers.at(layer).value.strides();
   std::vector<at::Tensor> keys,values;
   std::vector<at::Tensor> targets,sources;
   for(int64_t row=0;row<original.batch;++row) {
     int64_t length=offsets[row+1]-offsets[row],full=length+hits[row];
-    auto k=key.narrow(0,offsets[row],length),v=value.narrow(0,offsets[row],length);
+    auto k=direct?graph_layers[row].at(layer).key.narrow(0,hits[row],length):key.narrow(0,offsets[row],length);
+    auto v=direct?graph_layers[row].at(layer).value.narrow(0,hits[row],length):value.narrow(0,offsets[row],length);
     if(capture&&collect_graph) {
-      auto& packed=graph_packed_layers[layer];
-      if(!packed.key.defined()) {
-        auto key_shape=k.sizes().vec(),value_shape=v.sizes().vec();
-        key_shape[0]=original.ids.numel();value_shape[0]=original.ids.numel();
-        packed.key=at::empty(key_shape,k.options());packed.value=at::empty(value_shape,v.options());
-      }
       auto& saved=graph_layers[row][layer];
-      if(!saved.key.defined()) {
-        saved.key=packed.key.narrow(0,original.offsets[row],full);
-        saved.value=packed.value.narrow(0,original.offsets[row],full);
-        if(hits[row]) {
-          auto old=previous(row,layer);
-          TORCH_CHECK(old&&old->key.defined()&&old->key.size(0)>=hits[row],"Missing graph prefix attention state");
-          targets.push_back(saved.key.narrow(0,0,hits[row]));sources.push_back(old->key.narrow(0,0,hits[row]));
-          targets.push_back(saved.value.narrow(0,0,hits[row]));sources.push_back(old->value.narrow(0,0,hits[row]));
-        }
-      }
-      targets.push_back(saved.key.narrow(0,hits[row],length));sources.push_back(k);
-      targets.push_back(saved.value.narrow(0,hits[row],length));sources.push_back(v);
+      auto key_target=saved.key.narrow(0,hits[row],length),value_target=saved.value.narrow(0,hits[row],length);
+      if(k.is_neg()||k.is_conj()||k.data_ptr()!=key_target.data_ptr()||k.strides()!=key_target.strides()) {targets.push_back(key_target);sources.push_back(k);}
+      if(v.is_neg()||v.is_conj()||v.data_ptr()!=value_target.data_ptr()||v.strides()!=value_target.strides()) {targets.push_back(value_target);sources.push_back(v);}
       k=saved.key;v=saved.value;
     } else if(hits[row]) {
       auto old=previous(row,layer);

@@ -67,6 +67,8 @@ struct PrefixContext {
   // Attention adapters use independently packed Q and K/V boundaries.
   struct KV { at::Tensor key, value, cumulative; int64_t max_length=0; };
   KV attention(int64_t layer,const at::Tensor& key,const at::Tensor& value,bool capture=true);
+  PrefixLayer& prepare_graph_layer(int64_t layer,const at::Tensor& key,const at::Tensor& value);
+  const at::Tensor& prepare_graph_rows(const c10::Device&);
   const PrefixLayer* previous(int64_t row,int64_t layer) const;
   void checkpoint(int64_t row,int64_t layer,const at::Tensor& state,const at::Tensor& history);
   at::Tensor restore(const at::Tensor& suffix);
@@ -84,6 +86,7 @@ struct PrefixContext {
   std::vector<at::Tensor> graph_outputs;
   std::map<int64_t,PrefixLayer> graph_packed_layers;
   at::Tensor graph_hidden;
+  at::Tensor graph_input_rows;
 };
 const PackedInput& prefix_logical_input(const PackedInput&);
 at::Tensor prefix_restore(const PackedInput&,const at::Tensor&);
