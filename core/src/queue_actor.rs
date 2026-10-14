@@ -225,8 +225,6 @@ fn queue_blocking_task(
     // staged on this thread after dispatch, while the backend owns the batch.
     let mut spare_token_buffers = allocate_token_buffers();
 
-    tracing::info!("Using {} queue {}", "custom Baseten", "implementation.");
-
     while let Some(cmd) = queue_receiver.blocking_recv() {
         if closed.load(Ordering::SeqCst) {
             for entry in entries.drain(..) {
