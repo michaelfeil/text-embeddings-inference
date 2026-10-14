@@ -202,20 +202,18 @@ impl AsRef<[u8]> for ReservedBytes {
 }
 impl io::Write for ReservedWriter {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        let required = self
-            .bytes
-            .len()
-            .checked_add(bytes.len())
-            .ok_or_else(|| io::Error::other("HTTP response length overflow"))?;
+        let required = self.bytes.len().checked_add(bytes.len()).ok_or_else(|| {
+            self.exhausted = true;
+            io::Error::from(io::ErrorKind::OutOfMemory)
+        })?;
         if required > self.bytes.capacity() {
             // Charge allocation capacity, including spare capacity, before allocation.
             let growth = required - self.bytes.capacity();
             let reserve = growth.max(self.bytes.capacity()).max(64 * 1024);
-            let target = self
-                .bytes
-                .capacity()
-                .checked_add(reserve)
-                .ok_or_else(|| io::Error::other("HTTP response capacity overflow"))?;
+            let target = self.bytes.capacity().checked_add(reserve).ok_or_else(|| {
+                self.exhausted = true;
+                io::Error::from(io::ErrorKind::OutOfMemory)
+            })?;
             // A realloc may keep the old allocation alive while allocating the new
             // buffer. Charge the full new capacity before touching the old buffer.
             let new_permit = if let Some(budget) = &self.budget {
@@ -223,13 +221,13 @@ impl io::Write for ReservedWriter {
                     // Geometric growth can exceed the supported budget even when
                     // the configured budget itself fits the permit count.
                     self.exhausted = true;
-                    io::Error::other("HTTP response memory capacity exhausted")
+                    io::Error::from(io::ErrorKind::OutOfMemory)
                 })?;
                 match budget.clone().try_acquire_many_owned(count) {
                     Ok(permit) => Some(permit),
                     Err(_) => {
                         self.exhausted = true;
-                        return Err(io::Error::other("HTTP response memory capacity exhausted"));
+                        return Err(io::Error::from(io::ErrorKind::OutOfMemory));
                     }
                 }
             } else {
@@ -237,7 +235,12 @@ impl io::Write for ReservedWriter {
             };
             self.bytes
                 .try_reserve_exact(target - self.bytes.len())
-                .map_err(io::Error::other)?;
+                .map_err(|_| {
+                    // Allocation pressure uses the shared overload response;
+                    // avoid formatting another error while memory is exhausted.
+                    self.exhausted = true;
+                    io::Error::from(io::ErrorKind::OutOfMemory)
+                })?;
             self.permits.clear();
             if let Some(permit) = new_permit {
                 self.permits.push(permit);

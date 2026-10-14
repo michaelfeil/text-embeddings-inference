@@ -53,12 +53,24 @@ impl<T: Serialize> IntoResponse for Json<T> {
         let mut writer = super::memory::ReservedWriter::new();
         let result = match format {
             Format::Native | Format::Json => {
-                serde_json::to_writer(&mut writer, &self.0).map_err(|error| error.to_string())
+                serde_json::to_writer(&mut writer, &self.0).map_err(|error| {
+                    if writer.exhausted {
+                        String::new()
+                    } else {
+                        error.to_string()
+                    }
+                })
             }
             Format::MessagePack | Format::LegacyMessagePack => self
                 .0
                 .serialize(&mut rmp_serde::Serializer::new(&mut writer).with_struct_map())
-                .map_err(|error| error.to_string()),
+                .map_err(|error| {
+                    if writer.exhausted {
+                        String::new()
+                    } else {
+                        error.to_string()
+                    }
+                }),
         };
         match result {
             Ok(()) => (
