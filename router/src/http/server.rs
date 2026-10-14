@@ -2648,22 +2648,11 @@ async fn default_inference(
         };
     }
     match &runtime.info.model_type {
-        ModelType::Decision => match serde_json::from_value(value) {
-            Ok(request) => super::systemone::systemone(RoutedJson {
-                runtime,
-                value: request,
-            })
-            .await
-            .into_response(),
-            Err(error) => (
-                StatusCode::UNPROCESSABLE_ENTITY,
-                Json(ErrorResponse {
-                    error: error.to_string(),
-                    error_type: ErrorType::Empty,
-                }),
-            )
-                .into_response(),
-        },
+        ModelType::Decision => {
+            super::systemone::systemone(super::model_routing::RoutedJson { runtime, value })
+                .await
+                .into_response()
+        }
         ModelType::Classifier(_) => {
             let mut response = call!(PredictRequest, predict_inner);
             response = deprecate_predict(response).await;

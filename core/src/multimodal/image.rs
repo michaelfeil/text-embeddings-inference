@@ -23,6 +23,10 @@ pub struct QwenImageProcessor {
     do_center_crop: Option<bool>,
     #[serde(default)]
     do_pad: Option<bool>,
+    #[serde(skip)]
+    video_frame_count: Option<usize>,
+    #[serde(skip)]
+    ignore_exif: bool,
 }
 
 pub(crate) struct ImagePlan {
@@ -62,6 +66,43 @@ impl QwenImageProcessor {
         let config: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
         config.validate()?;
         Ok(config)
+    }
+
+    /// Released D3 uses the Qwen defaults but saves only a subset of processor fields.
+    pub(super) fn load_d3(root: &Path) -> Result<Self, String> {
+        let mut value: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(root.join("preprocessor_config.json")).map_err(|e| e.to_string())?,
+        )
+        .map_err(|e| e.to_string())?;
+        for (key, default) in [
+            ("rescale_factor", serde_json::json!(1.0 / 255.0)),
+            ("resample", serde_json::json!(3)),
+            ("do_resize", serde_json::json!(true)),
+            ("do_rescale", serde_json::json!(true)),
+            ("do_normalize", serde_json::json!(true)),
+            ("do_convert_rgb", serde_json::json!(true)),
+        ] {
+            if value.get(key).is_none() {
+                value[key] = default;
+            }
+        }
+        value["min_pixels"] = serde_json::json!(65_536);
+        value["max_pixels"] = serde_json::json!(1_638_400);
+        let mut config: Self = serde_json::from_value(value).map_err(|e| e.to_string())?;
+        config.ignore_exif = true;
+        config.validate()?;
+        if config.patch_size != 16 || config.merge_size != 2 {
+            return Err("D3 requires 16-pixel patches and spatial merge size 2".into());
+        }
+        Ok(config)
+    }
+
+    pub(super) fn video_frames(&self, count: usize) -> Self {
+        let mut config = self.clone();
+        config.min_pixels = 4096usize.div_ceil(count);
+        config.video_frame_count = Some(count);
+        config.max_pixels = 200_704;
+        config
     }
 
     fn validate(&self) -> Result<(), String> {
@@ -108,8 +149,17 @@ impl QwenImageProcessor {
         {
             return Err("Image aspect ratio must be at most 200 with nonzero dimensions".into());
         }
-        let (w, h) = (f64::from(width), f64::from(height));
+        let (mut w, mut h) = (f64::from(width), f64::from(height));
         let factor = (self.patch_size * self.merge_size) as f64;
+        if self.video_frame_count.is_some() && w.min(h) < factor {
+            let scale = factor / w.min(h);
+            w = (w * scale).floor();
+            h = (h * scale).floor();
+        }
+        let min_pixels = self
+            .video_frame_count
+            .map(|count| 4096.0 / count as f64)
+            .unwrap_or(self.min_pixels as f64);
         // Python round is ties-to-even; the reference does not clamp this first rounding.
         let (mut rw, mut rh) = (
             (w / factor).round_ties_even() * factor,
@@ -119,8 +169,8 @@ impl QwenImageProcessor {
             let scale = (w * h / self.max_pixels as f64).sqrt();
             rw = (w / scale / factor).floor().max(1.0) * factor;
             rh = (h / scale / factor).floor().max(1.0) * factor;
-        } else if rw * rh < self.min_pixels as f64 {
-            let scale = (self.min_pixels as f64 / (w * h)).sqrt();
+        } else if rw * rh < min_pixels {
+            let scale = (min_pixels / (w * h)).sqrt();
             rw = (w * scale / factor).ceil() * factor;
             rh = (h * scale / factor).ceil() * factor;
         }
@@ -172,9 +222,13 @@ impl QwenImageProcessor {
     pub(crate) fn inspect(&self, bytes: &[u8], max_pixels: u64) -> Result<ImagePlan, String> {
         let mut decoder = Self::decoder(bytes, max_pixels)?;
         let (mut width, mut height) = decoder.dimensions();
-        let orientation = decoder
-            .orientation()
-            .map_err(|_| "Invalid image orientation")?;
+        let orientation = if self.ignore_exif {
+            image::metadata::Orientation::NoTransforms
+        } else {
+            decoder
+                .orientation()
+                .map_err(|_| "Invalid image orientation")?
+        };
         if matches!(
             orientation,
             image::metadata::Orientation::Rotate90
@@ -209,7 +263,7 @@ impl QwenImageProcessor {
         max_pixels: u64,
     ) -> Result<ImagePatches, String> {
         let (w, h) = (plan.output_width, plan.output_height);
-        let output = resize_rgb(bytes, w, h, max_pixels)?;
+        let output = resize_rgb_with_orientation(bytes, w, h, max_pixels, !self.ignore_exif)?;
         let (p, m) = (self.patch_size, self.merge_size);
         let (gh, gw) = (h as usize / p, w as usize / p);
         let patch_dim = 3 * self.temporal_patch_size * p * p;
@@ -247,10 +301,24 @@ impl QwenImageProcessor {
 }
 
 pub(super) fn resize_rgb(bytes: &[u8], w: u32, h: u32, max_pixels: u64) -> Result<Vec<u8>, String> {
+    resize_rgb_with_orientation(bytes, w, h, max_pixels, true)
+}
+
+fn resize_rgb_with_orientation(
+    bytes: &[u8],
+    w: u32,
+    h: u32,
+    max_pixels: u64,
+    orient: bool,
+) -> Result<Vec<u8>, String> {
     let mut decoder = QwenImageProcessor::decoder(bytes, max_pixels)?;
-    let orientation = decoder
-        .orientation()
-        .map_err(|_| "Invalid image orientation")?;
+    let orientation = if orient {
+        decoder
+            .orientation()
+            .map_err(|_| "Invalid image orientation")?
+    } else {
+        image::metadata::Orientation::NoTransforms
+    };
     let mut decoded = DynamicImage::from_decoder(decoder).map_err(|_| "Invalid image data")?;
     decoded.apply_orientation(orientation);
     let rgb = decoded.into_rgb8();
@@ -318,6 +386,33 @@ mod tests {
     fn processor() -> QwenImageProcessor {
         serde_json::from_str(r#"{"patch_size":16,"temporal_patch_size":2,"merge_size":2,"min_pixels":4096,"max_pixels":1310720,"image_mean":[0.5,0.5,0.5],"image_std":[0.5,0.5,0.5],"rescale_factor":0.00392156862745098,"resample":3,"do_resize":true,"do_rescale":true,"do_normalize":true,"do_convert_rgb":true}"#).unwrap()
     }
+    #[test]
+    fn d3_keeps_encoded_pixels_without_exif_rotation() {
+        let pixels = vec![120u8; 128 * 64 * 3];
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode(&pixels, 128, 64, image::ExtendedColorType::Rgb8)
+            .unwrap();
+        let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let mut oriented = jpeg[..2].to_vec();
+        oriented.extend_from_slice(&[0xff, 0xe1]);
+        oriented.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+        oriented.extend_from_slice(exif);
+        oriented.extend_from_slice(&jpeg[2..]);
+        let legacy = processor();
+        let rotated = legacy.inspect(&oriented, 1_000_000).unwrap();
+        assert_eq!((rotated.output_width, rotated.output_height), (64, 128));
+        let mut d3 = legacy.clone();
+        d3.ignore_exif = true;
+        let plan = d3.inspect(&oriented, 1_000_000).unwrap();
+        assert_eq!((plan.output_width, plan.output_height), (128, 64));
+        let original = d3.inspect(&jpeg, 1_000_000).unwrap();
+        assert_eq!(
+            d3.prepare(&oriented, &plan, 1_000_000).unwrap().pixels,
+            d3.prepare(&jpeg, &original, 1_000_000).unwrap().pixels
+        );
+    }
+
     // Little-endian float32 reference patches: Transformers 5.17.0 / Torchvision 0.26.0,
     // Qwen3-VL-Embedding-2B revision 9f2f7e710d6d81056aa5c0a4f04764fec6bb7bda.
     #[test]

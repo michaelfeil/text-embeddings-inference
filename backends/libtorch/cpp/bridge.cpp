@@ -195,7 +195,7 @@ size_t validate_request_input(Engine& model,const int64_t* ids,const int64_t* ty
    media_positions,images,image_count,audios,audio_count,gemma);
  const auto image_dtype=family.starts_with("qwen3_5")?at::kHalf:model.dtype;
  return tei::validate_input_upload_budget(tokens,batch,media_positions,images,image_count,audios,audio_count,
-   radix,c10::elementSize(image_dtype),input_upload_limit(model),gemma);
+   radix,c10::elementSize(image_dtype),input_upload_limit(model),gemma,model.options.string("_decision.kind")=="d3");
 }
 void validate_forward_descriptors(Engine& model,const int64_t* ids,const int64_t* types,
  const int64_t* positions,const int32_t* cumulative,int64_t batch,int64_t max_sequence,int32_t pool,
@@ -228,13 +228,12 @@ tei::PackedInput packed_input(Engine& model,const int64_t* ids,const int64_t* ty
  auto cu=upload(at::from_blob(const_cast<int32_t*>(cumulative),{batch+1},options.dtype(at::kInt)));
  tei::PackedInput packed{input(ids),input(types),input(positions),cu,cumulative,batch,max_sequence};
  if(media_positions)packed.multimodal_positions=at::from_blob(const_cast<int64_t*>(media_positions),{3,tokens},options).to(model.device);
+ const bool d3=model.options.string("_decision.kind")=="d3";
+ tei::RequestImageUploads shared_images;
  for(size_t i=0;i<image_count;++i){const auto& item=images[i];
-  // Gemma normalizes incoming pixels in F32 before casting for projection.
-  // Casting the raw pixels first loses precision before that normalization.
-  const auto image_dtype=gemma_image?at::kFloat:family.starts_with("qwen3_5")?at::kHalf:model.dtype;
-  auto pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
-  // Upload F32 pixels before dtype conversion: avoid CPU worker-pool casting.
-  if(!gemma_image)pixels=pixels.to(model.device).to(image_dtype);
+  auto host_pixels=at::from_blob(const_cast<float*>(item.pixels),{item.rows,item.patch_dim},options.dtype(at::kFloat));
+  auto upload=[&]{return tei::upload_image_pixels(host_pixels,model.device,model.dtype,family,d3);};
+  auto pixels=d3?shared_images.get(host_pixels,upload):upload();
   packed.images.push_back({pixels,{item.grid[0],item.grid[1],item.grid[2]},item.merge_size,item.token_start,item.token_count,item.sequence_start});
   std::copy_n(item.feature_key,32,packed.images.back().feature_key.begin());
   packed.images.back().has_feature_key=item.has_feature_key!=0;
@@ -364,8 +363,14 @@ int32_t tei_weight(void* handle, const char* name, const uint8_t* data,
         || key.ends_with(".lconv1d.depthwise_conv1d.weight"));
     auto target_dtype = key.ends_with(".A_log") || key.ends_with(".dt_bias") || fp32_audio_filter ? at::kFloat : model.dtype;
     const auto family = model.options.string("model_type");
-    if ((key.starts_with("model.visual.") || key.starts_with("visual.")) && family.starts_with("qwen3_5")) target_dtype = at::kHalf;
-    if(key.starts_with("__tei_decision.")&&model.options.string("_decision.kind")=="pplx")target_dtype=at::kBFloat16;
+    if ((key.starts_with("model.visual.") || key.starts_with("visual.")) && family.starts_with("qwen3_5")) {
+      target_dtype = model.options.string("_decision.kind")=="d3" ? at::kBFloat16 : at::kHalf;
+    }
+    if(key.starts_with("__tei_decision.")) {
+      auto kind=model.options.string("_decision.kind");
+      if(kind=="pplx")target_dtype=at::kBFloat16;
+      if(kind=="d3")target_dtype=at::kFloat;
+    }
     TORCH_CHECK(model.weights.emplace(name, tensor.to(model.device, target_dtype)).second,
                 "Duplicate weight: ", name);
   });

@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "models/decision_models.h"
+#include "batching/input_validation.h"
 #include <c10/core/InferenceMode.h>
 #include <ATen/Parallel.h>
 #include <iostream>
@@ -65,4 +66,67 @@ void clef_test(){Input in;Options cfg,backbone;cfg.values={{"hidden_size","16"},
  std::cout<<"Clef lexical prior/span means, routing/field decoder, variable option counts and sequence isolation passed\n";
 }
 }
-int main(){c10::InferenceMode inference;at::set_num_threads(1);options_test();laya_test();clef_test();}
+void d3_test(){
+ // Values straddling a BF16 midpoint expose FP32->FP16->BF16 double rounding.
+ auto pixels=at::tensor({1.0038f,1.00395f,-1.0038f,-1.00395f},at::TensorOptions().dtype(at::kFloat));
+ auto uploaded=upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",true);
+ TORCH_CHECK(at::equal(uploaded,pixels.to(at::kBFloat16)),"D3 image upload must cast directly to BF16");
+ TORCH_CHECK(!at::equal(uploaded,pixels.to(at::kHalf).to(at::kBFloat16)),"D3 fixture must distinguish double rounding");
+ TORCH_CHECK(at::equal(upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",false),pixels.to(at::kHalf)),"Non-D3 Qwen3.5 must retain FP16 upload");
+ // One prepared image is shared by all questions, with one media reservation.
+ RequestImageUploads uploads;int upload_calls=0;
+ auto upload=[&]{++upload_calls;return upload_image_pixels(pixels,c10::Device(at::kCPU),at::kBFloat16,"qwen3_5",true);};
+ auto first_upload=uploads.get(pixels,upload),second_upload=uploads.get(pixels,upload);
+ TORCH_CHECK(upload_calls==1&&first_upload.unsafeGetTensorImpl()==second_upload.unsafeGetTensorImpl(),"Shared D3 pixels uploaded once per request");
+ auto reshaped=pixels.view({2,2});uploads.get(reshaped,[&]{++upload_calls;return reshaped.to(at::kBFloat16);});
+ TORCH_CHECK(upload_calls==2,"Distinct host layout incorrectly reused upload");
+ uploads.get(reshaped,[&]{++upload_calls;return reshaped.to(at::kBFloat16);});
+ TORCH_CHECK(upload_calls==2,"Matrix upload identity differs from admission identity");
+ auto transposed=reshaped.transpose(0,1);uploads.get(transposed,[&]{++upload_calls;return transposed.to(at::kBFloat16);});
+ TORCH_CHECK(upload_calls==3,"Distinct matrix strides incorrectly reused upload");
+ // Admission reads descriptors only, even before the caller's pixels are readable.
+ TeiImage aliases[2]{};for(auto& image:aliases){image.pixels=reinterpret_cast<const float*>(uintptr_t(4096));image.rows=16;image.patch_dim=16;}
+ auto admitted=[&](size_t limit,bool dedup){return validate_input_upload_budget(2,2,false,aliases,2,nullptr,0,nullptr,2,limit,false,dedup);};
+ const auto shared_bytes=admitted(1<<20,true);
+ TORCH_CHECK(admitted(shared_bytes,true)==shared_bytes,"Shared uploads rejected at their exact byte budget");
+ reject([&]{admitted(shared_bytes-1,true);});
+ reject([&]{admitted(shared_bytes,false);}); // Non-D3 uploads remain distinct.
+ aliases[1].pixels=reinterpret_cast<const float*>(uintptr_t(8192));
+ reject([&]{admitted(shared_bytes,true);});
+ aliases[1].pixels=aliases[0].pixels;aliases[1].rows=32;aliases[1].patch_dim=8;
+ reject([&]{admitted(shared_bytes,true);}); // Same pointer/count, different matrix layout.
+ int vision_calls=0;
+ ImageInput first_image{first_upload,{1,2,2},2,1,1,0};auto next_question=first_image;next_question.token_start=9;next_question.sequence_start=8;
+ RequestImageFeatures features({first_image,next_question});
+ auto compute=[&]{++vision_calls;return at::ones({1,16});};
+ auto first_features=features.get(first_image,compute),second_features=features.get(next_question,compute);
+ TORCH_CHECK(vision_calls==1&&first_features.unsafeGetTensorImpl()==second_features.unsafeGetTensorImpl(),"Shared D3 vision computed once across question positions");
+ auto other_grid=first_image;other_grid.grid_thw={1,1,4};features.get(other_grid,compute);
+ auto distinct_pixels=first_image;distinct_pixels.pixels=first_upload.clone();features.get(distinct_pixels,compute);
+ TORCH_CHECK(vision_calls==3,"Distinct pixels/grid incorrectly reused D3 vision");
+ c10::weak_intrusive_ptr<at::TensorImpl> last_feature(first_features.getIntrusivePtr());
+ first_features=at::Tensor();second_features=at::Tensor();
+ TORCH_CHECK(last_feature.expired(),"D3 feature memo retained pixels after their final consumer");
+ {RequestImageFeatures next_request({first_image});auto unique=next_request.get(first_image,compute);
+  c10::weak_intrusive_ptr<at::TensorImpl> unique_feature(unique.getIntrusivePtr());unique=at::Tensor();
+  TORCH_CHECK(unique_feature.expired(),"Unique D3 media feature should not enter memo");}
+ TORCH_CHECK(vision_calls==4,"D3 vision must not survive a native request");
+ Input in;Options cfg,backbone;
+ cfg.values={{"format_id","d3-code-readout-v1"},{"prompt","d3"},{"pooling","last"},{"attention_mode","noncausal_full_attention"},{"readout_dtype","float32"}};
+ backbone.values={{"model_type","qwen3_5"},{"hidden_size","16"}};
+ Weights readout;readout["weight"]=at::sin(at::arange(255*16).view({255,16}).to(at::kFloat)*.017);
+ auto hidden=(at::cos(at::arange(80).view({5,16}).to(at::kFloat)*.13)).to(at::kBFloat16);
+ auto head=create_decision_head("d3",cfg,backbone,readout,{});
+ DecisionRequest first{DecisionRequest::Kind::OptionTokens},second{DecisionRequest::Kind::Warmup};first.token_ids={0,1,2};
+ auto result=head->forward(hidden,in.input,{first,second});
+ auto full=at::linear(hidden[2].to(at::kFloat).unsqueeze(0),readout["weight"]);
+ close(result[0].logits,full.narrow(1,0,3).flatten());
+ close(result[1].logits,at::linear(hidden[4].to(at::kFloat).unsqueeze(0),readout["weight"]).narrow(1,0,1).flatten());
+ auto bf16=at::linear(hidden[2].unsqueeze(0),readout["weight"].to(at::kBFloat16)).narrow(1,0,3).flatten();
+ TORCH_CHECK((result[0].logits-bf16.to(at::kFloat)).abs().max().item<float>()>1e-4,"D3 precision fixture must distinguish FP32 from BF16 readout");
+ first.token_ids={1,0};reject([&]{head->output_count(first);});
+ for(const auto&entry:std::vector<std::pair<std::string,std::string>>{{"pooling","mean"},{"attention_mode","causal"},{"readout_dtype","bfloat16"},{"prompt","pplx"}}){auto bad=cfg;bad.values[entry.first]=entry.second;reject([&]{create_decision_head("d3",bad,backbone,readout,{});});}
+ readout["weight"]=readout["weight"].to(at::kBFloat16);reject([&]{create_decision_head("d3",cfg,backbone,readout,{});});
+ std::cout<<"D3 FP32 full readout, last-token selection, warmup and checkpoint validation passed\n";
+}
+int main(){c10::InferenceMode inference;at::set_num_threads(1);options_test();d3_test();laya_test();clef_test();}

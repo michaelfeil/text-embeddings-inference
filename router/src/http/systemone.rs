@@ -38,6 +38,7 @@ struct Config {
 }
 
 mod clef;
+mod d3;
 mod onejev;
 mod pplx;
 mod rune;
@@ -48,6 +49,7 @@ pub enum SystemOne {
     Onejev(onejev::Onejev),
     Clef(clef::Clef),
     Pplx(pplx::Pplx),
+    D3(Box<d3::D3>),
 }
 
 impl SystemOne {
@@ -65,6 +67,13 @@ impl SystemOne {
                 onejev::Onejev::load(path, tokenizer, max_input_length)?
                     .with_images(path, multimodal_config)?,
             ))
+        } else if matches!(protocol, Some(crate::DecisionProtocol::D3)) {
+            Ok(Self::D3(Box::new(d3::D3::load(
+                path,
+                tokenizer,
+                max_input_length,
+                multimodal_config,
+            )?)))
         } else if matches!(protocol, Some(crate::DecisionProtocol::Pplx)) {
             Ok(Self::Pplx(pplx::Pplx::load(
                 path,
@@ -88,6 +97,7 @@ impl SystemOne {
             Self::Onejev(model) => model.prepare(request),
             Self::Clef(model) => model.prepare(request),
             Self::Pplx(model) => model.prepare(request),
+            Self::D3(model) => model.prepare(request),
         }
     }
 
@@ -98,6 +108,7 @@ impl SystemOne {
             Self::Onejev(_) => onejev::answer(question, output),
             Self::Clef(_) => clef::answer(question, output),
             Self::Pplx(model) => model.answer(question, output),
+            Self::D3(model) => model.answer(question, output),
         }
     }
 }
@@ -559,14 +570,12 @@ fn error(status: StatusCode, message: impl ToString) -> ApiError {
     )
 }
 
-#[utoipa::path(post, path = "/v1/systemone", request_body = SystemOneRequest,
+#[utoipa::path(post, path = "/v1/systemone", request_body = Value,
     responses((status = 200, description = "Typed decisions", body = Value),
               (status = 422, description = "Invalid question or token budget"),
               (status = 429, description = "Server overloaded")))]
 pub async fn systemone(
-    super::model_routing::RoutedJson { runtime, value }: super::model_routing::RoutedJson<
-        SystemOneRequest,
-    >,
+    super::model_routing::RoutedJson { runtime, value }: super::model_routing::RoutedJson<Value>,
 ) -> axum::response::Response {
     use axum::response::IntoResponse;
     let result = systemone_inner(
@@ -591,7 +600,7 @@ pub(crate) async fn systemone_inner(
     Extension(infer): Extension<Infer>,
     Extension(info): Extension<crate::Info>,
     Extension(service): Extension<Option<Arc<SystemOne>>>,
-    Json(mut request): Json<SystemOneRequest>,
+    Json(raw_request): Json<Value>,
 ) -> Result<(HeaderMap, Json<Value>), ApiError> {
     metrics::counter!("te_request_count", "model" => info.model_id.clone(), "method" => "systemone").increment(1);
     let service = service.ok_or_else(|| {
@@ -600,6 +609,20 @@ pub(crate) async fn systemone_inner(
             "Loaded model does not support typed decisions",
         )
     })?;
+    let (mut request, d3_images, d3_videos) = if matches!(service.as_ref(), SystemOne::D3(_)) {
+        serde_json::from_value::<d3::Request>(raw_request)
+            .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?
+            .into_common()
+            .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?
+    } else {
+        (
+            serde_json::from_value::<SystemOneRequest>(raw_request)
+                .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?,
+            vec![],
+            vec![],
+        )
+    };
+    let d3_max_len = request.max_len;
     if request.questions.len() > info.max_decision_questions {
         return Err(error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -650,6 +673,25 @@ pub(crate) async fn systemone_inner(
             _ => unreachable!("image sources require a multimodal decision model"),
         };
         attached.map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
+    }
+    if !d3_images.is_empty() || !d3_videos.is_empty() {
+        let SystemOne::D3(model) = service.as_ref() else {
+            unreachable!()
+        };
+        let media = model
+            .prepare_media(d3_images, d3_videos)
+            .await
+            .map_err(|e| {
+                let status = if matches!(e, infinity_v3_core::TextEmbeddingsError::Overloaded(_)) {
+                    StatusCode::TOO_MANY_REQUESTS
+                } else {
+                    StatusCode::UNPROCESSABLE_ENTITY
+                };
+                error(status, e)
+            })?;
+        model
+            .attach_media(&mut questions, media, d3_max_len)
+            .map_err(|e| error(StatusCode::UNPROCESSABLE_ENTITY, e))?;
     }
     let tokenization = start.elapsed();
     let compute_chars = questions.iter().map(|q| q.compute_chars).sum();

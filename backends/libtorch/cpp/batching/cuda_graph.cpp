@@ -128,7 +128,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     if(tensor.defined())key<<':'<<tensor.device()<<':'<<tensor.scalar_type()<<':'<<tensor.sizes();
   };
   key<<";images="<<input.images.size();
+  std::unordered_map<const at::TensorImpl*,size_t> image_aliases;
   for(const auto& image:input.images) {
+    const auto& payload=image.prepared_features.defined()?image.prepared_features:image.pixels;
+    auto [alias,inserted]=image_aliases.emplace(payload.unsafeGetTensorImpl(),image_aliases.size());
+    key<<";image-alias="<<alias->second;
     tensor_key(image.prepared_features);
     if(!image.prepared_features.defined())tensor_key(image.pixels);
     for(auto dimension:image.grid_thw)key<<':'<<dimension;
@@ -156,7 +160,10 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     impl->lru.erase(entry.lru);impl->lru.push_front(id);entry.lru=impl->lru.begin();
     entry.input.ids.copy_(input.ids);entry.input.types.copy_(input.types);
     entry.input.positions.copy_(input.positions);entry.input.cumulative.copy_(input.cumulative);
+    std::unordered_set<const at::TensorImpl*> updated_images;
     for(size_t i=0;i<input.images.size();++i) {
+      const auto& payload=input.images[i].prepared_features.defined()?input.images[i].prepared_features:input.images[i].pixels;
+      if(!updated_images.insert(payload.unsafeGetTensorImpl()).second)continue;
       if(input.images[i].prepared_features.defined())
         entry.input.images[i].prepared_features.copy_(input.images[i].prepared_features);
       else entry.input.images[i].pixels.copy_(input.images[i].pixels);
@@ -190,8 +197,11 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     remaining-=bytes;return true;
   };
   bool inputs_fit=fits(input.ids)&&fits(input.types)&&fits(input.positions)&&fits(input.cumulative);
-  for(const auto& image:input.images)
-    inputs_fit=inputs_fit&&fits(image.prepared_features.defined()?image.prepared_features:image.pixels);
+  std::unordered_set<const at::TensorImpl*> fitted_images;
+  for(const auto& image:input.images) {
+    const auto& payload=image.prepared_features.defined()?image.prepared_features:image.pixels;
+    if(fitted_images.insert(payload.unsafeGetTensorImpl()).second)inputs_fit=inputs_fit&&fits(payload);
+  }
   for(const auto& audio:input.audios)
     inputs_fit=inputs_fit&&fits(audio.features)&&fits(audio.validity)&&fits(audio.selected_frames);
   inputs_fit=inputs_fit&&fits(input.multimodal_positions)&&fits(input.compact_ids)
@@ -201,11 +211,17 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   auto entry=std::make_unique<Impl::Entry>();
   entry->offsets.assign(input.offsets,input.offsets+input.batch+1);
   entry->input={input.ids.clone(),input.types.clone(),input.positions.clone(),input.cumulative.clone(),entry->offsets.data(),input.batch,input.max_sequence};
+  std::unordered_map<const at::TensorImpl*,at::Tensor> cloned_images;
+  auto clone_image=[&](const at::Tensor& payload) {
+    auto [entry,inserted]=cloned_images.emplace(payload.unsafeGetTensorImpl(),at::Tensor());
+    if(inserted)entry->second=payload.clone();
+    return entry->second;
+  };
   for(auto image:input.images) {
     if(image.prepared_features.defined()) {
-      image.prepared_features=image.prepared_features.clone();
+      image.prepared_features=clone_image(image.prepared_features);
       image.pixels=at::Tensor(); // Captured forward never reads raw host pixels.
-    } else image.pixels=image.pixels.clone();
+    } else image.pixels=clone_image(image.pixels);
     entry->input.images.push_back(std::move(image));
   }
   for(auto audio:input.audios) {
@@ -276,7 +292,8 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
   // Cumulative admission charges survive eviction: reservation can outlive graphs.
   for(const auto& segment:c10::cuda::CUDACachingAllocator::snapshot(entry->graph->pool(),false).segments)
     if(segment.device==input.ids.get_device() && segment.owner_private_pool_id==entry->graph->pool())entry->bytes+=segment.total_size;
-  auto charge=[&](const at::Tensor& t){if(t.defined() && t.is_cuda())entry->bytes+=t.nbytes();};
+  std::unordered_set<const c10::StorageImpl*> charged_inputs;
+  auto charge=[&](const at::Tensor& t){if(t.defined() && t.is_cuda() && charged_inputs.insert(t.storage().unsafeGetStorageImpl()).second)entry->bytes+=t.storage().nbytes();};
   charge(entry->input.ids);charge(entry->input.types);charge(entry->input.positions);charge(entry->input.cumulative);
   for(const auto& image:entry->input.images){charge(image.prepared_features);charge(image.pixels);}
   for(const auto& audio:entry->input.audios){charge(audio.features);charge(audio.validity);charge(audio.selected_frames);}

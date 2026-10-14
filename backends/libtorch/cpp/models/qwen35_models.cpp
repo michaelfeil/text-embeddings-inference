@@ -270,7 +270,7 @@ class Qwen35 final : public Model {
     rotary=static_cast<int64_t>(dim*real("rope_parameters.partial_rotary_factor",1.));
     for(const auto& p:{"model.language_model.","language_model.","model.",""})
       if(weights.count(std::string(p)+"embed_tokens.weight")) { prefix=p; break; }
-    if(cfg.integer("vision_config.depth",0)>0)visual=std::make_unique<Qwen3VL>(cfg,weights,device,at::kHalf,true);
+    if(cfg.integer("vision_config.depth",0)>0)visual=std::make_unique<Qwen3VL>(cfg,weights,device,cfg.string("_decision.kind")=="d3"?at::kBFloat16:at::kHalf,true);
   }
   int64_t output_width() const override { return hidden; }
   bool supports_images() const override {return bool(visual);}
@@ -351,9 +351,11 @@ class Qwen35 final : public Model {
     TORCH_CHECK(!radix_enabled(input)||supports_radix(),"Noncausal Qwen3.5 attention does not support radix folding");
     TORCH_CHECK(!radix_enabled(input)||input.audios.empty(),"Qwen3.5 radix audio is not supported");
     auto states=at::embedding(w("embed_tokens.weight"),input.images.empty()?radix_ids(input):input.ids);
+    RequestImageFeatures shared_features(input.images,cfg.string("_decision.kind")=="d3");
     for(const auto& image:input.images) {
       TORCH_CHECK(visual,"Qwen3.5 vision tower unavailable");
-      auto features=visual->image_features(image).to(dtype);
+      auto compute=[&]{return visual->image_features(image).to(dtype);};
+      auto features=cfg.string("_decision.kind")=="d3"?shared_features.get(image,compute):compute();
       TORCH_CHECK(features.size(0)==image.token_count && features.size(1)==hidden,"Qwen3.5 visual token geometry mismatch");
       states.narrow(0,image.token_start,image.token_count).copy_(features);
     }
