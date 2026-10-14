@@ -1,3 +1,10 @@
+//! FIFO selection and packed-batch construction on a dedicated thread.
+//!
+//! `infer::batching_task` asks for batches; this worker owns the pending entries.
+//! The early-dispatch target is a soft cut, relaxed for unfinished client batches
+//! or a large backlog. Token and request maxima still apply. Selection never
+//! runs a model; the selected entries' metadata follows the batch into delivery.
+
 use crate::infer::InferResult;
 use crate::log_response_dropped_after;
 use crate::tokenization::ValidEncoding;

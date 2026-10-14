@@ -1,4 +1,10 @@
 //! Experimental native packed inference. Python and exported TorchScript models are not required.
+//!
+//! `Native*` descriptors mirror `cpp/bridge.h`. The constructors below load config
+//! and weights; `submit_inner` adapts a core Batch to that ABI. On the CUDA path,
+//! `NativeOutput` keeps the submitted buffers alive while a completion worker
+//! waits and calls `pack_output`. CPU and decision calls complete synchronously.
+//! See `cpp/README.md` for model entry points and tests.
 mod radix;
 use radix::{NativeRadix, OwnedRadix};
 use safetensors::{Dtype, SafeTensors};

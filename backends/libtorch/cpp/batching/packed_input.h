@@ -82,6 +82,9 @@ struct AudioInput {
   int64_t token_start=0, token_count=0;
   at::Tensor selected_frames{};
 };
+// Packed token rows, without padding. For sequence lengths [3, 2], cumulative
+// is [0, 3, 5]. These offsets locate sequences in the packed buffer; they are
+// separate from model position IDs. offsets is the host view of those boundaries.
 struct PackedInput {
   at::Tensor ids, types, positions, cumulative;
   const int32_t* offsets;

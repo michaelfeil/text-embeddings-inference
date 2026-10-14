@@ -2,6 +2,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+// C ABI mirrored by the repr(C) descriptors in ../src/lib.rs and ../src/radix.rs.
+// Keep field order and integer widths in sync when changing a descriptor.
 struct TeiConfig {
   int64_t hidden, heads, layers, intermediate, vocab, positions, types;
   double epsilon;
@@ -90,6 +92,9 @@ int32_t tei_forward_radix(void*, const int64_t* ids, const int64_t* types,
                     const int64_t* raw, size_t raw_count, float* output, size_t capacity,
                     const int64_t* media_positions, const TeiImage* images, size_t image_count,
                     const TeiAudio* audios, size_t audio_count, const TeiRadix* radix);
+// Returns an owned output lease, or nullptr on failure. capacity counts floats.
+// Inputs are staged during this call; caller storage can be released on return.
+// Wait before reading results, then destroy the lease after copying them out.
 void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
                     const int64_t* positions, const int32_t* cumulative,
                     int64_t batch, int64_t max_sequence, int32_t pool,
