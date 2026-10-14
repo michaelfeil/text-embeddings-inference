@@ -29,6 +29,8 @@ install(DIRECTORY ../../../LICENSES/ DESTINATION share/licenses/tei_torch/LICENS
 # Custom packed operators use the same current CUDA stream as ATen.
 if(TARGET torch_cuda)
   enable_language(CUDA)
+  target_sources(tei_torch PRIVATE kernels/laya_features.cu)
+  set_source_files_properties(kernels/laya_features.cu PROPERTIES COMPILE_OPTIONS "--fmad=false;--prec-div=true;--prec-sqrt=true")
   # The exact router keeps F32 subnormals; RMS kernels retain their old flags.
   target_sources(tei_torch PRIVATE kernels/decoder_half_moe.cu)
   set_source_files_properties(kernels/decoder_half_moe.cu PROPERTIES
@@ -134,12 +136,13 @@ if(INFINITY_BUILD_NATIVE_TESTS)
     target_compile_definitions(qwen35_models_test PRIVATE TEI_TORCH_CUDA_KERNELS)
   endif()
   if(TARGET torch_cuda AND INFINITY_RUN_CUDA_TESTS)
-    foreach(test output bert_private_flash qwen35_reference fp8_linear decoder_fp8 fast_kernels encoder_activation encoder_norm decoder_norm cuda_graph gemma_vision_kernels gemma_rotary packed_pool packed_alibi packed_relative_bias moe_kernels moe_cuda_graph torch_flash_fma)
+    foreach(test output bert_private_flash qwen35_reference fp8_linear decoder_fp8 fast_kernels encoder_activation encoder_norm decoder_norm cuda_graph gemma_vision_kernels gemma_rotary packed_pool packed_alibi packed_relative_bias moe_kernels moe_cuda_graph torch_flash_fma laya_features)
       add_executable(${test}_test tests/${test}_test.cpp)
       target_compile_features(${test}_test PRIVATE cxx_std_20)
       target_link_libraries(${test}_test PRIVATE tei_torch "${TORCH_LIBRARIES}")
       add_test(NAME ${test}_cuda COMMAND ${test}_test)
     endforeach()
+    add_test(NAME decision_models_cuda COMMAND decision_models_test --cuda)
     target_compile_definitions(output_test PRIVATE TEI_TORCH_CUDA_KERNELS)
     target_compile_options(qwen35_reference_test PRIVATE -ffp-contract=off)
     target_link_libraries(fp8_linear_test PRIVATE CUDA::cublasLt)

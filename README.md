@@ -647,13 +647,15 @@ curl 127.0.0.1:8080/predict \
 
 ### Laya typed decisions (Jev API)
 
-Serve `convaiinnovations/laya-typed-decisions` with the Candle HTTP build:
+Serve `convaiinnovations/laya-typed-decisions` with the HTTP build using LibTorch
+or Candle. For LibTorch CUDA inference:
 
 ```shell
-infinity_v3 --model-id convaiinnovations/laya-typed-decisions
+infinity_v3 --model-id convaiinnovations/laya-typed-decisions \
+  --backend libtorch --torch-device cuda:0 --dtype bfloat16
 ```
 
-For CPU inference, add `--dtype float32`.
+For LibTorch CPU inference, use `--torch-device cpu --dtype float32`.
 
 The existing API server exposes `POST /v1/systemone`. Questions use infinity_v3's shared
 batch queue, backend replicas, concurrency limits, authentication, and metrics.
@@ -704,7 +706,9 @@ Use the existing `--max-batch-tokens`, `--max-batch-requests`,
 `--max-concurrent-requests`, and replica options to control serving capacity.
 For a local checkpoint, retain `rl_agent_config.json`, `encoder/config.json`,
 `tokenizer/tokenizer.json`, and `model.safetensors` in their original layout.
-Laya requires the Candle backend and the HTTP API.
+Laya requires the HTTP API. The LibTorch CUDA head processes packed questions
+together with variable-length attention and computes action features on the GPU;
+CPU execution retains the original per-question head.
 
 Unknown request/question fields are rejected. Execution extensions such as
 `think`, `mode`, `depends_on`, `ask_if`, and `alone` are not implemented.
