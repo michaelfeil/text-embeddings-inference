@@ -121,7 +121,7 @@ int main(){c10::InferenceMode guard;
 
  for(auto dtype:{at::kHalf,at::kBFloat16,at::kFloat}) {
   auto opts=at::TensorOptions().device(at::kCUDA).dtype(dtype);
-  for(int width:{7,16,63,128,257,513,768,769,1024,1152,2048,4096,8192}) {
+  for(int width:{7,16,63,128,257,513,768,769,1024,1152,2048,2624,4096,8192}) {
    auto x=at::randn({33,width},opts),r=at::randn_like(x),r2=at::randn_like(x);
    auto w=at::randn({width},opts),b=at::randn({width},opts);
    auto tol=dtype==at::kBFloat16?0.04:dtype==at::kHalf?0.006:0.00001;
