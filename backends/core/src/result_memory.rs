@@ -129,6 +129,13 @@ impl<T> IntoIterator for ResultMap<T> {
         }
     }
 }
+impl<'a, T> IntoIterator for &'a ResultMap<T> {
+    type Item = (&'a usize, &'a T);
+    type IntoIter = std::collections::hash_map::Iter<'a, usize, T>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.values.iter()
+    }
+}
 pub trait HasResultMemory {
     fn result_memory(&self) -> Option<ResultLease>;
 }
@@ -178,13 +185,17 @@ mod tests {
     fn held_outputs_and_transform_overlap_admit_and_recover() {
         let pool = ResultPool::new(96).unwrap();
         let first = pool.reserve(64).unwrap();
+        let first_payload = vec![0u8; 64];
         let response = first.clone();
         assert!(matches!(pool.reserve(64), Err(BackendError::Overloaded(_))));
         let transform = first.reserve_more(32).unwrap();
+        let transform_payload = vec![0u8; 32];
         drop(first);
         assert_eq!(pool.used(), 96);
+        drop(transform_payload);
         drop(transform);
         assert_eq!(pool.used(), 64);
+        drop(first_payload);
         drop(response);
         assert_eq!(pool.used(), 0);
         assert!(pool.reserve(96).is_ok());

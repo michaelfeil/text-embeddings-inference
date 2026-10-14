@@ -1089,16 +1089,24 @@ mod completion_tests {
         }
         drop(receivers.remove(0));
         let inference = Duration::from_millis(1);
+        let pool = infinity_v3_backend::result_memory::ResultPool::new(96).unwrap();
+        let mut outputs = infinity_v3_backend::Predictions::default();
+        outputs.memory = Some(pool.reserve(96).unwrap());
+        for (index, value) in [1.0, 2.0, 3.0].into_iter().enumerate() {
+            outputs.insert(index, vec![value]);
+        }
         send_batch_results(
             entries,
-            Ok(([vec![1.0], vec![2.0], vec![3.0]].into_iter(), inference)),
-            |outputs, _, metadata| {
+            Ok((outputs, inference)),
+            |outputs, index, metadata| {
                 InferResult::Classification(ClassificationInferResponse {
-                    results: outputs.next().unwrap(),
+                    results: outputs.remove(&index).unwrap(),
                     metadata,
                 })
             },
         );
+        assert_eq!(pool.used(), 96);
+        assert!(pool.reserve(1).is_err());
         for (receiver, expected) in receivers.into_iter().zip([2.0, 3.0]) {
             let InferResult::Classification(response) = receiver.blocking_recv().unwrap().unwrap()
             else {
@@ -1108,7 +1116,10 @@ mod completion_tests {
             assert_eq!(response.metadata.prompt_tokens, expected as usize * 10);
             assert_eq!(response.metadata.tokenization, Duration::from_micros(7));
             assert_eq!(response.metadata.inference, inference);
+            assert_eq!(pool.used(), 96);
         }
+        assert_eq!(pool.used(), 0);
+        assert!(pool.reserve(96).is_ok());
     }
 }
 

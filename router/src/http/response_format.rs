@@ -563,31 +563,106 @@ mod tests {
 
 /// Preserve native host-result ownership across serialization and body handoff.
 pub(crate) async fn retain_results(request: Request, next: Next) -> Response {
-    use axum::body::Bytes;
-    use futures::StreamExt;
     use infinity_v3_backend::result_memory::{RequestResults, REQUEST_RESULTS};
     use std::sync::Arc;
-    struct Chunk {
-        bytes: Bytes,
-        _results: Arc<RequestResults>,
-    }
-    impl AsRef<[u8]> for Chunk {
-        fn as_ref(&self) -> &[u8] {
-            &self.bytes
-        }
-    }
     let owner = Arc::new(RequestResults::default());
     let response = REQUEST_RESULTS
         .scope(owner.clone(), next.run(request))
         .await;
     let (parts, body) = response.into_parts();
-    let stream = body.into_data_stream().map(move |chunk| {
-        chunk.map(|bytes| {
-            Bytes::from_owner(Chunk {
-                bytes,
-                _results: owner.clone(),
+    Response::from_parts(
+        parts,
+        Body::new(ResultBody {
+            body: Box::pin(body),
+            owner,
+        }),
+    )
+}
+struct ResultBody {
+    body: std::pin::Pin<Box<Body>>,
+    owner: std::sync::Arc<infinity_v3_backend::result_memory::RequestResults>,
+}
+struct ResultChunk {
+    bytes: axum::body::Bytes,
+    _owner: std::sync::Arc<infinity_v3_backend::result_memory::RequestResults>,
+}
+impl AsRef<[u8]> for ResultChunk {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+impl http_body::Body for ResultBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        let this = self.get_mut();
+        this.body.as_mut().poll_frame(cx).map(|frame| {
+            frame.map(|result| {
+                result.map(|frame| {
+                    frame.map_data(|bytes| {
+                        axum::body::Bytes::from_owner(ResultChunk {
+                            bytes,
+                            _owner: this.owner.clone(),
+                        })
+                    })
+                })
             })
         })
-    });
-    Response::from_parts(parts, Body::from_stream(stream))
+    }
+    fn is_end_stream(&self) -> bool {
+        self.body.is_end_stream()
+    }
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.body.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod result_lifetime_tests {
+    use super::*;
+    use axum::{extract::State, routing::get, Router};
+    use infinity_v3_backend::result_memory::{retain_for_request, ResultPool};
+    use std::sync::Arc;
+    use tower::ServiceExt;
+
+    async fn result(
+        State(pool): State<Arc<ResultPool>>,
+    ) -> Result<Json<Vec<f32>>, (StatusCode, Json<crate::ErrorResponse>)> {
+        let memory = pool.reserve(128).map_err(|e| {
+            crate::ErrorResponse::from(infinity_v3_core::TextEmbeddingsError::Backend(e))
+        })?;
+        let values = vec![1.0f32; 32];
+        retain_for_request(Some(memory));
+        Ok(Json(values))
+    }
+    #[tokio::test]
+    async fn retained_result_ownership_rejects_then_recovers_after_transport_clone_drop() {
+        use futures::StreamExt;
+        let pool = ResultPool::new(128).unwrap();
+        let app = Router::new()
+            .route("/", get(result))
+            .with_state(pool.clone())
+            .layer(axum::middleware::from_fn(retain_results));
+        let request = || Request::builder().uri("/").body(Body::empty()).unwrap();
+        let first = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let mut stream = first.into_body().into_data_stream();
+        let bytes = stream.next().await.unwrap().unwrap();
+        let transport_clone = bytes.clone();
+        drop(stream);
+        drop(bytes);
+        assert_eq!(pool.used(), 128);
+        let rejected = app.clone().oneshot(request()).await.unwrap();
+        assert_eq!(rejected.status(), StatusCode::TOO_MANY_REQUESTS);
+        drop(rejected);
+        drop(transport_clone);
+        assert_eq!(pool.used(), 0);
+        let recovered = app.oneshot(request()).await.unwrap();
+        assert_eq!(recovered.status(), StatusCode::OK);
+        drop(recovered);
+        assert_eq!(pool.used(), 0);
+    }
 }

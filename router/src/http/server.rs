@@ -115,6 +115,7 @@ async fn predict(
     let single = matches!(&req.inputs, PredictInput::Single(_));
     let labels = classifier_labels(&info.model_type)?;
     let (scores, metadata) = run_classification(infer, info, Extension(context), req).await?;
+    reserve_classification_output(&scores, &labels).map_err(ErrorResponse::from)?;
     let predictions = scores
         .into_iter()
         .map(|scores| {
@@ -359,6 +360,9 @@ async fn classify(
     })?;
     let (scores, metadata) = run_classification(infer, info, context, request)
         .await
+        .map_err(classify_inference_error)?;
+    reserve_classification_output(&scores, &labels)
+        .map_err(ErrorResponse::from)
         .map_err(classify_inference_error)?;
     let response = classification_response(scores, &labels, model, metadata.compute_tokens);
     Ok((HeaderMap::from(metadata), Json(response)))
@@ -941,6 +945,7 @@ async fn similarity(
     let embeddings = embed_response.0 .0;
 
     // Compute cosine
+    reserve_result_allocation::<f32>(batch_size - 1).map_err(ErrorResponse::from)?;
     let distances = (1..batch_size)
         .map(|i| 1.0 - f32::cosine(&embeddings[0], &embeddings[i]).unwrap() as f32)
         .collect();
@@ -2577,6 +2582,34 @@ fn reserve_result_allocation<T>(count: usize) -> Result<(), TextEmbeddingsError>
     let bytes = count
         .checked_mul(std::mem::size_of::<T>())
         .ok_or_else(|| BackendError::Inference("HTTP result size overflow".into()))?;
+    infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
+    Ok(())
+}
+
+fn reserve_classification_output(
+    scores: &[Vec<f32>],
+    labels: &std::collections::HashMap<String, String>,
+) -> Result<(), TextEmbeddingsError> {
+    let overflow = || BackendError::Inference("Classification result size overflow".into());
+    let mut bytes = scores
+        .len()
+        .checked_mul(std::mem::size_of::<Vec<Prediction>>() + std::mem::size_of::<ClassifyData>())
+        .ok_or_else(overflow)?;
+    for row in scores {
+        bytes = bytes
+            .checked_add(
+                row.len()
+                    .checked_mul(std::mem::size_of::<Prediction>())
+                    .ok_or_else(overflow)?,
+            )
+            .ok_or_else(overflow)?;
+        for index in 0..row.len() {
+            let label_bytes = labels
+                .get(&index.to_string())
+                .map_or(6 + 20, |label| label.len());
+            bytes = bytes.checked_add(label_bytes).ok_or_else(overflow)?;
+        }
+    }
     infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
     Ok(())
 }

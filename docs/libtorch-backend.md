@@ -128,6 +128,32 @@ returns an error; subsequent requests can still run. This output limit does not
 cover model activations, native staging buffers, upstream request buffers or
 allocator-reserved memory.
 
+`TEI_HOST_RESULTS_MAX_BYTES` adds one process-wide budget for admitted LibTorch
+host results, shared across replicas and requests, defaulting to 536870912 bytes
+(512 MiB). It must be a positive, representable byte count. The existing
+per-submission limit also applies. Reservations precede output packing and cover
+estimated float payloads, row/map storage and CPU packing overlap. Core carries
+these reservations with results; HTTP retains them through serialization and the
+last transport byte clone. A shared batch remains charged until its last response
+owner releases it. Cancellation releases completed results, while deferred native
+work keeps its reservation until completion or destruction drains the work.
+
+Core token-result tuples and HTTP sparse, base64 and classification conversions
+reserve their additional storage before allocation. Budget rejection returns 429
+and preserves backend health so a later admitted request can succeed. Native
+memory-admission errors use bridge error kind 2; recognized native allocator
+failures use kind 3. Kind 0 clears a previous error after success, and kind 1
+retains other failures as fatal. The native output regression exercises an actual
+CUDA allocator rejection followed by a valid response. This establishes that
+recovery path, not recovery from every device fault or avoidance of all OOMs.
+
+This pool covers LibTorch numeric result storage in the serving pipeline. It does
+not bound Candle results, native pinned allocator reservations, parsed request
+objects, NER aggregation strings/maps, decision-derived JSON trees, model memory,
+socket buffers or allocator overhead. The separate HTTP encoded-response budget
+still applies. This is an allocation-admission limit, not a process RSS ceiling.
+Direct Core consumers must keep response metadata alive with extracted results.
+
 HTTP POST requests also reserve a request slot before reading or parsing the body.
 `TEI_HTTP_INPUT_MAX_BYTES` limits aggregate reserved request-body capacity and
 `TEI_HTTP_OUTPUT_MAX_BYTES` limits aggregate encoded-response allocation capacity;

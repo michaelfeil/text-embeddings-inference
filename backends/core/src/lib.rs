@@ -75,6 +75,32 @@ pub struct DecisionOutput {
     pub memory: Option<result_memory::ResultLease>,
 }
 
+impl DecisionOutput {
+    /// Reserve a duplicate payload before copying an admitted result.
+    pub fn try_clone(&self) -> Result<Self, BackendError> {
+        let bytes = self
+            .logits
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| BackendError::Inference("Decision clone size overflow".into()))?;
+        let memory = self
+            .memory
+            .as_ref()
+            .map(|memory| memory.reserve_more(bytes))
+            .transpose()?;
+        let mut logits = Vec::new();
+        logits
+            .try_reserve_exact(self.logits.len())
+            .map_err(|e| BackendError::Inference(e.to_string()))?;
+        logits.extend_from_slice(&self.logits);
+        Ok(Self {
+            logits,
+            action_probability: self.action_probability,
+            memory,
+        })
+    }
+}
+
 /// An owned result, or CPU completion work after an ordered native submission.
 /// Deferred work must retain all native buffers until `complete` or drop, and
 /// bound pending work before returning. The next model call may run immediately.
@@ -87,6 +113,15 @@ impl<T: Send + 'static> Inference<T> {
         match self {
             Self::Ready(value) => Ok(value),
             Self::Deferred(complete) => complete(),
+        }
+    }
+    pub fn try_map<U: Send + 'static>(
+        self,
+        map: impl FnOnce(T) -> Result<U, BackendError> + Send + 'static,
+    ) -> Result<Inference<U>, BackendError> {
+        match self {
+            Self::Ready(value) => map(value).map(Inference::Ready),
+            Self::Deferred(complete) => Ok(Inference::Deferred(Box::new(move || map(complete()?)))),
         }
     }
     pub fn map<U: Send + 'static>(self, map: impl FnOnce(T) -> U + Send + 'static) -> Inference<U> {

@@ -1098,6 +1098,52 @@ mod completion_tests {
             offsets: vec![],
         }
     }
+    struct AdmittedBackend(Arc<result_memory::ResultPool>);
+    impl CoreBackend for AdmittedBackend {
+        fn health(&self) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn embed(&self, _: Batch) -> Result<Embeddings, BackendError> {
+            let memory = self.0.reserve(64)?;
+            let mut result = Embeddings::default();
+            result.memory = Some(memory);
+            result.insert(0, Embedding::Pooled(vec![1.0; 16]));
+            Ok(result)
+        }
+        fn predict(&self, _: Batch) -> Result<Predictions, BackendError> {
+            unreachable!()
+        }
+        fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
+            unreachable!()
+        }
+    }
+    #[tokio::test]
+    async fn serving_worker_recovers_after_result_admission_rejection() {
+        let pool = result_memory::ResultPool::new(64).unwrap();
+        let held = pool.reserve(64).unwrap();
+        let (sender, receiver) = mpsc::channel(8);
+        let (health, health_receiver) = watch::channel(true);
+        let worker = BackendThread::new(Box::new(AdmittedBackend(pool.clone())), receiver, health);
+        let backend = Backend {
+            backend_sender: sender,
+            health_receiver,
+            _backend_thread: Arc::new(worker),
+            radix_mlp_supported: false,
+            max_batch_size: Some(1),
+            model_type: ModelType::Embedding(Pool::Mean),
+        };
+        assert!(matches!(
+            backend.embed(batch()).await,
+            Err(BackendError::Overloaded(_))
+        ));
+        assert!(*backend.health_receiver.borrow());
+        drop(held);
+        let (result, _) = backend.embed(batch()).await.unwrap();
+        assert!(matches!(&result[&0],Embedding::Pooled(values) if values==&vec![1.0;16]));
+        assert!(*backend.health_receiver.borrow());
+        drop(result);
+        assert_eq!(pool.used(), 0);
+    }
     #[test]
     fn deferred_completion_does_not_block_model_and_drains_after_cancellation() {
         let (gate, wait) = std::sync::mpsc::channel();
