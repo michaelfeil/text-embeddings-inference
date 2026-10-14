@@ -735,9 +735,21 @@ pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
         })
         .collect();
     let fft = FftPlanner::<f64>::new().plan_fft_forward(FFT);
-    let mut values = Vec::with_capacity(frames * BINS);
-    let mut mask = Vec::with_capacity(frames);
-    let mut buffer = vec![Complex::default(); FFT];
+    let mut values = Vec::new();
+    values
+        .try_reserve_exact(frames * BINS)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    let mut mask = Vec::new();
+    mask.try_reserve_exact(frames)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    // Explicit scratch avoids an infallible allocation on every FFT frame.
+    let mut scratch = Vec::new();
+    scratch
+        .try_reserve_exact(fft.get_inplace_scratch_len())
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    scratch.resize(fft.get_inplace_scratch_len(), Complex::default());
+    let mut buffer = [Complex::default(); FFT];
+    let mut magnitude = [0.0; FFT / 2 + 1];
     for frame in 0..frames {
         let valid = frame * HOP + FRAME < samples.len() + FRAME / 2;
         mask.push(u8::from(valid));
@@ -750,8 +762,10 @@ pub(crate) fn extract_audio_features(samples: &[f32]) -> Result<AudioFeatures> {
                 }
             }
         }
-        fft.process(&mut buffer);
-        let magnitude: Vec<f64> = buffer[..=FFT / 2].iter().map(|v| v.norm()).collect();
+        fft.process_with_scratch(&mut buffer, &mut scratch);
+        for (value, complex) in magnitude.iter_mut().zip(&buffer) {
+            *value = complex.norm();
+        }
         for filter in &filters {
             let mel = magnitude
                 .iter()
