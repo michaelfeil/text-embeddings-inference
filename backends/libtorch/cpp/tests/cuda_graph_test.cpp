@@ -278,6 +278,29 @@ void gemm_workspace_lifetime_test() {
  }
  TORCH_CHECK(cache.stats().captures==8&&cache.stats().evictions==6&&cache.stats().hits==14,
    "GEMM fixture did not exercise eviction and surviving replay");
+ // The shared Torch stream pool wraps after 32 acquisitions. Another resident
+ // model must not capture on a lane whose workspaces our graph still uses.
+ std::vector<int32_t> offsets{0,32768};auto ids=at::arange(32768,options);
+ PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,32768},options.dtype(at::kInt)),offsets.data(),1,32768};
+ auto surviving=std::make_unique<CudaGraphCache>(1,65536,1,2ULL<<30,2);
+ auto expected=model.forward(input);
+ TORCH_CHECK(at::equal(surviving->forward(model,input).clone(),expected),"Resident GEMM capture failed");
+ for(int i=0;i<31;++i)c10::cuda::getStreamFromPool(false,0);
+ {
+  GemmWorkspaces other_model;CudaGraphCache other(1,65536,1,2ULL<<30,2);
+  TORCH_CHECK(at::equal(other.forward(other_model,input).clone(),other_model.forward(input)),"Other model capture failed");
+  TORCH_CHECK(other.size()==1,"Other resident model did not capture");
+ }
+ c10::cuda::CUDACachingAllocator::emptyCache();
+ TORCH_CHECK(at::equal(surviving->forward(model,input).clone(),expected),"Another model destroyed a surviving workspace");
+ auto caller=c10::cuda::getCurrentCUDAStream();caller.synchronize();
+ TORCH_CHECK(cudaLaunchHostFunc(caller.stream(),[](void*) {
+  std::this_thread::sleep_for(std::chrono::milliseconds(250));
+ },nullptr)==cudaSuccess,"Unable to enqueue pending replay");
+ auto held=surviving->forward(model,input);at::cuda::CUDAEvent finished;finished.record(caller);
+ surviving.reset();
+ TORCH_CHECK(finished.query(),"Graph cache destroyed before pending replay drained");
+ TORCH_CHECK(at::equal(held,expected),"Graph teardown changed deferred output");
 }
 int main(){c10::InferenceMode guard;admission_test();retired_output_pool_test();gemm_workspace_lifetime_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){

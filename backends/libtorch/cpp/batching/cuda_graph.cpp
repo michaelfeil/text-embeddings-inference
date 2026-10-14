@@ -6,6 +6,7 @@
 #include <string>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include <ATen/cuda/CUDAGraph.h>
+#include <ATen/cuda/CUDAContextLight.h>
 #include <ATen/cuda/CUDAEvent.h>
 #include <c10/cuda/CUDAGuard.h>
 #include <c10/cuda/CUDAException.h>
@@ -38,6 +39,8 @@ struct CudaGraphCache::Impl {
     ~CaptureLane() {
       try {
         c10::cuda::CUDAGuard guard(device);
+        // Warmup may fail before a CUDAGraph exists to clear its workspace.
+        at::cuda::clearCublasWorkspacesForStream(raw);
         C10_CUDA_CHECK_WARN(cudaStreamDestroy(raw));
       } catch(...) { /* A failed device is reported by inference/completion. */ }
     }
