@@ -7,6 +7,15 @@
 #include "vendor/torch_flash_attention/flash_fwd_launch_template.h"
 namespace tei_torch_flash {
 void launch_128(Flash_fwd_params& params,cudaStream_t stream) {
+  if(params.is_bf16&&params.is_causal&&params.seqlen_q>1&&params.seqlen_q<=32&&params.seqlen_q<params.seqlen_k) {
+    const auto [major,minor]=get_compute_capability(get_current_device());
+    if(major==9&&minor==0) {
+      // Short suffixes need at most32 query rows. Keep64-key reductions and
+      // fused softmax while avoiding the original128-query tile's padding.
+      run_flash_fwd<Flash_fwd_kernel_traits<128,32,64,1,false,false,cutlass::bfloat16_t>,false,true>(params,stream);
+      return;
+    }
+  }
   if(params.is_bf16&&params.is_causal&&params.seqlen_q==1&&params.seqlen_k>1) {
     const auto [major,minor]=get_compute_capability(get_current_device());
     if(major==9&&minor==0) {
