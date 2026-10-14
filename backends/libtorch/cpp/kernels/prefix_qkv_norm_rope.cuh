@@ -39,7 +39,7 @@ __global__ void prefix_qkv_norm_rope(const T *q, const T *k, const T *qw, const 
         int r = isq ? row : row - qrows;
         int token = r / (isq ? qheads : kheads);
         const int output_token=Indexed&&!isq?output_rows[token]:token;
-        CUDA_KERNEL_ASSERT(output_token>=0&&output_token<output_tokens);
+        if constexpr(Indexed)CUDA_KERNEL_ASSERT(output_token>=0&&output_token<output_tokens);
         const int output_row=isq?r:output_token*kheads+r%kheads;
         const T *in = isq ? q : k;
         const T *w = isq ? qw : kw;
