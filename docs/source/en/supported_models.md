@@ -51,6 +51,8 @@ Below are some examples of the currently supported models:
 | N/A       | 434M                   | Alibaba GTE    | [Alibaba-NLP/gte-large-en-v1.5](https://hf.co/Alibaba-NLP/gte-large-en-v1.5)                     |
 | N/A       | 396M                   | ModernBERT     | [answerdotai/ModernBERT-large](https://hf.co/answerdotai/ModernBERT-large)                       |
 | N/A       | 150M                   | UltraBERT      | [dmis-lab/UltraBERT-Embed-150M](https://hf.co/dmis-lab/UltraBERT-Embed-150M)                     |
+| N/A       | 137M                   | JinaBERT       | [jinaai/jina-embeddings-v2-base-en](https://hf.co/jinaai/jina-embeddings-v2-base-en)             |
+| N/A       | 137M                   | JinaBERT       | [jinaai/jina-embeddings-v2-base-code](https://hf.co/jinaai/jina-embeddings-v2-base-code)         |
 
 `dmis-lab/UltraBERT-Embed-150M` supports 32,768 input tokens and produces
 768-dimensional CLS embeddings. Use `prompt_name: "query"` for retrieval
@@ -60,8 +62,6 @@ packed Mistral layers on CPU (FP32/FP16) and CUDA SM80+ (FP16/BF16), with
 bidirectional local/global attention and per-layer rotary scales. Its d128 MHA
 geometry currently uses FA2 even when `ATTN_BACKEND=fa4`. Metal and classifier
 heads are unsupported.
-| N/A       | 137M                   | JinaBERT       | [jinaai/jina-embeddings-v2-base-en](https://hf.co/jinaai/jina-embeddings-v2-base-en)             |
-| N/A       | 137M                   | JinaBERT       | [jinaai/jina-embeddings-v2-base-code](https://hf.co/jinaai/jina-embeddings-v2-base-code)         |
 
 To explore the list of best performing text embeddings models, visit the
 [Massive Text Embedding Benchmark (MTEB) Leaderboard](https://huggingface.co/spaces/mteb/leaderboard).
