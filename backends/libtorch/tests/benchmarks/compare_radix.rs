@@ -1,6 +1,6 @@
 #![cfg(feature = "benchmark-cuda")]
 //! Compare native backends on the same packed decoder inputs; tokenization/HTTP are excluded.
-use infinity_v3_backend_libtorch::LibtorchBackend;
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,

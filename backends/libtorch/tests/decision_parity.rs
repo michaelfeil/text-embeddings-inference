@@ -1,5 +1,5 @@
 //! Synthetic typed decision checkpoints; no network or Python runtime.
-use infinity_v3_backend_libtorch::LibtorchBackend;
+use infinity_backend_libtorch::LibtorchBackend;
 use safetensors::{
     serialize_to_file,
     tensor::{Dtype, TensorView},

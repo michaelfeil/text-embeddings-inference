@@ -26,8 +26,8 @@ Earlier Apache-2.0 and INFOIL grants and third-party licenses remain in
 effect for the material and rights they cover. Retained attribution is in
 [NOTICE](NOTICE) and [third-party notices](THIRD_PARTY_NOTICES.md).
 
-The server command is `infinity_v3`; serving Rust packages use the `infinity_v3-`
-prefix, including `infinity_v3-backend-libtorch`. Package metadata credits
+The server command is `infinity_v3`; the LibTorch Rust package is
+`infinity-backend-libtorch`. Package metadata credits
 `infinity authors`; inherited attribution is recorded in [NOTICE](NOTICE).
 LibTorch's native symbols retain their existing names.
 

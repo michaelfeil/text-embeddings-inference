@@ -1,7 +1,7 @@
 [package]
 # Fork license adoption; see the scoped workspace license bundle.
 license-file.workspace = true
-name = "infinity_v3-backend-libtorch"
+name = "infinity-backend-libtorch"
 version.workspace = true
 edition.workspace = true
 authors.workspace = true

@@ -1,6 +1,6 @@
 //! Synthetic CUDA checkpoints exercise both runtimes without network downloads.
 #![cfg(feature = "benchmark-cuda")]
-use infinity_v3_backend_libtorch::LibtorchBackend;
+use infinity_backend_libtorch::LibtorchBackend;
 use safetensors::{
     serialize_to_file,
     tensor::{Dtype, TensorView},

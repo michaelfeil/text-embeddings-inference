@@ -1,5 +1,5 @@
 #![recursion_limit = "256"]
-use infinity_v3_backend_libtorch::LibtorchBackend;
+use infinity_backend_libtorch::LibtorchBackend;
 use safetensors::tensor::{serialize, Dtype, TensorView};
 use std::{
     fs,

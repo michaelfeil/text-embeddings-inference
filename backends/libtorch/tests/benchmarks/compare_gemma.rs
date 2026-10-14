@@ -1,5 +1,5 @@
 //! Compare native backends on identical packed Gemma embeddings; HTTP/tokenization excluded.
-use infinity_v3_backend_libtorch::LibtorchBackend;
+use infinity_backend_libtorch::LibtorchBackend;
 use std::{
     hint::black_box,
     path::PathBuf,
