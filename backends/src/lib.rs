@@ -706,7 +706,9 @@ impl BackendThread {
                     BackendCommand::Decide(batch, inputs, span, sender) => {
                         let _span = span.entered();
                         let result = backend.decide(batch, inputs);
-                        let _ = health_sender.send(result.is_ok());
+                        let _ = health_sender.send(
+                            result.is_ok() || matches!(&result, Err(BackendError::Overloaded(_))),
+                        );
                         let _ = sender.send(result.map(|output| (output, start.elapsed())));
                     }
                     BackendCommand::Health(span, sender) => {
@@ -1116,6 +1118,18 @@ mod completion_tests {
         fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
             unreachable!()
         }
+        fn decide(
+            &self,
+            _: Batch,
+            _: Vec<DecisionInput>,
+        ) -> Result<Vec<DecisionOutput>, BackendError> {
+            let memory = self.0.reserve(64)?;
+            Ok(vec![DecisionOutput {
+                logits: vec![1.0; 16],
+                action_probability: 0.5,
+                memory: Some(memory),
+            }])
+        }
     }
     #[tokio::test]
     async fn serving_worker_recovers_after_result_admission_rejection() {
@@ -1140,6 +1154,23 @@ mod completion_tests {
         drop(held);
         let (result, _) = backend.embed(batch()).await.unwrap();
         assert!(matches!(&result[&0],Embedding::Pooled(values) if values==&vec![1.0;16]));
+        assert!(*backend.health_receiver.borrow());
+        drop(result);
+        assert_eq!(pool.used(), 0);
+        // Decision requests use the synchronous worker path, so verify its
+        // admission failures preserve health and release ownership too.
+        let held = pool.reserve(64).unwrap();
+        assert!(matches!(
+            backend.decide(batch(), vec![DecisionInput::Warmup]).await,
+            Err(BackendError::Overloaded(_))
+        ));
+        assert!(*backend.health_receiver.borrow());
+        drop(held);
+        let (result, _) = backend
+            .decide(batch(), vec![DecisionInput::Warmup])
+            .await
+            .unwrap();
+        assert_eq!(result[0].logits, vec![1.0; 16]);
         assert!(*backend.health_receiver.borrow());
         drop(result);
         assert_eq!(pool.used(), 0);
