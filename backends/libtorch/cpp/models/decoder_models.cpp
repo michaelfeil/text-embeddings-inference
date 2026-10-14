@@ -248,8 +248,12 @@ class Decoder final : public Model {
   }
   at::Tensor attend(const at::Tensor& q,const at::Tensor& k,const at::Tensor& v,const PackedInput& input,int64_t layer) const {
     if(input.prefix)return attend_cached(q,k,v,input,layer);
-    if(!radix_enabled(input))return attend_full(q,k,v,input);
+    if(!radix_enabled(input)) {
+      if(input.capture_prefix)prefix_capture_attention(input,layer,k,v);
+      return attend_full(q,k,v,input);
+    }
     auto unfolded=radix_unfold_qkv(q,k,v,input);
+    if(input.capture_prefix)prefix_capture_attention(input,layer,unfolded[1],unfolded[2]);
     auto full=attend_full(unfolded[0],unfolded[1],unfolded[2],input);
     return radix_fold(full,input);
   }
@@ -552,13 +556,20 @@ public:
     TORCH_CHECK(!tokenwise,"Decoder sequence classifier does not implement token classification");
     TORCH_CHECK(score.defined(),"Decoder checkpoint has no supported sequence classification score head");
     for(int64_t row=0;row<input.batch;++row)TORCH_CHECK(input.offsets[row+1]>input.offsets[row],"Sequence classification requires nonempty inputs");
-    auto hidden_states=forward(input);
+    return classify_hidden(input,forward(input));
+  }
+  at::Tensor classify_hidden(const PackedInput& input,const at::Tensor& hidden_states) const override {
     const auto& logical=prefix_logical_input(input);
 #ifdef TEI_TORCH_CUDA_KERNELS
-    if((dtype==at::kBFloat16||qwen_half_exact)&&family=="qwen2"&&hidden==896&&head_dim==64&&hidden_states.is_cuda()) {
+    if(hidden_states.is_cuda()&&hidden_states.dim()==2&&hidden_states.is_contiguous()
+      &&(hidden_states.scalar_type()==at::kBFloat16||hidden_states.scalar_type()==at::kHalf||hidden_states.scalar_type()==at::kFloat)
+      &&logical.ids.device()==hidden_states.device()&&logical.ids.scalar_type()==at::kLong
+      &&logical.ids.dim()==1&&logical.ids.is_contiguous()
+      &&logical.cumulative.device()==hidden_states.device()&&logical.cumulative.scalar_type()==at::kInt
+      &&logical.cumulative.is_contiguous()) {
       TORCH_CHECK(hidden_states.size(-1)==score.size(1),"Classifier backbone output projection has incompatible width");
-      return at::linear(qwen2_packed_classifier_rows(hidden_states,logical.ids,logical.cumulative,
-        logical.batch,options.integer("pad_token_id",-1)),score,score_bias);
+      return at::linear(decoder_packed_classifier_rows(hidden_states,logical.ids,logical.cumulative,
+        logical.batch,options.integer("pad_token_id",-1),options.values.count("pad_token_id")!=0),score,score_bias);
     }
 #endif
     auto starts=logical.cumulative.narrow(0,0,logical.batch).to(at::kLong);
@@ -615,8 +626,23 @@ public:
       auto q = qkv.narrow(1, 0, heads), k = qkv.narrow(1, heads, kvheads), v = qkv.narrow(1, heads + kvheads, kvheads);
 #ifdef TEI_TORCH_CUDA_KERNELS
       if (q.is_cuda() && layer.q_norm.defined() && head_dim==128) {
-        auto pair=fused_qk_norm_rope(q,k,layer.q_norm,layer.k_norm,cosine,sine,epsilon);
-        q=pair.first;k=pair.second;
+        if(input.prefix&&input.prefix->collect_graph&&!radix_enabled(input)
+          &&(q.scalar_type()==at::kHalf||q.scalar_type()==at::kBFloat16)) {
+          auto& packed=input.prefix->prepare_graph_layer(layer_index,k,v);
+          if(input.batch==1) {
+            auto key_target=packed.key.narrow(0,input.prefix->hits[0],k.size(0));
+            auto value_target=packed.value.narrow(0,input.prefix->hits[0],v.size(0));
+            q=fused_qkv_norm_rope_into(q,k,v,layer.q_norm,layer.k_norm,cosine,sine,epsilon,key_target,value_target);
+            k=key_target;v=value_target;
+          }else {
+            const auto& rows=input.prefix->prepare_graph_rows(q.device());
+            q=fused_qkv_norm_rope_into(q,k,v,layer.q_norm,layer.k_norm,cosine,sine,epsilon,packed.key,packed.value,rows);
+            k=packed.key;v=packed.value;
+          }
+        }else {
+          auto pair=fused_qk_norm_rope(q,k,layer.q_norm,layer.k_norm,cosine,sine,epsilon);
+          q=pair.first;k=pair.second;
+        }
       } else
 #endif
       {

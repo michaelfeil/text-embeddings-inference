@@ -10,6 +10,19 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #endif
 using namespace tei;
+void rotary_presence_test(Model& model,PackedInput input) {
+  input.images.clear();input.multimodal_positions=at::Tensor();input.host_multimodal_positions=at::Tensor();
+  auto implicit=model.forward(input);auto explicit_zero=input;
+  explicit_zero.multimodal_positions=at::zeros({3,input.ids.numel()},input.ids.options());
+  auto expected=model.forward(explicit_zero);
+  TORCH_CHECK(!at::equal(implicit,expected),"Rotary presence control did not distinguish implicit positions from explicit zeros");
+  PrefixCache cache(16<<20,32,8);cache.run(model,input,0);
+  TORCH_CHECK(at::allclose(cache.run(model,explicit_zero,0),expected,.003,.003)&&cache.stats().hits==0,
+    "Explicit zero rotary axes reused implicit-position state");
+  cache.clear();cache.run(model,explicit_zero,0);
+  TORCH_CHECK(at::allclose(cache.run(model,input,0),implicit,.003,.003)&&cache.stats().hits==0,
+    "Implicit rotary positions reused explicit-zero state");
+}
 int main(int argc,char** argv) {
   c10::InferenceMode inference;at::set_num_threads(1);at::manual_seed(712);
   Options cfg;
@@ -47,6 +60,7 @@ int main(int argc,char** argv) {
   PackedInput input{at::from_blob(ids.data(),{6},options),at::zeros({6},options),at::from_blob(pos.data(),{6},options),
     at::from_blob(offsets.data(),{3},options.dtype(at::kInt)),offsets.data(),2,4};
   auto plain=model->forward(input);
+  rotary_presence_test(*model,input);
   input.images.push_back({at::rand({4,6}),{1,2,2},2,1,1,0});
   input.multimodal_positions=input.positions.unsqueeze(0).repeat({3,1});
   auto visual=model->forward(input);
@@ -104,6 +118,7 @@ int main(int argc,char** argv) {
     auto host=input,dev=input;host.images[0].pixels=host.images[0].pixels.to(at::kHalf);
     dev.ids=host.ids.to(device);dev.types=host.types.to(device);dev.positions=host.positions.to(device);dev.cumulative=host.cumulative.to(device);
     dev.multimodal_positions=host.multimodal_positions.to(device);dev.images[0].pixels=host.images[0].pixels.to(device);
+    rotary_presence_test(*native,dev);
     auto expected=reference->forward(host).to(at::kFloat),actual=native->forward(dev).cpu().to(at::kFloat);
     check_prefix_cache(*native,dev,0,.003,.003);
     PrefixCache context_cache(1<<20,64,8);context_cache.run(*native,dev,0);
