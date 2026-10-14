@@ -9,10 +9,10 @@ public:
 };
 // A nested C ABI operation has already classified and captured its exception.
 // Preserve that classification when the caller unwinds its pending lease.
-class NativeCallError final : public std::runtime_error {
+struct NativeCallError final {
 public:
   const int32_t kind;
-  NativeCallError(int32_t code,const char* message):std::runtime_error(message),kind(code) {}
+  explicit NativeCallError(int32_t code):kind(code) {}
 };
 inline void require_memory_admission(bool accepted,const char* message) {
   if(!accepted)throw MemoryAdmissionError(message);

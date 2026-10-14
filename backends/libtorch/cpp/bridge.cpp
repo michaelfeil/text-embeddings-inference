@@ -339,7 +339,7 @@ std::vector<tei::DecisionRequest> decision_requests(const TeiDecision* requests,
 template<class F> int32_t checked(F&& f) {
   error_kind=0;error_fallback=nullptr;error.clear();
   try { c10::InferenceMode guard; f(); return 0; }
-  catch (const tei::NativeCallError& ex) { set_error(ex.kind,ex.what());return -1; }
+  catch (const tei::NativeCallError& ex) { error_kind=ex.kind;return -1; }
   catch (const tei::MemoryAdmissionError& ex) { set_error(2,ex.what());return -1; }
   catch (const c10::OutOfMemoryError& ex) { set_error(3,ex.what());return -1; }
   catch (const c10::AcceleratorError& ex) { set_error(tei::accelerator_error_kind(ex),ex.what());return -1; }
@@ -601,7 +601,7 @@ void* tei_forward_submit(void* handle, const int64_t* ids, const int64_t* types,
     lease=std::make_unique<tei::OutputLease>(model.outputs,model.device,capacity);
     lease->allocate();
     if (forward_radix(handle,ids,types,positions,cumulative,batch,max_sequence,pool,pooled,pooled_count,raw,raw_count,nullptr,capacity,media_positions,images,image_count,audios,audio_count,radix,lease.get()) != 0)
-      throw tei::NativeCallError(error_kind,error.c_str());
+      throw tei::NativeCallError(error_kind);
   });
   return status==0?lease.release():nullptr;
 }
