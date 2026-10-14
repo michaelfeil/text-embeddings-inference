@@ -959,8 +959,8 @@ async fn rerank_inner(
             let local_infer = infer.clone();
             let local_batch_counter = batch_counter.clone();
             futures.push(rerank_inner(
-                super::memory::copy_input(&req.query)?,
-                super::memory::copy_input(text)?,
+                req.query.clone(),
+                text.clone(),
                 truncate,
                 local_infer.0,
                 local_batch_counter,
@@ -2472,17 +2472,6 @@ pub async fn run(
         cors_allow_origin,
     )?;
 
-    let connection_limit = std::env::var("INFINITY_HTTP_MAX_CONNECTIONS")
-        .ok()
-        .map(|value| value.parse::<usize>())
-        .transpose()
-        .context("Invalid INFINITY_HTTP_MAX_CONNECTIONS")?
-        .unwrap_or(256);
-    anyhow::ensure!(
-        connection_limit > 0 && connection_limit <= tokio::sync::Semaphore::MAX_PERMITS,
-        "INFINITY_HTTP_MAX_CONNECTIONS must be positive and representable"
-    );
-
     // Run server
     let listener = tokio::net::TcpListener::bind(&addr)
         .await
@@ -2491,13 +2480,9 @@ pub async fn run(
     tracing::info!("Starting HTTP server: {}", &addr);
     tracing::info!("Ready");
 
-    super::connections::serve(
-        listener,
-        app,
-        Arc::new(tokio::sync::Semaphore::new(connection_limit)),
-        shutdown::shutdown_signal(),
-    )
-    .await;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown::shutdown_signal())
+        .await?;
 
     Ok(())
 }

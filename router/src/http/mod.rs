@@ -1,4 +1,3 @@
-pub(crate) mod connections;
 pub(crate) mod memory;
 pub mod ner;
 pub(crate) mod response_format;
