@@ -250,6 +250,41 @@ void retired_output_pool_test() {
   TORCH_CHECK(pools()==initial,"Rejected capture left a private pool reserved");
  }
 }
+void graph_teardown_pool_test() {
+ auto pools=[] {
+  std::set<c10::MempoolId_t> result;
+  for(const auto& segment:c10::cuda::CUDACachingAllocator::snapshot({0,0},false).segments)
+   if(segment.owner_private_pool_id!=c10::MempoolId_t{0,0})result.insert(segment.owner_private_pool_id);
+  return result;
+ };
+ Dense model;
+ auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+ std::vector<int32_t> offsets{0,4};auto ids=at::arange(4,options);
+ PackedInput input{ids,at::zeros_like(ids),ids,at::tensor({0,4},options.dtype(at::kInt)),offsets.data(),1,4};
+ const auto before=pools();
+ for(int repeat=0;repeat<8;++repeat) {
+  {
+   CudaGraphCache cache(1,64,1);
+   TORCH_CHECK(at::equal(cache.forward(model,input),model.forward(input)),"Teardown fixture changed output");
+   TORCH_CHECK(cache.size()==1,"Teardown fixture did not capture");
+  }
+  TORCH_CHECK(pools()==before,"Destroyed graph cache left a private pool reserved at iteration ",repeat);
+ }
+ // Deferred outputs must remain valid after model teardown. Once released,
+ // their remaining cached reservation must be reclaimable by the allocator.
+ at::Tensor held;std::set<c10::MempoolId_t> retained;
+ auto expected=model.forward(input);
+ {
+  CudaGraphCache cache(1,64,1);
+  held=cache.forward(model,input);
+  retained=pools();for(const auto& pool:before)retained.erase(pool);
+  TORCH_CHECK(retained.size()==1,"Deferred teardown fixture did not capture a pool");
+ }
+ TORCH_CHECK(at::equal(held,expected),"Graph teardown changed deferred output");
+ held=at::Tensor();
+ for(const auto& pool:retained)c10::cuda::CUDACachingAllocator::emptyCache(pool);
+ TORCH_CHECK(pools()==before,"Released deferred graph output left an unreclaimable private pool");
+}
 class GemmWorkspaces final:public Model {
  at::Tensor weight=at::randn({640,640},at::TensorOptions().device(at::kCUDA).dtype(at::kBFloat16));
 public:
@@ -305,7 +340,7 @@ void gemm_workspace_lifetime_test() {
  TORCH_CHECK(finished.query(),"Graph cache destroyed before pending replay drained");
  TORCH_CHECK(at::equal(held,expected),"Graph teardown changed deferred output");
 }
-int main(){c10::InferenceMode guard;admission_test();retired_output_pool_test();gemm_workspace_lifetime_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
+int main(){c10::InferenceMode guard;admission_test();retired_output_pool_test();graph_teardown_pool_test();gemm_workspace_lifetime_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);
