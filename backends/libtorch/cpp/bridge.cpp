@@ -31,6 +31,8 @@
 #include <c10/core/InferenceMode.h>
 #include <c10/core/impl/DeviceGuardImplInterface.h>
 #include <cstring>
+#include <cstdio>
+#include "helpers/vendor_error.h"
 #include <cstdlib>
 #include <mutex>
 #include "batching/input_validation.h"
@@ -339,6 +341,11 @@ template<class F> int32_t checked(F&& f) {
   error_kind=0;error_fallback=nullptr;error.clear();
   try { c10::InferenceMode guard; f(); return 0; }
   catch (const tei::NativeCallError& ex) { error_kind=ex.kind;return -1; }
+  catch (const tei::VendorAllocationError& ex) {
+    char diagnostic[192];
+    std::snprintf(diagnostic,sizeof(diagnostic),"%s allocation failed (vendor status %d)",ex.operation,ex.status);
+    set_error(3,diagnostic);return -1;
+  }
   catch (const tei::MemoryAdmissionError& ex) { set_error(2,ex.what());return -1; }
   catch (const c10::OutOfMemoryError& ex) { set_error(3,ex.what());return -1; }
   catch (const c10::AcceleratorError& ex) { set_error(tei::accelerator_error_kind(ex),ex.what());return -1; }
