@@ -10,7 +10,7 @@ void radix_workspace_recovery_test(const c10::Device& device) {
     {"num_attention_heads","32"},{"num_key_value_heads","2"},{"head_dim","128"},
     {"num_hidden_layers","1"},{"max_position_embeddings","1024"},
     {"rope_parameters.partial_rotary_factor",".5"},{"layer_types.0","full_attention"},
-    {"num_experts","3"},{"num_experts_per_tok","2"}};
+    {"num_experts","128"},{"num_experts_per_tok","8"}};
   auto options=at::TensorOptions().device(device).dtype(at::kBFloat16);Weights checkpoint;
   auto put=[&](const std::string& name,std::initializer_list<int64_t> dimensions,bool norm=false) {
     checkpoint["model."+name]=norm?at::ones(dimensions,options):
@@ -22,8 +22,8 @@ void radix_workspace_recovery_test(const c10::Device& device) {
   put(layer+"self_attn.q_proj.weight",{8192,2048});put(layer+"self_attn.k_proj.weight",{256,2048});
   put(layer+"self_attn.v_proj.weight",{256,2048});put(layer+"self_attn.o_proj.weight",{2048,4096});
   put(layer+"self_attn.q_norm.weight",{128},true);put(layer+"self_attn.k_norm.weight",{128},true);
-  put(layer+"mlp.gate.weight",{3,2048});put(layer+"mlp.experts.gate_up_proj",{3,12,2048});
-  put(layer+"mlp.experts.down_proj",{3,2048,6});
+  put(layer+"mlp.gate.weight",{128,2048});put(layer+"mlp.experts.gate_up_proj",{128,128,2048});
+  put(layer+"mlp.experts.down_proj",{128,2048,64});
   put(layer+"mlp.shared_expert.gate_proj.weight",{12,2048});put(layer+"mlp.shared_expert.up_proj.weight",{12,2048});
   put(layer+"mlp.shared_expert.down_proj.weight",{2048,12});put(layer+"mlp.shared_expert_gate.weight",{1,2048});
   auto build=[&]{auto weights=checkpoint;auto model=create_qwen35(cfg,weights,device,at::kBFloat16);model->ready();return model;};
