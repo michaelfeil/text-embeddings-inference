@@ -573,23 +573,77 @@ impl EmbeddingGemma2Processor {
         let mut sources = Vec::new();
         let mut source_memory = Vec::new();
         for i in 1..=unique_indices.len() {
-            let frame = std::fs::read(dir.path().join(format!("frame-{i:03}.png")))
-                .map_err(|_| invalid("Missing decoded video frame"))?;
-            if frame.len() > self.config.max_image_bytes {
-                return Err(invalid("Decoded video frame exceeds byte limit"));
-            }
-            source_memory.push(self.budget.reserve(frame.len() * 3)?);
-            sources.push(format!("data:image/png;base64,{}", STANDARD.encode(frame)));
+            let (source, reservation) = read_video_frame(
+                &dir.path().join(format!("frame-{i:03}.png")),
+                self.config.max_image_bytes,
+                &self.budget,
+            )?;
+            source_memory.push(reservation);
+            sources.push(source);
         }
         indices
             .iter()
             .map(|index| {
                 let source = &sources[unique_indices.binary_search(index).unwrap()];
                 let memory = self.budget.reserve(source.len())?;
-                Ok((source.clone(), memory))
+                let mut copy = String::new();
+                copy.try_reserve_exact(source.len()).map_err(|_| {
+                    TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits)
+                })?;
+                copy.push_str(source);
+                Ok((copy, memory))
             })
             .collect()
     }
+}
+
+fn read_video_frame(
+    path: &Path,
+    max_bytes: usize,
+    budget: &MediaBudget,
+) -> Result<(String, OwnedSemaphorePermit)> {
+    use std::io::Read;
+    const PREFIX: &str = "data:image/png;base64,";
+    let mut file = std::fs::File::open(path).map_err(|_| invalid("Missing decoded video frame"))?;
+    let length = usize::try_from(
+        file.metadata()
+            .map_err(|_| invalid("Missing decoded video frame"))?
+            .len(),
+    )
+    .map_err(|_| invalid("Decoded video frame exceeds byte limit"))?;
+    if length > max_bytes {
+        return Err(invalid("Decoded video frame exceeds byte limit"));
+    }
+    let encoded = base64::encoded_len(length, true)
+        .and_then(|size| size.checked_add(PREFIX.len()))
+        .ok_or_else(|| invalid("Decoded video frame allocation overflow"))?;
+    let bytes = length
+        .checked_add(encoded)
+        .ok_or_else(|| invalid("Decoded video frame allocation overflow"))?;
+    // Charge simultaneous compressed frame and final data URL before reading.
+    let memory = budget.reserve(bytes)?;
+    let mut frame = Vec::new();
+    frame
+        .try_reserve_exact(length)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    frame.resize(length, 0);
+    file.read_exact(&mut frame)
+        .map_err(|_| invalid("Missing decoded video frame"))?;
+    let mut extra = [0u8; 1];
+    if file
+        .read(&mut extra)
+        .map_err(|_| invalid("Missing decoded video frame"))?
+        != 0
+    {
+        return Err(invalid("Decoded video frame changed during read"));
+    }
+    let mut source = String::new();
+    source
+        .try_reserve_exact(encoded)
+        .map_err(|_| TextEmbeddingsError::Overloaded(tokio::sync::TryAcquireError::NoPermits))?;
+    source.push_str(PREFIX);
+    STANDARD.encode_string(&frame, &mut source);
+    Ok((source, memory))
 }
 
 fn sample_video_frames(
@@ -695,6 +749,22 @@ mod tests {
         assert_eq!(frames.len(), 32);
         assert_eq!(frames[0], 0);
         assert_eq!(frames[31], 3570);
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("frame.png");
+        std::fs::write(&path, [1, 2, 3]).unwrap();
+        let budget = MediaBudget::new(1024).unwrap();
+        assert!(read_video_frame(&path, 2, &budget).is_err());
+        let held = budget.reserve(1024).unwrap();
+        assert!(matches!(
+            read_video_frame(&path, 3, &budget),
+            Err(TextEmbeddingsError::Overloaded(_))
+        ));
+        drop(held);
+        let (source, memory) = read_video_frame(&path, 3, &budget).unwrap();
+        assert_eq!(source, "data:image/png;base64,AQID");
+        assert!(budget.reserve(1024).is_err());
+        drop(memory);
+        assert!(budget.reserve(1024).is_ok());
     }
     #[test]
     fn audio_frame_and_token_counts_follow_two_stride_two_convolutions() {
