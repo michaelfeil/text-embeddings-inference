@@ -712,7 +712,19 @@ pub async fn systemone(
                     batch_counter,
                 )
                 .await
-                .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+                .map_err(|e| {
+                    let status = if matches!(
+                        e,
+                        infinity_v3_core::TextEmbeddingsError::Backend(
+                            infinity_v3_backend::BackendError::Overloaded(_)
+                        )
+                    ) {
+                        StatusCode::TOO_MANY_REQUESTS
+                    } else {
+                        StatusCode::INTERNAL_SERVER_ERROR
+                    };
+                    error(status, e)
+                })?;
             let answer = service
                 .answer(&question, output.results)
                 .map_err(|e| error(StatusCode::INTERNAL_SERVER_ERROR, e))?;
@@ -879,6 +891,7 @@ mod tests {
                 },
             };
             let output = DecisionOutput {
+                memory: None,
                 logits: serde_json::from_value(seq["logits"].clone()).unwrap(),
                 action_probability: seq["action_probability"].as_f64().unwrap() as f32,
             };

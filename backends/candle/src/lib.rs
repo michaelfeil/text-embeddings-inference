@@ -790,7 +790,7 @@ impl Backend for CandleBackend {
             cumulative_length += length;
         }
 
-        Ok(embeddings)
+        Ok(embeddings.into())
     }
 
     fn predict(&self, batch: Batch) -> Result<Predictions, BackendError> {
@@ -806,7 +806,7 @@ impl Backend for CandleBackend {
             predictions.insert(i, r);
         }
 
-        Ok(predictions)
+        Ok(predictions.into())
     }
 
     fn predict_tokens(&self, batch: Batch) -> Result<TokenPredictions, BackendError> {
@@ -829,7 +829,7 @@ impl Backend for CandleBackend {
             predictions.insert(i, token_predictions);
         }
 
-        Ok(predictions)
+        Ok(predictions.into())
     }
 }
 

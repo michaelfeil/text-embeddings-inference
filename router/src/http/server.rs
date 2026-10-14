@@ -115,6 +115,7 @@ async fn predict(
     let single = matches!(&req.inputs, PredictInput::Single(_));
     let labels = classifier_labels(&info.model_type)?;
     let (scores, metadata) = run_classification(infer, info, Extension(context), req).await?;
+    reserve_classification_output(&scores, &labels).map_err(ErrorResponse::from)?;
     let predictions = scores
         .into_iter()
         .map(|scores| {
@@ -360,6 +361,9 @@ async fn classify(
     let (scores, metadata) = run_classification(infer, info, context, request)
         .await
         .map_err(classify_inference_error)?;
+    reserve_classification_output(&scores, &labels)
+        .map_err(ErrorResponse::from)
+        .map_err(classify_inference_error)?;
     let response = classification_response(scores, &labels, model, metadata.compute_tokens);
     Ok((HeaderMap::from(metadata), Json(response)))
 }
@@ -573,11 +577,12 @@ async fn predict_tokens(
         let mut total_inference_time = 0;
         let mut total_compute_tokens = 0;
 
-        for (token_predictions, prompt_tokens, tokenization, queue, inference) in results {
-            total_compute_tokens += prompt_tokens;
-            total_tokenization_time += tokenization.as_nanos() as u64;
-            total_queue_time += queue.as_nanos() as u64;
-            total_inference_time += inference.as_nanos() as u64;
+        for response in results {
+            total_compute_tokens += response.metadata.prompt_tokens;
+            total_tokenization_time += response.metadata.tokenization.as_nanos() as u64;
+            total_queue_time += response.metadata.queue.as_nanos() as u64;
+            total_inference_time += response.metadata.inference.as_nanos() as u64;
+            let token_predictions = response.results;
 
             let mut token_predictions_result = Vec::with_capacity(token_predictions.len());
             for (token, token_id, scores, start, end) in token_predictions {
@@ -941,6 +946,7 @@ async fn similarity(
     let embeddings = embed_response.0 .0;
 
     // Compute cosine
+    reserve_result_allocation::<f32>(batch_size - 1).map_err(ErrorResponse::from)?;
     let distances = (1..batch_size)
         .map(|i| 1.0 - f32::cosine(&embeddings[0], &embeddings[i]).unwrap() as f32)
         .collect();
@@ -1169,14 +1175,15 @@ async fn embed_sparse(
 
     let start_time = Instant::now();
 
-    let sparsify = |values: Vec<f32>| {
+    let sparsify = |values: Vec<f32>| -> Result<Vec<SparseValue>, TextEmbeddingsError> {
+        reserve_result_allocation::<SparseValue>(values.len())?;
         let mut sparse_values = Vec::with_capacity(values.len());
         for (index, value) in values.into_iter().enumerate() {
             if value != 0.0 {
                 sparse_values.push(SparseValue { index, value });
             }
         }
-        sparse_values
+        Ok(sparse_values)
     };
     let truncate = req.truncate.unwrap_or(info.auto_truncate);
 
@@ -1202,7 +1209,9 @@ async fn embed_sparse(
             metrics::counter!("te_request_success", "method" => "single").increment(1);
 
             (
-                EmbedSparseResponse(vec![sparsify(response.results)]),
+                EmbedSparseResponse(vec![
+                    sparsify(response.results).map_err(ErrorResponse::from)?
+                ]),
                 ResponseMetadata::new(
                     compute_chars,
                     response.metadata.prompt_tokens,
@@ -1271,7 +1280,7 @@ async fn embed_sparse(
                             local_batch_counter,
                         )
                         .await?;
-                    Ok((sparsify(response.results), response.metadata))
+                    Ok((sparsify(response.results)?, response.metadata))
                 })
             }
             let results = join_all(futures)
@@ -1534,9 +1543,9 @@ async fn openai_embed(
     Json(req): Json<OpenAICompatRequest>,
 ) -> Result<(HeaderMap, Json<OpenAICompatResponse>), (StatusCode, Json<OpenAICompatErrorResponse>)>
 {
-    let encode_embedding = |array: Vec<f32>| {
+    let encode_embedding = |array: Vec<f32>| -> Result<Embedding, ErrorResponse> {
         match req.encoding_format {
-            EncodingFormat::Float => Embedding::Float(array),
+            EncodingFormat::Float => Ok(Embedding::Float(array)),
             EncodingFormat::Base64 => {
                 // Unsafe is fine here since we do not violate memory ownership: bytes
                 // is only used in this scope and we return an owned string
@@ -1544,7 +1553,13 @@ async fn openai_embed(
                     std::slice::from_raw_parts(array.as_ptr() as *const u8, array.len() * 4)
                 };
 
-                Embedding::Base64(BASE64_STANDARD.encode(bytes))
+                let encoded_size = base64::encoded_len(bytes.len(), true).ok_or_else(|| {
+                    ErrorResponse::from(TextEmbeddingsError::Backend(BackendError::Inference(
+                        "Base64 output size overflow".into(),
+                    )))
+                })?;
+                reserve_result_allocation::<u8>(encoded_size).map_err(ErrorResponse::from)?;
+                Ok(Embedding::Base64(BASE64_STANDARD.encode(bytes)))
             }
         }
     };
@@ -1581,7 +1596,7 @@ async fn openai_embed(
 
             metrics::counter!("te_request_success", "method" => "single").increment(1);
 
-            let embedding = encode_embedding(response.results);
+            let embedding = encode_embedding(response.results)?;
             (
                 vec![OpenAICompatEmbedding {
                     object: "embedding",
@@ -1676,7 +1691,7 @@ async fn openai_embed(
                 total_queue_time += r.metadata.queue.as_nanos() as u64;
                 total_inference_time += r.metadata.inference.as_nanos() as u64;
                 total_compute_tokens += r.metadata.prompt_tokens;
-                let embedding = encode_embedding(r.results);
+                let embedding = encode_embedding(r.results)?;
                 embeddings.push(OpenAICompatEmbedding {
                     object: "embedding",
                     embedding,
@@ -2359,6 +2374,9 @@ pub async fn run(
             admission,
             super::memory::response_budget,
         ))
+        .layer(axum::middleware::from_fn(
+            super::response_format::retain_results,
+        ))
         .layer(cors_layer);
 
     // Run server
@@ -2422,6 +2440,42 @@ impl From<serde_json::Error> for ErrorResponse {
     }
 }
 
+fn reserve_result_allocation<T>(count: usize) -> Result<(), TextEmbeddingsError> {
+    let bytes = count
+        .checked_mul(std::mem::size_of::<T>())
+        .ok_or_else(|| BackendError::Inference("HTTP result size overflow".into()))?;
+    infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
+    Ok(())
+}
+
+fn reserve_classification_output(
+    scores: &[Vec<f32>],
+    labels: &std::collections::HashMap<String, String>,
+) -> Result<(), TextEmbeddingsError> {
+    let overflow = || BackendError::Inference("Classification result size overflow".into());
+    let mut bytes = scores
+        .len()
+        .checked_mul(std::mem::size_of::<Vec<Prediction>>() + std::mem::size_of::<ClassifyData>())
+        .ok_or_else(overflow)?;
+    for row in scores {
+        bytes = bytes
+            .checked_add(
+                row.len()
+                    .checked_mul(std::mem::size_of::<Prediction>())
+                    .ok_or_else(overflow)?,
+            )
+            .ok_or_else(overflow)?;
+        for index in 0..row.len() {
+            let label_bytes = labels
+                .get(&index.to_string())
+                .map_or(6 + 20, |label| label.len());
+            bytes = bytes.checked_add(label_bytes).ok_or_else(overflow)?;
+        }
+    }
+    infinity_v3_backend::result_memory::reserve_for_request(bytes)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod classify_tests {
     use super::*;
@@ -2447,7 +2501,7 @@ mod classify_tests {
         assert_eq!(response.data[0].index, 0);
         assert_eq!(response.data[0].num_classes, 2);
         assert!((response.data[0].probs[0] - 0.11920292).abs() < 1e-6);
-        assert!((response.data[0].probs[1] - 0.88079708).abs() < 1e-6);
+        assert!((response.data[0].probs[1] - 0.880_797_1).abs() < 1e-6);
         assert_eq!(response.data[1].label, "negative");
         assert_eq!(response.data[1].index, 1);
         assert_eq!(response.data[1].probs, vec![0.5, 0.5]);

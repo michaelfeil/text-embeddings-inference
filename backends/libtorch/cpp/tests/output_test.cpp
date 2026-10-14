@@ -1,12 +1,93 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "batching/output.h"
+#include "bridge.h"
 #include "batching/cuda_graph.h"
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <c10/core/InferenceMode.h>
 #include <chrono>
+#include <cmath>
 #include <future>
 #include <iostream>
 #include <utility>
+
+// Exercise the production C ABI catch and error-unwind path with a real CUDA
+// allocator rejection. The large payload is never transferred or read.
+void native_allocator_error_test(const at::Device& device,bool bounded_staging=false) {
+  TeiConfig cfg{16,2,2,24,32,32,1,1e-6,0};
+  std::unique_ptr<void,decltype(&tei_destroy)> engine(tei_create(&cfg,device.str().c_str(),1),tei_destroy);
+  TORCH_CHECK(engine,tei_error());
+  for(const auto& [key,value]:std::initializer_list<std::pair<const char*,const char*>>{
+      {"model_type","qwen3"},{"hidden_size","16"},{"num_attention_heads","2"},
+      {"num_key_value_heads","1"},{"head_dim","8"},{"intermediate_size","24"},
+      {"num_hidden_layers","2"},{"vocab_size","32"},{"max_position_embeddings","32"},
+      {"hidden_act","silu"},{"rms_norm_eps","0.000001"}})
+    TORCH_CHECK(tei_option(engine.get(),key,value)==0,tei_error());
+  auto weight=[&](const std::string& key,std::initializer_list<int64_t> shape,bool norm=false) {
+    int64_t count=1;for(auto n:shape)count*=n;
+    float offset=0;for(auto c:key)offset+=c;
+    auto value=(at::sin(at::arange(count,at::TensorOptions().dtype(at::kFloat))*.13+offset*.01)*.15).view(at::IntArrayRef(shape));
+    if(norm)value+=1;
+    TORCH_CHECK(tei_weight(engine.get(),key.c_str(),reinterpret_cast<const uint8_t*>(value.const_data_ptr()),
+      value.sizes().data(),value.dim(),0)==0,tei_error());
+  };
+  weight("model.embed_tokens.weight",{32,16});weight("model.norm.weight",{16},true);
+  for(int layer=0;layer<2;++layer) {
+    auto root="model.layers."+std::to_string(layer)+".";
+    weight(root+"input_layernorm.weight",{16},true);weight(root+"post_attention_layernorm.weight",{16},true);
+    weight(root+"self_attn.q_proj.weight",{16,16});weight(root+"self_attn.k_proj.weight",{8,16});
+    weight(root+"self_attn.v_proj.weight",{8,16});weight(root+"self_attn.o_proj.weight",{16,16});
+    weight(root+"self_attn.q_norm.weight",{8},true);weight(root+"self_attn.k_norm.weight",{8},true);
+    weight(root+"mlp.gate_proj.weight",{24,16});weight(root+"mlp.up_proj.weight",{24,16});weight(root+"mlp.down_proj.weight",{16,24});
+  }
+  if(bounded_staging)TORCH_CHECK(tei_option(engine.get(),"_output_staging_max_bytes","256")==0,tei_error());
+  TORCH_CHECK(tei_ready(engine.get())==0,tei_error());
+  int64_t ids[]={3,4,5,6},types[4]{},positions[]={0,1,2,3},row=0;int32_t offsets[]={0,4};
+  auto valid=[&] {
+    std::unique_ptr<void,decltype(&tei_output_destroy)> output(tei_forward_submit(engine.get(),ids,types,positions,
+      offsets,1,4,0,&row,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(output,tei_error());const auto* values=tei_output_wait(output.get());TORCH_CHECK(values,tei_error());
+    for(int i=0;i<16;++i)TORCH_CHECK(std::isfinite(values[i]),"Allocator failure corrupted valid response");
+    TORCH_CHECK(tei_last_error_kind()==0,"Valid result retained allocator error kind");
+  };
+  valid();
+  if(bounded_staging) {
+    std::unique_ptr<void,decltype(&tei_output_destroy)> held(tei_forward_submit(engine.get(),ids,types,positions,
+      offsets,1,4,0,&row,1,nullptr,0,16,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(held,tei_error());const auto* before=tei_output_wait(held.get());TORCH_CHECK(before,tei_error());
+    std::array<float,16> saved;std::copy_n(before,16,saved.begin());
+    // A retains128 output+112 input bytes. B's empty result needs8 bytes;
+    // its first32-byte input pin cannot fit until the held result is released.
+    auto rejected=tei_forward_submit(engine.get(),ids,types,positions,offsets,1,4,0,nullptr,0,
+      nullptr,0,0,nullptr,nullptr,0,nullptr,0,nullptr);
+    TORCH_CHECK(!rejected&&tei_last_error_kind()==2&&std::string(tei_error()).find("pending results")!=std::string::npos,
+      "Nested input staging saturation lost its admission classification or diagnostic");
+    const auto* after=tei_output_wait(held.get());TORCH_CHECK(after,tei_error());
+    for(size_t i=0;i<saved.size();++i)TORCH_CHECK(after[i]==saved[i],"Rejected input upload corrupted a held result");
+    held.reset();valid();return;
+  }
+  C10_CUDA_CHECK(cudaDeviceSynchronize());
+  c10::cuda::CUDACachingAllocator::emptyCache();
+  const double original=c10::cuda::CUDACachingAllocator::getMemoryFraction(device.index());
+  size_t free=0,total=0;C10_CUDA_CHECK(cudaMemGetInfo(&free,&total));
+  const auto reserved=c10::cuda::CUDACachingAllocator::getDeviceStats(device.index()).reserved_bytes[0].current;
+  c10::cuda::CUDACachingAllocator::setMemoryFraction(double(reserved+(1<<20))/total,device.index());
+  try {
+    const auto* unread=reinterpret_cast<const int64_t*>(uintptr_t(1));int32_t huge[]={0,4000000};
+    std::unique_ptr<void,decltype(&tei_output_destroy)> rejected(tei_forward_submit(engine.get(),unread,unread,
+      unread,huge,1,4000000,0,nullptr,0,&row,1,64000000,nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(!rejected&&tei_last_error_kind()==3,"Actual allocator OOM was not classified as recoverable memory pressure");
+    // Reuse the other slot's small output allocation. Real host input is
+    // required here: failure happens in forward_radix's upload, after the
+    // outer submit operation has created its lease and copied the input pin.
+    std::vector<int64_t> real_input(4000000,0);
+    std::unique_ptr<void,decltype(&tei_output_destroy)> upload_rejected(tei_forward_submit(engine.get(),
+      real_input.data(),real_input.data(),real_input.data(),huge,1,4000000,0,nullptr,0,nullptr,0,0,
+      nullptr,nullptr,0,nullptr,0,nullptr),tei_output_destroy);
+    TORCH_CHECK(!upload_rejected&&tei_last_error_kind()==3,
+      "Nested forward allocation failure lost its recoverable classification");
+  } catch (...) {c10::cuda::CUDACachingAllocator::setMemoryFraction(original,device.index());throw;}
+  c10::cuda::CUDACachingAllocator::setMemoryFraction(original,device.index());valid();
+}
 
 class Model final : public tei::Model {
 public:
@@ -104,7 +185,7 @@ int main() {
     held->allocate(); held->copy(at::ones({8}, at::TensorOptions().device(device)), 0); held->record();
     bool rejected = false;
     try { tei::OutputLease oversized(bounded, device, 32); oversized.allocate(); }
-    catch (const c10::Error&) { rejected = true; }
+    catch (const tei::MemoryAdmissionError&) { rejected = true; }
     TORCH_CHECK(rejected && bounded->retained_bytes() == 64,
                 "Admission allocated over budget or freed a pending result");
     TORCH_CHECK(held->wait()[7] == 1, "Budget rejection corrupted pending output");
@@ -115,7 +196,7 @@ int main() {
       TORCH_CHECK(bounded->retained_bytes() == 256, "Idle staging eviction did not respect the budget");
       rejected = false;
       try { larger.upload(at::ones({1}, at::TensorOptions().dtype(at::kFloat))); }
-      catch (const c10::Error&) { rejected = true; }
+      catch (const tei::MemoryAdmissionError&) { rejected = true; }
       TORCH_CHECK(rejected && bounded->retained_bytes() == 256, "Input staging exceeded the budget");
       larger.copy(at::full({32}, 9, at::TensorOptions().device(device)), 0); larger.record();
       TORCH_CHECK(larger.wait()[31] == 9, "Staging did not recover after admission rejection"); }
@@ -155,6 +236,8 @@ int main() {
     { tei::OutputLease recovered(pressured, device, 8); recovered.allocate();
       recovered.copy(at::full({8}, 11, at::TensorOptions().device(device)), 0); recovered.record();
       TORCH_CHECK(recovered.wait()[7] == 11, "Device allocation failure poisoned subsequent submission"); }
+    native_allocator_error_test(device);
+    native_allocator_error_test(device,true);
     std::cout << "output staging, overlap, graph eviction, alternation, reuse and cancellation passed\n";
   } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

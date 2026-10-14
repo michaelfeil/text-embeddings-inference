@@ -1,8 +1,8 @@
 mod multimodal;
+pub mod result_memory;
 #[cfg(feature = "clap")]
 use clap::ValueEnum;
 pub use multimodal::{AudioFeatures, ImagePatches, MultimodalEncoding};
-use nohash_hasher::IntMap;
 use serde::Deserialize;
 use std::fmt;
 use thiserror::Error;
@@ -41,9 +41,9 @@ pub enum Embedding {
     All(Vec<Vec<f32>>),
 }
 
-pub type Embeddings = IntMap<usize, Embedding>;
-pub type Predictions = IntMap<usize, Vec<f32>>;
-pub type TokenPredictions = IntMap<usize, Vec<Vec<f32>>>;
+pub type Embeddings = result_memory::ResultMap<Embedding>;
+pub type Predictions = result_memory::ResultMap<Vec<f32>>;
+pub type TokenPredictions = result_memory::ResultMap<Vec<Vec<f32>>>;
 
 #[derive(Debug, Clone)]
 pub enum DecisionInput {
@@ -68,10 +68,37 @@ pub struct ClefField {
     pub options: Vec<(usize, usize)>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DecisionOutput {
     pub logits: Vec<f32>,
     pub action_probability: f32,
+    pub memory: Option<result_memory::ResultLease>,
+}
+
+impl DecisionOutput {
+    /// Reserve a duplicate payload before copying an admitted result.
+    pub fn try_clone(&self) -> Result<Self, BackendError> {
+        let bytes = self
+            .logits
+            .len()
+            .checked_mul(std::mem::size_of::<f32>())
+            .ok_or_else(|| BackendError::Inference("Decision clone size overflow".into()))?;
+        let memory = self
+            .memory
+            .as_ref()
+            .map(|memory| memory.reserve_more(bytes))
+            .transpose()?;
+        let mut logits = Vec::new();
+        logits
+            .try_reserve_exact(self.logits.len())
+            .map_err(|e| BackendError::Inference(e.to_string()))?;
+        logits.extend_from_slice(&self.logits);
+        Ok(Self {
+            logits,
+            action_probability: self.action_probability,
+            memory,
+        })
+    }
 }
 
 /// An owned result, or CPU completion work after an ordered native submission.
@@ -86,6 +113,15 @@ impl<T: Send + 'static> Inference<T> {
         match self {
             Self::Ready(value) => Ok(value),
             Self::Deferred(complete) => complete(),
+        }
+    }
+    pub fn try_map<U: Send + 'static>(
+        self,
+        map: impl FnOnce(T) -> Result<U, BackendError> + Send + 'static,
+    ) -> Result<Inference<U>, BackendError> {
+        match self {
+            Self::Ready(value) => map(value).map(Inference::Ready),
+            Self::Deferred(complete) => Ok(Inference::Deferred(Box::new(move || map(complete()?)))),
         }
     }
     pub fn map<U: Send + 'static>(self, map: impl FnOnce(T) -> U + Send + 'static) -> Inference<U> {
@@ -171,6 +207,8 @@ impl fmt::Display for Pool {
 
 #[derive(Debug, Error, Clone)]
 pub enum BackendError {
+    #[error("{0}")]
+    Overloaded(String),
     #[error("No backend found")]
     NoBackend,
     #[error("Could not start backend: {0}")]

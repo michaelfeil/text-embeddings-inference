@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #pragma once
+#include "helpers/admission_error.h"
 #include <ATen/ATen.h>
 #include <algorithm>
 #include <array>
@@ -49,7 +50,7 @@ class OutputLease {
   bool output_started = false;
   // Called under the pool lock, before allocating replacement storage.
   void make_room(size_t bytes, size_t replaced, bool shrink_output = false) {
-    TORCH_CHECK(bytes <= pool->max_bytes, "Native output staging exceeds its memory budget");
+    require_memory_admission(bytes <= pool->max_bytes, "Native output staging exceeds its memory budget");
     auto fits = [&] { return pool->retained_bytes() - replaced <= pool->max_bytes - bytes; };
     // Reacquiring a slot makes it busy, but its trailing pins have not been
     // used by this lease. Active input pins (including the replacement) stay live.
@@ -77,7 +78,7 @@ class OutputLease {
           at::TensorOptions().dtype(at::kFloat).device(device));
       }
     }
-    TORCH_CHECK(fits(), "Native output staging memory budget is occupied by pending results");
+    require_memory_admission(fits(), "Native output staging memory budget is occupied by pending results");
   }
 
 #ifdef TEI_TORCH_CUDA_KERNELS

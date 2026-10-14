@@ -1003,6 +1003,9 @@ impl From<TextEmbeddingsError> for ErrorResponse {
             TextEmbeddingsError::Validation(_) => ErrorType::Validation,
             TextEmbeddingsError::Empty(_) => ErrorType::Empty,
             TextEmbeddingsError::Overloaded(_) => ErrorType::Overloaded,
+            TextEmbeddingsError::Backend(infinity_v3_backend::BackendError::Overloaded(_)) => {
+                ErrorType::Overloaded
+            }
             TextEmbeddingsError::Backend(_) => ErrorType::Backend,
         };
         Self {
