@@ -116,11 +116,17 @@ behavior. This change performs no image inference or remote media downloads.
 
 ## Compatibility and implementation boundary
 
-This deliberately narrows the earlier PR's arbitrary JSON state contract. Clients
-sending records must serialize them explicitly as text. Native message envelopes
-are recognized structurally and never fall back to JSON text. The Laya adapter
+The HTTP boundary accepts text, ordinary JSON objects and arrays, and native
+message envelopes. Ordinary structured state is rendered to JSON text before
+adapter preparation. Laya instructions accept the same text/object/array forms.
+Objects containing `messages` are reserved for native conversations and never
+fall back to JSON text, including when validation fails. The Laya adapter
 returns 422 for native messages because it has no native chat processor or
 multimodal encoder. Existing plain-text tokenization and output remain unchanged.
+D3 retains its separate JSON-state and media contract.
+
+`model` remains optional with one loaded model; multiple models require a served
+model name. These routing rules and all response extensions are unchanged.
 
 Jev-Omni's reference uses one user turn per question. First validate exact
 single-turn processing and scores, then evaluate multi-turn question placement.
