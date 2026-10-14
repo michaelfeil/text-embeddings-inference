@@ -4,6 +4,7 @@
 #include "helpers/options.h"
 #include "helpers/fp8_linear.h"
 #include "helpers/attention.h"
+#include "helpers/vendor_error.h"
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "kernels/fast_kernels.h"
 #include "kernels/encoder_norm.h"
@@ -112,6 +113,8 @@ struct Bert : tei::Model {
         if(cublasLtMatmulDescSetAttribute(plan.operation,CUBLASLT_MATMUL_DESC_BIAS_POINTER,&pointer,sizeof(pointer))==CUBLAS_STATUS_SUCCESS) {
           auto output=at::empty({m,n},x.options());const float alpha=1.f,beta=0.f;
           auto status=cublasLtMatmul(at::cuda::getCurrentCUDABlasLtHandle(),plan.operation,&alpha,matrix.const_data_ptr(),plan.weight,x.const_data_ptr(),plan.input,&beta,output.const_data_ptr(),plan.output,output.mutable_data_ptr(),plan.output,&plan.algorithm,plan.bytes?classifier_workspace.mutable_data_ptr():nullptr,plan.bytes,at::cuda::getCurrentCUDAStream());
+          if(status==CUBLAS_STATUS_ALLOC_FAILED)
+            throw tei::VendorAllocationError{"BERT classifier cublasLtMatmul",static_cast<int32_t>(status)};
           if(status==CUBLAS_STATUS_SUCCESS)return output;
         }
         // Match ATen's retry policy and stop resubmitting this failed plan.
