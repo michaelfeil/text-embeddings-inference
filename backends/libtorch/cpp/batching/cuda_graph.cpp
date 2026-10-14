@@ -12,7 +12,7 @@
 #include <c10/cuda/CUDACachingAllocator.h>
 #include <ATen/ops/_foreach_copy.h>
 #include <list>
-#include <sstream>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #endif
@@ -55,6 +55,22 @@ struct CudaGraphCache::Impl {
   }
 };
 #ifdef TEI_TORCH_CUDA_KERNELS
+// Keys live only in this process. Lengths delimit variable-sized fields, and
+// each scalar keeps its native type so metadata needs no stream formatting.
+struct GraphKey {
+  std::string bytes;
+  template<class T> void add(T value) {
+    static_assert(std::is_trivially_copyable_v<T>);
+    bytes.append(reinterpret_cast<const char*>(&value),sizeof(value));
+  }
+  void device(c10::Device value) {add(value.type());add(value.index());}
+  void tensor(const at::Tensor& value,int64_t rows=-1) {
+    add(value.defined());if(!value.defined())return;
+    device(value.device());add(value.scalar_type());add(value.dim());
+    TORCH_CHECK(rows<0||(value.dim()>0&&rows<=value.size(0)),"Invalid graph prefix span");
+    for(int64_t dim=0;dim<value.dim();++dim)add(!dim&&rows>=0?rows:value.size(dim));
+  }
+};
 static PackedInput clone_graph_input(const PackedInput& input,std::vector<int32_t>& offsets) {
   offsets.assign(input.offsets,input.offsets+input.batch+1);
   PackedInput owned{input.ids.clone(),input.types.clone(),input.positions.clone(),input.cumulative.clone(),
@@ -128,62 +144,50 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
     &&!model.prefix_checkpoint_only()&&input.audios.empty();
   // Include offsets, max length, device and scalar types: no sequence metadata
   // from one batch can leak into another graph with the same total token count.
-  std::ostringstream key;
+  GraphKey key;
   const auto policy=known_policy?*known_policy:input.prefix?input.prefix->math_policy:execution_math_policy(input.ids.device());
-  // Keys are process-local strings; append the fixed policy bytes once instead
-  // of formatting every setting, including for full-request/miss graphs.
-  key.write(reinterpret_cast<const char*>(policy.data()),sizeof(policy));
-  key<<operation<<':'<<model.prefix_namespace()<<':'<<input.ids.device()<<':'<<input.ids.scalar_type()<<':'<<input.positions.scalar_type()<<':'<<input.types.scalar_type()<<':'<<input.cumulative.scalar_type()<<':'<<input.max_sequence<<':';
-  for(int64_t i=0;i<=input.batch;++i)key<<input.offsets[i]<<',';
-  auto tensor_key=[&](const at::Tensor& tensor,int64_t rows=-1) {
-    key<<';'<<tensor.defined();
-    if(tensor.defined()) {
-      key<<':'<<tensor.device()<<':'<<tensor.scalar_type()<<':';
-      if(rows<0)key<<tensor.sizes();
-      else {
-        TORCH_CHECK(tensor.dim()>0&&rows<=tensor.size(0),"Invalid graph prefix span");
-        key<<'[';
-        for(int64_t dim=0;dim<tensor.dim();++dim)
-          key<<(dim?", ":"")<<(dim?tensor.size(dim):rows);
-        key<<']';
-      }
-    }
-  };
+  key.bytes.append(reinterpret_cast<const char*>(policy.data()),sizeof(policy));
+  key.add(operation);key.add(model.prefix_namespace());key.device(input.ids.device());
+  key.add(input.ids.scalar_type());key.add(input.positions.scalar_type());
+  key.add(input.types.scalar_type());key.add(input.cumulative.scalar_type());key.add(input.max_sequence);
+  key.add(input.batch);for(int64_t i=0;i<=input.batch;++i)key.add(input.offsets[i]);
   auto describe_extras=[&](const PackedInput& value) {
-  key<<";images="<<value.images.size();
+  key.add(value.images.size());
   for(const auto& image:value.images) {
-    tensor_key(image.prepared_features);
-    if(!image.prepared_features.defined())tensor_key(image.pixels);
-    for(auto dimension:image.grid_thw)key<<':'<<dimension;
-    key<<':'<<image.merge_size<<':'<<image.token_start<<':'<<image.token_count<<':'<<image.sequence_start;
+    key.tensor(image.prepared_features);
+    if(!image.prepared_features.defined())key.tensor(image.pixels);
+    for(auto dimension:image.grid_thw)key.add(dimension);
+    key.add(image.merge_size);key.add(image.token_start);key.add(image.token_count);key.add(image.sequence_start);
   }
-  key<<";audios="<<value.audios.size();
+  key.add(value.audios.size());
   for(const auto& audio:value.audios) {
-    tensor_key(audio.features);tensor_key(audio.validity);tensor_key(audio.selected_frames);
-    key<<':'<<audio.token_start<<':'<<audio.token_count;
+    key.tensor(audio.features);key.tensor(audio.validity);key.tensor(audio.selected_frames);
+    key.add(audio.token_start);key.add(audio.token_count);
   }
-  tensor_key(value.multimodal_positions);
-  tensor_key(value.compact_ids);tensor_key(value.compact_positions);tensor_key(value.compact_types);
-  tensor_key(value.scatter_unfold);tensor_key(value.fold_gather);
+  key.tensor(value.multimodal_positions);
+  key.tensor(value.compact_ids);key.tensor(value.compact_positions);key.tensor(value.compact_types);
+  key.tensor(value.scatter_unfold);key.tensor(value.fold_gather);
   };
   describe_extras(input);
-  key<<";prefix="<<bool(input.prefix)<<";retain="<<retain;
+  key.add(bool(input.prefix));key.add(retain);
   if(input.prefix) {
     const auto& prefix=*input.prefix;
-    key<<':'<<prefix.original.max_sequence;
-    for(int64_t row=0;row<=prefix.original.batch;++row)key<<':'<<prefix.original.offsets[row];
-    for(auto hit:prefix.hits)key<<':'<<hit;
-    tensor_key(prefix.original.ids);tensor_key(prefix.original.multimodal_positions);
-    tensor_key(prefix.original.compact_ids);tensor_key(prefix.original.scatter_unfold);
+    key.add(prefix.original.max_sequence);key.add(prefix.original.batch);
+    for(int64_t row=0;row<=prefix.original.batch;++row)key.add(prefix.original.offsets[row]);
+    key.add(prefix.hits.size());for(auto hit:prefix.hits)key.add(hit);
+    key.tensor(prefix.original.ids);key.tensor(prefix.original.multimodal_positions);
+    key.tensor(prefix.original.compact_ids);key.tensor(prefix.original.scatter_unfold);
     describe_extras(prefix.original);
+    key.add(prefix.readers.size());
     for(size_t row=0;row<prefix.readers.size();++row)if(prefix.hits[row]) {
-      tensor_key(prefix.readers[row]->output,prefix.hits[row]);
+      key.tensor(prefix.readers[row]->output,prefix.hits[row]);
+      key.add(prefix.readers[row]->layers.size());
       for(const auto& [layer,state]:prefix.readers[row]->layers) {
-        key<<':'<<layer;tensor_key(state.key,prefix.hits[row]);tensor_key(state.value,prefix.hits[row]);
+        key.add(layer);key.tensor(state.key,prefix.hits[row]);key.tensor(state.value,prefix.hits[row]);
       }
     }
   }
-  auto id=key.str();
+  auto id=std::move(key.bytes);
   if(id==impl->last_shape) {
     if(impl->consecutive<impl->reuse)++impl->consecutive;
   } else {impl->last_shape=id;impl->consecutive=1;}
@@ -201,15 +205,15 @@ at::Tensor CudaGraphCache::forward(const Model& model,const PackedInput& origina
         const auto& actual=input.prefix->readers[row];const auto& owned=entry.prefix->readers[row];
         if(entry.parents[row].lock()==actual)continue;
         entry.parents[row].reset();
-        targets.push_back(owned->output);sources.push_back(actual->output.narrow(0,0,entry.prefix->hits[row]));
+        targets.push_back(owned->output);sources.push_back(actual->output);
         for(const auto& [layer,state]:owned->layers) {
           const auto& fresh=actual->layers.at(layer);
-          targets.push_back(state.key);sources.push_back(fresh.key.narrow(0,0,entry.prefix->hits[row]));
-          targets.push_back(state.value);sources.push_back(fresh.value.narrow(0,0,entry.prefix->hits[row]));
+          targets.push_back(state.key);sources.push_back(fresh.key);
+          targets.push_back(state.value);sources.push_back(fresh.value);
         }
       }
     }
-    tensor_copies(targets,sources);
+    tensor_copies(targets,sources,bool(entry.prefix));
     if(entry.prefix)for(size_t row=0;row<entry.parents.size();++row)
       entry.parents[row]=input.prefix->readers[row];
     entry.graph->replay();

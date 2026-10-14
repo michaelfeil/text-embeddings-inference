@@ -15,6 +15,7 @@
 #include <ATen/ops/_foreach_copy.h>
 #ifdef TEI_TORCH_CUDA_KERNELS
 #include "kernels/torch_flash_fma.h"
+#include "kernels/prefix_input.h"
 #include <ATen/cuda/CUDAEvent.h>
 #include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDACachingAllocator.h>
@@ -478,6 +479,10 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   PrefixContext context{original,{}, {}, {}, {},limit,budget};context.offsets={0};
   context.linear=linear.get();
   context.math_policy=policy;
+  bool pack_inputs=false;
+#ifdef TEI_TORCH_CUDA_KERNELS
+  pack_inputs=original.batch>1&&prefix_inputs_supported(original.ids,original.positions,original.types);
+#endif
   std::vector<at::Tensor> ids,positions,types,axes;std::vector<int64_t> original_rows;
   for(int64_t row=0;row<original.batch;++row) {
     auto key=std::move(identities[row]);
@@ -497,7 +502,9 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
 #endif
     context.hits.push_back(best);context.readers.push_back(source);
     auto start=original.offsets[row]+best,length=original.offsets[row+1]-start;
-    ids.push_back(original.ids.narrow(0,start,length));positions.push_back(original.positions.narrow(0,start,length));types.push_back(original.types.narrow(0,start,length));
+    if(!pack_inputs) {
+      ids.push_back(original.ids.narrow(0,start,length));positions.push_back(original.positions.narrow(0,start,length));types.push_back(original.types.narrow(0,start,length));
+    }
     if(original.multimodal_positions.defined())axes.push_back(original.multimodal_positions.narrow(1,start,length));
     context.offsets.push_back(context.offsets.back()+length);
     for(int64_t t=start;t<original.offsets[row+1];++t)original_rows.push_back(t);
@@ -562,9 +569,18 @@ at::Tensor PrefixCache::run(const Model& model,const PackedInput& original,int o
   // Cold capture keeps the caller's original metadata and device buffers.
   // Only a real hit needs packed suffix rows and a new Radix mapping.
   if(std::any_of(context.hits.begin(),context.hits.end(),[](auto hit){return hit!=0;})) {
-    input.ids=ids.size()==1?ids[0]:at::cat(ids);
-    input.positions=positions.size()==1?positions[0]:at::cat(positions);
-    input.types=types.size()==1?types[0]:at::cat(types);
+#ifdef TEI_TORCH_CUDA_KERNELS
+    if(pack_inputs) {
+      auto packed=pack_prefix_inputs(original.ids,original.positions,original.types,
+        {original.offsets,size_t(original.batch)+1},context.offsets,context.hits);
+      input.ids=packed.ids;input.positions=packed.positions;input.types=packed.types;
+    } else
+#endif
+    {
+      input.ids=ids.size()==1?ids[0]:at::cat(ids);
+      input.positions=positions.size()==1?positions[0]:at::cat(positions);
+      input.types=types.size()==1?types[0]:at::cat(types);
+    }
     input.cumulative=at::tensor(context.offsets,at::TensorOptions().dtype(at::kInt)).to(input.ids.device());input.offsets=context.offsets.data();input.max_sequence=0;
     for(int64_t row=0;row<original.batch;++row)input.max_sequence=std::max<int64_t>(input.max_sequence,context.offsets[row+1]-context.offsets[row]);
     if(!axes.empty())input.multimodal_positions=at::cat(axes,1);

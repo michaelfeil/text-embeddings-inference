@@ -4,6 +4,7 @@
 #include "models/decoder_models.h"
 #include "kernels/fast_kernels.h"
 #include "kernels/prefix_state_copy.h"
+#include "kernels/prefix_input.h"
 #include <ATen/ops/_fused_rms_norm.h>
 #include <ATen/ops/_flash_attention_forward.h>
 #include <c10/core/InferenceMode.h>
@@ -11,6 +12,27 @@
 #include <cuda_runtime_api.h>
 #include <c10/cuda/CUDAGuard.h>
 using namespace tei;
+void prefix_input_test() {
+ for(int batch:{1,32,65}) {
+  std::vector<int32_t> full{0},suffix{0};std::vector<int64_t> hits,indices;
+  for(int row=0;row<batch;++row) {
+   const auto length=row%3==0?513:row%7+2;const auto hit=row%length;
+   hits.push_back(hit);
+   for(int token=full.back()+hit;token<full.back()+length;++token)indices.push_back(token);
+   full.push_back(full.back()+length);suffix.push_back(suffix.back()+length-hit);
+  }
+  auto opts=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
+  auto ids=at::arange(full.back(),opts)+(int64_t(1)<<60),positions=-at::arange(full.back(),opts),types=ids.remainder(3);
+  auto selected=at::tensor(indices,opts);auto packed=pack_prefix_inputs(ids,positions,types,full,suffix,hits);
+  TORCH_CHECK(at::equal(packed.ids,ids.index_select(0,selected))&&at::equal(packed.positions,positions.index_select(0,selected))
+    &&at::equal(packed.types,types.index_select(0,selected)),"Packed suffix gather changed fields or sequence boundaries");
+  TORCH_CHECK(!prefix_inputs_supported(at::_neg_view(ids),positions,types)
+    &&!prefix_inputs_supported(ids,positions.to(at::kInt),types),"Unsupported prefix input layout accepted");
+  auto invalid=hits;invalid.back()=full.back()-full[batch-1];bool rejected=false;
+  try{pack_prefix_inputs(ids,positions,types,full,suffix,invalid);}catch(const c10::Error&){rejected=true;}
+  TORCH_CHECK(rejected,"Invalid final-row metadata reached suffix gathering");
+ }
+}
 void prefix_state_copy_test() {
  std::vector<at::Tensor> targets,sources,expected;
  const at::ScalarType types[]={at::kByte,at::kShort,at::kFloat,at::kDouble};
@@ -31,6 +53,13 @@ void prefix_state_copy_test() {
  TORCH_CHECK(prefix_state_copies(targets,sources),"Packed and row-strided prefix copies rejected");
  for(size_t i=0;i<targets.size();++i)
   TORCH_CHECK(at::equal(targets[i].view(at::kByte),expected[i]),"Prefix state copy changed raw bits or row boundaries");
+ std::vector<at::Tensor> partial;
+ for(const auto& source:sources){auto shape=source.sizes().vec();shape[0]=3;partial.push_back(at::empty(shape,source.options()));}
+ TORCH_CHECK(!prefix_state_copies(partial,sources),"Exact copy silently shortened source rows");
+ TORCH_CHECK(prefix_state_copies(partial,sources,true),"Leading-row copy rejected packed or strided sources");
+ for(size_t i=0;i<partial.size();++i)
+  TORCH_CHECK(at::equal(partial[i].view(at::kByte),sources[i].narrow(0,0,3).contiguous().view(at::kByte)),
+    "Leading-row copy changed bits or crossed its source span");
  auto first=at::full({4,4},-1,at::TensorOptions().device(at::kCUDA));
  auto unsupported=at::ones({4,4},first.options()).transpose(0,1);
  TORCH_CHECK(!prefix_state_copies({first,at::empty_like(first)},{at::zeros_like(first),unsupported})
@@ -308,7 +337,9 @@ void admission_test() {
   TORCH_CHECK(at::equal(tiny_budget.forward(model,input),model.forward(input)),"Budget fallback changed output");
  TORCH_CHECK(tiny_budget.size()==0 && tiny_budget.stats().attempts==1,"Oversized pools repeatedly captured");
 }
-int main(int argc,char** argv){c10::InferenceMode guard;prefix_state_copy_test();if(argc==2&&std::string(argv[1])=="prefix-copy")return 0;arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);full_snapshot_graph_test(model);CudaGraphCache cache(2,8,1);
+int main(int argc,char** argv){c10::InferenceMode guard;
+ if(argc==2&&std::string(argv[1])=="prefix-input"){prefix_input_test();return 0;}
+ prefix_state_copy_test();prefix_input_test();if(argc==2&&std::string(argv[1])=="prefix-copy")return 0;arithmetic_policy_test();admission_test();radix_qkv_copy_graph_test();Weights fixture;auto decoder=tiny_decoder(&fixture);auto& model=*decoder;radix_graph_test(model);full_snapshot_graph_test(model);CudaGraphCache cache(2,8,1);
  for(auto offsets:std::vector<std::vector<int32_t>>{{0,3},{0,1,3},{0,2,3},{0,3}}){
   auto options=at::TensorOptions().device(at::kCUDA).dtype(at::kLong);
   auto ids=at::tensor({3,4,5},options),pos=at::tensor({0,1,2},options);

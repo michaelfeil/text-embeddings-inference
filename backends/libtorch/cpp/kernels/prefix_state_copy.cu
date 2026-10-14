@@ -30,7 +30,7 @@ __global__ void copy_states(Copies copies) {
  else copy_rows<uint8_t>(copy);
 }
 }
-bool prefix_state_copies(const std::vector<at::Tensor>& targets,const std::vector<at::Tensor>& sources) {
+bool prefix_state_copies(const std::vector<at::Tensor>& targets,const std::vector<at::Tensor>& sources,bool leading_rows) {
  if(targets.empty())return sources.empty();
  if(targets.size()!=sources.size()||!targets[0].defined()||!targets[0].is_cuda())return false;
  const auto device=targets[0].device();
@@ -38,9 +38,13 @@ bool prefix_state_copies(const std::vector<at::Tensor>& targets,const std::vecto
  for(size_t i=0;i<targets.size();++i) {
   const auto& target=targets[i];const auto& source=sources[i];
   if(!source.defined()||!target.defined()||source.device()!=device||target.device()!=device
-    ||source.scalar_type()!=target.scalar_type()||source.sizes()!=target.sizes()||!target.is_contiguous()
+    ||source.scalar_type()!=target.scalar_type()||!target.is_contiguous()
     ||source.is_conj()||target.is_conj()||source.is_neg()||target.is_neg()
     ||source.dim()==0||source.size(0)==0||source.numel()==0)return false;
+  if(leading_rows) {
+   if(target.dim()!=source.dim()||target.size(0)<=0||target.size(0)>source.size(0)
+     ||target.sizes().slice(1)!=source.sizes().slice(1))return false;
+  }else if(source.sizes()!=target.sizes())return false;
   int64_t inner=1;
   for(int64_t dim=source.dim()-1;dim>0;--dim) {
    if(source.size(dim)!=1&&source.stride(dim)!=inner)return false;
@@ -48,8 +52,8 @@ bool prefix_state_copies(const std::vector<at::Tensor>& targets,const std::vecto
   }
   const auto width=inner*int64_t(source.element_size()),stride=source.stride(0)*int64_t(source.element_size());
   if(stride<0)return false;
-  copies.push_back({static_cast<const uint8_t*>(source.const_data_ptr()),static_cast<uint8_t*>(target.mutable_data_ptr()),source.size(0),width,stride});
-  largest=std::max(largest,int64_t(source.nbytes()));
+  copies.push_back({static_cast<const uint8_t*>(source.const_data_ptr()),static_cast<uint8_t*>(target.mutable_data_ptr()),target.size(0),width,stride});
+  largest=std::max(largest,int64_t(target.nbytes()));
  }
  c10::cuda::CUDAGuard guard(device);
  const auto blocks=std::min<int64_t>(128,std::max<int64_t>(1,(largest+4095)/4096));
