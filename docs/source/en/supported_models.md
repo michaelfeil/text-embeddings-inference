@@ -50,6 +50,16 @@ Below are some examples of the currently supported models:
 | N/A       | 475M-A305M             | NomicBERT      | [nomic-ai/nomic-embed-text-v2-moe](https://hf.co/nomic-ai/nomic-embed-text-v2-moe)               |
 | N/A       | 434M                   | Alibaba GTE    | [Alibaba-NLP/gte-large-en-v1.5](https://hf.co/Alibaba-NLP/gte-large-en-v1.5)                     |
 | N/A       | 396M                   | ModernBERT     | [answerdotai/ModernBERT-large](https://hf.co/answerdotai/ModernBERT-large)                       |
+| N/A       | 150M                   | UltraBERT      | [dmis-lab/UltraBERT-Embed-150M](https://hf.co/dmis-lab/UltraBERT-Embed-150M)                     |
+
+`dmis-lab/UltraBERT-Embed-150M` supports 32,768 input tokens and produces
+768-dimensional CLS embeddings. Use `prompt_name: "query"` for retrieval
+queries; documents use the empty `document` prompt. Mean and last-token pooling
+overrides and raw token embeddings are also supported. Execution uses the shared
+packed Mistral layers on CPU (FP32/FP16) and CUDA SM80+ (FP16/BF16), with
+bidirectional local/global attention and per-layer rotary scales. Its d128 MHA
+geometry currently uses FA2 even when `ATTN_BACKEND=fa4`. Metal and classifier
+heads are unsupported.
 | N/A       | 137M                   | JinaBERT       | [jinaai/jina-embeddings-v2-base-en](https://hf.co/jinaai/jina-embeddings-v2-base-en)             |
 | N/A       | 137M                   | JinaBERT       | [jinaai/jina-embeddings-v2-base-code](https://hf.co/jinaai/jina-embeddings-v2-base-code)         |
 
