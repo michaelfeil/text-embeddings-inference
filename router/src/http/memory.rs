@@ -123,7 +123,11 @@ pub(crate) async fn admit(
         _input: input,
     });
     let shape = ErrorShape::for_path(path);
-    let mut response = SHAPE.scope(shape, next.run(request)).await;
+    let mut response = infinity_v3_core::input_memory::with_input_memory(
+        lease.clone(),
+        SHAPE.scope(shape, next.run(request)),
+    )
+    .await;
     response.extensions_mut().insert(lease);
     response
 }

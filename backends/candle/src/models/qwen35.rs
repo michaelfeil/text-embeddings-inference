@@ -667,6 +667,7 @@ impl Model for Qwen35Model {
                         _ => candle::bail!("Pplx requires contiguous readout-row metadata"),
                     };
                     Ok(DecisionOutput {
+                        memory: None,
                         logits: logits[..count].to_vec(),
                         action_probability: 1.0,
                     })
@@ -706,6 +707,7 @@ impl Model for Qwen35Model {
                         weights,
                     )?;
                     Ok(DecisionOutput {
+                        memory: None,
                         logits,
                         action_probability: 1.0,
                     })
@@ -748,6 +750,7 @@ impl Model for Qwen35Model {
                     .to_dtype(DType::F32)?;
                 let logits = last.i(i)?.unsqueeze(0)?.matmul(&selected.t()?)?;
                 Ok(DecisionOutput {
+                    memory: None,
                     logits: logits.to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
                     action_probability: 1.0,
                 })

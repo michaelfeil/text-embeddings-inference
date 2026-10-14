@@ -14,6 +14,7 @@ use tracing::{instrument, Span};
 use serde::Deserialize;
 
 pub use crate::dtype::DType;
+pub use infinity_v3_backend_core::result_memory;
 pub use infinity_v3_backend_core::{
     AudioFeatures, BackendError, Batch, ClefField, DecisionInput, DecisionOutput, Embedding,
     Embeddings, ImagePatches, ModelType, MultimodalEncoding, Pool, Predictions, TokenPredictions,
@@ -654,7 +655,12 @@ fn deliver<T: Send + 'static>(
                 // Complete even after receiver cancellation: retain pins/slots until
                 // the GPU finishes, and never free native work on a Tokio worker.
                 let result = complete().map(|value| (value, start.elapsed()));
-                let _ = health.send(result.is_ok());
+                let _ = health.send(
+                    result.is_ok()
+                        || result
+                            .as_ref()
+                            .is_err_and(|e| matches!(e, BackendError::Overloaded(_))),
+                );
                 let _ = response.send(result);
             });
             completion
@@ -672,7 +678,12 @@ fn deliver<T: Send + 'static>(
             let result = result
                 .and_then(Inference::complete)
                 .map(|value| Submission::Ready(value, start.elapsed()));
-            let _ = health.send(result.is_ok());
+            let _ = health.send(
+                result.is_ok()
+                    || result
+                        .as_ref()
+                        .is_err_and(|e| matches!(e, BackendError::Overloaded(_))),
+            );
             let _ = sender.send(result);
         }
     }
@@ -695,7 +706,9 @@ impl BackendThread {
                     BackendCommand::Decide(batch, inputs, span, sender) => {
                         let _span = span.entered();
                         let result = backend.decide(batch, inputs);
-                        let _ = health_sender.send(result.is_ok());
+                        let _ = health_sender.send(
+                            result.is_ok() || matches!(&result, Err(BackendError::Overloaded(_))),
+                        );
                         let _ = sender.send(result.map(|output| (output, start.elapsed())));
                     }
                     BackendCommand::Health(span, sender) => {
@@ -1086,6 +1099,81 @@ mod completion_tests {
             tokens: vec![],
             offsets: vec![],
         }
+    }
+    struct AdmittedBackend(Arc<result_memory::ResultPool>);
+    impl CoreBackend for AdmittedBackend {
+        fn health(&self) -> Result<(), BackendError> {
+            Ok(())
+        }
+        fn embed(&self, _: Batch) -> Result<Embeddings, BackendError> {
+            let memory = self.0.reserve(64)?;
+            let mut result = Embeddings::default();
+            result.memory = Some(memory);
+            result.insert(0, Embedding::Pooled(vec![1.0; 16]));
+            Ok(result)
+        }
+        fn predict(&self, _: Batch) -> Result<Predictions, BackendError> {
+            unreachable!()
+        }
+        fn predict_tokens(&self, _: Batch) -> Result<TokenPredictions, BackendError> {
+            unreachable!()
+        }
+        fn decide(
+            &self,
+            _: Batch,
+            _: Vec<DecisionInput>,
+        ) -> Result<Vec<DecisionOutput>, BackendError> {
+            let memory = self.0.reserve(64)?;
+            Ok(vec![DecisionOutput {
+                logits: vec![1.0; 16],
+                action_probability: 0.5,
+                memory: Some(memory),
+            }])
+        }
+    }
+    #[tokio::test]
+    async fn serving_worker_recovers_after_result_admission_rejection() {
+        let pool = result_memory::ResultPool::new(64).unwrap();
+        let held = pool.reserve(64).unwrap();
+        let (sender, receiver) = mpsc::channel(8);
+        let (health, health_receiver) = watch::channel(true);
+        let worker = BackendThread::new(Box::new(AdmittedBackend(pool.clone())), receiver, health);
+        let backend = Backend {
+            backend_sender: sender,
+            health_receiver,
+            _backend_thread: Arc::new(worker),
+            radix_mlp_supported: false,
+            max_batch_size: Some(1),
+            model_type: ModelType::Embedding(Pool::Mean),
+        };
+        assert!(matches!(
+            backend.embed(batch()).await,
+            Err(BackendError::Overloaded(_))
+        ));
+        assert!(*backend.health_receiver.borrow());
+        drop(held);
+        let (result, _) = backend.embed(batch()).await.unwrap();
+        assert!(matches!(&result[&0],Embedding::Pooled(values) if values==&vec![1.0;16]));
+        assert!(*backend.health_receiver.borrow());
+        drop(result);
+        assert_eq!(pool.used(), 0);
+        // Decision requests use the synchronous worker path, so verify its
+        // admission failures preserve health and release ownership too.
+        let held = pool.reserve(64).unwrap();
+        assert!(matches!(
+            backend.decide(batch(), vec![DecisionInput::Warmup]).await,
+            Err(BackendError::Overloaded(_))
+        ));
+        assert!(*backend.health_receiver.borrow());
+        drop(held);
+        let (result, _) = backend
+            .decide(batch(), vec![DecisionInput::Warmup])
+            .await
+            .unwrap();
+        assert_eq!(result[0].logits, vec![1.0; 16]);
+        assert!(*backend.health_receiver.borrow());
+        drop(result);
+        assert_eq!(pool.used(), 0);
     }
     #[test]
     fn deferred_completion_does_not_block_model_and_drains_after_cancellation() {

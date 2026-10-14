@@ -1276,6 +1276,7 @@ impl Model for Gemma4Model {
         }
         if scores.len() == 1 {
             return Ok(vec![DecisionOutput {
+                memory: None,
                 logits: scores[0].to_dtype(DType::F32)?.flatten_all()?.to_vec1()?,
                 action_probability: 1.0,
             }]);
@@ -1292,6 +1293,7 @@ impl Model for Gemma4Model {
                 let logits = scores[offset..offset + len].to_vec();
                 offset += len;
                 DecisionOutput {
+                    memory: None,
                     logits,
                     action_probability: 1.0,
                 }

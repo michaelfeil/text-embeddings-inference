@@ -354,6 +354,7 @@ mod tests {
             let actual = answer(
                 &q,
                 DecisionOutput {
+                    memory: None,
                     logits: logits.into_iter().flatten().collect(),
                     action_probability: 1.0,
                 },

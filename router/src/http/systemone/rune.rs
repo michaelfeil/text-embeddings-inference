@@ -475,15 +475,16 @@ mod tests {
             },
         };
         let output = DecisionOutput {
+            memory: None,
             logits: vec![0., 0.],
             action_probability: 1.,
         };
-        let choice = answer(&question, output.clone()).unwrap();
+        let choice = answer(&question, output.try_clone().unwrap()).unwrap();
         assert_eq!(choice["choice"], "first");
         assert_eq!(choice["confidence"], 0.);
         let mut question = question;
         question.kind = "score".into();
-        let score = answer(&question, output.clone()).unwrap();
+        let score = answer(&question, output.try_clone().unwrap()).unwrap();
         assert_eq!(score["score"], 0.5);
         assert_eq!(score["confidence"], 0.);
         question.kind = "noul".into();
@@ -497,6 +498,7 @@ mod tests {
         let singleton = answer(
             &question,
             DecisionOutput {
+                memory: None,
                 logits: vec![7.],
                 action_probability: 1.,
             },

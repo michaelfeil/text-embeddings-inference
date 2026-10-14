@@ -324,7 +324,10 @@ impl Execution {
         if !self.released {
             r.busy = false;
         }
-        if result.is_err() {
+        if result
+            .as_ref()
+            .is_err_and(|e| !matches!(e, BackendError::Overloaded(_)))
+        {
             r.healthy = false;
         }
         if let Ok((_, duration)) = result {
@@ -350,6 +353,10 @@ impl Execution {
                 metrics::counter!("te_replica_batches", "replica" => self.id.to_string())
                     .increment(1);
             }
+            if !self.released && !state.closed {
+                state.idle.push_back(self.id);
+            }
+        } else if matches!(result, Err(BackendError::Overloaded(_))) {
             if !self.released && !state.closed {
                 state.idle.push_back(self.id);
             }
@@ -414,6 +421,26 @@ mod completion_tests {
             released: false,
             reserved_at: Instant::now(),
         }
+    }
+    #[tokio::test]
+    async fn overload_keeps_replica_available_for_the_next_request() {
+        let rejected = execution();
+        let pool = rejected.pool.clone();
+        rejected.finish::<()>(
+            1,
+            1,
+            &Err(BackendError::Overloaded("memory admission".into())),
+        );
+        assert!(!pool.is_closed());
+        let next = tokio::time::timeout(Duration::from_secs(1), pool.acquire_replica(0))
+            .await
+            .unwrap()
+            .unwrap();
+        next.finish(1, 1, &Ok(((), Duration::from_millis(1))));
+        let state = pool.inner.state.lock().unwrap();
+        assert!(state.replicas[0].healthy);
+        assert!(!state.replicas[0].busy);
+        assert_eq!(state.idle.len(), 1);
     }
     #[test]
     fn old_completion_does_not_release_the_next_model_lease() {

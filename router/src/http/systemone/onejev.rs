@@ -426,6 +426,7 @@ mod tests {
                 let actual = answer(
                     question,
                     DecisionOutput {
+                        memory: None,
                         logits,
                         action_probability: 1.0,
                     },
