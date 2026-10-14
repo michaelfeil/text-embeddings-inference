@@ -307,7 +307,7 @@ fn pretrained_encoder_arbitrary_ids_match_candle() {
 fn pretrained_encoder_cuda_parity(arbitrary_ids: bool) {
     // Deep trained weights expose accumulated half-precision differences that
     // the tiny deterministic fixtures cannot. Set this to a pinned checkpoint.
-    let Some(path) = std::env::var_os("TEI_ENCODER_PRETRAINED") else {
+    let Some(path) = std::env::var_os("INFINITY_ENCODER_PRETRAINED") else {
         return;
     };
     let path = PathBuf::from(path);
@@ -326,13 +326,13 @@ fn pretrained_encoder_cuda_parity(arbitrary_ids: bool) {
             })
     };
     let configured_cls = special_id(
-        "TEI_ENCODER_TEST_CLS_ID",
+        "INFINITY_ENCODER_TEST_CLS_ID",
         "cls_token_id",
         "bos_token_id",
         101,
     );
     let configured_sep = special_id(
-        "TEI_ENCODER_TEST_SEP_ID",
+        "INFINITY_ENCODER_TEST_SEP_ID",
         "sep_token_id",
         "eos_token_id",
         102,
@@ -345,7 +345,7 @@ fn pretrained_encoder_cuda_parity(arbitrary_ids: bool) {
     } else {
         (configured_cls, configured_sep)
     };
-    let pool = match std::env::var("TEI_ENCODER_TEST_POOL").as_deref() {
+    let pool = match std::env::var("INFINITY_ENCODER_TEST_POOL").as_deref() {
         Err(_) | Ok("cls") => Pool::Cls,
         Ok("mean") => Pool::Mean,
         Ok(other) => panic!("Unsupported pretrained test pooling: {other}"),
@@ -549,9 +549,10 @@ fn distilbert_splade_and_raw_widths_match_candle() {
 #[test]
 fn splade_selected_spans_preserve_mixed_raw_order() {
     let fixture = fixture("distilbert");
-    let cuda_device = std::env::var("TEI_TEST_CUDA_DEVICE").unwrap_or_else(|_| "cuda:0".into());
+    let cuda_device =
+        std::env::var("INFINITY_TEST_CUDA_DEVICE").unwrap_or_else(|_| "cuda:0".into());
     let mut devices = vec![("cpu", "float32", 0.00001)];
-    if std::env::var_os("TEI_TEST_CUDA").is_some() {
+    if std::env::var_os("INFINITY_TEST_CUDA").is_some() {
         devices.push((cuda_device.as_str(), "float16", 0.012));
     }
     for (device, dtype, tolerance) in devices {
@@ -596,7 +597,7 @@ fn splade_selected_spans_preserve_mixed_raw_order() {
 fn mpnet_cuda_varlen_matches_cpu() {
     // MPNet has no packed Candle implementation, so compare the native GPU
     // memory-efficient varlen operator to its independent CPU SDPA path.
-    if std::env::var_os("TEI_TEST_CUDA").is_none() {
+    if std::env::var_os("INFINITY_TEST_CUDA").is_none() {
         return;
     }
     let fixture = fixture("mpnet");
@@ -616,7 +617,7 @@ fn mpnet_cuda_varlen_matches_cpu() {
     .unwrap();
     let expected = cpu.embed(batch()).unwrap();
     let mut got = gpu.embed(batch()).unwrap();
-    if std::env::var("TEI_TORCH_CUDA_GRAPHS")
+    if std::env::var("INFINITY_TORCH_CUDA_GRAPHS")
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
     {
         // The default admission policy captures after three identical requests.
@@ -636,9 +637,9 @@ fn mpnet_cuda_varlen_matches_cpu() {
 }
 
 #[test]
-#[ignore = "Generate encoder_reference_fixtures.py and set TEI_ENCODER_REFERENCE"]
+#[ignore = "Generate encoder_reference_fixtures.py and set INFINITY_ENCODER_REFERENCE"]
 fn mpnet_and_deberta_match_independent_transformers() {
-    let root = PathBuf::from(std::env::var("TEI_ENCODER_REFERENCE").unwrap());
+    let root = PathBuf::from(std::env::var("INFINITY_ENCODER_REFERENCE").unwrap());
     let mut count = 0;
     for entry in fs::read_dir(root).unwrap() {
         let path = entry.unwrap().path();
@@ -743,7 +744,7 @@ fn input_json_batch(path: &std::path::Path) -> Batch {
 #[cfg(feature = "benchmark-cuda")]
 #[test]
 fn pretrained_deberta_classifier_cuda_matches_candle() {
-    let Some(path) = std::env::var_os("TEI_ENCODER_PRETRAINED") else {
+    let Some(path) = std::env::var_os("INFINITY_ENCODER_PRETRAINED") else {
         return;
     };
     let path = PathBuf::from(path);

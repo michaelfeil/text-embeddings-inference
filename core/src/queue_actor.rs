@@ -19,7 +19,7 @@ fn early_dispatch_tokens(value: Option<&str>) -> Option<usize> {
         Some(value) => {
             let tokens = value
                 .parse::<usize>()
-                .expect("TEI_EARLY_DISPATCH_TOKENS must be a nonnegative integer or empty");
+                .expect("INFINITY_EARLY_DISPATCH_TOKENS must be a nonnegative integer or empty");
             (tokens != 0).then_some(tokens)
         }
     }
@@ -97,10 +97,10 @@ impl Queue {
         replicas: usize,
     ) -> Self {
         // Validate on the caller's thread before spawning the detached worker.
-        let configured_target = match std::env::var("TEI_EARLY_DISPATCH_TOKENS") {
+        let configured_target = match std::env::var("INFINITY_EARLY_DISPATCH_TOKENS") {
             Ok(value) => Some(value),
             Err(std::env::VarError::NotPresent) => None,
-            Err(err) => panic!("Invalid TEI_EARLY_DISPATCH_TOKENS: {err}"),
+            Err(err) => panic!("Invalid INFINITY_EARLY_DISPATCH_TOKENS: {err}"),
         };
         let early_dispatch_tokens = if replicas > 1 || configured_target.is_some() {
             early_dispatch_tokens(configured_target.as_deref())

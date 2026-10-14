@@ -249,7 +249,7 @@ fn main() {
         .ok()
         .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         .and_then(|meta| meta["sha"].as_str().map(str::to_owned));
-    let fp8_dynamic = std::env::var("TEI_BENCHMARK_FP8")
+    let fp8_dynamic = std::env::var("INFINITY_BENCHMARK_FP8")
         .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"));
     let started = Instant::now();
     let torch = LibtorchBackend::new_with_dense_paths_and_fp8(
@@ -286,9 +286,9 @@ fn main() {
         ("8x512 prefix384", vec![512; 8], 384),
         ("32x512 prefix256", vec![512; 32], 256),
     ];
-    let graph_requested = std::env::var("TEI_TORCH_CUDA_GRAPHS")
+    let graph_requested = std::env::var("INFINITY_TORCH_CUDA_GRAPHS")
         .is_ok_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
-    let graph_max: usize = std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS")
+    let graph_max: usize = std::env::var("INFINITY_TORCH_CUDA_GRAPH_MAX_TOKENS")
         .unwrap_or_else(|_| "4096".into())
         .parse()
         .unwrap();
@@ -421,7 +421,7 @@ fn main() {
         );
     }
     let mut report = serde_json::json!({"model_path":path,"dtype":dtype,"checkpoint_revision":checkpoint_revision,"vocab_size":vocab_size,"bos_token_id":bos,"eos_token_id":eos,"pad_token_id":pad,"input_pattern":"synthetic valid vocabulary IDs with configured BOS/EOS; real shared prefixes and distinct suffixes; no padding",
-        "pooling":pooling,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graph_max_tokens":std::env::var("TEI_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("TEI_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graphs_requested":std::env::var("TEI_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"measurement_mode":"parallel separate GPUs; both backends radix-folded; pooled timings; raw parity outside timings","warmup_per_backend":20,
+        "pooling":pooling,"iterations_per_backend":iterations,"torch_gpu":torch_gpu,"candle_gpu":candle_gpu,"torch_cuda_graph_count":torch.lock().unwrap().cuda_graph_count(),"torch_cuda_graph_max_tokens":std::env::var("INFINITY_TORCH_CUDA_GRAPH_MAX_TOKENS").unwrap_or_else(|_| "4096".into()), "torch_cudnn_varlen_requested":std::env::var("INFINITY_TORCH_CUDNN_VARLEN").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"torch_cuda_graphs_requested":std::env::var("INFINITY_TORCH_CUDA_GRAPHS").is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true")),"measurement_mode":"parallel separate GPUs; both backends radix-folded; pooled timings; raw parity outside timings","warmup_per_backend":20,
         "torch_load_seconds":torch_load,"candle_load_seconds":candle_load,"workloads":rows});
     if fp8_dynamic {
         report["dynamic_fp8_requested"] = true.into();

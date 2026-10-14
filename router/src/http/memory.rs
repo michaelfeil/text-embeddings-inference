@@ -37,7 +37,7 @@ impl MemoryAdmission {
         anyhow::ensure!(
             (64 * 1024..=u32::MAX as usize).contains(&output_limit)
                 && output_limit <= Semaphore::MAX_PERMITS,
-            "TEI_HTTP_OUTPUT_MAX_BYTES must be between 65536 and {} bytes",
+            "INFINITY_HTTP_OUTPUT_MAX_BYTES must be between 65536 and {} bytes",
             (u32::MAX as usize).min(Semaphore::MAX_PERMITS)
         );
         anyhow::ensure!(

@@ -4,7 +4,7 @@ license-file.workspace = true
 name = "text-embeddings-backend-libtorch"
 version.workspace = true
 edition.workspace = true
-links = "tei_torch"
+links = "infinity_torch"
 autoexamples = false
 
 [dependencies]

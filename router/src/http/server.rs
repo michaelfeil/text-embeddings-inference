@@ -2312,17 +2312,17 @@ pub async fn run(
     }
 
     super::response_format::initialize_memory_errors();
-    let http_output_limit = std::env::var("TEI_HTTP_OUTPUT_MAX_BYTES")
+    let http_output_limit = std::env::var("INFINITY_HTTP_OUTPUT_MAX_BYTES")
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()
-        .context("Invalid TEI_HTTP_OUTPUT_MAX_BYTES")?
+        .context("Invalid INFINITY_HTTP_OUTPUT_MAX_BYTES")?
         .unwrap_or(512 * 1024 * 1024);
-    let http_input_limit = std::env::var("TEI_HTTP_INPUT_MAX_BYTES")
+    let http_input_limit = std::env::var("INFINITY_HTTP_INPUT_MAX_BYTES")
         .ok()
         .map(|value| value.parse::<usize>())
         .transpose()
-        .context("Invalid TEI_HTTP_INPUT_MAX_BYTES")?
+        .context("Invalid INFINITY_HTTP_INPUT_MAX_BYTES")?
         .unwrap_or(512 * 1024 * 1024);
     let admission = super::memory::MemoryAdmission::new(
         info.max_concurrent_requests,
