@@ -89,12 +89,13 @@ void d3_test(){
  auto admitted=[&](size_t limit,bool dedup){return validate_input_upload_budget(2,2,false,aliases,2,nullptr,0,nullptr,2,limit,false,dedup);};
  const auto shared_bytes=admitted(1<<20,true);
  TORCH_CHECK(admitted(shared_bytes,true)==shared_bytes,"Shared uploads rejected at their exact byte budget");
- reject([&]{admitted(shared_bytes-1,true);});
- reject([&]{admitted(shared_bytes,false);}); // Non-D3 uploads remain distinct.
+ auto reject_budget=[&](bool dedup,size_t limit){bool failed=false;try{admitted(limit,dedup);}catch(const MemoryAdmissionError&){failed=true;}TORCH_CHECK(failed,"Over-budget upload did not reject as memory admission");};
+ reject_budget(true,shared_bytes-1);
+ reject_budget(false,shared_bytes); // Non-D3 uploads remain distinct.
  aliases[1].pixels=reinterpret_cast<const float*>(uintptr_t(8192));
- reject([&]{admitted(shared_bytes,true);});
+ reject_budget(true,shared_bytes);
  aliases[1].pixels=aliases[0].pixels;aliases[1].rows=32;aliases[1].patch_dim=8;
- reject([&]{admitted(shared_bytes,true);}); // Same pointer/count, different matrix layout.
+ reject_budget(true,shared_bytes); // Same pointer/count, different matrix layout.
  int vision_calls=0;
  ImageInput first_image{first_upload,{1,2,2},2,1,1,0};auto next_question=first_image;next_question.token_start=9;next_question.sequence_start=8;
  RequestImageFeatures features({first_image,next_question});
